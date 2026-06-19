@@ -75,3 +75,24 @@ def config_init(
 
 def redacted_config_json(config: AppConfig) -> str:
     return json.dumps(config.to_dict(redacted=True), indent=2, sort_keys=True)
+
+
+def persist_config_updates(
+    config: AppConfig,
+    changes: dict[str, Any],
+    *,
+    explicit_path: Path | None = None,
+) -> AppConfig:
+    target = (explicit_path or default_config_path()).expanduser()
+    if target.exists():
+        data: dict[str, Any] = dict(DEFAULT_CONFIG)
+        data.update(_read_config_file(target))
+    else:
+        data = config.to_dict()
+        data["api_key"] = ""
+
+    data.update(changes)
+    validated = AppConfig.from_mapping(data)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return validated

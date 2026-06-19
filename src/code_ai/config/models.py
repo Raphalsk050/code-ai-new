@@ -83,6 +83,7 @@ class AppConfig:
     context_compression_target: float = 0.55
     output_token_reserve: int = 4096
     headless_event_format: str = "text"
+    terminal_theme: str = "textual-dark"
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> AppConfig:
@@ -105,6 +106,7 @@ class AppConfig:
             context_compression_target=float(data.get("context_compression_target", 0.55)),
             output_token_reserve=int(data.get("output_token_reserve", 4096)),
             headless_event_format=str(data.get("headless_event_format", "text")),
+            terminal_theme=str(data.get("terminal_theme", "textual-dark")),
         )
         config.validate()
         return config
@@ -132,6 +134,8 @@ class AppConfig:
             )
         if self.output_token_reserve <= 0:
             raise ConfigurationError("output_token_reserve must be positive.")
+        if not self.terminal_theme.strip():
+            raise ConfigurationError("terminal_theme must be non-empty.")
         if (
             self.api_mode in {"responses", "completions"}
             and not self.api_key

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from code_ai.bootstrap import build_application
+from code_ai.config.loader import persist_config_updates
 from code_ai.ui.terminal.controller import TerminalController
 from code_ai.ui.terminal.slash_commands import (
     command_completion,
@@ -72,6 +73,8 @@ def create_terminal_app(application, *, config_path: Path | None = None):
 
         async def on_mount(self) -> None:
             application.subscribe(self._on_event)
+            self._apply_configured_terminal_theme()
+            self.theme_changed_signal.subscribe(self, self._persist_terminal_theme)
             await application.start()
             self._refresh_status()
             self.query_one("#input", Input).focus()
@@ -124,9 +127,12 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 self._append_conversation_line(render_suggestions("/"))
                 return
             if text.strip().startswith("/config"):
+                stripped = text.strip()
                 self._append_conversation_line(
-                    handle_config_command(application, text.strip(), config_path=config_path)
+                    handle_config_command(application, stripped, config_path=config_path)
                 )
+                if stripped.startswith("/config theme "):
+                    self._apply_configured_terminal_theme()
                 return
             asyncio.create_task(self.controller.submit(text))
 
@@ -145,6 +151,35 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             for line in self.vm.conversation[-300:]:
                 conversation.write(line)
             self._refresh_status()
+
+        def _apply_configured_terminal_theme(self) -> None:
+            theme_name = application.session.config.terminal_theme
+            if self.theme == theme_name:
+                return
+            if theme_name not in self.available_themes:
+                self._append_conversation_line(
+                    f"warning> Unknown terminal theme in config: {theme_name}"
+                )
+                return
+            self.theme = theme_name
+
+        def _persist_terminal_theme(self, theme) -> None:
+            theme_name = getattr(theme, "name", self.theme)
+            config = application.session.config
+            if config.terminal_theme == theme_name:
+                return
+            try:
+                validated = persist_config_updates(
+                    config,
+                    {"terminal_theme": theme_name},
+                    explicit_path=config_path,
+                )
+            except Exception as exc:
+                self._append_conversation_line(
+                    f"warning> Could not persist terminal theme: {exc}"
+                )
+                return
+            config.terminal_theme = validated.terminal_theme
 
         async def action_cancel_or_quit(self) -> None:
             if self.vm.status not in {"READY", "STARTING"}:

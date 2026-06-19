@@ -148,6 +148,8 @@ def test_render_suggestions_lists_config_commands() -> None:
 def test_command_completion_completes_config_command_text() -> None:
     assert command_completion("/config a") == "/config api-mode "
     assert command_completion("/config api-mode o") == "/config api-mode ollama"
+    assert command_completion("/config th") == "/config theme "
+    assert command_completion("/config theme tok") == "/config theme tokyo-night"
 
 
 async def test_left_arrow_accepts_slash_command_completion(tmp_path) -> None:
@@ -177,3 +179,34 @@ def test_config_model_command_persists_and_updates_active_config(tmp_path) -> No
     assert "Applied now" in result
     assert fake_app.session.config.model == "other-model"
     assert saved["model"] == "other-model"
+
+
+def test_config_theme_command_persists_and_updates_active_config(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    config_path = tmp_path / "config.json"
+    result = handle_config_command(
+        fake_app,
+        "/config theme tokyo-night",
+        config_path=config_path,
+    )
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert "Applied now" in result
+    assert fake_app.session.config.terminal_theme == "tokyo-night"
+    assert saved["terminal_theme"] == "tokyo-night"
+
+
+async def test_terminal_persists_theme_changed_from_palette(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    fake_app.session.config.terminal_theme = "textual-light"
+    config_path = tmp_path / "config.json"
+    terminal_app = create_terminal_app(fake_app, config_path=config_path)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        assert terminal_app.theme == "textual-light"
+
+        terminal_app.theme = "textual-dark"
+        await pilot.pause(0.2)
+
+        saved = json.loads(config_path.read_text(encoding="utf-8"))
+        assert fake_app.session.config.terminal_theme == "textual-dark"
+        assert saved["terminal_theme"] == "textual-dark"

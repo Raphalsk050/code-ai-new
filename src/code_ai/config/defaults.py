@@ -45,4 +45,5 @@ DEFAULT_CONFIG: dict[str, object] = {
     "context_compression_target": 0.55,
     "output_token_reserve": 4096,
     "headless_event_format": "text",
+    "terminal_theme": "textual-dark",
 }

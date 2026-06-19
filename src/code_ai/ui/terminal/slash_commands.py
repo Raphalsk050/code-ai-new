@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-import json
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from code_ai.config.loader import default_config_path, redacted_config_json
+from code_ai.config.loader import persist_config_updates, redacted_config_json
 from code_ai.config.models import (
     SUPPORTED_API_MODES,
-    AppConfig,
     normalize_api_mode,
 )
 
@@ -58,10 +56,28 @@ SLASH_COMMANDS = [
         "Persist and switch response language for future calls.",
         "/config language ",
     ),
+    SlashCommand(
+        "/config theme <name>",
+        "Persist and switch the terminal theme.",
+        "/config theme ",
+    ),
 ]
 
 API_MODE_SUGGESTIONS = ("responses", "completions", "ollama")
 LANGUAGE_SUGGESTIONS = ("en", "pt", "pt-BR")
+TERMINAL_THEME_SUGGESTIONS = (
+    "textual-dark",
+    "textual-light",
+    "tokyo-night",
+    "dracula",
+    "monokai",
+    "nord",
+    "gruvbox",
+    "catppuccin-mocha",
+    "catppuccin-latte",
+    "solarized-dark",
+    "solarized-light",
+)
 
 
 def command_suggestions(prefix: str, *, limit: int = 8) -> list[SlashCommand]:
@@ -124,6 +140,16 @@ def handle_config_command(application: Any, command_text: str, *, config_path: P
             live_fields={"language"},
             restart_required=False,
         )
+    if action == "theme":
+        if len(parts) != 3:
+            return "command> Usage: /config theme <name>"
+        return _apply_config_change(
+            application,
+            config_path=config_path,
+            changes={"terminal_theme": parts[2]},
+            live_fields={"terminal_theme"},
+            restart_required=False,
+        )
     if action == "api-mode":
         if len(parts) != 3:
             return "command> Usage: /config api-mode <responses|completions|ollama>"
@@ -169,16 +195,10 @@ def _apply_config_change(
     restart_required: bool,
 ) -> str:
     config = application.session.config
-    target = (config_path or default_config_path()).expanduser()
-    data = _load_config_data(target, config)
-    data.update(changes)
     try:
-        validated = AppConfig.from_mapping(data)
+        validated = persist_config_updates(config, changes, explicit_path=config_path)
     except Exception as exc:
         return f"command> Config not changed: {exc}"
-
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     for field in live_fields:
         setattr(config, field, getattr(validated, field))
@@ -186,16 +206,6 @@ def _apply_config_change(
     changed = ", ".join(f"{key}={value}" for key, value in changes.items())
     suffix = " Restart Code-AI to apply this setting." if restart_required else " Applied now."
     return f"command> Updated {changed}.{suffix}"
-
-
-def _load_config_data(target: Path, config: AppConfig) -> dict[str, Any]:
-    if target.exists():
-        parsed = json.loads(target.read_text(encoding="utf-8"))
-        if isinstance(parsed, dict):
-            return parsed
-    data = config.to_dict()
-    data["api_key"] = ""
-    return data
 
 
 def _value_suggestions(prefix: str) -> list[SlashCommand]:
@@ -221,5 +231,17 @@ def _value_suggestions(prefix: str) -> list[SlashCommand]:
             )
             for language in LANGUAGE_SUGGESTIONS
             if language.lower().startswith(value_prefix.lower())
+        ]
+
+    theme_prefix = "/config theme "
+    if prefix.startswith(theme_prefix):
+        value_prefix = prefix[len(theme_prefix) :].strip()
+        return [
+            SlashCommand(
+                f"/config theme {theme}",
+                "Persist and switch the terminal theme.",
+            )
+            for theme in TERMINAL_THEME_SUGGESTIONS
+            if theme.startswith(value_prefix)
         ]
     return []
