@@ -1,0 +1,64 @@
+Screen {
+  background: #071018;
+  color: #d7dee8;
+}
+
+#root {
+  height: 100%;
+}
+
+#topbar {
+  height: 12;
+  border: solid #8892a0;
+  padding: 0 1;
+}
+
+#logo {
+  color: #ff9f1c;
+  text-style: bold;
+}
+
+#subtitle {
+  color: #9aa4b2;
+}
+
+#statusline {
+  color: #48d17a;
+}
+
+#main {
+  height: 1fr;
+}
+
+#session {
+  width: 34%;
+  min-width: 28;
+  max-width: 58;
+  border: solid #8892a0;
+  padding: 1;
+}
+
+#conversation {
+  width: 1fr;
+  border: solid #8892a0;
+  padding: 1;
+}
+
+#command-suggestions {
+  height: auto;
+  max-height: 10;
+  border: solid #8892a0;
+  color: #d7dee8;
+  background: #111820;
+  padding: 0 1;
+}
+
+#input {
+  height: 3;
+  border: solid #8892a0;
+}
+
+.panel-title {
+  color: #ff9f1c;
+  text-style: bold;
+}
