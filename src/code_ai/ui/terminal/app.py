@@ -6,7 +6,11 @@ from typing import Any
 
 from code_ai.bootstrap import build_application
 from code_ai.ui.terminal.controller import TerminalController
-from code_ai.ui.terminal.slash_commands import handle_config_command, render_suggestions
+from code_ai.ui.terminal.slash_commands import (
+    command_completion,
+    handle_config_command,
+    render_suggestions,
+)
 from code_ai.ui.terminal.view_models import TerminalViewModel
 from code_ai.ui.terminal.widgets import CODE_AI_LOGO
 
@@ -14,7 +18,21 @@ from code_ai.ui.terminal.widgets import CODE_AI_LOGO
 def create_terminal_app(application, *, config_path: Path | None = None):
     from textual.app import App, ComposeResult
     from textual.containers import Container, Horizontal, Vertical
+    from textual.suggester import Suggester
     from textual.widgets import Footer, Header, Input, RichLog, Static
+
+    class SlashCommandSuggester(Suggester):
+        async def get_suggestion(self, value: str) -> str | None:
+            return command_completion(value)
+
+    class CommandInput(Input):
+        def action_cursor_left(self, select: bool = False) -> None:
+            completion = command_completion(self.value)
+            if not select and self.cursor_at_end and completion:
+                self.value = completion
+                self.cursor_position = len(completion)
+                return
+            super().action_cursor_left(select)
 
     class CodeAITerminalApp(App[None]):
         CSS_PATH = "theme.tcss"
@@ -45,7 +63,11 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 suggestions = Static("", id="command-suggestions")
                 suggestions.display = False
                 yield suggestions
-                yield Input(placeholder="you>", id="input")
+                yield CommandInput(
+                    placeholder="you>",
+                    id="input",
+                    suggester=SlashCommandSuggester(case_sensitive=True),
+                )
             yield Footer()
 
         async def on_mount(self) -> None:

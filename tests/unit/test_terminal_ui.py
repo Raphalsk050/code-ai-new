@@ -11,7 +11,11 @@ from code_ai.core.orchestration import TurnResult
 from code_ai.core.state import AgentState
 from code_ai.events.models import EventEnvelope
 from code_ai.ui.terminal.app import create_terminal_app
-from code_ai.ui.terminal.slash_commands import handle_config_command, render_suggestions
+from code_ai.ui.terminal.slash_commands import (
+    command_completion,
+    handle_config_command,
+    render_suggestions,
+)
 
 
 class FakeTerminalApplication:
@@ -139,6 +143,26 @@ def test_render_suggestions_lists_config_commands() -> None:
     rendered = render_suggestions("/config")
     assert "/config show" in rendered
     assert "/config api-mode" in rendered
+
+
+def test_command_completion_completes_config_command_text() -> None:
+    assert command_completion("/config a") == "/config api-mode "
+    assert command_completion("/config api-mode o") == "/config api-mode ollama"
+
+
+async def test_left_arrow_accepts_slash_command_completion(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", Input)
+        input_widget.value = "/config a"
+        input_widget.cursor_position = len(input_widget.value)
+        await pilot.press("left")
+        await pilot.pause(0.2)
+
+        assert input_widget.value == "/config api-mode "
+        assert input_widget.cursor_position == len(input_widget.value)
 
 
 def test_config_model_command_persists_and_updates_active_config(tmp_path) -> None:

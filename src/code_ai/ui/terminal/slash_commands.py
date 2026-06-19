@@ -18,6 +18,11 @@ from code_ai.config.models import (
 class SlashCommand:
     command: str
     description: str
+    completion: str | None = None
+
+    @property
+    def completion_text(self) -> str:
+        return self.completion or self.command
 
 
 SLASH_COMMANDS = [
@@ -28,25 +33,48 @@ SLASH_COMMANDS = [
     SlashCommand("/clear", "Clear the conversation view."),
     SlashCommand("/quit", "Close Code-AI."),
     SlashCommand("/config show", "Show redacted active config."),
-    SlashCommand("/config model <name>", "Persist and switch the model for future calls."),
+    SlashCommand(
+        "/config model <name>",
+        "Persist and switch the model for future calls.",
+        "/config model ",
+    ),
     SlashCommand(
         "/config api-mode <responses|completions|ollama>",
         "Persist API mode. Restart required.",
+        "/config api-mode ",
     ),
-    SlashCommand("/config base-url <url>", "Persist provider base URL. Restart required."),
-    SlashCommand("/config workspace <path>", "Persist workspace path. Restart required."),
+    SlashCommand(
+        "/config base-url <url>",
+        "Persist provider base URL. Restart required.",
+        "/config base-url ",
+    ),
+    SlashCommand(
+        "/config workspace <path>",
+        "Persist workspace path. Restart required.",
+        "/config workspace ",
+    ),
     SlashCommand(
         "/config language <code>",
         "Persist and switch response language for future calls.",
+        "/config language ",
     ),
 ]
 
+API_MODE_SUGGESTIONS = ("responses", "completions", "ollama")
+LANGUAGE_SUGGESTIONS = ("en", "pt", "pt-BR")
+
 
 def command_suggestions(prefix: str, *, limit: int = 8) -> list[SlashCommand]:
-    text = prefix.strip()
+    text = prefix.lstrip()
     if not text.startswith("/"):
         return []
-    matches = [item for item in SLASH_COMMANDS if item.command.startswith(text)]
+
+    value_matches = _value_suggestions(text)
+    if value_matches:
+        return value_matches[:limit]
+
+    command_prefix = text.rstrip()
+    matches = [item for item in SLASH_COMMANDS if item.command.startswith(command_prefix)]
     if matches:
         return matches[:limit]
     return [item for item in SLASH_COMMANDS if item.command.startswith("/config")][:limit]
@@ -57,6 +85,14 @@ def render_suggestions(prefix: str) -> str:
     if not suggestions:
         return ""
     return "\n".join(f"{item.command:<42} {item.description}" for item in suggestions)
+
+
+def command_completion(prefix: str) -> str | None:
+    suggestions = command_suggestions(prefix, limit=1)
+    if not suggestions:
+        return None
+    completion = suggestions[0].completion_text
+    return completion if len(completion) > len(prefix) else None
 
 
 def handle_config_command(application: Any, command_text: str, *, config_path: Path | None) -> str:
@@ -160,3 +196,30 @@ def _load_config_data(target: Path, config: AppConfig) -> dict[str, Any]:
     data = config.to_dict()
     data["api_key"] = ""
     return data
+
+
+def _value_suggestions(prefix: str) -> list[SlashCommand]:
+    api_mode_prefix = "/config api-mode "
+    if prefix.startswith(api_mode_prefix):
+        value_prefix = prefix[len(api_mode_prefix) :].strip()
+        return [
+            SlashCommand(
+                f"/config api-mode {mode}",
+                "Persist API mode. Restart required.",
+            )
+            for mode in API_MODE_SUGGESTIONS
+            if mode.startswith(value_prefix)
+        ]
+
+    language_prefix = "/config language "
+    if prefix.startswith(language_prefix):
+        value_prefix = prefix[len(language_prefix) :].strip()
+        return [
+            SlashCommand(
+                f"/config language {language}",
+                "Persist and switch response language for future calls.",
+            )
+            for language in LANGUAGE_SUGGESTIONS
+            if language.lower().startswith(value_prefix.lower())
+        ]
+    return []
