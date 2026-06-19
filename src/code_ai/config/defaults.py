@@ -1,0 +1,48 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+DEFAULT_CONFIG_DIRNAME = ".code-ai"
+DEFAULT_CONFIG_FILENAME = "config.json"
+
+
+def default_config_path() -> Path:
+    return Path.home() / DEFAULT_CONFIG_DIRNAME / DEFAULT_CONFIG_FILENAME
+
+
+DEFAULT_BUDGETS: dict[str, int] = {
+    "build_tool_timeout_s": 300,
+    "default_tool_timeout_s": 60,
+    "max_context_tokens": 256000,
+    "max_model_call_s": 180,
+    "max_model_step_seconds": 180,
+    "max_model_steps": 600,
+    "max_orchestration_rounds": 60,
+    "max_orchestration_seconds": 60,
+    "max_tool_call_seconds": 900,
+    "max_tool_calls": 1200,
+    "max_tool_output_chars": 12000,
+    "max_tool_wall_time_s": 900,
+    "max_turn_seconds": 900,
+    "max_turn_wall_time_s": 900,
+    "subagent_explorer_timeout_s": 120,
+    "subagent_worker_timeout_s": 300,
+}
+
+
+DEFAULT_CONFIG: dict[str, object] = {
+    "api_key": "",
+    "api_mode": "responses",
+    "base_url": "http://localhost:11434/v1",
+    "budgets": DEFAULT_BUDGETS,
+    "language": "en",
+    "model": "gemma4:31b-cloud",
+    "show_ui": True,
+    "ssl_verification": False,
+    "use_remote_conversation_state": True,
+    "workspace": str(Path.cwd()),
+    "context_compression_threshold": 0.82,
+    "context_compression_target": 0.55,
+    "output_token_reserve": 4096,
+    "headless_event_format": "text",
+}
