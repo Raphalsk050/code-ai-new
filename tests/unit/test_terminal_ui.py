@@ -123,6 +123,22 @@ def test_terminal_logo_styles_tarty2_banner_lines() -> None:
     assert "xsansi" in CODE_AI_BANNER_FONT_OPTIONS
 
 
+def test_terminal_styles_thinking_lines_darker_gray() -> None:
+    from rich.text import Text
+
+    from code_ai.ui.terminal.widgets import THINKING_LINE_STYLE, render_conversation_line
+
+    thinking = render_conversation_line("thinking> checking files")
+    activity = render_conversation_line("model> thinking step 0...")
+    answer = render_conversation_line("ai> done")
+
+    assert isinstance(thinking, Text)
+    assert isinstance(activity, Text)
+    assert str(thinking.style) == THINKING_LINE_STYLE
+    assert str(activity.style) == THINKING_LINE_STYLE
+    assert answer == "ai> done"
+
+
 def test_terminal_view_model_shows_command_output() -> None:
     from code_ai.ui.terminal.view_models import TerminalViewModel
 

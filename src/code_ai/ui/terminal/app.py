@@ -18,6 +18,7 @@ from code_ai.ui.terminal.widgets import (
     CODE_AI_BANNER_FONT_OPTIONS,
     load_code_ai_logo,
     normalize_banner_font,
+    render_conversation_line,
 )
 
 
@@ -108,7 +109,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             }:
                 conversation.clear()
                 for line in self.vm.conversation[-300:]:
-                    conversation.write(line)
+                    conversation.write(render_conversation_line(line))
             self._refresh_status()
 
         async def on_input_changed(self, event: Input.Changed) -> None:
@@ -169,7 +170,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             conversation = self.query_one("#conversation", RichLog)
             conversation.clear()
             for line in self.vm.conversation[-300:]:
-                conversation.write(line)
+                conversation.write(render_conversation_line(line))
             self._refresh_status()
 
         def _apply_configured_terminal_theme(self) -> None:

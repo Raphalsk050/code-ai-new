@@ -54,6 +54,7 @@ CODE_AI_LOGO_STYLES = (
     "bold rgb(255,80,100)",
     "bold rgb(255,230,90)",
 )
+THINKING_LINE_STYLE = "#6b7280"
 
 FALLBACK_CODE_AI_LOGO_TEXT = "code.ai"
 FALLBACK_CODE_AI_LOGO_ART = "       \n█▀▀ █▀█ █▀▄ █▀▀ ░ ▄▀█ █ \n█▄▄ █▄█ █▄▀ ██▄ ▄ █▀█ █ \n       "
@@ -111,6 +112,12 @@ def style_banner_art(
 
 def load_code_ai_logo(font: str = CODE_AI_LOGO_FONT) -> Text:
     return style_banner_art(render_banner_art(load_banner_source(), font=font))
+
+
+def render_conversation_line(line: str) -> str | Text:
+    if line.startswith("thinking> ") or line.startswith("model> thinking"):
+        return Text(line, style=THINKING_LINE_STYLE)
+    return line
 
 
 CODE_AI_LOGO = load_code_ai_logo()
