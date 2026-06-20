@@ -62,67 +62,6 @@ def normalize_responses_output_item(item: Any) -> ToolCall | str | None:
     return None
 
 
-def _reasoning_text_from_value(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        parts = [_reasoning_text_from_value(part) for part in value]
-        return "\n".join(part for part in parts if part)
-    for key in (
-        "delta",
-        "text",
-        "summary_text",
-        "reasoning",
-        "reasoning_text",
-        "reasoning_content",
-        "thinking",
-    ):
-        text = _reasoning_text_from_value(object_get(value, key))
-        if text:
-            return text
-    for key in ("part", "content", "summary", "metadata", "item"):
-        text = _reasoning_text_from_value(object_get(value, key))
-        if text:
-            return text
-    return ""
-
-
-def responses_reasoning_from_output_item(item: Any) -> str:
-    metadata_text = _reasoning_text_from_value(object_get(item, "metadata"))
-    if metadata_text:
-        return metadata_text
-    item_type = str(object_get(item, "type", "") or "").lower()
-    if "reasoning" not in item_type and "thinking" not in item_type:
-        return ""
-    for key in ("summary", "content", "text", "reasoning", "reasoning_content", "thinking"):
-        text = _reasoning_text_from_value(object_get(item, key))
-        if text:
-            return text
-    return ""
-
-
-def responses_reasoning_delta_from_event(event_type: str, event: Any) -> str:
-    lowered_type = event_type.lower()
-    for source in (event, object_get(event, "response"), object_get(event, "item")):
-        metadata_text = _reasoning_text_from_value(object_get(source, "metadata"))
-        if metadata_text:
-            return metadata_text
-    if "reasoning" not in lowered_type and "thinking" not in lowered_type:
-        return ""
-    for key in ("delta", "text", "part", "content", "summary", "item"):
-        text = _reasoning_text_from_value(object_get(event, key))
-        if text:
-            return text
-    return ""
-
-
-def _is_reasoning_event(event_type: str) -> bool:
-    lowered_type = event_type.lower()
-    return "reasoning" in lowered_type or "thinking" in lowered_type
-
-
 def _text_delta_from_event(event_type: str, event: Any) -> str:
     if event_type not in {"response.output_text.delta", "response.text.delta"}:
         return ""
@@ -146,7 +85,6 @@ class OpenAIResponsesProvider:
             max_retries=0,
         )
         self._remote_state_supported = config.use_remote_conversation_state
-        self._reasoning_summary_supported = True
         self._capabilities = ProviderCapabilities(
             streaming=True,
             tool_calling=True,
@@ -167,25 +105,18 @@ class OpenAIResponsesProvider:
 
     async def complete(self, request: ModelRequest) -> ModelResponse:
         text_parts: list[str] = []
-        reasoning_parts: list[str] = []
         completed: ModelResponse | None = None
         async for event in self.stream(request):
             if event.kind == "text_delta":
                 text_parts.append(event.text_delta)
-            elif event.kind == "reasoning_delta":
-                reasoning_parts.append(event.reasoning_delta)
             elif event.kind == "completed" and event.response:
                 completed = event.response
         if completed is None:
             completed = ModelResponse(
-                text="".join(text_parts),
-                reasoning="".join(reasoning_parts),
-                raw_provider_name="openai_responses",
+                text="".join(text_parts), raw_provider_name="openai_responses"
             )
         elif not completed.text:
             completed.text = "".join(text_parts)
-        if completed and not completed.reasoning and reasoning_parts:
-            completed.reasoning = "".join(reasoning_parts)
         return completed
 
     async def _stream_with_retry(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
@@ -209,16 +140,6 @@ class OpenAIResponsesProvider:
                     request.previous_response_id = None
                     request.use_remote_conversation_state = False
                     continue
-                if self._reasoning_summary_supported and "reasoning" in text:
-                    self._reasoning_summary_supported = False
-                    yield ProviderEvent(
-                        kind="warning",
-                        warning=(
-                            "Endpoint rejected Responses reasoning summaries; retrying without "
-                            "public thinking output."
-                        ),
-                    )
-                    continue
                 if not _is_transient_exception(exc) or attempts >= 2:
                     raise ProviderError(f"Responses request failed: {exc}") from exc
                 attempts += 1
@@ -232,8 +153,6 @@ class OpenAIResponsesProvider:
         }
         if request.max_output_tokens:
             kwargs["max_output_tokens"] = request.max_output_tokens
-        if self._reasoning_summary_supported:
-            kwargs["reasoning"] = {"effort": "high", "summary": "auto"}
         if request.tools:
             kwargs["tools"] = tools_to_responses(request.tools)
         if (
@@ -251,35 +170,19 @@ class OpenAIResponsesProvider:
             raise
 
         text_parts: list[str] = []
-        reasoning_parts: list[str] = []
         tool_calls: list[ToolCall] = []
         response_id: str | None = None
         usage: TokenUsage | None = None
-        saw_reasoning_delta = False
 
         async for event in stream:
             event_type = str(object_get(event, "type", ""))
             is_completion_event = event_type in {"response.completed", "response.done"}
-            reasoning_delta = responses_reasoning_delta_from_event(event_type, event)
-            if reasoning_delta and not is_completion_event and (
-                event_type.endswith(".delta")
-                or not event_type.endswith(".done")
-                or not saw_reasoning_delta
-            ):
-                if event_type.endswith(".delta"):
-                    saw_reasoning_delta = True
-                reasoning_parts.append(reasoning_delta)
-                yield ProviderEvent(kind="reasoning_delta", reasoning_delta=reasoning_delta)
-                continue
             delta = _text_delta_from_event(event_type, event)
             if delta:
                 text_parts.append(delta)
                 yield ProviderEvent(kind="text_delta", text_delta=delta)
             elif is_completion_event:
                 response = object_get(event, "response", event)
-                if reasoning_delta and not reasoning_parts:
-                    reasoning_parts.append(reasoning_delta)
-                    yield ProviderEvent(kind="reasoning_delta", reasoning_delta=reasoning_delta)
                 response_id = (
                     str(object_get(response, "id", response_id or "") or "") or response_id
                 )
@@ -293,17 +196,12 @@ class OpenAIResponsesProvider:
                         tool_calls.append(normalized)
                     elif isinstance(normalized, str) and normalized and not text_parts:
                         text_parts.append(normalized)
-                    reasoning = responses_reasoning_from_output_item(item)
-                    if reasoning and not reasoning_parts:
-                        reasoning_parts.append(reasoning)
-                        yield ProviderEvent(kind="reasoning_delta", reasoning_delta=reasoning)
 
         finish = FinishReason.TOOL_CALLS if tool_calls else FinishReason.STOP
         yield ProviderEvent(
             kind="completed",
             response=ModelResponse(
                 text="".join(text_parts),
-                reasoning="".join(reasoning_parts),
                 tool_calls=tool_calls,
                 usage=usage,
                 finish_reason=finish,
