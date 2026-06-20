@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from code_ai.core.errors import ToolArgumentError, ToolExecutionError
+from code_ai.core.internet_intent import requires_current_web_search
 from code_ai.tools.base import ToolContext
-from code_ai.tools.web.backend import DDGSWebSearchBackend, WebSearchBackend
+from code_ai.tools.web.backend import DDGSWebSearchBackend, WebSearchBackend, fetch_page_text
 
 
 class WebSearchTool:
     name = "web_search"
-    description = "Perform a bounded provider-independent web search."
+    description = (
+        "Search the public web for current or unknown facts. Use for news, sports "
+        "schedules, prices, recent releases, and any request involving today, now, "
+        "latest, or hoje."
+    )
     input_schema = {
         "type": "object",
         "properties": {
@@ -18,6 +24,7 @@ class WebSearchTool:
             "region": {"type": "string"},
             "time_filter": {"type": "string"},
             "timeout": {"type": "number", "minimum": 1},
+            "fetch_top_n": {"type": "integer", "minimum": 0, "maximum": 3},
         },
         "required": ["query"],
         "additionalProperties": False,
@@ -34,6 +41,7 @@ class WebSearchTool:
         timeout = min(
             float(arguments.get("timeout") or 10), context.config.budgets.default_tool_timeout_s
         )
+        fetch_top_n = _fetch_top_n(arguments, query)
         try:
             results = await self._backend.search(
                 query,
@@ -48,4 +56,31 @@ class WebSearchTool:
             if isinstance(exc, ToolExecutionError):
                 raise
             raise ToolExecutionError(f"web_search failed: {exc}") from exc
-        return {"query": query, "results": [result.to_dict() for result in results[:max_results]]}
+
+        pages = []
+        for result in results[:fetch_top_n]:
+            try:
+                page = await _fetch_page(result.url, timeout=timeout)
+            except Exception as exc:
+                pages.append({"url": result.url, "status": "error", "error": str(exc)})
+                continue
+            pages.append(page)
+
+        return {
+            "query": query,
+            "results": [result.to_dict() for result in results[:max_results]],
+            "pages": pages,
+        }
+
+
+async def _fetch_page(url: str, *, timeout: float) -> dict[str, str]:
+    page = await asyncio.to_thread(fetch_page_text, url, timeout=timeout, max_chars=6000)
+    data = page.to_dict()
+    data["status"] = "ok"
+    return data
+
+
+def _fetch_top_n(arguments: dict[str, Any], query: str) -> int:
+    if "fetch_top_n" in arguments:
+        return max(0, min(3, int(arguments.get("fetch_top_n") or 0)))
+    return 2 if requires_current_web_search(query) else 0

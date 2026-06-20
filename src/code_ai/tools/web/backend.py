@@ -54,6 +54,17 @@ class WebSearchBackend(Protocol):
         raise NotImplementedError
 
 
+@dataclass(slots=True)
+class WebPageText:
+    url: str
+    title: str
+    text: str
+    source: str = "fetch"
+
+    def to_dict(self) -> dict[str, str]:
+        return asdict(self)
+
+
 @dataclass(frozen=True, slots=True)
 class SearchRequest:
     query: str
@@ -644,3 +655,67 @@ class DuckDuckGoParser(HTMLParser):
             self._current["title"] += data
         elif self._capture_snippet:
             self._current["snippet"] += data
+
+
+def fetch_page_text(url: str, *, timeout: float, max_chars: int = 6000) -> WebPageText:
+    request = SearchRequest(
+        query=url,
+        max_results=1,
+        region=None,
+        time_filter=None,
+        timeout=timeout,
+    )
+    body, final_url, content_type = _http_request(url, request)
+    title = ""
+    text = body
+    if "html" in content_type.lower() or _looks_like_html(body):
+        parser = PageTextParser()
+        parser.feed(body)
+        title = _compact_text(parser.title, 240)
+        text = parser.text()
+    return WebPageText(
+        url=final_url,
+        title=title,
+        text=_compact_text(text, max_chars),
+    )
+
+
+def _looks_like_html(value: str) -> bool:
+    return bool(re.search(r"<\s*(html|body|main|article|p|div|title)\b", value, re.IGNORECASE))
+
+
+class PageTextParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.title = ""
+        self._title_depth = 0
+        self._skip_depth = 0
+        self._chunks: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in {"script", "style", "noscript", "svg"}:
+            self._skip_depth += 1
+            return
+        if tag == "title":
+            self._title_depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"script", "style", "noscript", "svg"} and self._skip_depth:
+            self._skip_depth -= 1
+        if tag == "title" and self._title_depth:
+            self._title_depth -= 1
+        if tag in {"p", "div", "section", "article", "br", "li", "h1", "h2", "h3"}:
+            self._chunks.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth:
+            return
+        if self._title_depth:
+            self.title += data
+            return
+        text = data.strip()
+        if text:
+            self._chunks.append(text)
+
+    def text(self) -> str:
+        return _compact_text(" ".join(self._chunks), 20_000)

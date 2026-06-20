@@ -10,6 +10,12 @@ from code_ai.context.compression import ContextCompressor
 from code_ai.context.conversation import ConversationState
 from code_ai.context.usage import UsageLedger
 from code_ai.core.errors import CancellationError, CodeAIError, ToolExecutionError
+from code_ai.core.internet_intent import (
+    assistant_promised_search_without_tool,
+    build_web_search_query,
+    enrich_web_search_arguments,
+    should_force_web_search_for_turn,
+)
 from code_ai.core.state import AgentState
 from code_ai.events.bus import AsyncEventBus
 from code_ai.providers.base import ModelProvider
@@ -74,8 +80,19 @@ class AgentOrchestrator:
 
         tool_calls_executed = 0
         last_response: ModelResponse | None = None
+        host_web_search_done = False
 
         try:
+            if should_force_web_search_for_turn(text, self.conversation.messages):
+                tool_calls_executed += 1
+                if tool_calls_executed > self.config.budgets.max_tool_calls:
+                    raise ToolExecutionError("Maximum tool call budget exceeded.")
+                await self._execute_host_web_search(
+                    build_web_search_query(text, self.conversation.messages),
+                    cancel_event,
+                )
+                host_web_search_done = True
+
             for step in range(self.config.budgets.max_model_steps):
                 self._raise_if_cancelled(cancel_event)
                 tool_definitions = self.tool_registry.definitions()
@@ -135,6 +152,23 @@ class AgentOrchestrator:
                     self.conversation.add_assistant("", response.tool_calls)
 
                 if not response.tool_calls:
+                    if (
+                        response.text
+                        and not host_web_search_done
+                        and assistant_promised_search_without_tool(response.text)
+                    ):
+                        tool_calls_executed += 1
+                        if tool_calls_executed > self.config.budgets.max_tool_calls:
+                            raise ToolExecutionError("Maximum tool call budget exceeded.")
+                        await self._execute_host_web_search(
+                            build_web_search_query(text, self.conversation.messages),
+                            cancel_event,
+                        )
+                        host_web_search_done = True
+                        await self.set_state(
+                            AgentState.CALLING_MODEL, phase="calling_model_after_tools"
+                        )
+                        continue
                     await self.set_state(AgentState.READY, phase="waiting_user")
                     await self.event_bus.emit(
                         "turn.completed",
@@ -149,10 +183,16 @@ class AgentOrchestrator:
                     tool_calls_executed += 1
                     if tool_calls_executed > self.config.budgets.max_tool_calls:
                         raise ToolExecutionError("Maximum tool call budget exceeded.")
+                    arguments = enrich_web_search_arguments(
+                        call.arguments,
+                        self.conversation.messages,
+                    )
                     result = await self._execute_tool(
-                        call.id, call.name, call.arguments, cancel_event
+                        call.id, call.name, arguments, cancel_event
                     )
                     self.conversation.add_tool_result(result)
+                    if call.name == "web_search":
+                        host_web_search_done = True
                 await self.set_state(AgentState.CALLING_MODEL, phase="calling_model_after_tools")
 
             raise ToolExecutionError("Maximum model step budget exceeded.")
@@ -276,6 +316,29 @@ class AgentOrchestrator:
                 source="core.orchestrator",
             )
             return ToolResult(tool_call_id=tool_call_id, name=name, content=str(exc), is_error=True)
+
+    async def _execute_host_web_search(
+        self,
+        query: str,
+        cancel_event: asyncio.Event | None,
+    ) -> None:
+        if "web_search" not in self.tool_registry.names():
+            return
+        await self.set_state(AgentState.EXECUTING_TOOL, phase="executing_tools")
+        result = await self._execute_tool(
+            "host_web_search_current",
+            "web_search",
+            {"query": query, "max_results": 5, "region": "br-pt"},
+            cancel_event,
+        )
+        self.conversation.add_user(
+            "Host-executed web_search for current information.\n"
+            f"Search query: {query}\n"
+            f"Result:\n{result.content}\n\n"
+            "Use these search results as current evidence. If the results are "
+            "insufficient or contradictory, say that explicitly. Do not answer from "
+            "stale model knowledge."
+        )
 
     @staticmethod
     def _raise_if_cancelled(cancel_event: asyncio.Event | None) -> None:

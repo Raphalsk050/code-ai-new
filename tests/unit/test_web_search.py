@@ -6,8 +6,8 @@ from code_ai.config.models import AppConfig
 from code_ai.core.errors import ToolExecutionError
 from code_ai.events.bus import AsyncEventBus
 from code_ai.tools.base import ToolContext
-from code_ai.tools.web import backend
-from code_ai.tools.web.backend import SearchRequest, WebSearchResult
+from code_ai.tools.web import backend, web_search
+from code_ai.tools.web.backend import SearchRequest, WebPageText, WebSearchResult
 from code_ai.tools.web.web_search import WebSearchTool
 from code_ai.util.paths import WorkspacePolicy
 
@@ -87,3 +87,38 @@ async def test_web_search_tool_rejects_empty_results(tmp_path) -> None:
 
     with pytest.raises(ToolExecutionError, match="no usable results"):
         await WebSearchTool(backend=EmptyBackend()).execute({"query": "anything"}, context)
+
+
+async def test_web_search_fetches_pages_for_current_queries(tmp_path, monkeypatch) -> None:
+    class ResultBackend:
+        async def search(self, *args, **kwargs) -> list[WebSearchResult]:
+            return [
+                WebSearchResult(
+                    title="Official schedule",
+                    url="https://www.fifa.com/en/tournaments/mens/worldcup",
+                    snippet="Schedule",
+                    source="test",
+                )
+            ]
+
+    def fake_fetch_page_text(url: str, *, timeout: float, max_chars: int) -> WebPageText:
+        return WebPageText(
+            url=url,
+            title="Official schedule",
+            text="Brazil vs France - 16:00",
+        )
+
+    monkeypatch.setattr(web_search, "fetch_page_text", fake_fetch_page_text)
+    config = AppConfig.from_mapping({"api_mode": "ollama", "workspace": str(tmp_path)})
+    context = ToolContext(
+        config=config,
+        workspace=WorkspacePolicy.from_path(config.workspace),
+        event_bus=AsyncEventBus(),
+    )
+
+    result = await WebSearchTool(backend=ResultBackend()).execute(
+        {"query": "quem joga hoje na copa do mundo"},
+        context,
+    )
+
+    assert result["pages"][0]["text"] == "Brazil vs France - 16:00"
