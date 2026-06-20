@@ -13,7 +13,7 @@ FALLBACK_CODE_AI_LOGO = r"""
 """
 
 
-def load_code_ai_logo() -> str:
+def load_banner_source() -> str:
     try:
         logo = resources.files(__package__).joinpath(BANNER_RESOURCE).read_text(encoding="utf-8")
     except (FileNotFoundError, ModuleNotFoundError, OSError):
@@ -21,6 +21,10 @@ def load_code_ai_logo() -> str:
     if not logo.strip():
         return FALLBACK_CODE_AI_LOGO
     return logo
+
+
+def load_code_ai_logo() -> str:
+    return load_banner_source()
 
 
 CODE_AI_LOGO = load_code_ai_logo()
