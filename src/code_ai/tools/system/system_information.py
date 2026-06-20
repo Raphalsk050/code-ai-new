@@ -6,12 +6,13 @@ import shutil
 import sys
 from typing import Any
 
-from code_ai.tools.base import ToolContext
+from code_ai.tools.base import ToolCapability, ToolContext
 
 
 class SystemInformationTool:
     name = "system_information"
     description = "Return non-sensitive system information useful for development tasks."
+    capabilities = frozenset({ToolCapability.LOCAL_READ})
     input_schema = {
         "type": "object",
         "properties": {

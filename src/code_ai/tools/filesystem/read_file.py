@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from code_ai.core.errors import ToolArgumentError
-from code_ai.tools.base import ToolContext
+from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.filesystem.common import read_text_file
 from code_ai.tools.output import bound_text
 
@@ -11,6 +11,7 @@ from code_ai.tools.output import bound_text
 class ReadFileTool:
     name = "read_file"
     description = "Read a UTF-8 text file inside the workspace, optionally bounded to a line range."
+    capabilities = frozenset({ToolCapability.LOCAL_READ})
     input_schema = {
         "type": "object",
         "properties": {

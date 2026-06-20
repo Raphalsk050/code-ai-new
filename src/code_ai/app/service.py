@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from code_ai.app.session import ApplicationSession
 from code_ai.context.compression import ContextCompressor
 from code_ai.core.orchestration import AgentOrchestrator, TurnResult
+from code_ai.core.planning import PlannerMode
 from code_ai.core.state import AgentState
 from code_ai.events.bus import AsyncEventBus, EventSubscriber
 from code_ai.events.models import EventEnvelope
@@ -79,6 +80,54 @@ class CodeAIApplication:
         )
         await self.orchestrator.set_state(AgentState.READY, phase="waiting_user")
 
+    async def set_planner_mode(self, mode: str | PlannerMode) -> None:
+        if not self.orchestrator.planner:
+            raise RuntimeError("Planner is not configured.")
+        await self.orchestrator.planner.set_mode(PlannerMode(mode))
+
+    async def request_deep_plan(self, *, write_to_workspace: bool = False) -> str:
+        if not self.orchestrator.planner:
+            raise RuntimeError("Planner is not configured.")
+        if write_to_workspace:
+            return "command> Writing plan files is not enabled in this build."
+        snapshot = self.orchestrator.planner.plan_snapshot()
+        await self.event_bus.emit(
+            "planning.plan.created",
+            snapshot,
+            source="app",
+        )
+        return _render_plan_snapshot(snapshot)
+
+    async def approve_or_start_plan_execution(self) -> None:
+        await self.set_planner_mode(PlannerMode.ACT)
+
+    async def request_replan(self, reason: str | None = None) -> str:
+        if not self.orchestrator.planner:
+            raise RuntimeError("Planner is not configured.")
+        await self.event_bus.emit(
+            "planning.replan.started",
+            {"reason": reason or "manual request"},
+            source="app",
+        )
+        await self.event_bus.emit(
+            "planning.replan.completed",
+            self.orchestrator.planner.plan_snapshot(),
+            source="app",
+        )
+        return "command> Replan requested. The next turn will classify the current objective again."
+
+    def get_plan_snapshot(self) -> dict[str, object]:
+        if not self.orchestrator.planner:
+            return {"planner": "not configured"}
+        return self.orchestrator.planner.plan_snapshot()
+
+    async def submit_question_answer(self, answer: str) -> None:
+        await self.event_bus.emit(
+            "interaction.question.answered",
+            {"answer": answer},
+            source="app",
+        )
+
     def subscribe(self, handler_or_sink: EventSubscriber) -> EventSubscriber:
         return self.event_bus.subscribe(handler_or_sink)
 
@@ -97,3 +146,17 @@ class CodeAIApplication:
 
 
 ApplicationEventHandler = Callable[[EventEnvelope], Awaitable[None] | None]
+
+
+def _render_plan_snapshot(snapshot: dict[str, object]) -> str:
+    if "current_step" not in snapshot:
+        return "command> No active plan."
+    return (
+        "command> Plan snapshot\n"
+        f"mode: {snapshot.get('mode')}\n"
+        f"phase: {snapshot.get('phase')}\n"
+        f"progress: {snapshot.get('progress')}\n"
+        f"current: {snapshot.get('current_step')}\n"
+        f"changed paths: {snapshot.get('changed_paths', [])}\n"
+        f"verification passed: {snapshot.get('latest_verification_passed')}"
+    )

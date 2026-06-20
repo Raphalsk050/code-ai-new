@@ -13,12 +13,49 @@ class TerminalViewModel:
     conversation: list[str] = field(default_factory=list)
     active_context_tokens: str = "tokens unavailable"
     cumulative_usage: str = "0"
+    planner_mode: str = "auto"
+    plan_progress: str = "-"
+    current_step: str = "-"
+    latest_verification_status: str = "unknown"
 
     def apply(self, event: EventEnvelope) -> None:
         if event.event_type == "status.changed":
             self.status = str(event.payload.get("state", self.status))
         elif event.event_type == "phase.changed":
             self.phase = str(event.payload.get("phase", self.phase))
+        elif event.event_type == "planning.mode.changed":
+            self.planner_mode = str(event.payload.get("mode", self.planner_mode))
+        elif event.event_type == "planning.phase.changed":
+            self.phase = str(event.payload.get("phase", self.phase))
+            self.planner_mode = str(event.payload.get("mode", self.planner_mode))
+        elif event.event_type in {
+            "planning.plan.created",
+            "planning.plan.revised",
+            "planning.step.started",
+            "planning.step.completed",
+            "planning.step.failed",
+            "planning.step.blocked",
+        }:
+            self._apply_plan_payload(event.payload)
+            if event.event_type == "planning.step.started":
+                self.conversation.append(f"plan> {self.current_step}")
+            elif event.event_type == "planning.step.completed":
+                self.conversation.append(f"plan> completed {self.current_step}")
+            elif event.event_type == "planning.step.failed":
+                self.conversation.append(f"plan> failed {self.current_step}")
+        elif event.event_type == "planning.evidence.recorded":
+            summary = str(event.payload.get("summary") or "")
+            evidence_type = str(event.payload.get("type") or "evidence")
+            self.conversation.append(f"evidence> {evidence_type}: {summary[:180]}")
+        elif event.event_type == "planning.policy.denied":
+            self.conversation.append(
+                f"policy> denied {event.payload.get('tool_name')}: {event.payload.get('reason')}"
+            )
+        elif event.event_type == "planning.completion.rejected":
+            missing = event.payload.get("missing_requirements", [])
+            self.conversation.append(f"completion> rejected: {missing}")
+        elif event.event_type == "assistant.final":
+            self.conversation.append(f"ai> {event.payload.get('text', '')}")
         elif event.event_type == "user.message":
             self.conversation.append(f"you> {event.payload.get('text', '')}")
         elif event.event_type == "model.request.started":
@@ -27,10 +64,12 @@ class TerminalViewModel:
             self.conversation.append(f"model> thinking{suffix}...")
         elif event.event_type == "model.stream.delta":
             text = str(event.payload.get("text", ""))
-            if self.conversation and self.conversation[-1].startswith("ai> "):
+            channel = str(event.payload.get("channel") or "answer")
+            prefix = "working> " if channel == "working" else "ai> "
+            if self.conversation and self.conversation[-1].startswith(prefix):
                 self.conversation[-1] += text
             else:
-                self.conversation.append("ai> " + text)
+                self.conversation.append(prefix + text)
         elif event.event_type == "model.thinking.delta":
             text = str(event.payload.get("text", ""))
             if self.conversation and self.conversation[-1].startswith("thinking> "):
@@ -50,6 +89,12 @@ class TerminalViewModel:
             if isinstance(result, dict):
                 if name == "web_search":
                     detail = _web_search_detail(result)
+                elif name == "list_files":
+                    detail = f": {len(result.get('entries', []))} entries"
+                elif name == "search_code":
+                    detail = f": {len(result.get('matches', []))} matches"
+                elif name in {"write_file", "edit_code"}:
+                    detail = f": {result.get('path', '')}"
                 stdout = str(result.get("stdout") or "").strip()
                 cwd = str(result.get("cwd") or "").strip()
                 if not detail and stdout:
@@ -71,6 +116,15 @@ class TerminalViewModel:
             cumulative = event.payload.get("cumulative")
             if isinstance(cumulative, dict):
                 self.cumulative_usage = str(cumulative.get("total_tokens", "0"))
+
+    def _apply_plan_payload(self, payload: dict[object, object]) -> None:
+        self.planner_mode = str(payload.get("mode", self.planner_mode))
+        self.phase = str(payload.get("phase", self.phase))
+        self.plan_progress = str(payload.get("progress", self.plan_progress))
+        self.current_step = str(payload.get("current_step", self.current_step))
+        verification = payload.get("latest_verification_passed")
+        if verification is not None:
+            self.latest_verification_status = "passed" if verification else "not current"
 
 
 def _web_search_detail(result: dict[object, object]) -> str:

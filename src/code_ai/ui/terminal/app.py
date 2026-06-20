@@ -104,6 +104,15 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 "tool.call.started",
                 "tool.call.completed",
                 "tool.call.failed",
+                "planning.plan.created",
+                "planning.plan.revised",
+                "planning.step.started",
+                "planning.step.completed",
+                "planning.step.failed",
+                "planning.evidence.recorded",
+                "planning.policy.denied",
+                "planning.completion.rejected",
+                "assistant.final",
                 "warning",
                 "error",
             }:
@@ -127,6 +136,21 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 return
             if text.strip() == "/compact":
                 await self.controller.compact()
+                return
+            if text.strip() in {"/auto", "/plan", "/act"}:
+                mode = text.strip().lstrip("/")
+                await self.controller.set_planner_mode(mode)
+                self._append_conversation_line(f"command> Planner mode set to {mode}")
+                return
+            if text.strip() == "/deep-plan":
+                self._append_conversation_line(await self.controller.deep_plan())
+                return
+            if text.strip() == "/plan-status":
+                self._append_conversation_line(self.controller.plan_status())
+                return
+            if text.strip().startswith("/replan"):
+                reason = text.strip()[len("/replan") :].strip() or None
+                self._append_conversation_line(await self.controller.replan(reason))
                 return
             if text.strip() == "/cancel":
                 await self.controller.cancel()
@@ -257,7 +281,8 @@ def create_terminal_app(application, *, config_path: Path | None = None):
         def _refresh_status(self) -> None:
             self.query_one("#statusline", Static).update(
                 f"{self.vm.status} | {self.vm.phase} | {application.session.config.model} | "
-                f"{application.session.config.workspace.name} | ctx {self.vm.active_context_tokens}"
+                f"{application.session.config.workspace.name} | plan {self.vm.plan_progress} | "
+                f"ctx {self.vm.active_context_tokens}"
             )
             self.query_one("#session-info", Static).update(self._session_text())
 
@@ -271,6 +296,10 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 f"provider: {config.base_url}\n"
                 f"model: {config.model}\n"
                 f"api mode: {config.api_mode}\n"
+                f"planner: {self.vm.planner_mode}\n"
+                f"plan progress: {self.vm.plan_progress}\n"
+                f"current step: {self.vm.current_step}\n"
+                f"verification: {self.vm.latest_verification_status}\n"
                 f"usage: {self.vm.cumulative_usage}\n"
                 f"state: {application.orchestrator.state.value}\n"
                 f"tools: {tools}\n\n"

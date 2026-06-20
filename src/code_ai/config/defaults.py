@@ -30,11 +30,29 @@ DEFAULT_BUDGETS: dict[str, int] = {
 }
 
 
+DEFAULT_PLANNER: dict[str, object] = {
+    "enabled": True,
+    "mode": "auto",
+    "strict_tool_policy": True,
+    "local_first": True,
+    "require_plan_for_mutations": True,
+    "require_verification_for_changes": True,
+    "double_check_completion": True,
+    "max_plan_steps": 20,
+    "max_discovery_rounds": 8,
+    "max_replans": 3,
+    "max_step_attempts": 3,
+    "max_no_progress_rounds": 3,
+    "persist_plan": True,
+}
+
+
 DEFAULT_CONFIG: dict[str, object] = {
     "api_key": "",
     "api_mode": "responses",
     "base_url": "http://localhost:11434/v1",
     "budgets": DEFAULT_BUDGETS,
+    "planner": DEFAULT_PLANNER,
     "language": "en",
     "model": "gemma4:31b-cloud",
     "show_ui": True,

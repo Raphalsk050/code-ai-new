@@ -17,6 +17,7 @@ dependencies = [
   "pyte>=0.8.0",
   "pexpect>=4.8.0; platform_system != 'Windows'",
   "ddgs>=9.0.0",
+  "pydantic>=2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -39,6 +40,9 @@ where = ["src"]
 pythonpath = ["src"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+  "live_model: uses the configured real provider/model and is skipped unless CODE_AI_RUN_LIVE_MODEL_TESTS=1",
+]
 
 [tool.ruff]
 line-length = 100

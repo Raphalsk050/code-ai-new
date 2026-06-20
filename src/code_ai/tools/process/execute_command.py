@@ -3,13 +3,14 @@ from __future__ import annotations
 from typing import Any
 
 from code_ai.core.errors import CancellationError, CommandTimeoutError, ToolExecutionError
-from code_ai.tools.base import ToolContext
+from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.process.command_runner import CommandRunner
 
 
 class ExecuteCommandTool:
     name = "execute_command"
     description = "Run a bounded non-interactive command inside the workspace."
+    capabilities = frozenset({ToolCapability.PROCESS})
     input_schema = {
         "type": "object",
         "properties": {
@@ -56,4 +57,6 @@ class ExecuteCommandTool:
             raise ToolExecutionError(f"Command timed out after {timeout:g}s.") from exc
         except CancellationError:
             raise
+        except OSError as exc:
+            raise ToolExecutionError(f"Command failed to start: {exc}") from exc
         return result.to_dict(max_chars=context.config.budgets.max_tool_output_chars)

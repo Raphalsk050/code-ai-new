@@ -1,0 +1,184 @@
+from __future__ import annotations
+
+from code_ai.config.models import PlannerConfig
+from code_ai.core.planning import PlannerService, PlanningPhase, TaskProfile
+from code_ai.events.bus import AsyncEventBus
+from code_ai.tools.filesystem import EditCodeTool, ListFilesTool, ReadFileTool, WriteFileTool
+from code_ai.tools.internal import CompleteTaskTool, FinishDiscoveryTool
+from code_ai.tools.registry import ToolRegistry
+from code_ai.tools.search import SearchCodeTool
+from code_ai.tools.web import WebSearchTool
+
+
+def make_registry() -> ToolRegistry:
+    registry = ToolRegistry()
+    for tool in (
+        ListFilesTool(),
+        SearchCodeTool(),
+        ReadFileTool(),
+        WriteFileTool(),
+        EditCodeTool(),
+        WebSearchTool(),
+        FinishDiscoveryTool(),
+        CompleteTaskTool(),
+    ):
+        registry.register(tool)
+    return registry
+
+
+def test_task_profile_keeps_obvious_fix_as_mutation() -> None:
+    profile = TaskProfile.from_user_text("Fix the authentication bug in this repository.")
+
+    assert profile.requires_workspace_mutation is True
+    assert profile.requires_local_context is True
+    assert profile.requires_verification is True
+    assert profile.allows_web_first is False
+
+
+def test_task_profile_keeps_greeting_as_toolless_conversation() -> None:
+    profile = TaskProfile.from_user_text("Olá")
+    service = PlannerService(
+        config=PlannerConfig(),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    service.profile = profile
+    service.plan = None
+
+    assert profile.requires_local_context is False
+    assert profile.requires_workspace_mutation is False
+    assert profile.intent == "conversation"
+    assert service.policy.allowed_tool_names(
+        registry=make_registry(),
+        profile=profile,
+        mode=service.mode,
+        phase=service.phase,
+        current_step=None,
+    ) == set()
+
+
+def test_task_profile_treats_read_request_as_local_inspection() -> None:
+    profile = TaskProfile.from_user_text("read the note")
+
+    assert profile.requires_local_context is True
+    assert profile.intent == "local_inspection"
+
+
+def test_task_profile_treats_project_today_as_local_current_state() -> None:
+    profile = TaskProfile.from_user_text("O que temos no projeto hoje?")
+
+    assert profile.intent == "local_inspection"
+    assert profile.requires_local_context is True
+    assert profile.requires_external_information is False
+    assert profile.allows_web_first is False
+    assert "Use current external evidence before answering." not in profile.acceptance_criteria
+
+
+def test_task_profile_keeps_external_current_questions_on_web() -> None:
+    sports = TaskProfile.from_user_text("quem vai jogar no jogo da copa de hoje")
+    package = TaskProfile.from_user_text("pesquise na internet a versao atual do pytest")
+
+    assert sports.intent == "external_research"
+    assert sports.requires_local_context is False
+    assert sports.requires_external_information is True
+    assert sports.allows_web_first is True
+    assert package.intent == "external_research"
+    assert package.requires_external_information is True
+    assert package.allows_web_first is True
+
+
+async def test_plan_mode_denies_mutating_and_process_tools() -> None:
+    service = PlannerService(
+        config=PlannerConfig(mode="plan"),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    registry = make_registry()
+    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+
+    write = service.evaluate_tool("write_file", registry)
+    web = service.evaluate_tool("web_search", registry)
+
+    assert write.allowed is False
+    assert "PLAN mode" in write.reason
+    assert web.allowed is False
+
+
+async def test_local_workspace_task_denies_web_before_external_gap() -> None:
+    service = PlannerService(
+        config=PlannerConfig(),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    registry = make_registry()
+    await service.begin_turn(
+        "Fix the authentication bug in this repository.",
+        provider_supports_tools=True,
+    )
+
+    decision = service.evaluate_tool("web_search", registry)
+
+    assert service.phase == PlanningPhase.DISCOVER_LOCAL
+    assert decision.allowed is False
+    assert "validated external gap" in decision.reason
+
+
+async def test_generic_external_gap_does_not_unlock_web_for_local_question() -> None:
+    service = PlannerService(
+        config=PlannerConfig(),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    registry = make_registry()
+    await service.begin_turn("O que temos no projeto hoje?", provider_supports_tools=True)
+
+    await service.record_tool_result(
+        tool_call_id="list_1",
+        tool_name="list_files",
+        payload={"path": ".", "entries": [], "skipped_count": 0},
+        success=True,
+    )
+    await service.record_tool_result(
+        tool_call_id="finish_1",
+        tool_name="finish_discovery",
+        payload={
+            "summary": "Workspace inspected.",
+            "external_knowledge_gaps": [
+                {
+                    "question": "What public project matches this workspace?",
+                    "why_local_files_are_insufficient": (
+                        "Need external evidence because local files are insufficient."
+                    ),
+                    "decision_depends_on": "External information from the web.",
+                }
+            ],
+        },
+        success=True,
+    )
+
+    assert service.approved_external_gap is False
+    assert service.approved_external_gaps == ()
+    decision = service.evaluate_tool("web_search", registry)
+    assert decision.allowed is False
+    assert "validated external gap" in decision.reason
+
+
+async def test_completion_requires_file_change_and_verification_evidence() -> None:
+    service = PlannerService(
+        config=PlannerConfig(double_check_completion=False),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+
+    rejected = await service.evaluate_completion(
+        {
+            "outcome": "success",
+            "summary": "done",
+            "acceptance_evidence": {"criterion": ["evidence"]},
+            "changed_paths": ["src/example.py"],
+        }
+    )
+
+    assert rejected.accepted is False
+    assert any("file-change" in item for item in rejected.missing_requirements)

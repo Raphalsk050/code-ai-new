@@ -5,17 +5,18 @@ from typing import Any
 
 from code_ai.core.errors import ToolArgumentError, ToolExecutionError
 from code_ai.core.internet_intent import requires_current_web_search
-from code_ai.tools.base import ToolContext
+from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.web.backend import DDGSWebSearchBackend, WebSearchBackend, fetch_page_text
 
 
 class WebSearchTool:
     name = "web_search"
     description = (
-        "Search the public web for current or unknown facts. Use for news, sports "
-        "schedules, prices, recent releases, and any request involving today, now, "
-        "latest, or hoje."
+        "Search the public web for external current or unknown facts. Use for news, "
+        "sports schedules, prices, recent releases, regulations, explicit web "
+        "research, or host-approved external gaps."
     )
+    capabilities = frozenset({ToolCapability.WEB})
     input_schema = {
         "type": "object",
         "properties": {

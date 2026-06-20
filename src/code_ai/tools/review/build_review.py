@@ -3,13 +3,14 @@ from __future__ import annotations
 from typing import Any
 
 from code_ai.core.errors import ToolArgumentError
-from code_ai.tools.base import ToolContext
+from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.review.prompts import BUILD_REVIEW_PROMPT
 
 
 class BuildReviewTool:
     name = "build_review"
     description = "Run a one-shot build-output review with tools disabled."
+    capabilities = frozenset({ToolCapability.PROCESS, ToolCapability.REVIEW})
     input_schema = {
         "type": "object",
         "properties": {"content": {"type": "string"}},

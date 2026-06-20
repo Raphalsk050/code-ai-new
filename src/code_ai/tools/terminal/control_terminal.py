@@ -3,12 +3,13 @@ from __future__ import annotations
 from typing import Any
 
 from code_ai.core.errors import ToolArgumentError
-from code_ai.tools.base import ToolContext
+from code_ai.tools.base import ToolCapability, ToolContext
 
 
 class ControlTerminalTool:
     name = "control_terminal"
     description = "Create and control a persistent POSIX terminal session inside the workspace."
+    capabilities = frozenset({ToolCapability.INTERACTIVE_TERMINAL})
     input_schema = {
         "type": "object",
         "properties": {

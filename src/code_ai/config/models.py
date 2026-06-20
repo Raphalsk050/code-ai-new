@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from code_ai.config.defaults import DEFAULT_BUDGETS
+from code_ai.config.defaults import DEFAULT_BUDGETS, DEFAULT_PLANNER
 from code_ai.core.errors import ConfigurationError
 from code_ai.util.redaction import redact_mapping
 
@@ -68,11 +68,72 @@ class BudgetConfig:
 
 
 @dataclass(slots=True)
+class PlannerConfig:
+    enabled: bool = bool(DEFAULT_PLANNER["enabled"])
+    mode: str = str(DEFAULT_PLANNER["mode"])
+    strict_tool_policy: bool = bool(DEFAULT_PLANNER["strict_tool_policy"])
+    local_first: bool = bool(DEFAULT_PLANNER["local_first"])
+    require_plan_for_mutations: bool = bool(DEFAULT_PLANNER["require_plan_for_mutations"])
+    require_verification_for_changes: bool = bool(
+        DEFAULT_PLANNER["require_verification_for_changes"]
+    )
+    double_check_completion: bool = bool(DEFAULT_PLANNER["double_check_completion"])
+    max_plan_steps: int = int(DEFAULT_PLANNER["max_plan_steps"])
+    max_discovery_rounds: int = int(DEFAULT_PLANNER["max_discovery_rounds"])
+    max_replans: int = int(DEFAULT_PLANNER["max_replans"])
+    max_step_attempts: int = int(DEFAULT_PLANNER["max_step_attempts"])
+    max_no_progress_rounds: int = int(DEFAULT_PLANNER["max_no_progress_rounds"])
+    persist_plan: bool = bool(DEFAULT_PLANNER["persist_plan"])
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any] | None) -> PlannerConfig:
+        values = dict(DEFAULT_PLANNER)
+        if data:
+            values.update(data)
+        return cls(
+            enabled=bool(values["enabled"]),
+            mode=str(values["mode"]),
+            strict_tool_policy=bool(values["strict_tool_policy"]),
+            local_first=bool(values["local_first"]),
+            require_plan_for_mutations=bool(values["require_plan_for_mutations"]),
+            require_verification_for_changes=bool(
+                values["require_verification_for_changes"]
+            ),
+            double_check_completion=bool(values["double_check_completion"]),
+            max_plan_steps=int(values["max_plan_steps"]),
+            max_discovery_rounds=int(values["max_discovery_rounds"]),
+            max_replans=int(values["max_replans"]),
+            max_step_attempts=int(values["max_step_attempts"]),
+            max_no_progress_rounds=int(values["max_no_progress_rounds"]),
+            persist_plan=bool(values["persist_plan"]),
+        )
+
+    def validate(self) -> None:
+        if self.mode not in {"auto", "plan", "act"}:
+            raise ConfigurationError(f"Unsupported planner mode: {self.mode}.")
+        limits = {
+            "max_plan_steps": self.max_plan_steps,
+            "max_discovery_rounds": self.max_discovery_rounds,
+            "max_replans": self.max_replans,
+            "max_step_attempts": self.max_step_attempts,
+            "max_no_progress_rounds": self.max_no_progress_rounds,
+        }
+        for key, value in limits.items():
+            if value <= 0:
+                raise ConfigurationError(f"Planner value {key} must be positive.")
+        if self.max_plan_steps > 100:
+            raise ConfigurationError("max_plan_steps must be 100 or lower.")
+        if self.max_no_progress_rounds > 20:
+            raise ConfigurationError("max_no_progress_rounds must be 20 or lower.")
+
+
+@dataclass(slots=True)
 class AppConfig:
     api_key: str = ""
     api_mode: str = "responses"
     base_url: str = "http://localhost:11434/v1"
     budgets: BudgetConfig = field(default_factory=BudgetConfig)
+    planner: PlannerConfig = field(default_factory=PlannerConfig)
     language: str = "en"
     model: str = "gemma4:31b-cloud"
     show_ui: bool = True
@@ -91,12 +152,16 @@ class AppConfig:
         budgets = BudgetConfig.from_mapping(
             data.get("budgets") if isinstance(data.get("budgets"), dict) else None
         )
+        planner = PlannerConfig.from_mapping(
+            data.get("planner") if isinstance(data.get("planner"), dict) else None
+        )
         workspace = Path(str(data.get("workspace", Path.cwd()))).expanduser()
         config = cls(
             api_key=str(data.get("api_key", "")),
             api_mode=normalize_api_mode(str(data.get("api_mode", "responses"))),
             base_url=str(data.get("base_url", "http://localhost:11434/v1")),
             budgets=budgets,
+            planner=planner,
             language=str(data.get("language", "en")),
             model=str(data.get("model", "gemma4:31b-cloud")),
             show_ui=bool(data.get("show_ui", True)),
@@ -123,6 +188,7 @@ class AppConfig:
             raise ConfigurationError(f"workspace must exist and be a directory: {self.workspace}")
         self.workspace = self.workspace.resolve()
         self.budgets.validate()
+        self.planner.validate()
         parsed = urlparse(self.base_url)
         if self.api_mode in {"responses", "completions", "ollama"} and parsed.scheme not in {
             "http",

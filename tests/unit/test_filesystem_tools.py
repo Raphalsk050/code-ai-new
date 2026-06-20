@@ -8,7 +8,8 @@ from code_ai.config.models import AppConfig
 from code_ai.core.errors import ToolExecutionError, WorkspaceBoundaryError
 from code_ai.events.bus import AsyncEventBus
 from code_ai.tools.base import ToolContext
-from code_ai.tools.filesystem import EditCodeTool, ReadFileTool, WriteFileTool
+from code_ai.tools.filesystem import EditCodeTool, ListFilesTool, ReadFileTool, WriteFileTool
+from code_ai.tools.search import SearchCodeTool
 from code_ai.util.paths import WorkspacePolicy
 
 
@@ -81,3 +82,46 @@ async def test_edit_code_failure_leaves_original_file_intact(tmp_path) -> None:
             context,
         )
     assert path.read_text(encoding="utf-8") == "one two\n"
+
+
+async def test_list_files_is_bounded_sorted_and_skips_default_excludes(tmp_path) -> None:
+    context = make_context(tmp_path)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "b.py").write_text("print('b')\n", encoding="utf-8")
+    (tmp_path / "src" / "a.py").write_text("print('a')\n", encoding="utf-8")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "config").write_text("secret\n", encoding="utf-8")
+
+    listed = await ListFilesTool().execute(
+        {"path": ".", "max_depth": 2, "max_entries": 10},
+        context,
+    )
+
+    paths = [entry["path"] for entry in listed["entries"]]
+    assert paths == sorted(paths, key=str.casefold)
+    assert "src/a.py" in paths
+    assert "src/b.py" in paths
+    assert not any(path.startswith(".git") for path in paths)
+
+
+async def test_search_code_finds_bounded_matches(tmp_path) -> None:
+    context = make_context(tmp_path)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text(
+        "def answer():\n    return 42\n",
+        encoding="utf-8",
+    )
+
+    result = await SearchCodeTool().execute(
+        {
+            "query": "return 42",
+            "path": "src",
+            "include_globs": ["*.py", "src/*.py"],
+            "max_matches": 5,
+        },
+        context,
+    )
+
+    assert result["matches"]
+    assert result["matches"][0]["path"] == "src/app.py"
+    assert result["matches"][0]["line"] == 2

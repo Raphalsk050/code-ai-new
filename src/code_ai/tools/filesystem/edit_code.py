@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from code_ai.core.errors import ToolArgumentError, ToolExecutionError
-from code_ai.tools.base import ToolContext
+from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.filesystem.common import read_text_file, sha256_bytes
 from code_ai.tools.output import bound_text
 
@@ -24,6 +24,7 @@ class EditCodeTool:
     description = (
         "Apply all-or-nothing literal text replacements with SHA-256 guard and unified diff."
     )
+    capabilities = frozenset({ToolCapability.LOCAL_WRITE})
     input_schema = {
         "type": "object",
         "properties": {

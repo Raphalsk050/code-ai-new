@@ -5,7 +5,7 @@ import tempfile
 from typing import Any
 
 from code_ai.core.errors import ToolArgumentError, ToolExecutionError
-from code_ai.tools.base import ToolContext
+from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.filesystem.common import sha256_bytes, sha256_file
 
 
@@ -14,6 +14,7 @@ class WriteFileTool:
     description = (
         "Atomically write a UTF-8 text file inside the workspace with optional hash guards."
     )
+    capabilities = frozenset({ToolCapability.LOCAL_WRITE})
     input_schema = {
         "type": "object",
         "properties": {

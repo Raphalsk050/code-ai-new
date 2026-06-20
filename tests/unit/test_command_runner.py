@@ -75,3 +75,10 @@ async def test_execute_command_timeout(tmp_path) -> None:
             {"argv": [sys.executable, "-c", "import time; time.sleep(2)"], "timeout": 0.1},
             context,
         )
+
+
+async def test_execute_command_missing_binary_is_tool_error(tmp_path) -> None:
+    context = make_context(tmp_path)
+    tool = ExecuteCommandTool()
+    with pytest.raises(ToolExecutionError, match="failed to start"):
+        await tool.execute({"argv": ["definitely-missing-code-ai-binary"]}, context)

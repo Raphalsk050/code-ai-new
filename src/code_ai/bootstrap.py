@@ -13,13 +13,16 @@ from code_ai.context.conversation import ConversationState
 from code_ai.context.token_counting import TokenCounter
 from code_ai.context.usage import UsageLedger
 from code_ai.core.orchestration import AgentOrchestrator
+from code_ai.core.planning import PlannerService
 from code_ai.events.bus import AsyncEventBus
 from code_ai.prompts import build_system_prompt
 from code_ai.providers.base import ModelProvider
 from code_ai.providers.factory import create_provider
 from code_ai.providers.models import Message
 from code_ai.tools.base import ToolContext
-from code_ai.tools.filesystem import EditCodeTool, ReadFileTool, WriteFileTool
+from code_ai.tools.filesystem import EditCodeTool, ListFilesTool, ReadFileTool, WriteFileTool
+from code_ai.tools.interaction import AskUserTool
+from code_ai.tools.internal import CompleteTaskTool, FinishDiscoveryTool
 from code_ai.tools.process import ExecuteCommandTool
 from code_ai.tools.registry import ToolRegistry
 from code_ai.tools.review import (
@@ -28,6 +31,7 @@ from code_ai.tools.review import (
     CodeReviewTool,
     ReviewService,
 )
+from code_ai.tools.search import SearchCodeTool
 from code_ai.tools.system import SystemInformationTool
 from code_ai.tools.terminal import ControlTerminalTool, PersistentTerminalManager, ReadScreenTool
 from code_ai.tools.web import WebSearchTool
@@ -37,6 +41,8 @@ from code_ai.util.paths import WorkspacePolicy
 def build_tool_registry() -> ToolRegistry:
     registry = ToolRegistry()
     for tool in (
+        ListFilesTool(),
+        SearchCodeTool(),
         ReadFileTool(),
         WriteFileTool(),
         EditCodeTool(),
@@ -48,6 +54,9 @@ def build_tool_registry() -> ToolRegistry:
         ArchitectureReviewTool(),
         CodeReviewTool(),
         BuildReviewTool(),
+        AskUserTool(),
+        FinishDiscoveryTool(),
+        CompleteTaskTool(),
     ):
         registry.register(tool)
     return registry
@@ -85,6 +94,11 @@ def build_application(
     )
     terminal_manager = PersistentTerminalManager()
     review_service = ReviewService(provider=provider, config=config, event_bus=event_bus)
+    planner = PlannerService(
+        config=config.planner,
+        event_bus=event_bus,
+        session_id=event_bus.session_id,
+    )
 
     def tool_context(cancel_event: asyncio.Event | None) -> ToolContext:
         return ToolContext(
@@ -105,6 +119,7 @@ def build_application(
         event_bus=event_bus,
         compressor=compressor,
         tool_context_factory=tool_context,
+        planner=planner,
     )
     session = ApplicationSession(session_id=event_bus.session_id, config=config)
     return CodeAIApplication(

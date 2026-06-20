@@ -3,12 +3,15 @@ from __future__ import annotations
 from typing import Any
 
 from code_ai.core.errors import ToolArgumentError
-from code_ai.tools.base import ToolContext
+from code_ai.tools.base import ToolCapability, ToolContext
 
 
 class ReadScreenTool:
     name = "read_screen"
     description = "Read the current emulated screen of a persistent terminal session."
+    capabilities = frozenset(
+        {ToolCapability.INTERACTIVE_TERMINAL, ToolCapability.LOCAL_READ}
+    )
     input_schema = {
         "type": "object",
         "properties": {

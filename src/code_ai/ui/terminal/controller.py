@@ -24,3 +24,23 @@ class TerminalController:
 
     async def cancel(self) -> None:
         await self.app.cancel_current_turn()
+
+    async def set_planner_mode(self, mode: str) -> None:
+        await self.app.set_planner_mode(mode)
+
+    async def deep_plan(self) -> str:
+        return await self.app.request_deep_plan(write_to_workspace=False)
+
+    async def replan(self, reason: str | None = None) -> str:
+        return await self.app.request_replan(reason=reason)
+
+    def plan_status(self) -> str:
+        snapshot = self.app.get_plan_snapshot()
+        return (
+            "command> Plan status\n"
+            f"mode: {snapshot.get('mode')}\n"
+            f"phase: {snapshot.get('phase')}\n"
+            f"progress: {snapshot.get('progress')}\n"
+            f"current: {snapshot.get('current_step')}\n"
+            f"verification passed: {snapshot.get('latest_verification_passed')}"
+        )

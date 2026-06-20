@@ -5,7 +5,7 @@ from typing import Any
 
 from code_ai.core.errors import ToolArgumentError
 from code_ai.providers.models import ToolDefinition
-from code_ai.tools.base import BaseTool, ToolContext
+from code_ai.tools.base import BaseTool, ToolCapability, ToolContext
 
 
 @dataclass(slots=True)
@@ -20,7 +20,7 @@ class ToolRegistry:
     def names(self) -> list[str]:
         return sorted(self._tools)
 
-    def definitions(self) -> list[ToolDefinition]:
+    def definitions(self, allowed_names: set[str] | None = None) -> list[ToolDefinition]:
         return [
             ToolDefinition(
                 name=self._tools[name].name,
@@ -28,7 +28,18 @@ class ToolRegistry:
                 input_schema=self._tools[name].input_schema,
             )
             for name in self.names()
+            if allowed_names is None or name in allowed_names
         ]
+
+    def capabilities(self, name: str) -> frozenset[ToolCapability]:
+        tool = self._tools.get(name)
+        if tool is None:
+            raise ToolArgumentError(f"Unknown tool: {name}")
+        raw_capabilities = getattr(tool, "capabilities", frozenset())
+        return frozenset(raw_capabilities)
+
+    def has(self, name: str) -> bool:
+        return name in self._tools
 
     async def execute(
         self, name: str, arguments: dict[str, Any], context: ToolContext
