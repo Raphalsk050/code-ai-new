@@ -44,16 +44,23 @@ class TerminalViewModel:
         elif event.event_type == "tool.call.started":
             self.conversation.append(f"tool> {event.payload.get('name')} started")
         elif event.event_type == "tool.call.completed":
+            name = str(event.payload.get("name") or "")
             result = event.payload.get("result")
             detail = ""
             if isinstance(result, dict):
+                if name == "web_search":
+                    detail = _web_search_detail(result)
                 stdout = str(result.get("stdout") or "").strip()
                 cwd = str(result.get("cwd") or "").strip()
-                if stdout:
+                if not detail and stdout:
                     detail = f": {stdout[:180]}"
                 elif cwd:
                     detail = f": cwd {cwd}"
-            self.conversation.append(f"tool> {event.payload.get('name')} completed{detail}")
+            self.conversation.append(f"tool> {name} completed{detail}")
+        elif event.event_type == "tool.call.failed":
+            name = event.payload.get("name")
+            message = event.payload.get("message", "")
+            self.conversation.append(f"tool> {name} failed: {message}")
         elif event.event_type in {"warning", "error"}:
             self.conversation.append(f"{event.event_type}> {event.payload.get('message', '')}")
         elif event.event_type == "usage.updated":
@@ -64,3 +71,25 @@ class TerminalViewModel:
             cumulative = event.payload.get("cumulative")
             if isinstance(cumulative, dict):
                 self.cumulative_usage = str(cumulative.get("total_tokens", "0"))
+
+
+def _web_search_detail(result: dict[object, object]) -> str:
+    raw_results = result.get("results")
+    if not isinstance(raw_results, list):
+        return ""
+    count = len(raw_results)
+    if count == 0:
+        return ": 0 results"
+    titles = []
+    for item in raw_results[:3]:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        url = str(item.get("url") or "").strip()
+        if title and url:
+            titles.append(f"{title[:80]} <{url[:100]}>")
+        elif title:
+            titles.append(title[:100])
+    if not titles:
+        return f": {count} result(s)"
+    return f": {count} result(s): " + " | ".join(titles)

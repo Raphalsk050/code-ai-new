@@ -42,6 +42,10 @@ class WebSearchTool:
                 time_filter=arguments.get("time_filter"),
                 timeout=timeout,
             )
+            if not results:
+                raise ToolExecutionError("web_search returned no usable results.")
         except Exception as exc:
+            if isinstance(exc, ToolExecutionError):
+                raise
             raise ToolExecutionError(f"web_search failed: {exc}") from exc
         return {"query": query, "results": [result.to_dict() for result in results[:max_results]]}

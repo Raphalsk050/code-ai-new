@@ -103,6 +103,51 @@ def test_terminal_view_model_shows_command_output() -> None:
     assert "python_agent" in view_model.conversation[-1]
 
 
+def test_terminal_view_model_shows_web_search_results() -> None:
+    from code_ai.ui.terminal.view_models import TerminalViewModel
+
+    view_model = TerminalViewModel()
+    event = EventEnvelope.create(
+        event_type="tool.call.completed",
+        session_id="fake-session",
+        sequence=1,
+        payload={
+            "name": "web_search",
+            "result": {
+                "query": "world cup schedule today",
+                "results": [
+                    {
+                        "title": "FIFA World Cup schedule",
+                        "url": "https://www.fifa.com/en/tournaments/mens/worldcup",
+                    }
+                ],
+            },
+        },
+        source="test",
+    )
+    view_model.apply(event)
+    assert "1 result" in view_model.conversation[-1]
+    assert "FIFA World Cup schedule" in view_model.conversation[-1]
+
+
+def test_terminal_view_model_shows_tool_failures() -> None:
+    from code_ai.ui.terminal.view_models import TerminalViewModel
+
+    view_model = TerminalViewModel()
+    event = EventEnvelope.create(
+        event_type="tool.call.failed",
+        session_id="fake-session",
+        sequence=1,
+        payload={
+            "name": "web_search",
+            "message": "No web search provider returned usable results.",
+        },
+        source="test",
+    )
+    view_model.apply(event)
+    assert "tool> web_search failed" in view_model.conversation[-1]
+
+
 def test_terminal_view_model_shows_model_activity_and_public_thinking() -> None:
     from code_ai.ui.terminal.view_models import TerminalViewModel
 

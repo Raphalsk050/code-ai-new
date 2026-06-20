@@ -93,6 +93,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 "model.response.completed",
                 "tool.call.started",
                 "tool.call.completed",
+                "tool.call.failed",
                 "warning",
                 "error",
             }:
