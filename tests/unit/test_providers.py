@@ -144,6 +144,47 @@ async def test_responses_reasoning_delta_streams_separately_from_answer_text() -
     assert events[-1].response.reasoning == "checking facts"
 
 
+async def test_responses_function_call_argument_delta_is_not_visible_text() -> None:
+    provider = _responses_provider(
+        [
+            {
+                "type": "response.function_call_arguments.delta",
+                "delta": '{"argv":["pwd"]}',
+            },
+            {
+                "type": "response.function_call_arguments.done",
+            },
+            {
+                "type": "response.completed",
+                "response": {
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "call_id": "call_1",
+                            "name": "execute_command",
+                            "arguments": '{"argv":["pwd"]}',
+                        }
+                    ]
+                },
+            },
+        ]
+    )
+
+    events = [
+        event
+        async for event in provider.stream(
+            ModelRequest(model="test-model", messages=[Message(role="user", content="hi")])
+        )
+    ]
+
+    assert [event.kind for event in events] == ["completed"]
+    assert events[-1].response is not None
+    assert events[-1].response.text == ""
+    assert events[-1].response.tool_calls == [
+        ToolCall(id="call_1", name="execute_command", arguments={"argv": ["pwd"]})
+    ]
+
+
 async def test_responses_requests_public_reasoning_summary_by_default() -> None:
     provider = _responses_provider(
         [

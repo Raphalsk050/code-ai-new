@@ -124,7 +124,7 @@ def _is_reasoning_event(event_type: str) -> bool:
 
 
 def _text_delta_from_event(event_type: str, event: Any) -> str:
-    if not event_type.endswith(".delta") or _is_reasoning_event(event_type):
+    if event_type not in {"response.output_text.delta", "response.text.delta"}:
         return ""
     return str(object_get(event, "delta", "") or "")
 
