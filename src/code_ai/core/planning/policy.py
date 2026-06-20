@@ -54,12 +54,60 @@ class PlannerToolPolicy:
         phase: PlanningPhase,
         current_step: PlanStep | None,
         approved_external_gap: bool = False,
-        strict: bool = True,
+        advisory: bool = False,
     ) -> set[str]:
         names = set(registry.names())
-        if not strict or profile is None:
+        if profile is None:
             return names
+        if advisory:
+            return self._advisory_allowed_tool_names(names, registry, profile, mode)
+        return self._strict_allowed_tool_names(
+            names=names,
+            registry=registry,
+            profile=profile,
+            mode=mode,
+            phase=phase,
+            current_step=current_step,
+            approved_external_gap=approved_external_gap,
+        )
 
+    def _advisory_allowed_tool_names(
+        self,
+        names: set[str],
+        registry: ToolRegistry,
+        profile: TaskProfile,
+        mode: PlannerMode,
+    ) -> set[str]:
+        """Fail-open visibility: expose every tool except for genuine hard gates.
+
+        The planner still *recommends* a focused set via the task context block;
+        it no longer hides tools and risks blocking a misclassified task.
+        """
+        if profile.intent == TaskIntent.CONVERSATION:
+            return set()
+        if mode == PlannerMode.PLAN:
+            return self._by_capabilities(
+                names,
+                registry,
+                {
+                    ToolCapability.LOCAL_READ,
+                    ToolCapability.INTERACTION,
+                    ToolCapability.INTERNAL_TRANSITION,
+                },
+            )
+        return set(names)
+
+    def _strict_allowed_tool_names(
+        self,
+        *,
+        names: set[str],
+        registry: ToolRegistry,
+        profile: TaskProfile,
+        mode: PlannerMode,
+        phase: PlanningPhase,
+        current_step: PlanStep | None,
+        approved_external_gap: bool,
+    ) -> set[str]:
         if not profile.requires_workspace_mutation:
             return self._allowed_for_read_only(
                 names=names,
@@ -156,7 +204,7 @@ class PlannerToolPolicy:
         phase: PlanningPhase,
         current_step: PlanStep | None,
         approved_external_gap: bool = False,
-        strict: bool = True,
+        advisory: bool = False,
     ) -> PolicyDecision:
         allowed = self.allowed_tool_names(
             registry=registry,
@@ -165,8 +213,12 @@ class PlannerToolPolicy:
             phase=phase,
             current_step=current_step,
             approved_external_gap=approved_external_gap,
-            strict=strict,
+            advisory=advisory,
         )
+        if advisory:
+            return self._advisory_evaluate(
+                tool_name=tool_name, registry=registry, mode=mode, allowed=allowed
+            )
         if tool_name in allowed:
             return PolicyDecision(True, "allowed", allowed)
         if profile and profile.requires_local_context and tool_name == "web_search":
@@ -188,6 +240,28 @@ class PlannerToolPolicy:
             f"{tool_name} is not allowed during phase {phase.value}.",
             allowed,
         )
+
+    def _advisory_evaluate(
+        self,
+        *,
+        tool_name: str,
+        registry: ToolRegistry,
+        mode: PlannerMode,
+        allowed: set[str],
+    ) -> PolicyDecision:
+        if mode == PlannerMode.PLAN and self._has_capability(
+            registry, tool_name, ToolCapability.LOCAL_WRITE
+        ):
+            return PolicyDecision(False, "PLAN mode does not allow workspace mutation.", allowed)
+        if mode == PlannerMode.PLAN and self._has_capability(
+            registry, tool_name, ToolCapability.PROCESS
+        ):
+            return PolicyDecision(False, "PLAN mode does not allow command execution.", allowed)
+        if tool_name in allowed:
+            return PolicyDecision(True, "allowed", allowed)
+        if mode == PlannerMode.PLAN:
+            return PolicyDecision(False, f"{tool_name} is not available in PLAN mode.", allowed)
+        return PolicyDecision(False, f"{tool_name} is not available for this request.", allowed)
 
     def _allowed_for_read_only(
         self,

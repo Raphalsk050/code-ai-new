@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import sys
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
 from code_ai.bootstrap import build_application
 from code_ai.config.models import AppConfig
+from code_ai.core.orchestration import _TurnState
 from code_ai.providers.models import (
     FinishReason,
     ModelRequest,
@@ -116,9 +118,12 @@ class FakeWebSearchTool:
         }
 
 
-class FakeCurrentAnswerProvider:
-    def __init__(self) -> None:
-        self.requests: list[ModelRequest] = []
+class FakeWebSearchThenAnswerProvider:
+    """Model that decides to call web_search itself, then answers from the result."""
+
+    def __init__(self, query: str) -> None:
+        self.query = query
+        self.calls = 0
 
     @property
     def capabilities(self) -> ProviderCapabilities:
@@ -127,9 +132,20 @@ class FakeCurrentAnswerProvider:
         )
 
     async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
-        self.requests.append(request)
+        self.calls += 1
+        if self.calls == 1:
+            yield ProviderEvent(
+                kind="completed",
+                response=ModelResponse(
+                    tool_calls=[
+                        ToolCall(id="web_1", name="web_search", arguments={"query": self.query})
+                    ],
+                    finish_reason=FinishReason.TOOL_CALLS,
+                ),
+            )
+            return
         assert any(
-            message.role == "user" and "Host-executed web_search" in message.content
+            message.role == "tool" and message.name == "web_search"
             for message in request.messages
         )
         yield ProviderEvent(kind="text_delta", text_delta="grounded answer")
@@ -148,11 +164,11 @@ class FakeCurrentAnswerProvider:
         return None
 
 
-async def test_current_question_runs_web_search_before_model(tmp_path) -> None:
+async def test_current_question_lets_model_run_web_search(tmp_path) -> None:
     config = AppConfig.from_mapping(
         {"api_mode": "ollama", "workspace": str(tmp_path), "model": "fake"}
     )
-    provider = FakeCurrentAnswerProvider()
+    provider = FakeWebSearchThenAnswerProvider("quem vai jogar no jogo da copa de hoje")
     web_search = FakeWebSearchTool()
     app = build_application(config=config, provider=provider)
     registry = ToolRegistry()
@@ -168,11 +184,11 @@ async def test_current_question_runs_web_search_before_model(tmp_path) -> None:
     assert "hoje" in web_search.calls[0]["query"]
 
 
-async def test_explicit_web_research_still_runs_web_search_before_model(tmp_path) -> None:
+async def test_explicit_web_research_lets_model_run_web_search(tmp_path) -> None:
     config = AppConfig.from_mapping(
         {"api_mode": "ollama", "workspace": str(tmp_path), "model": "fake"}
     )
-    provider = FakeCurrentAnswerProvider()
+    provider = FakeWebSearchThenAnswerProvider("versao atual do pytest")
     web_search = FakeWebSearchTool()
     app = build_application(config=config, provider=provider)
     registry = ToolRegistry()
@@ -188,53 +204,11 @@ async def test_explicit_web_research_still_runs_web_search_before_model(tmp_path
     assert "pytest" in web_search.calls[0]["query"]
 
 
-class FakeToolCallingProvider:
-    def __init__(self) -> None:
-        self.calls = 0
-
-    @property
-    def capabilities(self) -> ProviderCapabilities:
-        return ProviderCapabilities(
-            streaming=True, tool_calling=True, provider_reported_usage=False
-        )
-
-    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
-        self.calls += 1
-        if self.calls == 1:
-            yield ProviderEvent(
-                kind="completed",
-                response=ModelResponse(
-                    tool_calls=[
-                        ToolCall(
-                            id="call_1",
-                            name="web_search",
-                            arguments={"query": "copa do mundo"},
-                        )
-                    ],
-                    finish_reason=FinishReason.TOOL_CALLS,
-                ),
-            )
-            return
-        yield ProviderEvent(
-            kind="completed",
-            response=ModelResponse(text="done", finish_reason=FinishReason.STOP),
-        )
-
-    async def complete(self, request: ModelRequest) -> ModelResponse:
-        async for event in self.stream(request):
-            if event.response:
-                return event.response
-        return ModelResponse()
-
-    async def close(self) -> None:
-        return None
-
-
-async def test_web_search_tool_call_inherits_recent_current_context(tmp_path) -> None:
+async def test_web_search_tool_call_passes_model_query_unchanged(tmp_path) -> None:
     config = AppConfig.from_mapping(
         {"api_mode": "ollama", "workspace": str(tmp_path), "model": "fake"}
     )
-    provider = FakeToolCallingProvider()
+    provider = FakeWebSearchThenAnswerProvider("copa do mundo")
     web_search = FakeWebSearchTool()
     app = build_application(config=config, provider=provider)
     registry = ToolRegistry()
@@ -242,15 +216,13 @@ async def test_web_search_tool_call_inherits_recent_current_context(tmp_path) ->
     app.orchestrator.tool_registry = registry
 
     await app.start()
-    app.orchestrator.conversation.add_user("quem vai jogar no jogo da copa de hoje")
-    result = await app.submit_user_message("copa do mundo")
+    result = await app.submit_user_message("pesquise copa do mundo na internet")
     await app.close()
 
-    assert result.text == "done"
+    assert result.text == "grounded answer"
     assert web_search.calls
-    query = web_search.calls[0]["query"]
-    assert "quem vai jogar no jogo da copa de hoje" in query
-    assert "Copa do Mundo FIFA 2026" in query
+    # The host no longer rewrites the model's query (no locale-specific enrichment).
+    assert web_search.calls[0]["query"] == "copa do mundo"
 
 
 class FakeCodeBlockThenToolsProvider:
@@ -411,7 +383,7 @@ class FakeEarlyWebForLocalBugProvider:
                         name="complete_task",
                         arguments={
                             "outcome": "blocked",
-                            "summary": "Blocked after early web search was denied.",
+                            "summary": "Blocked after early web search.",
                             "remaining_issues": ["Need local inspection first."],
                         },
                     )
@@ -430,7 +402,7 @@ class FakeEarlyWebForLocalBugProvider:
         return None
 
 
-async def test_workspace_bug_denies_early_web_search_without_backend_call(tmp_path) -> None:
+async def test_workspace_bug_allows_web_search_under_advisory_policy(tmp_path) -> None:
     config = AppConfig.from_mapping(
         {"api_mode": "ollama", "workspace": str(tmp_path), "model": "fake"}
     )
@@ -449,9 +421,10 @@ async def test_workspace_bug_denies_early_web_search_without_backend_call(tmp_pa
     result = await app.submit_user_message("Fix the authentication bug in this repository.")
     await app.close()
 
-    assert "Blocked after early web search was denied" in result.text
-    assert web_search.calls == []
-    assert "planning.policy.denied" in events
+    assert "Blocked after early web search" in result.text
+    # Advisory policy keeps web_search callable instead of hard-denying it.
+    assert web_search.calls
+    assert "planning.policy.denied" not in events
 
 
 class FakeGenericGapThenWebProvider:
@@ -468,8 +441,6 @@ class FakeGenericGapThenWebProvider:
     async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
         self.calls += 1
         self.requests.append(request)
-        tool_names = {tool.name for tool in request.tools}
-        assert "web_search" not in tool_names
         if self.calls == 1:
             yield ProviderEvent(
                 kind="completed",
@@ -517,15 +488,13 @@ class FakeGenericGapThenWebProvider:
             )
             return
         assert any(
-            message.role == "tool"
-            and message.name == "web_search"
-            and "Tool policy denied" in message.content
+            message.role == "tool" and message.name == "web_search"
             for message in request.messages
         )
         yield ProviderEvent(
             kind="completed",
             response=ModelResponse(
-                text="O workspace local foi inspecionado; nao usei web_search.",
+                text="O projeto local foi inspecionado com evidencia da busca.",
                 finish_reason=FinishReason.STOP,
             ),
         )
@@ -540,7 +509,7 @@ class FakeGenericGapThenWebProvider:
         return None
 
 
-async def test_local_project_today_rejects_generic_gap_and_web_search(tmp_path) -> None:
+async def test_local_project_today_rejects_generic_gap_but_allows_web(tmp_path) -> None:
     config = AppConfig.from_mapping(
         {"api_mode": "ollama", "workspace": str(tmp_path), "model": "fake"}
     )
@@ -559,10 +528,12 @@ async def test_local_project_today_rejects_generic_gap_and_web_search(tmp_path) 
     result = await app.submit_user_message("O que temos no projeto hoje?")
     await app.close()
 
-    assert "workspace local" in result.text
-    assert web_search.calls == []
+    assert "projeto local" in result.text
+    # The generic external gap is still rejected as low-quality evidence...
     assert "planning.external_gap.rejected" in events
-    assert "planning.policy.denied" in events
+    # ...but advisory policy no longer hard-blocks the model's web_search call.
+    assert web_search.calls
+    assert "planning.policy.denied" not in events
 
 
 async def test_plan_mode_policy_bypass_rejects_direct_write_tool(tmp_path) -> None:
@@ -577,15 +548,14 @@ async def test_plan_mode_policy_bypass_rejects_direct_write_tool(tmp_path) -> No
     await app.start()
     await app.orchestrator.planner.set_mode("plan")
     await app.orchestrator.planner.begin_turn("Create a.txt", provider_supports_tools=True)
-    result = await app.orchestrator._execute_tool(
-        "bypass_1",
-        "write_file",
-        {"path": "a.txt", "content": "x\n"},
-        None,
-    )
+    call = ToolCall(id="bypass_1", name="write_file", arguments={"path": "a.txt", "content": "x\n"})
+    decision = app.orchestrator._policy_decision_for("write_file")
+    state = _TurnState(cancel_event=None, deadline=time.monotonic() + 60)
+    outcome = await app.orchestrator._execute_call(call, decision, state)
     await app.close()
 
-    assert result.is_error
+    assert outcome.result.is_error
+    assert outcome.denied
     assert not (tmp_path / "a.txt").exists()
     assert "planning.policy.denied" in events
 

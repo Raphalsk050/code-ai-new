@@ -62,6 +62,7 @@ class PlannerService:
         self.event_bus = event_bus
         self.session_id = session_id
         self.policy = PlannerToolPolicy()
+        self.advisory = config.advisory_tool_policy
         self.mode = PlannerMode(config.mode)
         self.phase = PlanningPhase.UNDERSTAND
         self.profile: TaskProfile | None = None
@@ -140,7 +141,23 @@ class PlannerService:
             phase=self.phase,
             current_step=self.current_step,
             approved_external_gap=self.approved_external_gap,
-            strict=self.config.strict_tool_policy,
+            advisory=self.advisory,
+        )
+
+    def recommended_tool_names(self, registry: ToolRegistry) -> set[str]:
+        """Focused set the model is steered toward, regardless of policy mode.
+
+        In advisory mode every tool stays callable; this is only guidance shown
+        in the task context block.
+        """
+        return self.policy.allowed_tool_names(
+            registry=registry,
+            profile=self.profile,
+            mode=self.mode,
+            phase=self.phase,
+            current_step=self.current_step,
+            approved_external_gap=self.approved_external_gap,
+            advisory=False,
         )
 
     def evaluate_tool(self, tool_name: str, registry: ToolRegistry) -> PolicyDecision:
@@ -152,7 +169,7 @@ class PlannerService:
             phase=self.phase,
             current_step=self.current_step,
             approved_external_gap=self.approved_external_gap,
-            strict=self.config.strict_tool_policy,
+            advisory=self.advisory,
         )
 
     async def record_tool_result(
@@ -227,7 +244,7 @@ class PlannerService:
             PlanningPhase.COMPLETE,
         }
 
-    def task_context_block(self, *, allowed_tool_names: set[str]) -> str:
+    def task_context_block(self, *, recommended_tool_names: set[str]) -> str:
         if not (self.enabled and self.profile and self.plan):
             return ""
         if self.profile.intent == TaskIntent.CONVERSATION:
@@ -252,35 +269,35 @@ class PlannerService:
             f"Latest verification passed: {self.ledger.latest_verification_passed}\n"
             f"Approved external gaps: {[gap.to_dict() for gap in self.approved_external_gaps]}\n"
             f"Recent evidence: {self.ledger.compact_recent(limit=8)}\n"
-            f"Allowed tools now: {sorted(allowed_tool_names)}\n"
-            "Rules: use only allowed tools, work only on the current step, and do not "
+            f"Recommended tools now: {sorted(recommended_tool_names)}\n"
+            "Rules: prefer the recommended tools, work on the current step, and do not "
             "claim completion from prose. For workspace changes, call write_file or "
             "edit_code; for completion, call complete_task after verification evidence exists."
         )
 
-    def corrective_message(self, *, allowed_tool_names: set[str]) -> str:
+    def corrective_message(self, *, recommended_tool_names: set[str]) -> str:
         current = self.current_step
         required_evidence = [
             item.value for item in current.required_evidence
         ] if current else []
         return (
             "Runtime correction: this task requires workspace evidence. Do not provide "
-            "the implementation, diff, or command as chat text. Use the allowed tools to "
-            "satisfy the current step, then verify the result. "
+            "the implementation, diff, or command as chat text. Use the recommended tools "
+            "to satisfy the current step, then verify the result. "
             f"Phase: {self.phase.value}. "
             f"Current step: {current.title if current else 'none'}. "
-            f"Allowed tools: {sorted(allowed_tool_names)}. "
+            f"Recommended tools: {sorted(recommended_tool_names)}. "
             f"Required evidence: {required_evidence}."
         )
 
-    async def note_no_tool_response(self, *, allowed_tool_names: set[str]) -> str:
+    async def note_no_tool_response(self, *, recommended_tool_names: set[str]) -> str:
         self.no_progress_rounds += 1
         await self.event_bus.emit(
             "agent.corrective_prompt.injected",
             {
                 "phase": self.phase.value,
                 "current_step": self.current_step.title if self.current_step else None,
-                "allowed_tools": sorted(allowed_tool_names),
+                "recommended_tools": sorted(recommended_tool_names),
                 "no_progress_rounds": self.no_progress_rounds,
             },
             source="core.planner",
@@ -297,7 +314,7 @@ class PlannerService:
             )
         if self.no_progress_rounds > self.config.max_no_progress_rounds:
             await self._emit_phase(PlanningPhase.BLOCKED)
-        return self.corrective_message(allowed_tool_names=allowed_tool_names)
+        return self.corrective_message(recommended_tool_names=recommended_tool_names)
 
     async def evaluate_completion(self, arguments: dict[str, Any]) -> CompletionDecision:
         try:

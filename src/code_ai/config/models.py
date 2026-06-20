@@ -71,7 +71,7 @@ class BudgetConfig:
 class PlannerConfig:
     enabled: bool = bool(DEFAULT_PLANNER["enabled"])
     mode: str = str(DEFAULT_PLANNER["mode"])
-    strict_tool_policy: bool = bool(DEFAULT_PLANNER["strict_tool_policy"])
+    tool_policy: str = str(DEFAULT_PLANNER["tool_policy"])
     local_first: bool = bool(DEFAULT_PLANNER["local_first"])
     require_plan_for_mutations: bool = bool(DEFAULT_PLANNER["require_plan_for_mutations"])
     require_verification_for_changes: bool = bool(
@@ -93,7 +93,7 @@ class PlannerConfig:
         return cls(
             enabled=bool(values["enabled"]),
             mode=str(values["mode"]),
-            strict_tool_policy=bool(values["strict_tool_policy"]),
+            tool_policy=_resolve_tool_policy(data),
             local_first=bool(values["local_first"]),
             require_plan_for_mutations=bool(values["require_plan_for_mutations"]),
             require_verification_for_changes=bool(
@@ -108,9 +108,19 @@ class PlannerConfig:
             persist_plan=bool(values["persist_plan"]),
         )
 
+    @property
+    def strict_tool_policy(self) -> bool:
+        return self.tool_policy == "strict"
+
+    @property
+    def advisory_tool_policy(self) -> bool:
+        return self.tool_policy == "advisory"
+
     def validate(self) -> None:
         if self.mode not in {"auto", "plan", "act"}:
             raise ConfigurationError(f"Unsupported planner mode: {self.mode}.")
+        if self.tool_policy not in {"advisory", "strict"}:
+            raise ConfigurationError(f"Unsupported tool_policy: {self.tool_policy}.")
         limits = {
             "max_plan_steps": self.max_plan_steps,
             "max_discovery_rounds": self.max_discovery_rounds,
@@ -125,6 +135,18 @@ class PlannerConfig:
             raise ConfigurationError("max_plan_steps must be 100 or lower.")
         if self.max_no_progress_rounds > 20:
             raise ConfigurationError("max_no_progress_rounds must be 20 or lower.")
+
+
+def _resolve_tool_policy(data: dict[str, Any] | None) -> str:
+    """Resolve the tool policy, honoring the legacy ``strict_tool_policy`` flag."""
+    if data:
+        raw = data.get("tool_policy")
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip().lower()
+        legacy = data.get("strict_tool_policy")
+        if isinstance(legacy, bool):
+            return "strict" if legacy else "advisory"
+    return str(DEFAULT_PLANNER["tool_policy"])
 
 
 @dataclass(slots=True)
