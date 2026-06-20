@@ -163,7 +163,7 @@ async def test_responses_requests_public_reasoning_summary_by_default() -> None:
 
     assert events[-1].response is not None
     assert provider._client.responses.calls[0]["reasoning"] == {
-        "effort": "low",
+        "effort": "high",
         "summary": "auto",
     }
 
@@ -188,7 +188,7 @@ async def test_responses_retries_without_reasoning_when_endpoint_rejects_it() ->
 
     assert [event.kind for event in events] == ["warning", "completed"]
     assert provider._client.responses.calls[0]["reasoning"] == {
-        "effort": "low",
+        "effort": "high",
         "summary": "auto",
     }
     assert "reasoning" not in provider._client.responses.calls[1]

@@ -233,7 +233,7 @@ class OpenAIResponsesProvider:
         if request.max_output_tokens:
             kwargs["max_output_tokens"] = request.max_output_tokens
         if self._reasoning_summary_supported:
-            kwargs["reasoning"] = {"effort": "low", "summary": "auto"}
+            kwargs["reasoning"] = {"effort": "high", "summary": "auto"}
         if request.tools:
             kwargs["tools"] = tools_to_responses(request.tools)
         if (
