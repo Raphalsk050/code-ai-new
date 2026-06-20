@@ -146,6 +146,7 @@ class OpenAIResponsesProvider:
             max_retries=0,
         )
         self._remote_state_supported = config.use_remote_conversation_state
+        self._reasoning_summary_supported = True
         self._capabilities = ProviderCapabilities(
             streaming=True,
             tool_calling=True,
@@ -208,6 +209,16 @@ class OpenAIResponsesProvider:
                     request.previous_response_id = None
                     request.use_remote_conversation_state = False
                     continue
+                if self._reasoning_summary_supported and "reasoning" in text:
+                    self._reasoning_summary_supported = False
+                    yield ProviderEvent(
+                        kind="warning",
+                        warning=(
+                            "Endpoint rejected Responses reasoning summaries; retrying without "
+                            "public thinking output."
+                        ),
+                    )
+                    continue
                 if not _is_transient_exception(exc) or attempts >= 2:
                     raise ProviderError(f"Responses request failed: {exc}") from exc
                 attempts += 1
@@ -221,6 +232,8 @@ class OpenAIResponsesProvider:
         }
         if request.max_output_tokens:
             kwargs["max_output_tokens"] = request.max_output_tokens
+        if self._reasoning_summary_supported:
+            kwargs["reasoning"] = {"effort": "low", "summary": "auto"}
         if request.tools:
             kwargs["tools"] = tools_to_responses(request.tools)
         if (

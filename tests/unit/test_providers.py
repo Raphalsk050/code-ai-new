@@ -15,10 +15,20 @@ from code_ai.providers.openai_responses import (
 
 
 class _FakeResponsesResource:
-    def __init__(self, events: list[dict[str, object]]) -> None:
+    def __init__(
+        self,
+        events: list[dict[str, object]],
+        failures: list[Exception] | None = None,
+    ) -> None:
         self.events = events
+        self.failures = failures or []
+        self.calls: list[dict[str, object]] = []
 
     async def create(self, **kwargs: object):
+        self.calls.append(kwargs)
+        if self.failures:
+            raise self.failures.pop(0)
+
         async def stream():
             for event in self.events:
                 yield event
@@ -27,14 +37,22 @@ class _FakeResponsesResource:
 
 
 class _FakeOpenAIClient:
-    def __init__(self, events: list[dict[str, object]]) -> None:
-        self.responses = _FakeResponsesResource(events)
+    def __init__(
+        self,
+        events: list[dict[str, object]],
+        failures: list[Exception] | None = None,
+    ) -> None:
+        self.responses = _FakeResponsesResource(events, failures)
 
 
-def _responses_provider(events: list[dict[str, object]]) -> OpenAIResponsesProvider:
+def _responses_provider(
+    events: list[dict[str, object]],
+    failures: list[Exception] | None = None,
+) -> OpenAIResponsesProvider:
     provider = object.__new__(OpenAIResponsesProvider)
-    provider._client = _FakeOpenAIClient(events)
+    provider._client = _FakeOpenAIClient(events, failures)
     provider._remote_state_supported = False
+    provider._reasoning_summary_supported = True
     provider._capabilities = ProviderCapabilities(remote_conversation_state=False)
     return provider
 
@@ -124,6 +142,57 @@ async def test_responses_reasoning_delta_streams_separately_from_answer_text() -
     assert events[-1].response is not None
     assert events[-1].response.text == "final answer"
     assert events[-1].response.reasoning == "checking facts"
+
+
+async def test_responses_requests_public_reasoning_summary_by_default() -> None:
+    provider = _responses_provider(
+        [
+            {
+                "type": "response.completed",
+                "response": {"output": [{"type": "message", "content": "done"}]},
+            },
+        ]
+    )
+
+    events = [
+        event
+        async for event in provider.stream(
+            ModelRequest(model="test-model", messages=[Message(role="user", content="hi")])
+        )
+    ]
+
+    assert events[-1].response is not None
+    assert provider._client.responses.calls[0]["reasoning"] == {
+        "effort": "low",
+        "summary": "auto",
+    }
+
+
+async def test_responses_retries_without_reasoning_when_endpoint_rejects_it() -> None:
+    provider = _responses_provider(
+        [
+            {
+                "type": "response.completed",
+                "response": {"output": [{"type": "message", "content": "done"}]},
+            },
+        ],
+        failures=[ValueError("unsupported reasoning parameter")],
+    )
+
+    events = [
+        event
+        async for event in provider.stream(
+            ModelRequest(model="test-model", messages=[Message(role="user", content="hi")])
+        )
+    ]
+
+    assert [event.kind for event in events] == ["warning", "completed"]
+    assert provider._client.responses.calls[0]["reasoning"] == {
+        "effort": "low",
+        "summary": "auto",
+    }
+    assert "reasoning" not in provider._client.responses.calls[1]
+    assert provider._reasoning_summary_supported is False
 
 
 async def test_responses_metadata_thinking_streams_as_reasoning_delta() -> None:
