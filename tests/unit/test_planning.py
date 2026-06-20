@@ -104,9 +104,9 @@ async def test_plan_mode_denies_mutating_and_process_tools() -> None:
     assert web.allowed is False
 
 
-async def test_local_workspace_task_denies_web_before_external_gap() -> None:
+async def test_strict_local_workspace_task_denies_web_before_external_gap() -> None:
     service = PlannerService(
-        config=PlannerConfig(),
+        config=PlannerConfig(tool_policy="strict"),
         event_bus=AsyncEventBus(session_id="session"),
         session_id="session",
     )
@@ -123,9 +123,30 @@ async def test_local_workspace_task_denies_web_before_external_gap() -> None:
     assert "validated external gap" in decision.reason
 
 
+async def test_advisory_policy_allows_web_but_recommends_local_first() -> None:
+    service = PlannerService(
+        config=PlannerConfig(),  # advisory is the default
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    registry = make_registry()
+    await service.begin_turn(
+        "Fix the authentication bug in this repository.",
+        provider_supports_tools=True,
+    )
+
+    decision = service.evaluate_tool("web_search", registry)
+
+    # Fail-open: the tool stays callable so a misclassified task is never blocked,
+    # but local-first guidance still steers the model away from it.
+    assert decision.allowed is True
+    assert "web_search" not in service.recommended_tool_names(registry)
+    assert "read_file" in service.recommended_tool_names(registry)
+
+
 async def test_generic_external_gap_does_not_unlock_web_for_local_question() -> None:
     service = PlannerService(
-        config=PlannerConfig(),
+        config=PlannerConfig(tool_policy="strict"),
         event_bus=AsyncEventBus(session_id="session"),
         session_id="session",
     )

@@ -1,22 +1,26 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import random
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
 from code_ai.config.models import AppConfig
-from code_ai.context.compression import ContextCompressor
+from code_ai.context.compression import CompressionResult, ContextCompressor
 from code_ai.context.conversation import ConversationState
 from code_ai.context.usage import UsageLedger
-from code_ai.core.errors import CancellationError, CodeAIError, ToolExecutionError
-from code_ai.core.internet_intent import (
-    assistant_promised_search_without_tool,
-    build_web_search_query,
-    enrich_web_search_arguments,
-    should_force_web_search_for_turn,
+from code_ai.core.errors import (
+    CancellationError,
+    CodeAIError,
+    CommandTimeoutError,
+    ProviderError,
+    TransientProviderError,
 )
 from code_ai.core.planning import PlannerMode, PlannerService, PlanningPhase
+from code_ai.core.planning.policy import PolicyDecision
 from code_ai.core.state import AgentState
 from code_ai.events.bus import AsyncEventBus
 from code_ai.providers.base import ModelProvider
@@ -26,13 +30,19 @@ from code_ai.providers.models import (
     ModelRequest,
     ModelResponse,
     ProviderEvent,
+    ToolCall,
     ToolResult,
 )
-from code_ai.tools.base import ToolContext
+from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.output import bound_text
 from code_ai.tools.registry import ToolRegistry
 
 ToolContextFactory = Callable[[asyncio.Event | None], ToolContext]
+
+_MODEL_STEP_MAX_RETRIES = 2
+_TOOL_GUARD_POLL_SECONDS = 0.1
+_TOOL_GUARD_GRACE_SECONDS = 5.0
+_ALLOWED_POLICY = PolicyDecision(True, "allowed", set())
 
 
 @dataclass(slots=True)
@@ -40,10 +50,26 @@ class TurnResult:
     text: str
     response: ModelResponse | None
     cancelled: bool = False
+    error: str | None = None
+
+
+@dataclass(slots=True)
+class _TurnState:
+    cancel_event: asyncio.Event | None
+    deadline: float
+    tool_calls_executed: int = 0
+    last_response: ModelResponse | None = None
+
+
+@dataclass(slots=True)
+class _ToolOutcome:
+    result: ToolResult
+    payload: dict[str, object] | None
+    denied: bool = False
 
 
 class AgentOrchestrator:
-    """Deterministic provider/tool loop for one user turn at a time."""
+    """Deterministic, fault-tolerant provider/tool loop for one user turn at a time."""
 
     def __init__(
         self,
@@ -77,266 +103,517 @@ class AgentOrchestrator:
         if phase:
             await self.event_bus.emit("phase.changed", {"phase": phase}, source="core.orchestrator")
 
+    # ------------------------------------------------------------------ #
+    # Turn entry point
+    # ------------------------------------------------------------------ #
     async def run_turn(self, text: str, *, cancel_event: asyncio.Event | None = None) -> TurnResult:
         await self.set_state(AgentState.CALLING_MODEL, phase="accepted_user_message")
         await self.event_bus.emit("user.message", {"text": text}, source="core.orchestrator")
         self.conversation.add_user(text)
 
-        tool_calls_executed = 0
-        last_response: ModelResponse | None = None
-        host_web_search_done = False
-
+        state = _TurnState(
+            cancel_event=cancel_event,
+            deadline=time.monotonic() + self.config.budgets.turn_timeout(),
+        )
         try:
-            if self.planner and self.planner.enabled:
-                await self.planner.begin_turn(
-                    text,
-                    provider_supports_tools=self.provider.capabilities.tool_calling,
-                )
-                if self.planner.should_auto_list_workspace() and self.tool_registry.has(
-                    "list_files"
-                ):
-                    tool_calls_executed += 1
-                    await self._execute_tool(
-                        "host_list_files_initial",
-                        "list_files",
-                        {"path": ".", "max_depth": 2, "max_entries": 250},
-                        cancel_event,
-                        enforce_policy=False,
-                    )
-                if self.planner.mode == PlannerMode.PLAN:
-                    summary = self._planner_summary_text()
-                    await self.set_state(AgentState.READY, phase="waiting_user")
-                    await self.event_bus.emit(
-                        "turn.completed",
-                        {"text": summary, "usage": self.usage.to_dict()},
-                        source="core.orchestrator",
-                    )
-                    return TurnResult(text=summary, response=None)
-
-            if should_force_web_search_for_turn(text, self.conversation.messages):
-                if self._planner_allows_host_web_first():
-                    tool_calls_executed += 1
-                    if tool_calls_executed > self.config.budgets.max_tool_calls:
-                        raise ToolExecutionError("Maximum tool call budget exceeded.")
-                    await self._execute_host_web_search(
-                        build_web_search_query(text, self.conversation.messages),
-                        cancel_event,
-                    )
-                    host_web_search_done = True
-
-            for step in range(self.config.budgets.max_model_steps):
-                self._raise_if_cancelled(cancel_event)
-                allowed_tool_names = self._allowed_tool_names()
-                tool_definitions = self.tool_registry.definitions(allowed_tool_names)
-                compression = await self.compressor.ensure_capacity(
-                    self.conversation, tool_definitions
-                )
-                await self.event_bus.emit(
-                    "usage.updated",
-                    {
-                        "active_context_tokens": compression.active_tokens,
-                        "active_context_estimated": compression.estimated,
-                        "cumulative": self.usage.to_dict(),
-                    },
-                    source="context",
-                )
-                messages = self.conversation.snapshot()
-                planner_context = self._planner_context(allowed_tool_names)
-                if planner_context:
-                    messages = [
-                        *messages,
-                        Message(role="user", content=planner_context),
-                    ]
-                request = ModelRequest(
-                    model=self.config.model,
-                    messages=messages,
-                    tools=tool_definitions,
-                    max_output_tokens=self.config.output_token_reserve,
-                    previous_response_id=self.conversation.previous_response_id,
-                    use_remote_conversation_state=(
-                        self.config.use_remote_conversation_state
-                        and self.conversation.remote_state_supported
-                        and self.provider.capabilities.remote_conversation_state
-                    ),
-                    metadata={
-                        "step": step,
-                        "planning_phase": self.planner.phase.value
-                        if self.planner and self.planner.enabled
-                        else None,
-                    },
-                )
-                await self.event_bus.emit(
-                    "model.request.started",
-                    {
-                        "model": self.config.model,
-                        "step": step,
-                        "tools": len(tool_definitions),
-                        "allowed_tools": sorted(allowed_tool_names)
-                        if allowed_tool_names is not None
-                        else None,
-                    },
-                    source="core.orchestrator",
-                )
-                response = await self._collect_model_response(request, cancel_event)
-                last_response = response
-                self.usage.add(response.usage)
-                if response.response_id:
-                    self.conversation.previous_response_id = response.response_id
-                await self.event_bus.emit(
-                    "model.response.completed",
-                    {
-                        "finish_reason": response.finish_reason.value,
-                        "tool_calls": [call.to_dict() for call in response.tool_calls],
-                        "usage": response.usage.to_dict() if response.usage else None,
-                    },
-                    source="core.orchestrator",
-                )
-                await self.event_bus.emit(
-                    "usage.updated",
-                    {"cumulative": self.usage.to_dict()},
-                    source="context",
-                )
-
-                if not response.tool_calls:
-                    if self._requires_tool_for_progress():
-                        if response.text:
-                            self.conversation.add_assistant(
-                                bound_text(
-                                    response.text,
-                                    self.config.budgets.max_tool_output_chars,
-                                ),
-                                [],
-                            )
-                        correction = await self.planner.note_no_tool_response(
-                            allowed_tool_names=allowed_tool_names or set()
-                        )
-                        self.conversation.add_user(correction)
-                        if self.planner.phase == PlanningPhase.BLOCKED:
-                            await self.set_state(AgentState.READY, phase="waiting_user")
-                            await self.event_bus.emit(
-                                "turn.completed",
-                                {"text": correction, "usage": self.usage.to_dict()},
-                                source="core.orchestrator",
-                            )
-                            return TurnResult(text=correction, response=response)
-                        await self.set_state(
-                            AgentState.CALLING_MODEL,
-                            phase="correcting_no_tool_response",
-                        )
-                        continue
-
-                    if response.text:
-                        self.conversation.add_assistant(response.text, response.tool_calls)
-                    if (
-                        response.text
-                        and not host_web_search_done
-                        and assistant_promised_search_without_tool(response.text)
-                    ):
-                        tool_calls_executed += 1
-                        if tool_calls_executed > self.config.budgets.max_tool_calls:
-                            raise ToolExecutionError("Maximum tool call budget exceeded.")
-                        await self._execute_host_web_search(
-                            build_web_search_query(text, self.conversation.messages),
-                            cancel_event,
-                        )
-                        host_web_search_done = True
-                        await self.set_state(
-                            AgentState.CALLING_MODEL, phase="calling_model_after_tools"
-                        )
-                        continue
-                    await self.set_state(AgentState.READY, phase="waiting_user")
-                    await self.event_bus.emit(
-                        "turn.completed",
-                        {"text": response.text, "usage": self.usage.to_dict()},
-                        source="core.orchestrator",
-                    )
-                    return TurnResult(text=response.text, response=response)
-
-                if response.text:
-                    self.conversation.add_assistant(response.text, response.tool_calls)
-                else:
-                    self.conversation.add_assistant("", response.tool_calls)
-
-                await self.set_state(AgentState.EXECUTING_TOOL, phase="executing_tools")
-                for call in response.tool_calls:
-                    self._raise_if_cancelled(cancel_event)
-                    tool_calls_executed += 1
-                    if tool_calls_executed > self.config.budgets.max_tool_calls:
-                        raise ToolExecutionError("Maximum tool call budget exceeded.")
-                    arguments = enrich_web_search_arguments(
-                        call.arguments,
-                        self.conversation.messages,
-                    )
-                    result = await self._execute_tool(
-                        call.id, call.name, arguments, cancel_event
-                    )
-                    self.conversation.add_tool_result(result)
-                    if call.name == "web_search":
-                        host_web_search_done = True
-                    if self.planner and self.planner.accepted_final_text is not None:
-                        final_text = self.planner.accepted_final_text
-                        await self.set_state(AgentState.READY, phase="waiting_user")
-                        await self.event_bus.emit(
-                            "turn.completed",
-                            {"text": final_text, "usage": self.usage.to_dict()},
-                            source="core.orchestrator",
-                        )
-                        return TurnResult(text=final_text, response=response)
-                await self.set_state(AgentState.CALLING_MODEL, phase="calling_model_after_tools")
-
-            raise ToolExecutionError("Maximum model step budget exceeded.")
+            early = await self._begin_planner(text, state)
+            if early is not None:
+                return early
+            return await self._run_model_loop(state)
         except CancellationError:
             await self.set_state(AgentState.READY, phase="waiting_user")
             await self.event_bus.emit("turn.cancelled", {}, source="core.orchestrator")
-            return TurnResult(text="", response=last_response, cancelled=True)
-        except Exception as exc:
+            return TurnResult(text="", response=state.last_response, cancelled=True)
+        except ProviderError as exc:
+            # Provider exhausted retries: degrade gracefully instead of crashing the turn.
+            await self._emit_error(exc)
             await self.set_state(AgentState.FAILED, phase="failed")
+            return TurnResult(
+                text=self._best_effort_text(state),
+                response=state.last_response,
+                error=str(exc),
+            )
+        except Exception as exc:
+            await self._emit_error(exc)
+            await self.set_state(AgentState.FAILED, phase="failed")
+            raise
+
+    async def _begin_planner(self, text: str, state: _TurnState) -> TurnResult | None:
+        if not (self.planner and self.planner.enabled):
+            return None
+        await self.planner.begin_turn(
+            text, provider_supports_tools=self.provider.capabilities.tool_calling
+        )
+        if self.planner.should_auto_list_workspace() and self.tool_registry.has("list_files"):
+            state.tool_calls_executed += 1
+            await self._execute_host_tool(
+                "host_list_files_initial",
+                "list_files",
+                {"path": ".", "max_depth": 2, "max_entries": 250},
+                state,
+            )
+        if self.planner.mode == PlannerMode.PLAN:
+            return await self._finish_turn(self._planner_summary_text(), None, state)
+        return None
+
+    # ------------------------------------------------------------------ #
+    # Model loop
+    # ------------------------------------------------------------------ #
+    async def _run_model_loop(self, state: _TurnState) -> TurnResult:
+        for step in range(self.config.budgets.max_model_steps):
+            self._raise_if_cancelled(state.cancel_event)
+            if time.monotonic() > state.deadline:
+                return await self._wind_down(state, reason="turn_time_budget_exhausted")
+
+            allowed = self._allowed_tool_names()
+            tool_definitions = self.tool_registry.definitions(allowed)
+            compression = await self.compressor.ensure_capacity(self.conversation, tool_definitions)
+            await self._emit_pre_request_usage(compression)
+
+            request = self._build_request(step, tool_definitions)
             await self.event_bus.emit(
-                "error",
-                {"message": str(exc), "type": type(exc).__name__},
+                "model.request.started",
+                {
+                    "model": self.config.model,
+                    "step": step,
+                    "tools": len(tool_definitions),
+                    "allowed_tools": sorted(allowed) if allowed is not None else None,
+                },
                 source="core.orchestrator",
             )
-            raise
+
+            response = await self._run_model_step(request, state)
+            state.last_response = response
+            self.usage.add(response.usage)
+            if response.response_id:
+                self.conversation.previous_response_id = response.response_id
+            await self._emit_response_completed(response)
+
+            if not response.tool_calls:
+                outcome = await self._handle_no_tool_response(response, state)
+                if outcome is not None:
+                    return outcome
+                continue
+
+            self.conversation.add_assistant(response.text or "", response.tool_calls)
+            outcome = await self._execute_tool_batch(response, state)
+            if outcome is not None:
+                return outcome
+            await self.set_state(AgentState.CALLING_MODEL, phase="calling_model_after_tools")
+
+        return await self._wind_down(state, reason="model_step_budget_exhausted")
+
+    async def _handle_no_tool_response(
+        self, response: ModelResponse, state: _TurnState
+    ) -> TurnResult | None:
+        if self._requires_tool_for_progress():
+            if response.text:
+                self.conversation.add_assistant(
+                    bound_text(response.text, self.config.budgets.max_tool_output_chars), []
+                )
+            correction = await self.planner.note_no_tool_response(
+                recommended_tool_names=self._recommended_tool_names()
+            )
+            self.conversation.add_user(correction)
+            if self.planner.phase == PlanningPhase.BLOCKED:
+                return await self._finish_turn(correction, response, state)
+            await self.set_state(AgentState.CALLING_MODEL, phase="correcting_no_tool_response")
+            return None
+
+        if response.text:
+            self.conversation.add_assistant(response.text, response.tool_calls)
+        return await self._finish_turn(response.text, response, state)
+
+    # ------------------------------------------------------------------ #
+    # Model request with timeout + transient retry
+    # ------------------------------------------------------------------ #
+    async def _run_model_step(self, request: ModelRequest, state: _TurnState) -> ModelResponse:
+        attempts = 0
+        model_timeout = float(self.config.budgets.model_timeout())
+        while True:
+            streamed: list[str] = []
+            try:
+                return await asyncio.wait_for(
+                    self._collect_model_response(request, state.cancel_event, streamed),
+                    timeout=model_timeout,
+                )
+            except CancellationError:
+                raise
+            except (TransientProviderError, TimeoutError) as exc:
+                if streamed:
+                    # Output already reached the user; salvage rather than replay.
+                    return ModelResponse(
+                        text="".join(streamed), finish_reason=FinishReason.UNKNOWN
+                    )
+                if attempts >= _MODEL_STEP_MAX_RETRIES:
+                    await self._emit_request_failed(exc)
+                    raise ProviderError(f"Model step failed after retries: {exc}") from exc
+                attempts += 1
+                await self.event_bus.emit(
+                    "model.request.retrying",
+                    {"attempt": attempts, "reason": type(exc).__name__},
+                    source="core.orchestrator",
+                )
+                await asyncio.sleep(min(2.0, 0.25 * (2**attempts)) + random.random() * 0.1)
+            except ProviderError as exc:
+                if streamed:
+                    return ModelResponse(
+                        text="".join(streamed), finish_reason=FinishReason.UNKNOWN
+                    )
+                await self._emit_request_failed(exc)
+                raise
 
     async def _collect_model_response(
         self,
         request: ModelRequest,
         cancel_event: asyncio.Event | None,
+        streamed_sink: list[str],
     ) -> ModelResponse:
-        text_parts: list[str] = []
         reasoning_parts: list[str] = []
         completed: ModelResponse | None = None
-        try:
-            async for event in self.provider.stream(request):
-                self._raise_if_cancelled(cancel_event)
-                await self._emit_provider_event(event)
-                if event.kind == "text_delta":
-                    text_parts.append(event.text_delta)
-                elif event.kind == "reasoning_delta":
-                    reasoning_parts.append(event.reasoning_delta)
-                elif event.kind == "completed" and event.response:
-                    completed = event.response
-        except CancellationError:
-            raise
-        except Exception as exc:
-            await self.event_bus.emit(
-                "model.request.failed",
-                {"message": str(exc), "type": type(exc).__name__},
-                source="core.orchestrator",
-            )
-            raise
+        async for event in self.provider.stream(request):
+            self._raise_if_cancelled(cancel_event)
+            await self._emit_provider_event(event)
+            if event.kind == "text_delta":
+                streamed_sink.append(event.text_delta)
+            elif event.kind == "reasoning_delta":
+                reasoning_parts.append(event.reasoning_delta)
+            elif event.kind == "completed" and event.response:
+                completed = event.response
 
         if completed is None:
             return ModelResponse(
-                text="".join(text_parts),
+                text="".join(streamed_sink),
                 reasoning="".join(reasoning_parts),
                 finish_reason=FinishReason.UNKNOWN,
             )
-        if not completed.text and text_parts:
-            completed.text = "".join(text_parts)
+        if not completed.text and streamed_sink:
+            completed.text = "".join(streamed_sink)
         if not completed.reasoning and reasoning_parts:
             completed.reasoning = "".join(reasoning_parts)
         return completed
+
+    # ------------------------------------------------------------------ #
+    # Tool batch execution
+    # ------------------------------------------------------------------ #
+    async def _execute_tool_batch(
+        self, response: ModelResponse, state: _TurnState
+    ) -> TurnResult | None:
+        await self.set_state(AgentState.EXECUTING_TOOL, phase="executing_tools")
+        calls = response.tool_calls
+
+        if state.tool_calls_executed >= self.config.budgets.max_tool_calls:
+            return await self._wind_down(state, reason="tool_call_budget_exhausted")
+        state.tool_calls_executed += len(calls)
+
+        # Evaluate policy for the whole batch against one consistent snapshot so a
+        # planner transition triggered by an early call cannot retroactively deny a
+        # later call in the same model response.
+        decisions = {call.id: self._policy_decision_for(call.name) for call in calls}
+        parallel = [
+            call
+            for call in calls
+            if decisions[call.id].allowed and self._is_read_only(call.name)
+        ]
+        parallel_ids = {call.id for call in parallel}
+        outcomes: dict[str, _ToolOutcome] = {}
+
+        if len(parallel) > 1:
+            gathered = await asyncio.gather(
+                *(self._execute_call(call, decisions[call.id], state) for call in parallel)
+            )
+            for call, outcome in zip(parallel, gathered, strict=True):
+                outcomes[call.id] = outcome
+        elif parallel:
+            call = parallel[0]
+            outcomes[call.id] = await self._execute_call(call, decisions[call.id], state)
+
+        for call in calls:
+            if call.id in parallel_ids:
+                continue
+            self._raise_if_cancelled(state.cancel_event)
+            outcomes[call.id] = await self._execute_call(call, decisions[call.id], state)
+
+        # Record results and advance the planner sequentially, in model order, to keep
+        # the evidence ledger deterministic even when reads ran concurrently.
+        for call in calls:
+            outcome = outcomes[call.id]
+            self.conversation.add_tool_result(outcome.result)
+            if (
+                self.planner
+                and self.planner.enabled
+                and outcome.payload is not None
+                and not outcome.result.is_error
+            ):
+                await self.planner.record_tool_result(
+                    tool_call_id=call.id,
+                    tool_name=call.name,
+                    payload=outcome.payload,
+                    success=True,
+                )
+            if self.planner and self.planner.accepted_final_text is not None:
+                return await self._finish_turn(self.planner.accepted_final_text, response, state)
+        return None
+
+    async def _execute_host_tool(
+        self,
+        call_id: str,
+        name: str,
+        arguments: dict[str, object],
+        state: _TurnState,
+    ) -> None:
+        await self.set_state(AgentState.EXECUTING_TOOL, phase="executing_tools")
+        call = ToolCall(id=call_id, name=name, arguments=arguments)
+        outcome = await self._execute_call(call, None, state)
+        if (
+            self.planner
+            and self.planner.enabled
+            and outcome.payload is not None
+            and not outcome.result.is_error
+        ):
+            await self.planner.record_tool_result(
+                tool_call_id=call_id,
+                tool_name=name,
+                payload=outcome.payload,
+                success=True,
+            )
+
+    async def _execute_call(
+        self,
+        call: ToolCall,
+        decision: PolicyDecision | None,
+        state: _TurnState,
+    ) -> _ToolOutcome:
+        await self.event_bus.emit(
+            "tool.call.requested",
+            {"tool_call_id": call.id, "name": call.name, "arguments": call.arguments},
+            source="core.orchestrator",
+        )
+        if decision is not None and not decision.allowed:
+            if self.planner and self.planner.enabled:
+                await self.planner.record_policy_denial(
+                    tool_call_id=call.id,
+                    tool_name=call.name,
+                    reason=decision.reason,
+                    allowed_tool_names=decision.allowed_tool_names,
+                )
+            await self.event_bus.emit(
+                "tool.call.failed",
+                {
+                    "tool_call_id": call.id,
+                    "name": call.name,
+                    "message": decision.reason,
+                    "type": "ToolPolicyDenied",
+                },
+                source="core.orchestrator",
+            )
+            return _ToolOutcome(
+                result=ToolResult(
+                    tool_call_id=call.id,
+                    name=call.name,
+                    content=f"Tool policy denied: {decision.reason}",
+                    is_error=True,
+                ),
+                payload=None,
+                denied=True,
+            )
+
+        await self.event_bus.emit(
+            "tool.call.started",
+            {"tool_call_id": call.id, "name": call.name},
+            source="core.orchestrator",
+        )
+        try:
+            payload = await self._guarded_execute(call.name, call.arguments, state)
+            if self.planner and self.planner.enabled and call.name == "complete_task":
+                rejection = await self._completion_rejection(call, payload)
+                if rejection is not None:
+                    return rejection
+            content = bound_text(
+                json.dumps(payload, indent=2, sort_keys=True, default=str),
+                self.config.budgets.max_tool_output_chars,
+            )
+            await self.event_bus.emit(
+                "tool.call.completed",
+                {"tool_call_id": call.id, "name": call.name, "result": payload},
+                source="core.orchestrator",
+            )
+            return _ToolOutcome(
+                result=ToolResult(tool_call_id=call.id, name=call.name, content=content),
+                payload=payload,
+            )
+        except CancellationError:
+            raise
+        except CodeAIError as exc:
+            await self.event_bus.emit(
+                "tool.call.failed",
+                {
+                    "tool_call_id": call.id,
+                    "name": call.name,
+                    "message": str(exc),
+                    "type": type(exc).__name__,
+                },
+                source="core.orchestrator",
+            )
+            return _ToolOutcome(
+                result=ToolResult(
+                    tool_call_id=call.id, name=call.name, content=str(exc), is_error=True
+                ),
+                payload=None,
+            )
+
+    async def _completion_rejection(
+        self, call: ToolCall, payload: dict[str, object]
+    ) -> _ToolOutcome | None:
+        decision = await self.planner.evaluate_completion(payload)
+        if decision.accepted:
+            return None
+        missing = {
+            "status": "rejected",
+            "missing_requirements": list(decision.missing_requirements),
+        }
+        content = bound_text(
+            json.dumps(missing, indent=2, sort_keys=True, default=str),
+            self.config.budgets.max_tool_output_chars,
+        )
+        await self.event_bus.emit(
+            "tool.call.failed",
+            {
+                "tool_call_id": call.id,
+                "name": call.name,
+                "message": "completion rejected",
+                "missing_requirements": list(decision.missing_requirements),
+                "type": "CompletionRejected",
+            },
+            source="core.orchestrator",
+        )
+        return _ToolOutcome(
+            result=ToolResult(
+                tool_call_id=call.id, name=call.name, content=content, is_error=True
+            ),
+            payload=None,
+        )
+
+    async def _guarded_execute(
+        self,
+        name: str,
+        arguments: dict[str, object],
+        state: _TurnState,
+    ) -> dict[str, object]:
+        """Run a tool with a cooperative wall-clock backstop.
+
+        Cancellation is signalled through a child event so the tool can clean up
+        (e.g. terminate a subprocess group) instead of being hard-killed and
+        leaking resources. A hard cancel is the last resort if the tool ignores
+        the cooperative signal past a short grace period.
+        """
+        parent = state.cancel_event
+        timeout = float(self.config.budgets.max_tool_wall_time_s)
+        tool_cancel = asyncio.Event()
+        exec_task = asyncio.ensure_future(
+            self.tool_registry.execute(name, arguments, self.tool_context_factory(tool_cancel))
+        )
+        start = time.monotonic()
+        timed_out = False
+        try:
+            while True:
+                if parent is not None and parent.is_set():
+                    tool_cancel.set()
+                elapsed = time.monotonic() - start
+                if not timed_out and elapsed > timeout:
+                    timed_out = True
+                    tool_cancel.set()
+                done, _ = await asyncio.wait({exec_task}, timeout=_TOOL_GUARD_POLL_SECONDS)
+                if exec_task in done:
+                    break
+                if timed_out and elapsed > timeout + _TOOL_GUARD_GRACE_SECONDS:
+                    exec_task.cancel()
+                    break
+        except asyncio.CancelledError:
+            exec_task.cancel()
+            with contextlib.suppress(BaseException):
+                await exec_task
+            raise
+
+        if exec_task.cancelled():
+            if parent is not None and parent.is_set():
+                raise CancellationError("Turn cancelled.")
+            raise CommandTimeoutError(f"Tool '{name}' exceeded its time budget.")
+
+        exc = exec_task.exception()
+        if exc is not None:
+            if isinstance(exc, CancellationError) and timed_out and not (
+                parent is not None and parent.is_set()
+            ):
+                raise CommandTimeoutError(f"Tool '{name}' exceeded its time budget.") from exc
+            raise exc
+        return exec_task.result()
+
+    # ------------------------------------------------------------------ #
+    # Turn termination
+    # ------------------------------------------------------------------ #
+    async def _wind_down(self, state: _TurnState, *, reason: str) -> TurnResult:
+        await self.event_bus.emit(
+            "turn.budget_exhausted",
+            {"reason": reason, "tool_calls_executed": state.tool_calls_executed},
+            source="core.orchestrator",
+        )
+        text = self._best_effort_text(state) or (
+            "I reached a runtime safety budget for this turn before fully completing the "
+            "request. The work so far is preserved; re-run or narrow the request to continue."
+        )
+        return await self._finish_turn(text, state.last_response, state)
+
+    async def _finish_turn(
+        self,
+        text: str,
+        response: ModelResponse | None,
+        state: _TurnState,
+        *,
+        error: str | None = None,
+    ) -> TurnResult:
+        await self.set_state(AgentState.READY, phase="waiting_user")
+        await self.event_bus.emit(
+            "turn.completed",
+            {"text": text, "usage": self.usage.to_dict()},
+            source="core.orchestrator",
+        )
+        return TurnResult(text=text, response=response, error=error)
+
+    def _best_effort_text(self, state: _TurnState) -> str:
+        if state.last_response and state.last_response.text:
+            return state.last_response.text
+        return ""
+
+    # ------------------------------------------------------------------ #
+    # Event helpers
+    # ------------------------------------------------------------------ #
+    async def _emit_pre_request_usage(self, compression: CompressionResult) -> None:
+        await self.event_bus.emit(
+            "usage.updated",
+            {
+                "active_context_tokens": compression.active_tokens,
+                "active_context_estimated": compression.estimated,
+                "cumulative": self.usage.to_dict(),
+            },
+            source="context",
+        )
+
+    async def _emit_response_completed(self, response: ModelResponse) -> None:
+        await self.event_bus.emit(
+            "model.response.completed",
+            {
+                "finish_reason": response.finish_reason.value,
+                "tool_calls": [call.to_dict() for call in response.tool_calls],
+                "usage": response.usage.to_dict() if response.usage else None,
+            },
+            source="core.orchestrator",
+        )
+        await self.event_bus.emit(
+            "usage.updated",
+            {"cumulative": self.usage.to_dict()},
+            source="context",
+        )
 
     async def _emit_provider_event(self, event: ProviderEvent) -> None:
         if event.kind == "text_delta":
@@ -361,156 +638,78 @@ class AgentOrchestrator:
                 source="provider",
             )
 
-    async def _execute_tool(
-        self,
-        tool_call_id: str,
-        name: str,
-        arguments: dict[str, object],
-        cancel_event: asyncio.Event | None,
-        *,
-        enforce_policy: bool = True,
-    ) -> ToolResult:
+    async def _emit_request_failed(self, exc: Exception) -> None:
         await self.event_bus.emit(
-            "tool.call.requested",
-            {"tool_call_id": tool_call_id, "name": name, "arguments": arguments},
+            "model.request.failed",
+            {"message": str(exc), "type": type(exc).__name__},
             source="core.orchestrator",
         )
-        if enforce_policy and self.planner and self.planner.enabled:
-            decision = self.planner.evaluate_tool(name, self.tool_registry)
-            if not decision.allowed:
-                await self.planner.record_policy_denial(
-                    tool_call_id=tool_call_id,
-                    tool_name=name,
-                    reason=decision.reason,
-                    allowed_tool_names=decision.allowed_tool_names,
-                )
-                await self.event_bus.emit(
-                    "tool.call.failed",
-                    {
-                        "tool_call_id": tool_call_id,
-                        "name": name,
-                        "message": decision.reason,
-                        "type": "ToolPolicyDenied",
-                    },
-                    source="core.orchestrator",
-                )
-                return ToolResult(
-                    tool_call_id=tool_call_id,
-                    name=name,
-                    content=f"Tool policy denied: {decision.reason}",
-                    is_error=True,
-                )
-        await self.event_bus.emit(
-            "tool.call.started",
-            {"tool_call_id": tool_call_id, "name": name},
-            source="core.orchestrator",
-        )
-        try:
-            payload = await self.tool_registry.execute(
-                name, arguments, self.tool_context_factory(cancel_event)
-            )
-            if self.planner and self.planner.enabled and name == "complete_task":
-                decision = await self.planner.evaluate_completion(payload)
-                if not decision.accepted:
-                    missing = {
-                        "status": "rejected",
-                        "missing_requirements": list(decision.missing_requirements),
-                    }
-                    content = bound_text(
-                        json.dumps(missing, indent=2, sort_keys=True, default=str),
-                        self.config.budgets.max_tool_output_chars,
-                    )
-                    await self.event_bus.emit(
-                        "tool.call.failed",
-                        {
-                            "tool_call_id": tool_call_id,
-                            "name": name,
-                            "message": "completion rejected",
-                            "missing_requirements": list(decision.missing_requirements),
-                            "type": "CompletionRejected",
-                        },
-                        source="core.orchestrator",
-                    )
-                    return ToolResult(
-                        tool_call_id=tool_call_id,
-                        name=name,
-                        content=content,
-                        is_error=True,
-                    )
-            if self.planner and self.planner.enabled:
-                await self.planner.record_tool_result(
-                    tool_call_id=tool_call_id,
-                    tool_name=name,
-                    payload=payload,
-                    success=True,
-                )
-            content = bound_text(
-                json.dumps(payload, indent=2, sort_keys=True, default=str),
-                self.config.budgets.max_tool_output_chars,
-            )
-            await self.event_bus.emit(
-                "tool.call.completed",
-                {"tool_call_id": tool_call_id, "name": name, "result": payload},
-                source="core.orchestrator",
-            )
-            return ToolResult(tool_call_id=tool_call_id, name=name, content=content)
-        except CancellationError:
-            raise
-        except CodeAIError as exc:
-            await self.event_bus.emit(
-                "tool.call.failed",
-                {
-                    "tool_call_id": tool_call_id,
-                    "name": name,
-                    "message": str(exc),
-                    "type": type(exc).__name__,
-                },
-                source="core.orchestrator",
-            )
-            return ToolResult(tool_call_id=tool_call_id, name=name, content=str(exc), is_error=True)
 
-    async def _execute_host_web_search(
-        self,
-        query: str,
-        cancel_event: asyncio.Event | None,
-    ) -> None:
-        if "web_search" not in self.tool_registry.names():
-            return
-        await self.set_state(AgentState.EXECUTING_TOOL, phase="executing_tools")
-        result = await self._execute_tool(
-            "host_web_search_current",
-            "web_search",
-            {"query": query, "max_results": 5, "region": "br-pt"},
-            cancel_event,
-            enforce_policy=False,
+    async def _emit_error(self, exc: Exception) -> None:
+        await self.event_bus.emit(
+            "error",
+            {"message": str(exc), "type": type(exc).__name__},
+            source="core.orchestrator",
         )
-        self.conversation.add_user(
-            "Host-executed web_search for current information.\n"
-            f"Search query: {query}\n"
-            f"Result:\n{result.content}\n\n"
-            "Use these search results as current evidence. If the results are "
-            "insufficient or contradictory, say that explicitly. Do not answer from "
-            "stale model knowledge."
+
+    # ------------------------------------------------------------------ #
+    # Request construction + planner helpers
+    # ------------------------------------------------------------------ #
+    def _build_request(self, step: int, tool_definitions: list) -> ModelRequest:
+        messages = self.conversation.snapshot()
+        planner_context = self._planner_context()
+        if planner_context:
+            messages = [*messages, Message(role="user", content=planner_context)]
+        return ModelRequest(
+            model=self.config.model,
+            messages=messages,
+            tools=tool_definitions,
+            max_output_tokens=self.config.output_token_reserve,
+            previous_response_id=self.conversation.previous_response_id,
+            use_remote_conversation_state=(
+                self.config.use_remote_conversation_state
+                and self.conversation.remote_state_supported
+                and self.provider.capabilities.remote_conversation_state
+            ),
+            metadata={
+                "step": step,
+                "planning_phase": self.planner.phase.value
+                if self.planner and self.planner.enabled
+                else None,
+            },
         )
+
+    def _policy_decision_for(self, name: str) -> PolicyDecision:
+        if not (self.planner and self.planner.enabled):
+            return _ALLOWED_POLICY
+        return self.planner.evaluate_tool(name, self.tool_registry)
+
+    def _is_read_only(self, name: str) -> bool:
+        try:
+            caps = self.tool_registry.capabilities(name)
+        except Exception:
+            return False
+        return bool(caps) and caps <= frozenset({ToolCapability.LOCAL_READ})
 
     def _allowed_tool_names(self) -> set[str] | None:
         if not (self.planner and self.planner.enabled):
             return None
         return self.planner.allowed_tool_names(self.tool_registry)
 
-    def _planner_context(self, allowed_tool_names: set[str] | None) -> str:
+    def _recommended_tool_names(self) -> set[str]:
+        if not (self.planner and self.planner.enabled):
+            return set()
+        return self.planner.recommended_tool_names(self.tool_registry)
+
+    def _planner_context(self) -> str:
         if not (self.planner and self.planner.enabled):
             return ""
-        return self.planner.task_context_block(allowed_tool_names=allowed_tool_names or set())
+        return self.planner.task_context_block(
+            recommended_tool_names=self.planner.recommended_tool_names(self.tool_registry)
+        )
 
     def _requires_tool_for_progress(self) -> bool:
         return bool(self.planner and self.planner.requires_tool_for_progress())
-
-    def _planner_allows_host_web_first(self) -> bool:
-        if not (self.planner and self.planner.enabled and self.planner.profile):
-            return True
-        profile = self.planner.profile
-        return profile.allows_web_first or not profile.requires_local_context
 
     def _planner_summary_text(self) -> str:
         if not (self.planner and self.planner.plan):
