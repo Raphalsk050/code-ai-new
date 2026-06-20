@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import inspect
 import json
+from importlib import resources
 from types import SimpleNamespace
 
 from textual.widgets import Input, Static
 
+import code_ai.ui.terminal as terminal_package
 from code_ai.config.models import AppConfig
 from code_ai.core.orchestration import TurnResult
 from code_ai.core.state import AgentState
@@ -83,6 +85,17 @@ async def test_terminal_enter_submits_input_and_renders_events(tmp_path) -> None
         assert fake_app.submitted == ["hello from tui"]
         assert "you> hello from tui" in terminal_app.vm.conversation
         assert "ai> ok" in terminal_app.vm.conversation
+
+
+def test_terminal_logo_loads_from_banner_resource() -> None:
+    from code_ai.ui.terminal.widgets import BANNER_RESOURCE, load_code_ai_logo
+
+    banner = resources.files(terminal_package).joinpath(BANNER_RESOURCE).read_text(
+        encoding="utf-8"
+    )
+
+    assert "____" in banner
+    assert load_code_ai_logo() == banner
 
 
 def test_terminal_view_model_shows_command_output() -> None:

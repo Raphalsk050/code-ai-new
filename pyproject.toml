@@ -32,7 +32,7 @@ code-ai = "code_ai.cli.main:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"code_ai.ui.terminal" = ["theme.tcss"]
+"code_ai.ui.terminal" = ["theme.tcss", "banner.txt"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
