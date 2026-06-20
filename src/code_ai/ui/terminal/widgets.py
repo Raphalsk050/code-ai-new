@@ -12,8 +12,8 @@ except ImportError:  # pragma: no cover - dependency fallback for incomplete ins
 BANNER_RESOURCE = "banner.txt"
 CODE_AI_LOGO_FONT = "tarty2"
 CODE_AI_LOGO_STYLES = (
-    "bold rgb(255,100,150)",
-    "color(155) on color(235)",
+    "bold rgb(255,80,100)",
+    "bold rgb(255,230,90)",
 )
 
 FALLBACK_CODE_AI_LOGO_TEXT = "code.ai"
