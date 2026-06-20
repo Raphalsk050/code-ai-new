@@ -10,6 +10,7 @@ from code_ai.config.models import (
     SUPPORTED_API_MODES,
     normalize_api_mode,
 )
+from code_ai.ui.terminal.widgets import CODE_AI_BANNER_FONT_OPTIONS, normalize_banner_font
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +61,11 @@ SLASH_COMMANDS = [
         "/config theme <name>",
         "Persist and switch the terminal theme.",
         "/config theme ",
+    ),
+    SlashCommand(
+        "/config banner-font <name>",
+        "Persist and switch the banner art font.",
+        "/config banner-font ",
     ),
 ]
 
@@ -148,6 +154,19 @@ def handle_config_command(application: Any, command_text: str, *, config_path: P
             config_path=config_path,
             changes={"terminal_theme": parts[2]},
             live_fields={"terminal_theme"},
+            restart_required=False,
+        )
+    if action == "banner-font":
+        if len(parts) != 3:
+            return "command> Usage: /config banner-font <name>"
+        font = normalize_banner_font(parts[2])
+        if font != parts[2]:
+            return f"command> Unsupported banner font: {parts[2]}"
+        return _apply_config_change(
+            application,
+            config_path=config_path,
+            changes={"terminal_banner_font": font},
+            live_fields={"terminal_banner_font"},
             restart_required=False,
         )
     if action == "api-mode":
@@ -243,5 +262,17 @@ def _value_suggestions(prefix: str) -> list[SlashCommand]:
             )
             for theme in TERMINAL_THEME_SUGGESTIONS
             if theme.startswith(value_prefix)
+        ]
+
+    banner_font_prefix = "/config banner-font "
+    if prefix.startswith(banner_font_prefix):
+        value_prefix = prefix[len(banner_font_prefix) :].strip()
+        return [
+            SlashCommand(
+                f"/config banner-font {font}",
+                "Persist and switch the banner art font.",
+            )
+            for font in CODE_AI_BANNER_FONT_OPTIONS
+            if font.startswith(value_prefix)
         ]
     return []

@@ -84,6 +84,7 @@ class AppConfig:
     output_token_reserve: int = 4096
     headless_event_format: str = "text"
     terminal_theme: str = "textual-dark"
+    terminal_banner_font: str = "tarty2"
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> AppConfig:
@@ -107,6 +108,7 @@ class AppConfig:
             output_token_reserve=int(data.get("output_token_reserve", 4096)),
             headless_event_format=str(data.get("headless_event_format", "text")),
             terminal_theme=str(data.get("terminal_theme", "textual-dark")),
+            terminal_banner_font=str(data.get("terminal_banner_font", "tarty2")),
         )
         config.validate()
         return config
@@ -136,6 +138,8 @@ class AppConfig:
             raise ConfigurationError("output_token_reserve must be positive.")
         if not self.terminal_theme.strip():
             raise ConfigurationError("terminal_theme must be non-empty.")
+        if not self.terminal_banner_font.strip():
+            raise ConfigurationError("terminal_banner_font must be non-empty.")
         if (
             self.api_mode in {"responses", "completions"}
             and not self.api_key

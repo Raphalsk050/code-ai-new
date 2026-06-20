@@ -53,6 +53,22 @@ def test_terminal_theme_loads_from_config_file(tmp_path) -> None:
     assert config.terminal_theme == "tokyo-night"
 
 
+def test_terminal_banner_font_loads_from_config_file(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "api_mode": "ollama",
+                "workspace": str(tmp_path),
+                "terminal_banner_font": "future_1",
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(explicit_path=config_path)
+    assert config.terminal_banner_font == "future_1"
+
+
 def test_invalid_budget_is_rejected(tmp_path) -> None:
     config_path = tmp_path / "config.json"
     config_path.write_text(

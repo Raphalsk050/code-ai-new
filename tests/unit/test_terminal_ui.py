@@ -109,12 +109,18 @@ def test_terminal_logo_loads_from_banner_resource() -> None:
 
 
 def test_terminal_logo_styles_tarty2_banner_lines() -> None:
-    from code_ai.ui.terminal.widgets import CODE_AI_LOGO_STYLES, load_code_ai_logo
+    from code_ai.ui.terminal.widgets import (
+        CODE_AI_BANNER_FONT_OPTIONS,
+        CODE_AI_LOGO_STYLES,
+        load_code_ai_logo,
+    )
 
     rendered = load_code_ai_logo()
     span_styles = [str(span.style) for span in rendered.spans]
 
     assert span_styles[:2] == [CODE_AI_LOGO_STYLES[1], CODE_AI_LOGO_STYLES[0]]
+    assert "future_1" in CODE_AI_BANNER_FONT_OPTIONS
+    assert "xsansi" in CODE_AI_BANNER_FONT_OPTIONS
 
 
 def test_terminal_view_model_shows_command_output() -> None:
@@ -227,6 +233,7 @@ def test_command_completion_completes_config_command_text() -> None:
     assert command_completion("/config api-mode o") == "/config api-mode ollama"
     assert command_completion("/config th") == "/config theme "
     assert command_completion("/config theme tok") == "/config theme tokyo-night"
+    assert command_completion("/config banner-font fut") == "/config banner-font future_1"
 
 
 async def test_left_arrow_accepts_slash_command_completion(tmp_path) -> None:
@@ -272,6 +279,20 @@ def test_config_theme_command_persists_and_updates_active_config(tmp_path) -> No
     assert saved["terminal_theme"] == "tokyo-night"
 
 
+def test_config_banner_font_command_persists_and_updates_active_config(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    config_path = tmp_path / "config.json"
+    result = handle_config_command(
+        fake_app,
+        "/config banner-font future_2",
+        config_path=config_path,
+    )
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert "Applied now" in result
+    assert fake_app.session.config.terminal_banner_font == "future_2"
+    assert saved["terminal_banner_font"] == "future_2"
+
+
 async def test_terminal_persists_theme_changed_from_palette(tmp_path) -> None:
     fake_app = FakeTerminalApplication(tmp_path)
     fake_app.session.config.terminal_theme = "textual-light"
@@ -287,3 +308,32 @@ async def test_terminal_persists_theme_changed_from_palette(tmp_path) -> None:
         saved = json.loads(config_path.read_text(encoding="utf-8"))
         assert fake_app.session.config.terminal_theme == "textual-dark"
         assert saved["terminal_theme"] == "textual-dark"
+
+
+async def test_terminal_command_palette_exposes_banner_font_command(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(110, 44)) as pilot:
+        commands = list(terminal_app.get_system_commands(terminal_app.screen))
+        await pilot.pause(0.1)
+
+    assert any(command.title == "Banner Font" for command in commands)
+
+
+async def test_terminal_banner_font_command_updates_logo_and_persists(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    config_path = tmp_path / "config.json"
+    terminal_app = create_terminal_app(fake_app, config_path=config_path)
+
+    async with terminal_app.run_test(size=(110, 44)) as pilot:
+        logo = terminal_app.query_one("#logo", Static)
+
+        before = str(logo.render())
+        terminal_app._persist_banner_font("future_1")
+        await pilot.pause(0.2)
+
+        saved = json.loads(config_path.read_text(encoding="utf-8"))
+        assert fake_app.session.config.terminal_banner_font == "future_1"
+        assert saved["terminal_banner_font"] == "future_1"
+        assert str(logo.render()) != before

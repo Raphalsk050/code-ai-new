@@ -46,4 +46,5 @@ DEFAULT_CONFIG: dict[str, object] = {
     "output_token_reserve": 4096,
     "headless_event_format": "text",
     "terminal_theme": "textual-dark",
+    "terminal_banner_font": "tarty2",
 }

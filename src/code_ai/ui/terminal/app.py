@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -13,11 +14,16 @@ from code_ai.ui.terminal.slash_commands import (
     render_suggestions,
 )
 from code_ai.ui.terminal.view_models import TerminalViewModel
-from code_ai.ui.terminal.widgets import CODE_AI_LOGO
+from code_ai.ui.terminal.widgets import (
+    CODE_AI_BANNER_FONT_OPTIONS,
+    load_code_ai_logo,
+    normalize_banner_font,
+)
 
 
 def create_terminal_app(application, *, config_path: Path | None = None):
-    from textual.app import App, ComposeResult
+    from textual.app import App, ComposeResult, SystemCommand
+    from textual.command import SimpleCommand
     from textual.containers import Container, Horizontal, Vertical
     from textual.suggester import Suggester
     from textual.widgets import Footer, Header, Input, RichLog, Static
@@ -53,7 +59,10 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             yield Header(show_clock=True)
             with Vertical(id="root"):
                 with Container(id="topbar"):
-                    yield Static(CODE_AI_LOGO, id="logo")
+                    yield Static(
+                        load_code_ai_logo(application.session.config.terminal_banner_font),
+                        id="logo",
+                    )
                     yield Static("Any model. Real tools. Local control.", id="subtitle")
                     yield Static("READY", id="statusline")
                 with Horizontal(id="main"):
@@ -134,8 +143,18 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 )
                 if stripped.startswith("/config theme "):
                     self._apply_configured_terminal_theme()
+                if stripped.startswith("/config banner-font "):
+                    self._refresh_logo()
                 return
             asyncio.create_task(self.controller.submit(text))
+
+        def get_system_commands(self, screen) -> Any:
+            yield from super().get_system_commands(screen)
+            yield SystemCommand(
+                "Banner Font",
+                "Change the banner art font",
+                self.action_change_banner_font,
+            )
 
         def _set_command_suggestions(self, text: str) -> None:
             suggestions = self.query_one("#command-suggestions", Static)
@@ -163,6 +182,44 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 )
                 return
             self.theme = theme_name
+
+        def _refresh_logo(self) -> None:
+            config = application.session.config
+            config.terminal_banner_font = normalize_banner_font(config.terminal_banner_font)
+            self.query_one("#logo", Static).update(load_code_ai_logo(config.terminal_banner_font))
+
+        def _persist_banner_font(self, font: str) -> None:
+            config = application.session.config
+            normalized = normalize_banner_font(font)
+            if config.terminal_banner_font == normalized:
+                self._refresh_logo()
+                return
+            try:
+                validated = persist_config_updates(
+                    config,
+                    {"terminal_banner_font": normalized},
+                    explicit_path=config_path,
+                )
+            except Exception as exc:
+                self._append_conversation_line(
+                    f"warning> Could not persist banner font: {exc}"
+                )
+                return
+            config.terminal_banner_font = validated.terminal_banner_font
+            self._refresh_logo()
+
+        def action_change_banner_font(self) -> None:
+            self.search_commands(
+                [
+                    SimpleCommand(
+                        font,
+                        partial(self._persist_banner_font, font),
+                        f"Use {font} for the Code-AI banner.",
+                    )
+                    for font in CODE_AI_BANNER_FONT_OPTIONS
+                ],
+                placeholder="Search for banner fonts...",
+            )
 
         def _persist_terminal_theme(self, theme) -> None:
             theme_name = getattr(theme, "name", self.theme)
