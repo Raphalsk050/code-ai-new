@@ -88,18 +88,33 @@ async def test_terminal_enter_submits_input_and_renders_events(tmp_path) -> None
 
 
 def test_terminal_logo_loads_from_banner_resource() -> None:
-    from code_ai.ui.terminal.widgets import BANNER_RESOURCE, load_banner_source, load_code_ai_logo
+    from code_ai.ui.terminal.widgets import (
+        BANNER_RESOURCE,
+        CODE_AI_LOGO_FONT,
+        load_banner_source,
+        load_code_ai_logo,
+    )
 
     banner = resources.files(terminal_package).joinpath(BANNER_RESOURCE).read_text(
         encoding="utf-8"
     )
+    rendered = load_code_ai_logo()
 
     assert banner.strip()
-    assert load_banner_source() == banner
-    assert load_code_ai_logo() == banner
-    assert "██████" in banner
-    assert "╔" in banner
-    assert "AGENT SDK" not in banner
+    assert load_banner_source() == "code.ai"
+    assert rendered.plain
+    assert "█▀▀" in rendered.plain
+    assert "█▄▄" in rendered.plain
+    assert CODE_AI_LOGO_FONT == "tarty2"
+
+
+def test_terminal_logo_styles_tarty2_banner_lines() -> None:
+    from code_ai.ui.terminal.widgets import CODE_AI_LOGO_STYLES, load_code_ai_logo
+
+    rendered = load_code_ai_logo()
+    span_styles = [str(span.style) for span in rendered.spans]
+
+    assert span_styles[:2] == [CODE_AI_LOGO_STYLES[1], CODE_AI_LOGO_STYLES[0]]
 
 
 def test_terminal_view_model_shows_command_output() -> None:

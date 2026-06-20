@@ -12,6 +12,7 @@ dependencies = [
   "openai>=1.0.0",
   "httpx>=0.25.0",
   "textual>=0.50.0",
+  "art>=6.5",
   "tiktoken>=0.5.0",
   "pyte>=0.8.0",
   "pexpect>=4.8.0; platform_system != 'Windows'",
