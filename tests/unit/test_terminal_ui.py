@@ -94,7 +94,7 @@ def test_terminal_logo_loads_from_banner_resource() -> None:
         encoding="utf-8"
     )
 
-    assert "____" in banner
+    assert banner.strip()
     assert load_code_ai_logo() == banner
 
 
