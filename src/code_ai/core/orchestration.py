@@ -6,7 +6,7 @@ import json
 import random
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from code_ai.config.models import AppConfig
 from code_ai.context.compression import CompressionResult, ContextCompressor
@@ -39,9 +39,9 @@ from code_ai.tools.registry import ToolRegistry
 
 ToolContextFactory = Callable[[asyncio.Event | None], ToolContext]
 
-_MODEL_STEP_MAX_RETRIES = 2
-_TOOL_GUARD_POLL_SECONDS = 0.1
-_TOOL_GUARD_GRACE_SECONDS = 5.0
+_MODEL_STEP_MAX_RETRIES = 200
+_TOOL_GUARD_POLL_SECONDS = 2.0
+_TOOL_GUARD_GRACE_SECONDS = 10.0
 _ALLOWED_POLICY = PolicyDecision(True, "allowed", set())
 
 
@@ -59,6 +59,10 @@ class _TurnState:
     deadline: float
     tool_calls_executed: int = 0
     last_response: ModelResponse | None = None
+    progress_signature: tuple[object, ...] = ()
+    stall_rounds: int = 0
+    stall_nudged: bool = False
+    seen_call_fingerprints: set[str] = field(default_factory=set)
 
 
 @dataclass(slots=True)
@@ -119,6 +123,7 @@ class AgentOrchestrator:
             early = await self._begin_planner(text, state)
             if early is not None:
                 return early
+            state.progress_signature = self._progress_signature()
             return await self._run_model_loop(state)
         except CancellationError:
             await self.set_state(AgentState.READY, phase="waiting_user")
@@ -199,6 +204,9 @@ class AgentOrchestrator:
             outcome = await self._execute_tool_batch(response, state)
             if outcome is not None:
                 return outcome
+            outcome = await self._note_tool_round(response, state)
+            if outcome is not None:
+                return outcome
             await self.set_state(AgentState.CALLING_MODEL, phase="calling_model_after_tools")
 
         return await self._wind_down(state, reason="model_step_budget_exhausted")
@@ -223,6 +231,76 @@ class AgentOrchestrator:
         if response.text:
             self.conversation.add_assistant(response.text, response.tool_calls)
         return await self._finish_turn(response.text, response, state)
+
+    # ------------------------------------------------------------------ #
+    # Convergence guard: stop tool-call loops that make no real progress
+    # ------------------------------------------------------------------ #
+    async def _note_tool_round(
+        self, response: ModelResponse, state: _TurnState
+    ) -> TurnResult | None:
+        """Detect a model that keeps calling tools without advancing the task.
+
+        A round counts as progress when the planner's semantic signature moves
+        (new evidence, a phase/step transition) or, without a planner, when the
+        batch contains a tool call we have not run before this turn. After a few
+        unproductive rounds we nudge once, then wind down with a best-effort
+        answer so the turn never spins to the hard step budget with no reply.
+        """
+        signature = self._progress_signature()
+        if signature:
+            productive = signature != state.progress_signature
+            state.progress_signature = signature
+        else:
+            fingerprints = {self._call_fingerprint(call) for call in response.tool_calls}
+            productive = bool(fingerprints - state.seen_call_fingerprints)
+            state.seen_call_fingerprints |= fingerprints
+
+        if productive:
+            state.stall_rounds = 0
+            state.stall_nudged = False
+            return None
+
+        state.stall_rounds += 1
+        limit = max(2, self.config.budgets.max_stall_rounds)
+        if state.stall_rounds >= limit:
+            await self.event_bus.emit(
+                "turn.stalled",
+                {"stall_rounds": state.stall_rounds, "tool_calls_executed": state.tool_calls_executed},
+                source="core.orchestrator",
+            )
+            return await self._wind_down(state, reason="model_stalled")
+        if state.stall_rounds >= limit // 2 and not state.stall_nudged:
+            state.stall_nudged = True
+            self.conversation.add_user(self._stall_nudge_text())
+            await self.event_bus.emit(
+                "agent.stall.nudged",
+                {"stall_rounds": state.stall_rounds},
+                source="core.orchestrator",
+            )
+        return None
+
+    def _progress_signature(self) -> tuple[object, ...]:
+        if self.planner and self.planner.enabled:
+            return self.planner.progress_signature()
+        return ()
+
+    @staticmethod
+    def _call_fingerprint(call: ToolCall) -> str:
+        try:
+            arguments = json.dumps(call.arguments, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            arguments = str(call.arguments)
+        return f"{call.name}:{arguments}"
+
+    @staticmethod
+    def _stall_nudge_text() -> str:
+        return (
+            "Runtime check: recent tool calls have not advanced the task, and repeating "
+            "the same observation will not help. If you already have enough information, "
+            "reply to the user now with your final answer. If a workspace change still "
+            "needs settling, make the single remaining change or call complete_task with "
+            "evidence. Do not issue further redundant tool calls."
+        )
 
     # ------------------------------------------------------------------ #
     # Model request with timeout + transient retry
@@ -583,6 +661,10 @@ class AgentOrchestrator:
     def _best_effort_text(self, state: _TurnState) -> str:
         if state.last_response and state.last_response.text:
             return state.last_response.text
+        if self.planner and self.planner.enabled:
+            summary = self.planner.best_effort_summary()
+            if summary:
+                return summary
         return ""
 
     # ------------------------------------------------------------------ #

@@ -16,7 +16,7 @@ from code_ai.util.redaction import sanitized_environment
 
 @dataclass(slots=True)
 class CommandResult:
-    argv: list[str] | str
+    argv: list[str]
     cwd: str
     exit_code: int | None
     stdout: str
@@ -44,31 +44,22 @@ class CommandRunner:
     async def run(
         self,
         *,
-        argv: list[str] | str,
+        argv: list[str],
         cwd: Path,
         timeout: float,
         event_bus: AsyncEventBus,
         cancel_event: asyncio.Event | None,
         extra_env: dict[str, str] | None = None,
-        shell: bool = False,
         max_output_chars: int = 12000,
     ) -> CommandResult:
-        if shell:
-            if not isinstance(argv, str) or not argv.strip():
-                raise ToolArgumentError("Shell command must be a non-empty string.")
-            create = asyncio.create_subprocess_shell
-            create_args = (argv,)
-        else:
-            if (
-                not isinstance(argv, list)
-                or not argv
-                or not all(isinstance(item, str) and item for item in argv)
-            ):
-                raise ToolArgumentError("argv must be a non-empty list of strings.")
-            if any("\x00" in item for item in argv):
-                raise ToolArgumentError("argv contains a NUL byte.")
-            create = asyncio.create_subprocess_exec
-            create_args = tuple(argv)
+        if (
+            not isinstance(argv, list)
+            or not argv
+            or not all(isinstance(item, str) and item for item in argv)
+        ):
+            raise ToolArgumentError("argv must be a non-empty list of strings.")
+        if any("\x00" in item for item in argv):
+            raise ToolArgumentError("argv contains a NUL byte.")
 
         env = sanitized_environment(os.environ)
         if extra_env:
@@ -79,8 +70,8 @@ class CommandRunner:
 
         start = time.monotonic()
         preexec_fn = os.setsid if hasattr(os, "setsid") else None
-        process = await create(
-            *create_args,
+        process = await asyncio.create_subprocess_exec(
+            *argv,
             cwd=str(cwd),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,

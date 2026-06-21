@@ -18,6 +18,7 @@ DEFAULT_BUDGETS: dict[str, int] = {
     "max_model_step_seconds": 180,
     "max_model_steps": 80,
     "max_orchestration_rounds": 60,
+    "max_stall_rounds": 4,
     "max_orchestration_seconds": 60,
     "max_tool_call_seconds": 900,
     "max_tool_calls": 250,

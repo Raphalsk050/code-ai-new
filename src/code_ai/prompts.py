@@ -13,8 +13,7 @@ Configured response language: {language}
 Current local date: {current_date}
 
 Follow the user's instructions, use tools when they are needed, keep all file and
-command operations inside the configured workspace, and be explicit about
-verification that was actually performed.
+command operations inside the configured workspace.
 
 For workspace tasks, local files are the source of truth. Inspect the workspace
 before proposing changes, search/read local code before using web_search, and
@@ -78,8 +77,7 @@ Do not replace file operations with instructions to show code to the user. Do
 not add web search before required local discovery.
 """
 
-CURRENT_STEP_EXECUTION_PROMPT = """Execute only the current plan step. Use only
-allowed tools and gather the required evidence. Do not work ahead or mark your
+CURRENT_STEP_EXECUTION_PROMPT = """Execute only the current plan step. Do not work ahead or mark your
 own step complete.
 """
 

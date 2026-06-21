@@ -59,6 +59,13 @@ class EvidenceLedger:
         self.latest_verification_passed = False
         self.latest_verification_evidence_id: str | None = None
         self.verification_hashes: dict[str, str] = {}
+        # Distinct knowledge accumulated this session. Each set grows only when the
+        # agent observes something genuinely new, so repeating an identical
+        # observation does not register as progress. See ``progress_fingerprint``.
+        self._read_keys: set[str] = set()
+        self._listed_keys: set[str] = set()
+        self._search_keys: set[str] = set()
+        self._web_keys: set[str] = set()
 
     def record_tool_result(
         self,
@@ -125,6 +132,24 @@ class EvidenceLedger:
     def compact_recent(self, *, limit: int = 12) -> list[dict[str, Any]]:
         return [record.compact() for record in self.records[-limit:]]
 
+    def progress_fingerprint(self) -> tuple[object, ...]:
+        """Snapshot of distinct knowledge and workspace state gathered so far.
+
+        The orchestrator compares this across model steps to tell genuine forward
+        motion (a new file read, a new listing, a fresh search/web result, a file
+        change, a verification outcome) apart from a non-advancing tool-call loop.
+        It is intentionally stable when the same observation is repeated.
+        """
+        return (
+            len(self._read_keys),
+            len(self._listed_keys),
+            len(self._search_keys),
+            len(self._web_keys),
+            tuple(sorted(self.changed_hashes.items())),
+            self.latest_verification_passed,
+            tuple(sorted(self.verification_hashes.items())),
+        )
+
     def _append(self, record: EvidenceRecord) -> None:
         self.records.append(record)
         if record.success and record.evidence_type in {
@@ -142,6 +167,21 @@ class EvidenceLedger:
         elif record.evidence_type == EvidenceType.VERIFICATION_FAILED:
             self.latest_verification_passed = False
             self.latest_verification_evidence_id = None
+        if record.success:
+            self._record_knowledge(record)
+
+    def _record_knowledge(self, record: EvidenceRecord) -> None:
+        if record.evidence_type == EvidenceType.FILE_READ:
+            self._read_keys.update(record.affected_paths)
+        elif record.evidence_type == EvidenceType.WORKSPACE_LISTED:
+            self._listed_keys.add(record.summary)
+        elif record.evidence_type in {
+            EvidenceType.LOCAL_SEARCH_MATCH,
+            EvidenceType.LOCAL_SEARCH_COMPLETED,
+        }:
+            self._search_keys.add(record.summary)
+        elif record.evidence_type == EvidenceType.WEB_RESULT:
+            self._web_keys.add(record.summary)
 
 
 def _records_from_payload(

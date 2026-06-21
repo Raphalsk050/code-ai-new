@@ -35,6 +35,7 @@ class BudgetConfig:
     max_model_steps: int = DEFAULT_BUDGETS["max_model_steps"]
     max_orchestration_rounds: int = DEFAULT_BUDGETS["max_orchestration_rounds"]
     max_orchestration_seconds: int = DEFAULT_BUDGETS["max_orchestration_seconds"]
+    max_stall_rounds: int = DEFAULT_BUDGETS["max_stall_rounds"]
     max_tool_call_seconds: int = DEFAULT_BUDGETS["max_tool_call_seconds"]
     max_tool_calls: int = DEFAULT_BUDGETS["max_tool_calls"]
     max_tool_output_chars: int = DEFAULT_BUDGETS["max_tool_output_chars"]

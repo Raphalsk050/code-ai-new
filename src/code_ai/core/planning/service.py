@@ -180,6 +180,7 @@ class PlannerService:
         payload: dict[str, Any],
         success: bool,
     ) -> list[EvidenceRecord]:
+        before = self.progress_signature()
         step_id = self.current_step.step_id if self.current_step else None
         records = self.ledger.record_tool_result(
             plan=self.plan,
@@ -195,9 +196,12 @@ class PlannerService:
                 record.compact(),
                 source="core.planner",
             )
-        if records:
-            self.no_progress_rounds = 0
         await self._advance_after_evidence(records, tool_name=tool_name, payload=payload)
+        # Only genuine forward motion clears the no-progress counter. Recording yet
+        # another identical observation must not look like progress, or a tool-call
+        # loop would reset the guard forever.
+        if self.progress_signature() != before:
+            self.no_progress_rounds = 0
         return records
 
     async def record_policy_denial(
@@ -386,6 +390,53 @@ class PlannerService:
             final_text=self.accepted_final_text or claim.summary,
         )
 
+    def progress_signature(self) -> tuple[object, ...]:
+        """Opaque token capturing semantic forward progress within a turn.
+
+        It changes only when the task genuinely moves forward — a phase or step
+        transition, a step completion, or new knowledge/state in the evidence
+        ledger — and stays constant when the model merely repeats observations.
+        The orchestrator compares it across model steps to detect stalled loops.
+        """
+        if not self.plan:
+            return (self.phase.value, self.ledger.progress_fingerprint())
+        completed = sum(
+            1 for step in self.plan.steps if step.status == PlanStepStatus.COMPLETED
+        )
+        return (
+            self.phase.value,
+            self.plan.status.value,
+            self.plan.current_step_index,
+            self.current_step.status.value if self.current_step else "",
+            completed,
+            self.ledger.progress_fingerprint(),
+        )
+
+    def best_effort_summary(self) -> str:
+        """A short evidence-backed summary for a turn that ends without a clean
+        ``complete_task`` (e.g. a stalled loop or an exhausted budget)."""
+        if not (self.enabled and self.plan and self.profile):
+            return ""
+        if self.profile.intent == TaskIntent.CONVERSATION:
+            return ""
+        changed = self.ledger.current_changed_paths()
+        parts: list[str] = []
+        if changed:
+            parts.append(f"Changed paths: {', '.join(changed)}.")
+        if self.profile.requires_workspace_mutation:
+            parts.append(
+                "Verification passed."
+                if self.ledger.latest_verification_passed
+                else "Verification was not confirmed."
+            )
+        if not parts:
+            return ""
+        return bound_text(
+            "Stopped before a clean completion. Work so far is preserved.\n"
+            + "\n".join(parts),
+            2000,
+        )
+
     def plan_snapshot(self) -> dict[str, Any]:
         if not self.plan:
             return {
@@ -433,9 +484,13 @@ class PlannerService:
             await self._move_to_step_kind(PlanStepKind.IMPLEMENT, PlanningPhase.REPAIR)
         elif (
             EvidenceType.VERIFICATION_PASSED in evidence_types
-            and self.phase == PlanningPhase.VERIFY
+            and self.phase in {PlanningPhase.VERIFY, PlanningPhase.REPAIR}
         ):
-            await self._complete_step_if_kind(PlanStepKind.VERIFY)
+            # A passing check resolves the work regardless of whether we reached it
+            # straight from EXECUTE or after a REPAIR loop. Settle the implement and
+            # verify steps so completion is not blocked by a step left in-progress.
+            await self._complete_step_by_kind(PlanStepKind.IMPLEMENT)
+            await self._complete_step_by_kind(PlanStepKind.VERIFY)
             await self._move_to_step_kind(PlanStepKind.COMPLETE, PlanningPhase.COMPLETE)
         if tool_name == "web_search" and self.current_step:
             if self.current_step.kind == PlanStepKind.RESEARCH_WEB:
@@ -506,6 +561,24 @@ class PlannerService:
             await self._emit_phase(PlanningPhase.VERIFY)
         elif next_kind == PlanStepKind.COMPLETE:
             await self._emit_phase(PlanningPhase.COMPLETE)
+
+    async def _complete_step_by_kind(self, kind: PlanStepKind) -> None:
+        """Mark the first not-yet-completed step of ``kind`` as completed in place,
+        without moving the cursor. Used when evidence settles a step other than the
+        current one (e.g. verification passing while the cursor sits on repair)."""
+        if not self.plan:
+            return
+        for step in self.plan.steps:
+            if step.kind == kind and step.status != PlanStepStatus.COMPLETED:
+                step.status = PlanStepStatus.COMPLETED
+                step.last_error = None
+                self.plan.updated_at = utc_now_iso()
+                await self.event_bus.emit(
+                    "planning.step.completed",
+                    self.plan_snapshot(),
+                    source="core.planner",
+                )
+                return
 
     async def _move_to_step_kind(self, kind: PlanStepKind, phase: PlanningPhase) -> None:
         if not self.plan:

@@ -476,6 +476,8 @@ def _mentions_workspace(text: str) -> bool:
         "file",
         "folder",
         "directory",
+        "diretorio",
+        "diretório",
         "codigo",
         "código",
         "arquivo",
