@@ -44,6 +44,11 @@ Screen {
   padding: 1;
 }
 
+#working-indicator {
+  height: 1;
+  padding: 0 1;
+}
+
 #command-suggestions {
   height: auto;
   max-height: 10;
@@ -53,7 +58,21 @@ Screen {
   padding: 0 1;
 }
 
+#input-row {
+  height: 3;
+}
+
+#mode-select {
+  width: 24;
+  margin-right: 1;
+}
+
+#mode-select > SelectCurrent {
+  border: solid #ff9f1c;
+}
+
 #input {
+  width: 1fr;
   height: 3;
   border: solid #8892a0;
 }
@@ -61,4 +80,39 @@ Screen {
 .panel-title {
   color: #ff9f1c;
   text-style: bold;
+}
+
+ApprovalModal {
+  align: center middle;
+}
+
+#approval-dialog {
+  width: 80%;
+  max-width: 100;
+  height: auto;
+  max-height: 80%;
+  border: thick #ff9f1c;
+  background: #111820;
+  padding: 1 2;
+}
+
+#approval-title {
+  color: #ff9f1c;
+  text-style: bold;
+  padding-bottom: 1;
+}
+
+#approval-body {
+  height: auto;
+  color: #d7dee8;
+  padding-bottom: 1;
+}
+
+#approval-actions {
+  height: auto;
+  align-horizontal: center;
+}
+
+#approval-actions Button {
+  margin: 0 1;
 }

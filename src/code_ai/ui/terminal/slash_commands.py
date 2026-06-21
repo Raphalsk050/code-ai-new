@@ -10,7 +10,12 @@ from code_ai.config.models import (
     SUPPORTED_API_MODES,
     normalize_api_mode,
 )
-from code_ai.ui.terminal.widgets import CODE_AI_BANNER_FONT_OPTIONS, normalize_banner_font
+from code_ai.ui.terminal.widgets import (
+    CODE_AI_BANNER_FONT_OPTIONS,
+    CODE_AI_SPINNER_OPTIONS,
+    normalize_banner_font,
+    normalize_spinner,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +36,11 @@ SLASH_COMMANDS = [
     SlashCommand("/auto", "Switch planner mode to auto."),
     SlashCommand("/plan", "Switch planner mode to plan."),
     SlashCommand("/act", "Switch planner mode to act."),
+    SlashCommand(
+        "/mode <ask|auto|bypass>",
+        "Set the tool permission mode (persisted).",
+        "/mode ",
+    ),
     SlashCommand("/deep-plan", "Show current bounded plan snapshot."),
     SlashCommand("/plan-status", "Show planner phase and current step."),
     SlashCommand("/replan", "Request a bounded replan on the next turn."),
@@ -72,6 +82,11 @@ SLASH_COMMANDS = [
         "/config banner-font <name>",
         "Persist and switch the banner art font.",
         "/config banner-font ",
+    ),
+    SlashCommand(
+        "/config spinner <name>",
+        "Persist and switch the working-indicator animation.",
+        "/config spinner ",
     ),
 ]
 
@@ -173,6 +188,19 @@ def handle_config_command(application: Any, command_text: str, *, config_path: P
             config_path=config_path,
             changes={"terminal_banner_font": font},
             live_fields={"terminal_banner_font"},
+            restart_required=False,
+        )
+    if action == "spinner":
+        if len(parts) != 3:
+            return "command> Usage: /config spinner <name>"
+        spinner = normalize_spinner(parts[2])
+        if spinner != parts[2]:
+            return f"command> Unsupported spinner: {parts[2]}"
+        return _apply_config_change(
+            application,
+            config_path=config_path,
+            changes={"terminal_spinner": spinner},
+            live_fields={"terminal_spinner"},
             restart_required=False,
         )
     if action == "api-mode":
@@ -280,5 +308,17 @@ def _value_suggestions(prefix: str) -> list[SlashCommand]:
             )
             for font in CODE_AI_BANNER_FONT_OPTIONS
             if font.startswith(value_prefix)
+        ]
+
+    spinner_prefix = "/config spinner "
+    if prefix.startswith(spinner_prefix):
+        value_prefix = prefix[len(spinner_prefix) :].strip()
+        return [
+            SlashCommand(
+                f"/config spinner {spinner}",
+                "Persist and switch the working-indicator animation.",
+            )
+            for spinner in CODE_AI_SPINNER_OPTIONS
+            if spinner.startswith(value_prefix)
         ]
     return []

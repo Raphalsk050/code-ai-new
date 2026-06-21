@@ -31,6 +31,25 @@ DEFAULT_BUDGETS: dict[str, int] = {
 }
 
 
+DEFAULT_SAMPLING: dict[str, object] = {
+    # Standard OpenAI sampling controls. ``None`` means "omit and let the
+    # endpoint use its own default".
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "presence_penalty": 0.0,
+    "frequency_penalty": None,
+    # Not part of the OpenAI schema; forwarded via ``extra_body`` for
+    # OpenAI-compatible servers (vLLM, SGLang, Ollama's OpenAI shim, ...).
+    "top_k": 20,
+    "min_p": 0.0,
+    # Responses-API reasoning controls (official OpenAI reasoning models).
+    "reasoning_effort": None,
+    "reasoning_summary": None,
+    # Free-form passthrough merged into the request ``extra_body``.
+    "extra_body": {},
+}
+
+
 DEFAULT_PLANNER: dict[str, object] = {
     "enabled": True,
     "mode": "auto",
@@ -52,8 +71,10 @@ DEFAULT_CONFIG: dict[str, object] = {
     "api_key": "",
     "api_mode": "responses",
     "base_url": "http://localhost:11434/v1",
+    "permission_mode": "ask",
     "budgets": DEFAULT_BUDGETS,
     "planner": DEFAULT_PLANNER,
+    "sampling": DEFAULT_SAMPLING,
     "language": "en",
     "model": "gemma4:31b-cloud",
     "show_ui": True,
@@ -66,4 +87,5 @@ DEFAULT_CONFIG: dict[str, object] = {
     "headless_event_format": "text",
     "terminal_theme": "textual-dark",
     "terminal_banner_font": "tarty2",
+    "terminal_spinner": "ascii",
 }

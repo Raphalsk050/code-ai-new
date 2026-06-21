@@ -12,6 +12,13 @@ from code_ai.config.models import AppConfig
 from code_ai.context.compression import CompressionResult, ContextCompressor
 from code_ai.context.conversation import ConversationState
 from code_ai.context.usage import UsageLedger
+from code_ai.core.approval import (
+    ApprovalDecision,
+    ApprovalGateway,
+    ApprovalRequest,
+    DenyAllGateway,
+    call_signature,
+)
 from code_ai.core.errors import (
     CancellationError,
     CodeAIError,
@@ -44,6 +51,17 @@ _TOOL_GUARD_POLL_SECONDS = 2.0
 _TOOL_GUARD_GRACE_SECONDS = 10.0
 _ALLOWED_POLICY = PolicyDecision(True, "allowed", set())
 
+# Capabilities that mutate the workspace or run external processes. In "ask"
+# mode these prompt for approval even when the policy already allows them; in
+# "auto" mode they run freely and only a policy denial escalates to the user.
+_APPROVAL_SENSITIVE_CAPABILITIES = frozenset(
+    {
+        ToolCapability.LOCAL_WRITE,
+        ToolCapability.PROCESS,
+        ToolCapability.INTERACTIVE_TERMINAL,
+    }
+)
+
 
 @dataclass(slots=True)
 class TurnResult:
@@ -72,6 +90,18 @@ class _ToolOutcome:
     denied: bool = False
 
 
+@dataclass(slots=True)
+class _Authorization:
+    """Result of reconciling the tool policy with the permission mode."""
+
+    allowed: bool
+    # Reason text to surface when a call is rejected.
+    reason: str = ""
+    # True when the user explicitly approved a call the policy would have denied,
+    # so the planner must not record it as a policy denial.
+    overrode_policy: bool = False
+
+
 class AgentOrchestrator:
     """Deterministic, fault-tolerant provider/tool loop for one user turn at a time."""
 
@@ -87,6 +117,7 @@ class AgentOrchestrator:
         compressor: ContextCompressor,
         tool_context_factory: ToolContextFactory,
         planner: PlannerService | None = None,
+        approval_gateway: ApprovalGateway | None = None,
     ) -> None:
         self.config = config
         self.provider = provider
@@ -97,7 +128,16 @@ class AgentOrchestrator:
         self.compressor = compressor
         self.tool_context_factory = tool_context_factory
         self.planner = planner
+        # Interactive approver. Defaults to deny-all so non-interactive runs keep
+        # the prior behaviour; the terminal UI swaps in a modal-backed gateway.
+        self.approval_gateway: ApprovalGateway = approval_gateway or DenyAllGateway()
+        # Signatures the user chose to "always allow" for this session.
+        self._session_allowlist: set[str] = set()
         self.state = AgentState.STARTING
+
+    @property
+    def permission_mode(self) -> str:
+        return self.config.permission_mode
 
     async def set_state(self, state: AgentState, *, phase: str | None = None) -> None:
         self.state = state
@@ -470,8 +510,13 @@ class AgentOrchestrator:
             {"tool_call_id": call.id, "name": call.name, "arguments": call.arguments},
             source="core.orchestrator",
         )
-        if decision is not None and not decision.allowed:
-            if self.planner and self.planner.enabled:
+        authorization = await self._authorize_call(call, decision, state)
+        if not authorization.allowed:
+            policy_denied = decision is not None and not decision.allowed
+            # A genuine policy gate that the user also declined is recorded so the
+            # planner learns the gate held. A plain user refusal of an otherwise
+            # allowed tool is not a policy denial and must not poison the ledger.
+            if policy_denied and self.planner and self.planner.enabled:
                 await self.planner.record_policy_denial(
                     tool_call_id=call.id,
                     tool_name=call.name,
@@ -483,16 +528,17 @@ class AgentOrchestrator:
                 {
                     "tool_call_id": call.id,
                     "name": call.name,
-                    "message": decision.reason,
-                    "type": "ToolPolicyDenied",
+                    "message": authorization.reason,
+                    "type": "ToolPolicyDenied" if policy_denied else "ToolApprovalDenied",
                 },
                 source="core.orchestrator",
             )
+            prefix = "Tool policy denied" if policy_denied else "Tool execution denied by user"
             return _ToolOutcome(
                 result=ToolResult(
                     tool_call_id=call.id,
                     name=call.name,
-                    content=f"Tool policy denied: {decision.reason}",
+                    content=f"{prefix}: {authorization.reason}",
                     is_error=True,
                 ),
                 payload=None,
@@ -768,6 +814,77 @@ class AgentOrchestrator:
         if not (self.planner and self.planner.enabled):
             return _ALLOWED_POLICY
         return self.planner.evaluate_tool(name, self.tool_registry)
+
+    def _capabilities_for(self, name: str) -> frozenset[ToolCapability]:
+        try:
+            return self.tool_registry.capabilities(name)
+        except Exception:
+            return frozenset()
+
+    def _requires_user_approval(self, name: str, *, policy_allowed: bool) -> bool:
+        mode = self.permission_mode
+        if mode == "bypass":
+            return False
+        if not policy_allowed:
+            # Both "ask" and "auto" escalate a policy denial to the user instead
+            # of failing the tool outright.
+            return True
+        if mode == "auto":
+            return False
+        # "ask": prompt before tools that mutate the workspace or run processes.
+        return bool(self._capabilities_for(name) & _APPROVAL_SENSITIVE_CAPABILITIES)
+
+    async def _authorize_call(
+        self,
+        call: ToolCall,
+        decision: PolicyDecision | None,
+        state: _TurnState,
+    ) -> _Authorization:
+        policy_allowed = decision is None or decision.allowed
+        if self.permission_mode == "bypass":
+            # Run everything, overriding any policy gate, and never prompt.
+            return _Authorization(allowed=True, overrode_policy=not policy_allowed)
+        if not self._requires_user_approval(call.name, policy_allowed=policy_allowed):
+            reason = "" if policy_allowed or decision is None else decision.reason
+            return _Authorization(allowed=policy_allowed, reason=reason)
+
+        signature = call_signature(call.name, call.arguments)
+        if signature in self._session_allowlist:
+            return _Authorization(allowed=True, overrode_policy=not policy_allowed)
+
+        request = ApprovalRequest(
+            call_id=call.id,
+            tool_name=call.name,
+            arguments=call.arguments,
+            signature=signature,
+            reason=decision.reason if (decision and not policy_allowed) else "",
+            capabilities=tuple(sorted(cap.value for cap in self._capabilities_for(call.name))),
+            policy_denied=not policy_allowed,
+        )
+        await self.event_bus.emit(
+            "tool.approval.requested", request.to_dict(), source="core.orchestrator"
+        )
+        try:
+            user_decision = await self.approval_gateway.request_approval(request)
+        except Exception as exc:  # pragma: no cover - defensive: never crash a turn on UI errors
+            user_decision = ApprovalDecision.deny(f"Approval prompt failed: {exc}")
+        await self.event_bus.emit(
+            "tool.approval.resolved",
+            {
+                "call_id": call.id,
+                "tool_name": call.name,
+                "scope": user_decision.scope.value,
+                "approved": user_decision.approved,
+            },
+            source="core.orchestrator",
+        )
+        if user_decision.approved and user_decision.remember:
+            self._session_allowlist.add(signature)
+        if not user_decision.approved:
+            return _Authorization(
+                allowed=False, reason=user_decision.reason or "Denied by user."
+            )
+        return _Authorization(allowed=True, overrode_policy=not policy_allowed)
 
     def _is_read_only(self, name: str) -> bool:
         try:

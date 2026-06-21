@@ -17,7 +17,11 @@ from code_ai.providers.models import (
     TokenUsage,
     ToolCall,
 )
-from code_ai.providers.openai_completions import _is_transient_exception, _usage_from_object
+from code_ai.providers.openai_completions import (
+    _is_transient_exception,
+    _looks_like_sampling_error,
+    _usage_from_object,
+)
 from code_ai.providers.translation import object_get, parse_arguments, tools_to_responses
 
 
@@ -81,6 +85,33 @@ def _text_delta_from_event(event_type: str, event: Any) -> str:
     return str(object_get(event, "delta", "") or "")
 
 
+def _reasoning_delta_from_event(event_type: str, event: Any) -> str:
+    """Reasoning-summary text streamed by the Responses API.
+
+    Raw reasoning tokens are never exposed; the API streams a *summary* of the
+    model's reasoning through ``response.reasoning_summary_text.delta`` events
+    (older snapshots used ``response.reasoning_summary.delta``).
+    """
+    if event_type not in {
+        "response.reasoning_summary_text.delta",
+        "response.reasoning_summary.delta",
+    }:
+        return ""
+    return str(object_get(event, "delta", "") or "")
+
+
+def _reasoning_from_output_item(item: Any) -> str:
+    """Concatenated summary text from a completed ``type: "reasoning"`` item."""
+    if object_get(item, "type") != "reasoning":
+        return ""
+    parts: list[str] = []
+    for entry in object_get(item, "summary", []) or []:
+        text = object_get(entry, "text", object_get(entry, "summary_text", ""))
+        if text:
+            parts.append(str(text))
+    return "".join(parts)
+
+
 class OpenAIResponsesProvider:
     """OpenAI Responses adapter with local-state fallback for unsupported remote state."""
 
@@ -98,6 +129,7 @@ class OpenAIResponsesProvider:
             max_retries=0,
         )
         self._remote_state_supported = config.use_remote_conversation_state
+        self._sampling_supported = True
         self._capabilities = ProviderCapabilities(
             streaming=True,
             tool_calling=True,
@@ -176,15 +208,27 @@ class OpenAIResponsesProvider:
             and request.previous_response_id
         ):
             kwargs["previous_response_id"] = request.previous_response_id
+        if self._sampling_supported:
+            kwargs.update(self._config.sampling.responses_kwargs())
 
         try:
             stream = await self._client.responses.create(**kwargs)
         except Exception as exc:
+            if self._sampling_supported and _looks_like_sampling_error(exc):
+                self._sampling_supported = False
+                yield ProviderEvent(
+                    kind="warning",
+                    warning="Endpoint rejected sampling parameters; retrying without them.",
+                )
+                async for event in self._stream_once(request):
+                    yield event
+                return
             if _is_transient_exception(exc):
                 raise TransientProviderError(str(exc)) from exc
             raise
 
         text_parts: list[str] = []
+        reasoning_parts: list[str] = []
         tool_calls: list[ToolCall] = []
         response_id: str | None = None
         usage: TokenUsage | None = None
@@ -193,9 +237,13 @@ class OpenAIResponsesProvider:
             event_type = str(object_get(event, "type", ""))
             is_completion_event = event_type in {"response.completed", "response.done"}
             delta = _text_delta_from_event(event_type, event)
+            reasoning_delta = _reasoning_delta_from_event(event_type, event)
             if delta:
                 text_parts.append(delta)
                 yield ProviderEvent(kind="text_delta", text_delta=delta)
+            elif reasoning_delta:
+                reasoning_parts.append(reasoning_delta)
+                yield ProviderEvent(kind="reasoning_delta", reasoning_delta=reasoning_delta)
             elif is_completion_event:
                 response = object_get(event, "response", event)
                 response_id = (
@@ -206,6 +254,9 @@ class OpenAIResponsesProvider:
                     or usage
                 )
                 for item in object_get(response, "output", []) or []:
+                    item_reasoning = _reasoning_from_output_item(item)
+                    if item_reasoning and not reasoning_parts:
+                        reasoning_parts.append(item_reasoning)
                     normalized = normalize_responses_output_item(item)
                     if isinstance(normalized, ToolCall):
                         tool_calls.append(normalized)
@@ -217,6 +268,7 @@ class OpenAIResponsesProvider:
             kind="completed",
             response=ModelResponse(
                 text="".join(text_parts),
+                reasoning="".join(reasoning_parts),
                 tool_calls=tool_calls,
                 usage=usage,
                 finish_reason=finish,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from importlib import resources
 
 from rich.text import Text
@@ -55,6 +56,132 @@ CODE_AI_LOGO_STYLES = (
     "bold rgb(255,230,90)",
 )
 THINKING_LINE_STYLE = "#6b7280"
+
+# --- Working indicator ("the agent is busy" animation) ----------------------
+# AgentState values that mean the agent is actively doing something; the
+# indicator animates for these and stays static otherwise.
+WORKING_STATES = frozenset(
+    {"CALLING_MODEL", "EXECUTING_TOOL", "COMPRESSING_CONTEXT", "CANCELLING"}
+)
+_WORKING_LABELS = {
+    "CALLING_MODEL": "calling model",
+    "EXECUTING_TOOL": "running tools",
+    "COMPRESSING_CONTEXT": "compacting context",
+    "CANCELLING": "cancelling",
+}
+
+# Animated glyph color base, the dim label next to it, and the static idle tint.
+WORKING_BASE_COLOR = "#ff9f1c"
+WORKING_LABEL_STYLE = "#6b7280"
+WORKING_IDLE_STYLE = "#3b4654"
+# Seconds for one full color-pulse cycle, and the red->orange->yellow ramp it
+# walks through (matches the CODE.AI banner palette).
+WORKING_PULSE_PERIOD = 2.2
+WORKING_PULSE_STOPS = ((255, 80, 100), (255, 138, 60), (255, 210, 80), (255, 138, 60))
+
+
+@dataclass(frozen=True, slots=True)
+class SpinnerStyle:
+    """One selectable working-indicator animation.
+
+    ``frames`` are cycled every ``interval`` seconds. ``pulse`` makes the glyph
+    walk the color ramp continuously (independent of the frame rate), which is
+    what gives single-frame styles like the plain asterisk their life.
+    """
+
+    key: str
+    label: str
+    frames: tuple[str, ...]
+    interval: float
+    pulse: bool = False
+
+
+# Order here drives the command palette and `/config spinner` listing. The
+# first entry is the default; the entries that read most like Claude Code's
+# indicator are grouped right after it.
+_SPINNER_LIST = (
+    SpinnerStyle("ascii", "ASCII line (retro)", ("|", "/", "—", "\\"), 0.11),
+    SpinnerStyle(
+        "star-spin", "star spinning", ("✶", "✷", "✸", "✹", "✺", "✹", "✸", "✷"), 0.11, True
+    ),
+    SpinnerStyle("asterisk-pulse", "asterisk pulse", ("✳",), 0.6, True),
+    SpinnerStyle("asterisk-color", "asterisk color only", ("✻",), 0.6, True),
+    SpinnerStyle(
+        "braille-full",
+        "braille full (smooth)",
+        ("⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"),
+        0.07,
+        True,
+    ),
+    SpinnerStyle("sparkle", "sparkle", ("·", "✢", "✦", "✶", "✦", "✢"), 0.13),
+    SpinnerStyle("asterisk-spin", "asterisk spinning", ("✲", "✳", "✴", "✳"), 0.12, True),
+    SpinnerStyle(
+        "starburst", "starburst", ("·", "∗", "✳", "✺", "✹", "✺", "✳", "∗"), 0.11, True
+    ),
+    SpinnerStyle(
+        "braille-classic",
+        "braille classic",
+        ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"),
+        0.08,
+    ),
+    SpinnerStyle(
+        "braille-wave",
+        "braille wave (fill)",
+        ("⡀", "⣀", "⣄", "⣆", "⣇", "⣧", "⣷", "⣿", "⣷", "⣧", "⣇", "⣆", "⣄", "⣀"),
+        0.06,
+    ),
+    SpinnerStyle("orbit", "orbit dot", ("⠁", "⠂", "⠄", "⡀", "⢀", "⠠", "⠐", "⠈"), 0.095),
+    SpinnerStyle("braille-orbit", "braille orbit", ("⠁", "⠈", "⠐", "⠠", "⢀", "⡀", "⠄", "⠂"), 0.075),
+    SpinnerStyle(
+        "equalizer",
+        "equalizer / breathing",
+        ("▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▂"),
+        0.085,
+    ),
+    SpinnerStyle("shade", "shaded block", ("░", "▒", "▓", "█", "▓", "▒"), 0.095),
+    SpinnerStyle("dotted-circle", "dotted circle", ("◌", "◍", "◎", "●", "◉", "●", "◎", "◍"), 0.13),
+    SpinnerStyle("corners", "corners", ("▖", "▘", "▝", "▗"), 0.12),
+    SpinnerStyle("quad-spin", "quadrants spinning", ("▘", "▝", "▗", "▖"), 0.11),
+    SpinnerStyle("arc", "arc", ("◜", "◠", "◝", "◞", "◡", "◟"), 0.11),
+    SpinnerStyle("moon", "moon", ("◐", "◓", "◑", "◒"), 0.15),
+    SpinnerStyle("clock", "clock", ("◴", "◷", "◶", "◵"), 0.14),
+    SpinnerStyle("triangle", "triangle", ("◢", "◣", "◤", "◥"), 0.13),
+    SpinnerStyle("flower", "flower", ("❉", "❊", "❋", "❊"), 0.16, True),
+)
+WORKING_SPINNERS = {style.key: style for style in _SPINNER_LIST}
+CODE_AI_SPINNER_OPTIONS = tuple(style.key for style in _SPINNER_LIST)
+DEFAULT_SPINNER = "ascii"
+
+
+def working_label(status: str) -> str:
+    return _WORKING_LABELS.get(status, "working")
+
+
+def normalize_spinner(spinner: str) -> str:
+    key = spinner.strip()
+    if key in WORKING_SPINNERS:
+        return key
+    return DEFAULT_SPINNER
+
+
+def resolve_spinner(spinner: str) -> SpinnerStyle:
+    return WORKING_SPINNERS[normalize_spinner(spinner)]
+
+
+def spinner_color(progress: float) -> str:
+    """Hex color for a point along the pulse ramp; ``progress`` wraps at 1.0."""
+    stops = WORKING_PULSE_STOPS
+    count = len(stops)
+    position = (progress % 1.0) * count
+    index = int(position)
+    fraction = position - index
+    start = stops[index % count]
+    end = stops[(index + 1) % count]
+    red = round(start[0] + (end[0] - start[0]) * fraction)
+    green = round(start[1] + (end[1] - start[1]) * fraction)
+    blue = round(start[2] + (end[2] - start[2]) * fraction)
+    return f"#{red:02x}{green:02x}{blue:02x}"
+
 
 FALLBACK_CODE_AI_LOGO_TEXT = "code.ai"
 FALLBACK_CODE_AI_LOGO_ART = "       \n█▀▀ █▀█ █▀▄ █▀▀ ░ ▄▀█ █ \n█▄▄ █▄█ █▄▀ ██▄ ▄ █▀█ █ \n       "

@@ -39,6 +39,7 @@ def _responses_provider(events: list[dict[str, object]]) -> OpenAIResponsesProvi
     provider = object.__new__(OpenAIResponsesProvider)
     provider._client = _FakeOpenAIClient(events)
     provider._remote_state_supported = False
+    provider._sampling_supported = False
     provider._capabilities = ProviderCapabilities(remote_conversation_state=False)
     return provider
 

@@ -14,6 +14,7 @@ class TerminalViewModel:
     active_context_tokens: str = "tokens unavailable"
     cumulative_usage: str = "0"
     planner_mode: str = "auto"
+    permission_mode: str = "ask"
     plan_progress: str = "-"
     current_step: str = "-"
     latest_verification_status: str = "unknown"
@@ -47,6 +48,17 @@ class TerminalViewModel:
             summary = str(event.payload.get("summary") or "")
             evidence_type = str(event.payload.get("type") or "evidence")
             self.conversation.append(f"evidence> {evidence_type}: {summary[:180]}")
+        elif event.event_type == "permission.mode.changed":
+            self.permission_mode = str(event.payload.get("mode", self.permission_mode))
+            self.conversation.append(f"permission> mode set to {self.permission_mode}")
+        elif event.event_type == "tool.approval.requested":
+            name = event.payload.get("tool_name")
+            self.conversation.append(f"approval> awaiting decision for {name}...")
+        elif event.event_type == "tool.approval.resolved":
+            name = event.payload.get("tool_name")
+            verb = "approved" if event.payload.get("approved") else "denied"
+            scope = event.payload.get("scope")
+            self.conversation.append(f"approval> {name} {verb} ({scope})")
         elif event.event_type == "planning.policy.denied":
             self.conversation.append(
                 f"policy> denied {event.payload.get('tool_name')}: {event.payload.get('reason')}"
