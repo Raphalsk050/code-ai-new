@@ -6,7 +6,7 @@ import sys
 import pytest
 
 from code_ai.config.models import AppConfig
-from code_ai.core.errors import ToolExecutionError
+from code_ai.core.errors import ToolArgumentError, ToolExecutionError
 from code_ai.events.bus import AsyncEventBus
 from code_ai.tools.base import ToolContext
 from code_ai.tools.process import ExecuteCommandTool
@@ -21,6 +21,17 @@ def make_context(tmp_path) -> ToolContext:
         event_bus=AsyncEventBus(session_id="session"),
         cancel_event=asyncio.Event(),
     )
+
+
+def test_execute_command_schema_accepts_only_argv_array() -> None:
+    schema = ExecuteCommandTool.input_schema
+
+    assert schema["properties"]["argv"] == {
+        "type": "array",
+        "items": {"type": "string"},
+        "minItems": 1,
+    }
+    assert "shell" not in schema["properties"]
 
 
 async def test_execute_command_separates_stdout_stderr(tmp_path) -> None:
@@ -47,6 +58,22 @@ async def test_execute_command_defaults_to_workspace(tmp_path) -> None:
     result = await tool.execute({"argv": ["pwd"]}, context)
     assert result["cwd"] == str(tmp_path)
     assert result["stdout"].strip() == str(tmp_path)
+
+
+async def test_execute_command_rejects_string_argv(tmp_path) -> None:
+    context = make_context(tmp_path)
+    tool = ExecuteCommandTool()
+
+    with pytest.raises(ToolArgumentError, match="argv"):
+        await tool.execute({"argv": "pwd"}, context)
+
+
+async def test_execute_command_rejects_shell_mode(tmp_path) -> None:
+    context = make_context(tmp_path)
+    tool = ExecuteCommandTool()
+
+    with pytest.raises(ToolArgumentError, match="shell"):
+        await tool.execute({"argv": ["pwd"], "shell": True}, context)
 
 
 async def test_execute_command_does_not_inherit_api_key(tmp_path, monkeypatch) -> None:

@@ -12,6 +12,9 @@ from code_ai.providers.openai_responses import (
     OpenAIResponsesProvider,
     normalize_responses_output_item,
 )
+from code_ai.providers.translation import tools_to_chat, tools_to_responses
+from code_ai.tools.process import ExecuteCommandTool
+from code_ai.tools.registry import ToolRegistry
 
 
 class _FakeResponsesResource:
@@ -59,6 +62,24 @@ def test_responses_output_item_tool_call_normalization() -> None:
     normalized = normalize_responses_output_item(item)
     assert isinstance(normalized, ToolCall)
     assert normalized.arguments == {"commands": ["python"]}
+
+
+def test_provider_tool_payloads_wrap_execute_command_as_function() -> None:
+    registry = ToolRegistry()
+    registry.register(ExecuteCommandTool())
+    definition = registry.definitions({"execute_command"})[0]
+
+    responses_payload = tools_to_responses([definition])[0]
+    assert responses_payload["type"] == "function"
+    assert responses_payload["name"] == "execute_command"
+    assert responses_payload["parameters"]["type"] == "object"
+    assert responses_payload["parameters"]["properties"]["argv"]["type"] == "array"
+
+    chat_payload = tools_to_chat([definition])[0]
+    assert chat_payload["type"] == "function"
+    assert chat_payload["function"]["name"] == "execute_command"
+    assert chat_payload["function"]["parameters"]["type"] == "object"
+    assert chat_payload["function"]["parameters"]["properties"]["argv"]["type"] == "array"
 
 
 def test_ollama_base_url_and_usage_normalization() -> None:
