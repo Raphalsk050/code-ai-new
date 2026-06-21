@@ -4,39 +4,31 @@ from typing import Any
 
 from code_ai.core.errors import ToolArgumentError
 from code_ai.tools.base import ToolCapability, ToolContext
+from code_ai.tools.schema import tool_schema
 
 
 class CompleteTaskTool:
     name = "complete_task"
     description = (
-        "Request task completion with acceptance criteria mapped to recorded evidence. "
-        "The runtime validates all claims before accepting completion."
+        "Request task completion after the runtime has recorded the required evidence."
     )
     capabilities = frozenset({ToolCapability.INTERNAL_COMPLETION})
-    input_schema = {
-        "type": "object",
-        "properties": {
-            "outcome": {"type": "string", "enum": ["success", "blocked", "failed"]},
-            "summary": {"type": "string"},
-            "acceptance_evidence": {
-                "type": "object",
-                "additionalProperties": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                },
+    input_schema = tool_schema(
+        {
+            "summary": {
+                "type": "string",
+                "description": "Concise summary of what was accomplished this turn.",
             },
-            "verification_summary": {"type": "string"},
-            "changed_paths": {"type": "array", "items": {"type": "string"}},
-            "remaining_issues": {"type": "array", "items": {"type": "string"}},
-            "limitations": {"type": "array", "items": {"type": "string"}},
-            "double_check_acknowledged": {"type": "boolean"},
+            "outcome": {
+                "type": "string",
+                "description": "One of 'success', 'blocked', or 'failed'. Defaults to 'success'.",
+            },
         },
-        "required": ["outcome", "summary"],
-        "additionalProperties": False,
-    }
+        required=("summary",),
+    )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-        outcome = str(arguments.get("outcome") or "").strip().lower()
+        outcome = str(arguments.get("outcome") or "success").strip().lower()
         if outcome not in {"success", "blocked", "failed"}:
             raise ToolArgumentError("outcome must be success, blocked, or failed.")
         summary = str(arguments.get("summary") or "").strip()

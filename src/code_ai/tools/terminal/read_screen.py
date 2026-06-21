@@ -4,6 +4,7 @@ from typing import Any
 
 from code_ai.core.errors import ToolArgumentError
 from code_ai.tools.base import ToolCapability, ToolContext
+from code_ai.tools.schema import tool_schema
 
 
 class ReadScreenTool:
@@ -12,15 +13,15 @@ class ReadScreenTool:
     capabilities = frozenset(
         {ToolCapability.INTERACTIVE_TERMINAL, ToolCapability.LOCAL_READ}
     )
-    input_schema = {
-        "type": "object",
-        "properties": {
-            "session_id": {"type": "string"},
-            "include_cursor": {"type": "boolean"},
+    input_schema = tool_schema(
+        {
+            "session_id": {
+                "type": "string",
+                "description": "Identifier of the terminal session to read.",
+            },
         },
-        "required": ["session_id"],
-        "additionalProperties": False,
-    }
+        required=("session_id",),
+    )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         if context.terminal_manager is None:

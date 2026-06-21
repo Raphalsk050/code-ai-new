@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 from typing import Any
 
 from code_ai.core.errors import (
@@ -10,23 +11,30 @@ from code_ai.core.errors import (
 )
 from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.process.command_runner import CommandRunner
+from code_ai.tools.schema import tool_schema
 
 
 class ExecuteCommandTool:
     name = "execute_command"
     description = "Run a bounded non-interactive command inside the workspace."
     capabilities = frozenset({ToolCapability.PROCESS})
-    input_schema = {
-        "type": "object",
-        "properties": {
-            "argv": {"type": "array", "items": {"type": "string"}, "minItems": 1},
-            "cwd": {"type": "string"},
-            "timeout": {"type": "number", "minimum": 0.1},
-            "env": {"type": "object", "additionalProperties": {"type": "string"}},
+    input_schema = tool_schema(
+        {
+            "command": {
+                "type": "string",
+                "description": "Command line, split shell-like (no shell features).",
+            },
+            "cwd": {
+                "type": "string",
+                "description": "Workspace-relative working directory. Defaults to the root.",
+            },
+            "timeout": {
+                "type": "number",
+                "description": "Soft timeout in seconds, clamped to the runtime budget.",
+            },
         },
-        "required": ["argv"],
-        "additionalProperties": False,
-    }
+        required=("command",),
+    )
 
     def __init__(self) -> None:
         self._runner = CommandRunner()
@@ -34,13 +42,7 @@ class ExecuteCommandTool:
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         if arguments.get("shell") is True:
             raise ToolArgumentError("execute_command does not support shell execution.")
-        argv = arguments.get("argv")
-        if (
-            not isinstance(argv, list)
-            or not argv
-            or not all(isinstance(item, str) and item for item in argv)
-        ):
-            raise ToolArgumentError("argv must be a non-empty array of strings.")
+        argv = _coerce_argv(arguments)
         cwd = context.workspace.relative_workdir(arguments.get("cwd"))
         requested_timeout = float(
             arguments.get("timeout") or context.config.budgets.default_tool_timeout_s
@@ -67,3 +69,26 @@ class ExecuteCommandTool:
         except OSError as exc:
             raise ToolExecutionError(f"Command failed to start: {exc}") from exc
         return result.to_dict(max_chars=context.config.budgets.max_tool_output_chars)
+
+
+def _coerce_argv(arguments: dict[str, Any]) -> list[str]:
+    command = arguments.get("command")
+    if isinstance(command, str):
+        if not command.strip():
+            raise ToolArgumentError("command is required.")
+        try:
+            argv = shlex.split(command)
+        except ValueError as exc:
+            raise ToolArgumentError(f"command could not be parsed: {exc}") from exc
+        if not argv:
+            raise ToolArgumentError("command is required.")
+        return argv
+
+    argv = arguments.get("argv")
+    if (
+        not isinstance(argv, list)
+        or not argv
+        or not all(isinstance(item, str) and item for item in argv)
+    ):
+        raise ToolArgumentError("command must be a non-empty string.")
+    return argv

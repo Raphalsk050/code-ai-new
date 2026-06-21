@@ -25,12 +25,18 @@ DEFAULT_CAPABILITIES_BY_NAME: dict[str, frozenset[ToolCapability]] = {
     "architecture_review": frozenset({ToolCapability.REVIEW}),
     "code_review": frozenset({ToolCapability.REVIEW}),
     "control_terminal": frozenset({ToolCapability.INTERACTIVE_TERMINAL}),
+    "start_terminal": frozenset({ToolCapability.INTERACTIVE_TERMINAL}),
+    "send_terminal_text": frozenset({ToolCapability.INTERACTIVE_TERMINAL}),
+    "terminal_enter": frozenset({ToolCapability.INTERACTIVE_TERMINAL}),
+    "interrupt_terminal": frozenset({ToolCapability.INTERACTIVE_TERMINAL}),
+    "terminate_terminal": frozenset({ToolCapability.INTERACTIVE_TERMINAL}),
     "read_screen": frozenset(
         {ToolCapability.INTERACTIVE_TERMINAL, ToolCapability.LOCAL_READ}
     ),
     "web_search": frozenset({ToolCapability.WEB}),
     "ask_user": frozenset({ToolCapability.INTERACTION}),
     "finish_discovery": frozenset({ToolCapability.INTERNAL_TRANSITION}),
+    "request_external_gap": frozenset({ToolCapability.INTERNAL_TRANSITION}),
     "complete_task": frozenset({ToolCapability.INTERNAL_COMPLETION}),
 }
 
@@ -154,6 +160,7 @@ class PlannerToolPolicy:
                     ToolCapability.LOCAL_READ,
                     ToolCapability.LOCAL_WRITE,
                     ToolCapability.INTERACTION,
+                    ToolCapability.INTERNAL_TRANSITION,
                     ToolCapability.INTERNAL_COMPLETION,
                 },
             )
@@ -161,9 +168,11 @@ class PlannerToolPolicy:
                 allowed.update(self._by_capabilities(names, registry, {ToolCapability.PROCESS}))
             if current_step and current_step.kind == PlanStepKind.RESEARCH_WEB:
                 allowed.update(self._by_capabilities(names, registry, {ToolCapability.WEB}))
+            if approved_external_gap:
+                allowed.update(self._by_capabilities(names, registry, {ToolCapability.WEB}))
             return allowed
         if phase == PlanningPhase.VERIFY:
-            return self._by_capabilities(
+            allowed = self._by_capabilities(
                 names,
                 registry,
                 {
@@ -171,11 +180,15 @@ class PlannerToolPolicy:
                     ToolCapability.PROCESS,
                     ToolCapability.REVIEW,
                     ToolCapability.INTERACTIVE_TERMINAL,
+                    ToolCapability.INTERNAL_TRANSITION,
                     ToolCapability.INTERNAL_COMPLETION,
                 },
             )
+            if approved_external_gap:
+                allowed.update(self._by_capabilities(names, registry, {ToolCapability.WEB}))
+            return allowed
         if phase == PlanningPhase.REPAIR:
-            return self._by_capabilities(
+            allowed = self._by_capabilities(
                 names,
                 registry,
                 {
@@ -183,14 +196,22 @@ class PlannerToolPolicy:
                     ToolCapability.LOCAL_WRITE,
                     ToolCapability.PROCESS,
                     ToolCapability.INTERACTION,
+                    ToolCapability.INTERNAL_TRANSITION,
                     ToolCapability.INTERNAL_COMPLETION,
                 },
             )
+            if approved_external_gap:
+                allowed.update(self._by_capabilities(names, registry, {ToolCapability.WEB}))
+            return allowed
         if phase in {PlanningPhase.COMPLETE, PlanningPhase.BLOCKED}:
             return self._by_capabilities(
                 names,
                 registry,
-                {ToolCapability.INTERACTION, ToolCapability.INTERNAL_COMPLETION},
+                {
+                    ToolCapability.INTERACTION,
+                    ToolCapability.INTERNAL_TRANSITION,
+                    ToolCapability.INTERNAL_COMPLETION,
+                },
             )
         return set()
 

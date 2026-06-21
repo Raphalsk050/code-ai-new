@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 import sys
 import time
 from collections.abc import AsyncIterator
@@ -18,7 +19,11 @@ from code_ai.providers.models import (
 )
 from code_ai.tools.base import ToolContext
 from code_ai.tools.filesystem import ListFilesTool
-from code_ai.tools.internal import CompleteTaskTool, FinishDiscoveryTool
+from code_ai.tools.internal import (
+    CompleteTaskTool,
+    FinishDiscoveryTool,
+    RequestExternalGapTool,
+)
 from code_ai.tools.registry import ToolRegistry
 
 
@@ -257,8 +262,6 @@ class FakeCodeBlockThenToolsProvider:
                             arguments={
                                 "path": "src/example.py",
                                 "content": "def answer():\n    return 42\n",
-                                "expected_new_file": True,
-                                "create_dirs": True,
                             },
                         )
                     ],
@@ -275,11 +278,10 @@ class FakeCodeBlockThenToolsProvider:
                             id="verify_1",
                             name="execute_command",
                             arguments={
-                                "argv": [
-                                    sys.executable,
-                                    "-c",
-                                    "from src.example import answer; assert answer() == 42",
-                                ],
+                                "command": (
+                                    f"{shlex.quote(sys.executable)} -c "
+                                    "'from src.example import answer; assert answer() == 42'"
+                                ),
                                 "timeout": 10,
                             },
                         )
@@ -289,15 +291,7 @@ class FakeCodeBlockThenToolsProvider:
             )
             return
         completion_args = {
-            "outcome": "success",
             "summary": "Created src/example.py and verified answer().",
-            "acceptance_evidence": {
-                "file created": ["write_1"],
-                "verification": ["verify_1"],
-            },
-            "verification_summary": "Python import assertion passed.",
-            "changed_paths": ["src/example.py"],
-            "double_check_acknowledged": self.calls >= 5,
         }
         yield ProviderEvent(
             kind="completed",
@@ -451,20 +445,6 @@ class FakeGenericGapThenWebProvider:
                             name="finish_discovery",
                             arguments={
                                 "summary": "The configured workspace was listed.",
-                                "external_knowledge_gaps": [
-                                    {
-                                        "question": (
-                                            "Which public repository should this project map to?"
-                                        ),
-                                        "why_local_files_are_insufficient": (
-                                            "Need external evidence because local files are "
-                                            "insufficient."
-                                        ),
-                                        "decision_depends_on": (
-                                            "External information from the public web."
-                                        ),
-                                    }
-                                ],
                             },
                         )
                     ],
@@ -473,6 +453,26 @@ class FakeGenericGapThenWebProvider:
             )
             return
         if self.calls == 2:
+            yield ProviderEvent(
+                kind="completed",
+                response=ModelResponse(
+                    tool_calls=[
+                        ToolCall(
+                            id="gap_1",
+                            name="request_external_gap",
+                            arguments={
+                                "question": "Which public repository should this project map to?",
+                                "reason": (
+                                    "Need external evidence because local files are insufficient."
+                                ),
+                            },
+                        )
+                    ],
+                    finish_reason=FinishReason.TOOL_CALLS,
+                ),
+            )
+            return
+        if self.calls == 3:
             yield ProviderEvent(
                 kind="completed",
                 response=ModelResponse(
@@ -519,6 +519,7 @@ async def test_local_project_today_rejects_generic_gap_but_allows_web(tmp_path) 
     registry = ToolRegistry()
     registry.register(ListFilesTool())
     registry.register(FinishDiscoveryTool())
+    registry.register(RequestExternalGapTool())
     registry.register(web_search)
     app.orchestrator.tool_registry = registry
     events = []

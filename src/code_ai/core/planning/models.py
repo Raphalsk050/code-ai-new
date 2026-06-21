@@ -277,8 +277,8 @@ class ExecutionPlan(BaseModel):
 class CompletionClaim(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    outcome: str
     summary: str
+    outcome: str = "success"
     acceptance_evidence: dict[str, list[str]] = Field(default_factory=dict)
     verification_summary: str = ""
     changed_paths: list[str] = Field(default_factory=list)

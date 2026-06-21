@@ -22,7 +22,7 @@ from code_ai.providers.models import Message
 from code_ai.tools.base import ToolContext
 from code_ai.tools.filesystem import EditCodeTool, ListFilesTool, ReadFileTool, WriteFileTool
 from code_ai.tools.interaction import AskUserTool
-from code_ai.tools.internal import CompleteTaskTool, FinishDiscoveryTool
+from code_ai.tools.internal import CompleteTaskTool, FinishDiscoveryTool, RequestExternalGapTool
 from code_ai.tools.process import ExecuteCommandTool
 from code_ai.tools.registry import ToolRegistry
 from code_ai.tools.review import (
@@ -33,7 +33,15 @@ from code_ai.tools.review import (
 )
 from code_ai.tools.search import SearchCodeTool
 from code_ai.tools.system import SystemInformationTool
-from code_ai.tools.terminal import ControlTerminalTool, PersistentTerminalManager, ReadScreenTool
+from code_ai.tools.terminal import (
+    InterruptTerminalTool,
+    PersistentTerminalManager,
+    ReadScreenTool,
+    SendTerminalTextTool,
+    StartTerminalTool,
+    TerminalEnterTool,
+    TerminateTerminalTool,
+)
 from code_ai.tools.web import WebSearchTool
 from code_ai.util.paths import WorkspacePolicy
 
@@ -47,7 +55,11 @@ def build_tool_registry() -> ToolRegistry:
         WriteFileTool(),
         EditCodeTool(),
         ExecuteCommandTool(),
-        ControlTerminalTool(),
+        StartTerminalTool(),
+        SendTerminalTextTool(),
+        TerminalEnterTool(),
+        InterruptTerminalTool(),
+        TerminateTerminalTool(),
         ReadScreenTool(),
         SystemInformationTool(),
         WebSearchTool(),
@@ -56,6 +68,7 @@ def build_tool_registry() -> ToolRegistry:
         BuildReviewTool(),
         AskUserTool(),
         FinishDiscoveryTool(),
+        RequestExternalGapTool(),
         CompleteTaskTool(),
     ):
         registry.register(tool)

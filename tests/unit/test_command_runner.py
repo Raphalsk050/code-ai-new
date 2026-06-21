@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import shlex
 import sys
 
 import pytest
@@ -23,28 +24,26 @@ def make_context(tmp_path) -> ToolContext:
     )
 
 
-def test_execute_command_schema_accepts_only_argv_array() -> None:
+def test_execute_command_schema_exposes_simple_command_string() -> None:
     schema = ExecuteCommandTool.input_schema
 
-    assert schema["properties"]["argv"] == {
-        "type": "array",
-        "items": {"type": "string"},
-        "minItems": 1,
-    }
+    assert schema["properties"]["command"]["type"] == "string"
+    assert schema["properties"]["command"]["description"]
+    # strict-mode: every declared property is required; optionals are nullable.
+    assert set(schema["required"]) == set(schema["properties"])
+    assert schema["properties"]["cwd"]["type"] == ["string", "null"]
+    assert schema["properties"]["timeout"]["type"] == ["number", "null"]
+    assert "argv" not in schema["properties"]
+    assert "env" not in schema["properties"]
     assert "shell" not in schema["properties"]
 
 
 async def test_execute_command_separates_stdout_stderr(tmp_path) -> None:
     context = make_context(tmp_path)
     tool = ExecuteCommandTool()
+    script = "import sys; print('out'); print('err', file=sys.stderr)"
     result = await tool.execute(
-        {
-            "argv": [
-                sys.executable,
-                "-c",
-                "import sys; print('out'); print('err', file=sys.stderr)",
-            ]
-        },
+        {"command": f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"},
         context,
     )
     assert result["exit_code"] == 0
@@ -55,17 +54,27 @@ async def test_execute_command_separates_stdout_stderr(tmp_path) -> None:
 async def test_execute_command_defaults_to_workspace(tmp_path) -> None:
     context = make_context(tmp_path)
     tool = ExecuteCommandTool()
-    result = await tool.execute({"argv": ["pwd"]}, context)
+    result = await tool.execute({"command": "pwd"}, context)
     assert result["cwd"] == str(tmp_path)
     assert result["stdout"].strip() == str(tmp_path)
 
 
-async def test_execute_command_rejects_string_argv(tmp_path) -> None:
+async def test_execute_command_keeps_legacy_argv_execution(tmp_path) -> None:
     context = make_context(tmp_path)
     tool = ExecuteCommandTool()
 
-    with pytest.raises(ToolArgumentError, match="argv"):
-        await tool.execute({"argv": "pwd"}, context)
+    result = await tool.execute({"argv": ["pwd"]}, context)
+
+    assert result["exit_code"] == 0
+    assert result["stdout"].strip() == str(tmp_path)
+
+
+async def test_execute_command_rejects_empty_command(tmp_path) -> None:
+    context = make_context(tmp_path)
+    tool = ExecuteCommandTool()
+
+    with pytest.raises(ToolArgumentError, match="command"):
+        await tool.execute({"command": ""}, context)
 
 
 async def test_execute_command_rejects_shell_mode(tmp_path) -> None:
@@ -73,21 +82,16 @@ async def test_execute_command_rejects_shell_mode(tmp_path) -> None:
     tool = ExecuteCommandTool()
 
     with pytest.raises(ToolArgumentError, match="shell"):
-        await tool.execute({"argv": ["pwd"], "shell": True}, context)
+        await tool.execute({"command": "pwd", "shell": True}, context)
 
 
 async def test_execute_command_does_not_inherit_api_key(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("API_KEY", "secret-value")
     context = make_context(tmp_path)
     tool = ExecuteCommandTool()
+    script = "import os; print(os.environ.get('API_KEY', 'missing'))"
     result = await tool.execute(
-        {
-            "argv": [
-                sys.executable,
-                "-c",
-                "import os; print(os.environ.get('API_KEY', 'missing'))",
-            ]
-        },
+        {"command": f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"},
         context,
     )
     assert "secret-value" not in result["stdout"]
@@ -99,7 +103,13 @@ async def test_execute_command_timeout(tmp_path) -> None:
     tool = ExecuteCommandTool()
     with pytest.raises(ToolExecutionError):
         await tool.execute(
-            {"argv": [sys.executable, "-c", "import time; time.sleep(2)"], "timeout": 0.1},
+            {
+                "command": (
+                    f"{shlex.quote(sys.executable)} -c "
+                    f"{shlex.quote('import time; time.sleep(2)')}"
+                ),
+                "timeout": 0.1,
+            },
             context,
         )
 
@@ -108,4 +118,4 @@ async def test_execute_command_missing_binary_is_tool_error(tmp_path) -> None:
     context = make_context(tmp_path)
     tool = ExecuteCommandTool()
     with pytest.raises(ToolExecutionError, match="failed to start"):
-        await tool.execute({"argv": ["definitely-missing-code-ai-binary"]}, context)
+        await tool.execute({"command": "definitely-missing-code-ai-binary"}, context)

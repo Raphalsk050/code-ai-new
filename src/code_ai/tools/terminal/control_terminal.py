@@ -4,15 +4,15 @@ from typing import Any
 
 from code_ai.core.errors import ToolArgumentError
 from code_ai.tools.base import ToolCapability, ToolContext
+from code_ai.tools.schema import tool_schema
 
 
 class ControlTerminalTool:
     name = "control_terminal"
     description = "Create and control a persistent POSIX terminal session inside the workspace."
     capabilities = frozenset({ToolCapability.INTERACTIVE_TERMINAL})
-    input_schema = {
-        "type": "object",
-        "properties": {
+    input_schema = tool_schema(
+        {
             "action": {
                 "type": "string",
                 "enum": [
@@ -25,18 +25,30 @@ class ControlTerminalTool:
                     "terminate",
                     "status",
                 ],
+                "description": "Terminal operation to perform.",
             },
-            "session_id": {"type": "string"},
-            "text": {"type": "string"},
-            "key": {"type": "string"},
-            "cwd": {"type": "string"},
-            "command": {"type": "string"},
-            "rows": {"type": "integer", "minimum": 4},
-            "columns": {"type": "integer", "minimum": 20},
+            "session_id": {
+                "type": "string",
+                "description": "Target session id. Required for every action except 'create'.",
+            },
+            "text": {"type": "string", "description": "Literal text for the 'send_text' action."},
+            "key": {"type": "string", "description": "Control key (e.g. 'c') for 'control'."},
+            "cwd": {
+                "type": "string",
+                "description": "Workspace-relative working directory for 'create'.",
+            },
+            "command": {
+                "type": "string",
+                "description": "Optional command to launch for the 'create' action.",
+            },
+            "rows": {"type": "integer", "description": "Rows for 'create'/'resize'. Default 24."},
+            "columns": {
+                "type": "integer",
+                "description": "Columns for 'create'/'resize'. Defaults to 80.",
+            },
         },
-        "required": ["action"],
-        "additionalProperties": False,
-    }
+        required=("action",),
+    )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         if context.terminal_manager is None:

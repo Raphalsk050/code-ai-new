@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import shlex
 import sys
 from collections.abc import AsyncIterator
 
@@ -166,17 +167,14 @@ class TwoFileMutationProvider(_BaseProvider):
             yield self._tool(
                 "v1",
                 "execute_command",
-                {"argv": [sys.executable, "-c", "pass"], "timeout": 10},
+                {"command": f"{shlex.quote(sys.executable)} -c pass", "timeout": 10},
             )
             return
         yield self._tool(
             "c1",
             "complete_task",
             {
-                "outcome": "success",
                 "summary": "Created a.py and b.py.",
-                "acceptance_evidence": {"files": ["w1", "w2"], "verification": ["v1"]},
-                "verification_summary": "python -c pass exited 0",
             },
         )
 

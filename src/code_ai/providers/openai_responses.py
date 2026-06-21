@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 from collections.abc import AsyncIterator
 from typing import Any
@@ -31,11 +32,23 @@ def _responses_input(request: ModelRequest) -> list[dict[str, Any]]:
                     "output": message.content,
                 }
             )
-        else:
+            continue
+        if message.content:
             items.append(
                 {
                     "role": message.role,
                     "content": [{"type": "input_text", "text": message.content}],
+                }
+            )
+        # Replay tool calls as structured function_call items so the model keeps
+        # invoking tools instead of echoing them as text in its next answer.
+        for call in message.tool_calls:
+            items.append(
+                {
+                    "type": "function_call",
+                    "call_id": call.id,
+                    "name": call.name,
+                    "arguments": json.dumps(call.arguments, default=str),
                 }
             )
     return items
@@ -154,7 +167,9 @@ class OpenAIResponsesProvider:
         if request.max_output_tokens:
             kwargs["max_output_tokens"] = request.max_output_tokens
         if request.tools:
-            kwargs["tools"] = tools_to_responses(request.tools)
+            kwargs["tools"] = tools_to_responses(
+                request.tools, strict=self._config.strict_tools
+            )
         if (
             self._remote_state_supported
             and request.use_remote_conversation_state

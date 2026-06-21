@@ -7,19 +7,14 @@ import sys
 from typing import Any
 
 from code_ai.tools.base import ToolCapability, ToolContext
+from code_ai.tools.schema import tool_schema
 
 
 class SystemInformationTool:
     name = "system_information"
     description = "Return non-sensitive system information useful for development tasks."
     capabilities = frozenset({ToolCapability.LOCAL_READ})
-    input_schema = {
-        "type": "object",
-        "properties": {
-            "commands": {"type": "array", "items": {"type": "string"}},
-        },
-        "additionalProperties": False,
-    }
+    input_schema = tool_schema({})
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         commands = arguments.get("commands") or []

@@ -15,13 +15,13 @@ class ConversationState:
         self.messages.append(Message(role="user", content=text))
 
     def add_assistant(self, text: str, tool_calls: list[ToolCall] | None = None) -> None:
-        if text or not tool_calls:
-            self.messages.append(Message(role="assistant", content=text))
-        if tool_calls:
-            call_lines = [f"{call.id}:{call.name}({call.arguments})" for call in tool_calls]
-            self.messages.append(
-                Message(role="assistant", content="Tool calls requested:\n" + "\n".join(call_lines))
-            )
+        calls = list(tool_calls or [])
+        if not text and not calls:
+            return
+        # Keep the tool calls structured on the assistant message. Flattening them
+        # into ``content`` makes providers replay them as plain text, which trains
+        # the model to *describe* tool calls instead of invoking them.
+        self.messages.append(Message(role="assistant", content=text, tool_calls=calls))
 
     def add_tool_result(self, result: ToolResult) -> None:
         self.messages.append(result.to_message())

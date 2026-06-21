@@ -10,6 +10,7 @@ from code_ai.core.errors import ToolArgumentError, ToolExecutionError
 from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.filesystem.common import read_text_file, sha256_bytes
 from code_ai.tools.output import bound_text
+from code_ai.tools.schema import tool_schema
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,37 +26,37 @@ class EditCodeTool:
         "Apply all-or-nothing literal text replacements with SHA-256 guard and unified diff."
     )
     capabilities = frozenset({ToolCapability.LOCAL_WRITE})
-    input_schema = {
-        "type": "object",
-        "properties": {
-            "path": {"type": "string"},
-            "expected_sha256": {"type": "string"},
-            "edits": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "old": {"type": "string"},
-                        "new": {"type": "string"},
-                        "expected_occurrences": {"type": "integer", "minimum": 1},
-                    },
-                    "required": ["old", "new"],
-                    "additionalProperties": False,
-                },
-                "minItems": 1,
+    input_schema = tool_schema(
+        {
+            "path": {
+                "type": "string",
+                "description": "Workspace-relative path of the file to edit. Must already exist.",
+            },
+            "old_text": {
+                "type": "string",
+                "description": "Exact literal text to replace. Must match the file verbatim.",
+            },
+            "new_text": {
+                "type": "string",
+                "description": "Replacement text inserted in place of old_text.",
+            },
+            "expected_occurrences": {
+                "type": "integer",
+                "description": "Required match count for old_text; fails on mismatch. Default 1.",
+            },
+            "expected_sha256": {
+                "type": "string",
+                "description": "Optional current-file SHA-256; edit aborts on mismatch.",
             },
         },
-        "required": ["path", "edits"],
-        "additionalProperties": False,
-    }
+        required=("path", "old_text", "new_text"),
+    )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         path_value = str(arguments.get("path", ""))
-        edits = arguments.get("edits")
+        edits = _coerce_edits(arguments)
         if not path_value:
             raise ToolArgumentError("path is required.")
-        if not isinstance(edits, list) or not edits:
-            raise ToolArgumentError("edits must be a non-empty list.")
 
         path = context.workspace.resolve(path_value, must_exist=True)
         original, old_hash = read_text_file(path)
@@ -147,3 +148,21 @@ class EditCodeTool:
             cursor = replacement.end
         parts.append(original[cursor:])
         return "".join(parts)
+
+
+def _coerce_edits(arguments: dict[str, Any]) -> list[Any]:
+    legacy = arguments.get("edits")
+    if legacy is not None:
+        if not isinstance(legacy, list) or not legacy:
+            raise ToolArgumentError("edits must be a non-empty list.")
+        return legacy
+    old_text = arguments.get("old_text")
+    new_text = arguments.get("new_text")
+    if not isinstance(old_text, str) or not old_text:
+        raise ToolArgumentError("old_text is required.")
+    if not isinstance(new_text, str):
+        raise ToolArgumentError("new_text is required.")
+    edit: dict[str, Any] = {"old": old_text, "new": new_text}
+    if arguments.get("expected_occurrences") is not None:
+        edit["expected_occurrences"] = arguments.get("expected_occurrences")
+    return [edit]
