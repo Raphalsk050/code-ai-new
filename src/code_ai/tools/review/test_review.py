@@ -4,23 +4,25 @@ from typing import Any
 
 from code_ai.core.errors import ToolArgumentError
 from code_ai.tools.base import ToolCapability, ToolContext
-from code_ai.tools.review.prompts import ARCHITECTURE_REVIEW_PROMPT
+from code_ai.tools.review.prompts import TEST_REVIEW_PROMPT
 from code_ai.tools.schema import tool_schema
 
 
-class ArchitectureReviewTool:
-    name = "architecture_review"
+class TestReviewTool:
+    name = "test_review"
     description = (
-        "Review how well-structured and organized just-implemented code is. Call this "
-        "after finishing an implementation to check separation of concerns, dependency "
-        "direction, cohesion, boundaries, and appropriate abstraction. Language-agnostic."
+        "Review test cases for whether they are well constructed: single intent, no "
+        "unnecessary steps, deterministic and isolated, meaningful assertions, and good "
+        "coverage of edge cases and failures. Pays special attention to device/hardware "
+        "tests (states, permissions, connectivity, configurations, cleanup). "
+        "Language-agnostic."
     )
     capabilities = frozenset({ToolCapability.REVIEW})
     input_schema = tool_schema(
         {
             "content": {
                 "type": "string",
-                "description": "Material to review (design notes, diffs, or context).",
+                "description": "Test code (and any relevant code under test) to review.",
             },
         },
         required=("content",),
@@ -30,7 +32,7 @@ class ArchitectureReviewTool:
         if context.review_service is None:
             raise ToolArgumentError("Review service is not configured.")
         result = await context.review_service.review(
-            prompt=ARCHITECTURE_REVIEW_PROMPT,
+            prompt=TEST_REVIEW_PROMPT,
             content=str(arguments.get("content", "")),
             source=self.name,
         )

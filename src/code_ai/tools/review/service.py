@@ -25,6 +25,18 @@ class ReviewResult:
         }
 
 
+@dataclass(slots=True)
+class GenerationResult:
+    text: str
+    usage: TokenUsage | None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "text": self.text,
+            "usage": self.usage.to_dict() if self.usage else None,
+        }
+
+
 class ReviewService:
     """Runs one-shot review calls using the configured provider with tools disabled."""
 
@@ -66,6 +78,36 @@ class ReviewService:
             source=f"tool.{source}",
         )
         return self._parse(response.text, response.usage)
+
+    async def generate(self, *, prompt: str, content: str, source: str) -> GenerationResult:
+        """Run a one-shot generation call that returns free-form text (no JSON contract)."""
+        bounded = bound_text(content, self._config.budgets.max_tool_output_chars)
+        request = ModelRequest(
+            model=self._config.model,
+            messages=[
+                Message(role="system", content=prompt),
+                Message(role="user", content=bounded),
+            ],
+            tools=[],
+            max_output_tokens=min(2048, self._config.output_token_reserve),
+            use_remote_conversation_state=False,
+        )
+        await self._event_bus.emit(
+            "model.request.started", {"review": source}, source=f"tool.{source}"
+        )
+        response = await asyncio.wait_for(
+            self._provider.complete(request),
+            timeout=min(
+                self._config.budgets.subagent_worker_timeout_s,
+                self._config.budgets.max_model_call_s,
+            ),
+        )
+        await self._event_bus.emit(
+            "usage.updated",
+            {"usage": response.usage.to_dict() if response.usage else None, "review": source},
+            source=f"tool.{source}",
+        )
+        return GenerationResult(text=response.text.strip(), usage=response.usage)
 
     @staticmethod
     def _parse(text: str, usage: TokenUsage | None) -> ReviewResult:
