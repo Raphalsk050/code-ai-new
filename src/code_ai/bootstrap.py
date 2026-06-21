@@ -21,6 +21,7 @@ from code_ai.providers.factory import create_provider
 from code_ai.providers.models import Message
 from code_ai.tools.base import ToolContext
 from code_ai.tools.filesystem import EditCodeTool, ListFilesTool, ReadFileTool, WriteFileTool
+from code_ai.tools.git import GitReviewTool
 from code_ai.tools.interaction import AskUserTool
 from code_ai.tools.internal import (
     CompleteTaskTool,
@@ -34,7 +35,9 @@ from code_ai.tools.review import (
     ArchitectureReviewTool,
     BuildReviewTool,
     CodeReviewTool,
+    GenerateDocumentationTool,
     ReviewService,
+    TestReviewTool,
 )
 from code_ai.tools.search import SearchCodeTool
 from code_ai.tools.system import SystemInformationTool
@@ -71,6 +74,9 @@ def build_tool_registry() -> ToolRegistry:
         ArchitectureReviewTool(),
         CodeReviewTool(),
         BuildReviewTool(),
+        TestReviewTool(),
+        GenerateDocumentationTool(),
+        GitReviewTool(),
         AskUserTool(),
         SubmitPlanTool(),
         FinishDiscoveryTool(),
