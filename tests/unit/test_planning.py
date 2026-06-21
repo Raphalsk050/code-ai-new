@@ -4,7 +4,7 @@ from code_ai.config.models import PlannerConfig
 from code_ai.core.planning import PlannerService, PlanningPhase, TaskProfile
 from code_ai.events.bus import AsyncEventBus
 from code_ai.tools.filesystem import EditCodeTool, ListFilesTool, ReadFileTool, WriteFileTool
-from code_ai.tools.internal import CompleteTaskTool, FinishDiscoveryTool
+from code_ai.tools.internal import CompleteTaskTool, FinishDiscoveryTool, RequestExternalGapTool
 from code_ai.tools.registry import ToolRegistry
 from code_ai.tools.search import SearchCodeTool
 from code_ai.tools.web import WebSearchTool
@@ -20,6 +20,7 @@ def make_registry() -> ToolRegistry:
         EditCodeTool(),
         WebSearchTool(),
         FinishDiscoveryTool(),
+        RequestExternalGapTool(),
         CompleteTaskTool(),
     ):
         registry.register(tool)
@@ -162,8 +163,14 @@ async def test_generic_external_gap_does_not_unlock_web_for_local_question() -> 
     await service.record_tool_result(
         tool_call_id="finish_1",
         tool_name="finish_discovery",
+        payload={"summary": "Workspace inspected."},
+        success=True,
+    )
+    await service.record_tool_result(
+        tool_call_id="gap_1",
+        tool_name="request_external_gap",
         payload={
-            "summary": "Workspace inspected.",
+            "summary": "External information requested.",
             "external_knowledge_gaps": [
                 {
                     "question": "What public project matches this workspace?",
@@ -184,6 +191,51 @@ async def test_generic_external_gap_does_not_unlock_web_for_local_question() -> 
     assert "validated external gap" in decision.reason
 
 
+async def test_concrete_external_gap_unlocks_web_after_local_evidence() -> None:
+    service = PlannerService(
+        config=PlannerConfig(tool_policy="strict"),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    registry = make_registry()
+    await service.begin_turn("Fix this package integration bug", provider_supports_tools=True)
+
+    await service.record_tool_result(
+        tool_call_id="read_1",
+        tool_name="read_file",
+        payload={
+            "path": "pyproject.toml",
+            "sha256": "abc",
+            "content": "dependencies = ['example']",
+        },
+        success=True,
+    )
+    await service.record_tool_result(
+        tool_call_id="gap_1",
+        tool_name="request_external_gap",
+        payload={
+            "summary": "Need current package documentation.",
+            "external_knowledge_gaps": [
+                {
+                    "question": "Which package version documents this integration behavior?",
+                    "why_local_files_are_insufficient": (
+                        "Local files identify the package but not the current version docs."
+                    ),
+                    "decision_depends_on": (
+                        "The fix depends on current package documentation and version behavior."
+                    ),
+                }
+            ],
+        },
+        success=True,
+    )
+
+    decision = service.evaluate_tool("web_search", registry)
+
+    assert service.approved_external_gap is True
+    assert decision.allowed is True
+
+
 async def test_completion_requires_file_change_and_verification_evidence() -> None:
     service = PlannerService(
         config=PlannerConfig(double_check_completion=False),
@@ -194,10 +246,7 @@ async def test_completion_requires_file_change_and_verification_evidence() -> No
 
     rejected = await service.evaluate_completion(
         {
-            "outcome": "success",
             "summary": "done",
-            "acceptance_evidence": {"criterion": ["evidence"]},
-            "changed_paths": ["src/example.py"],
         }
     )
 

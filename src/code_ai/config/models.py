@@ -162,6 +162,7 @@ class AppConfig:
     show_ui: bool = True
     ssl_verification: bool = False
     use_remote_conversation_state: bool = True
+    strict_tools: bool = False
     workspace: Path = field(default_factory=Path.cwd)
     context_compression_threshold: float = 0.82
     context_compression_target: float = 0.55
@@ -190,6 +191,7 @@ class AppConfig:
             show_ui=bool(data.get("show_ui", True)),
             ssl_verification=bool(data.get("ssl_verification", False)),
             use_remote_conversation_state=bool(data.get("use_remote_conversation_state", True)),
+            strict_tools=bool(data.get("strict_tools", False)),
             workspace=workspace,
             context_compression_threshold=float(data.get("context_compression_threshold", 0.82)),
             context_compression_target=float(data.get("context_compression_target", 0.55)),

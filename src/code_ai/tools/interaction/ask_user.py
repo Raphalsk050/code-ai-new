@@ -4,23 +4,22 @@ from typing import Any
 
 from code_ai.core.errors import ToolArgumentError
 from code_ai.tools.base import ToolCapability, ToolContext
+from code_ai.tools.schema import tool_schema
 
 
 class AskUserTool:
     name = "ask_user"
     description = "Ask the user only for a blocking decision that cannot be inferred safely."
     capabilities = frozenset({ToolCapability.INTERACTION})
-    input_schema = {
-        "type": "object",
-        "properties": {
-            "question": {"type": "string"},
-            "why_required": {"type": "string"},
-            "choices": {"type": "array", "items": {"type": "string"}},
-            "allow_free_form": {"type": "boolean"},
+    input_schema = tool_schema(
+        {
+            "question": {
+                "type": "string",
+                "description": "The single blocking question to put to the user.",
+            },
         },
-        "required": ["question", "why_required"],
-        "additionalProperties": False,
-    }
+        required=("question",),
+    )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         question = str(arguments.get("question") or "").strip()
@@ -28,7 +27,7 @@ class AskUserTool:
         if not question:
             raise ToolArgumentError("question is required.")
         if not why_required:
-            raise ToolArgumentError("why_required is required.")
+            why_required = "The task is blocked on a user decision."
         choices = _string_list(arguments.get("choices"))
         await context.event_bus.emit(
             "interaction.question.requested",

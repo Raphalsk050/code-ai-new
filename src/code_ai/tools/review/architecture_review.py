@@ -5,18 +5,22 @@ from typing import Any
 from code_ai.core.errors import ToolArgumentError
 from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.review.prompts import ARCHITECTURE_REVIEW_PROMPT
+from code_ai.tools.schema import tool_schema
 
 
 class ArchitectureReviewTool:
     name = "architecture_review"
     description = "Run a one-shot architecture review with tools disabled."
     capabilities = frozenset({ToolCapability.REVIEW})
-    input_schema = {
-        "type": "object",
-        "properties": {"content": {"type": "string"}},
-        "required": ["content"],
-        "additionalProperties": False,
-    }
+    input_schema = tool_schema(
+        {
+            "content": {
+                "type": "string",
+                "description": "Material to review (design notes, diffs, or context).",
+            },
+        },
+        required=("content",),
+    )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         if context.review_service is None:

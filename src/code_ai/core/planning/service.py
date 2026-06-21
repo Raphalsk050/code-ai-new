@@ -362,7 +362,7 @@ class PlannerService:
                     "Double-check required before successful completion.",
                     "Reconcile every acceptance criterion with actual evidence.",
                     "Confirm verification still applies to the current changed hashes.",
-                    "Call complete_task again with double_check_acknowledged=true.",
+                    "Call complete_task again after reconciling the evidence.",
                 )
                 await self.event_bus.emit(
                     "planning.completion.rejected",
@@ -373,14 +373,6 @@ class PlannerService:
                     accepted=False,
                     outcome="success",
                     missing_requirements=checklist,
-                )
-            if not claim.double_check_acknowledged:
-                return CompletionDecision(
-                    accepted=False,
-                    outcome="success",
-                    missing_requirements=(
-                        "double_check_acknowledged must be true on the second valid completion.",
-                    ),
                 )
 
         await self._accept_success_completion(claim)
@@ -726,8 +718,6 @@ class PlannerService:
                     f"claimed changed paths {sorted(claimed_paths)} do not match "
                     f"recorded paths {sorted(actual_paths)}."
                 )
-            if not claim.acceptance_evidence:
-                missing.append("acceptance_evidence mapping is required.")
         return missing
 
     def current_step_index_is_last(self) -> bool:

@@ -124,7 +124,7 @@ class OpenAIChatCompletionsProvider:
         if request.max_output_tokens:
             kwargs["max_tokens"] = request.max_output_tokens
         if request.tools:
-            kwargs["tools"] = tools_to_chat(request.tools)
+            kwargs["tools"] = tools_to_chat(request.tools, strict=self._config.strict_tools)
             kwargs["tool_choice"] = "auto"
         if self._stream_options_supported:
             kwargs["stream_options"] = {"include_usage": True}

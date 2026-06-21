@@ -6,6 +6,7 @@ from typing import Any
 
 from code_ai.core.errors import ToolArgumentError
 from code_ai.tools.base import ToolCapability, ToolContext
+from code_ai.tools.schema import tool_schema
 
 DEFAULT_EXCLUDES = {
     ".cache",
@@ -32,20 +33,14 @@ class ListFilesTool:
     name = "list_files"
     description = "List bounded workspace files and directories with deterministic ordering."
     capabilities = frozenset({ToolCapability.LOCAL_READ})
-    input_schema = {
-        "type": "object",
-        "properties": {
-            "path": {"type": "string"},
-            "max_depth": {"type": "integer", "minimum": 0, "maximum": 20},
-            "max_entries": {"type": "integer", "minimum": 1, "maximum": 5000},
-            "include_globs": {"type": "array", "items": {"type": "string"}},
-            "exclude_globs": {"type": "array", "items": {"type": "string"}},
-            "include_hidden": {"type": "boolean"},
-            "include_sizes": {"type": "boolean"},
-            "use_default_excludes": {"type": "boolean"},
+    input_schema = tool_schema(
+        {
+            "path": {
+                "type": "string",
+                "description": "Workspace-relative directory to list. Defaults to the root.",
+            },
         },
-        "additionalProperties": False,
-    }
+    )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         root = context.workspace.resolve(str(arguments.get("path") or "."), must_exist=True)

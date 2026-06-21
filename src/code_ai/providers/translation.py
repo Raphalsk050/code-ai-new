@@ -10,30 +10,37 @@ def messages_to_chat(messages: list[Message]) -> list[dict[str, Any]]:
     return [message.to_dict() for message in messages]
 
 
-def tools_to_chat(tools: list[ToolDefinition]) -> list[dict[str, Any]]:
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": tool.name,
-                "description": tool.description,
-                "parameters": tool.input_schema,
-            },
+def tools_to_chat(
+    tools: list[ToolDefinition], *, strict: bool = False
+) -> list[dict[str, Any]]:
+    definitions: list[dict[str, Any]] = []
+    for tool in tools:
+        function: dict[str, Any] = {
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": tool.input_schema,
         }
-        for tool in tools
-    ]
+        if strict:
+            function["strict"] = True
+        definitions.append({"type": "function", "function": function})
+    return definitions
 
 
-def tools_to_responses(tools: list[ToolDefinition]) -> list[dict[str, Any]]:
-    return [
-        {
+def tools_to_responses(
+    tools: list[ToolDefinition], *, strict: bool = False
+) -> list[dict[str, Any]]:
+    definitions: list[dict[str, Any]] = []
+    for tool in tools:
+        definition: dict[str, Any] = {
             "type": "function",
             "name": tool.name,
             "description": tool.description,
             "parameters": tool.input_schema,
         }
-        for tool in tools
-    ]
+        if strict:
+            definition["strict"] = True
+        definitions.append(definition)
+    return definitions
 
 
 def parse_arguments(arguments: Any) -> dict[str, Any]:

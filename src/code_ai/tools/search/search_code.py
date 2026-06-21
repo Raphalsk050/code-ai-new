@@ -13,29 +13,26 @@ from code_ai.core.errors import ToolArgumentError, ToolExecutionError
 from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.filesystem.list_files import DEFAULT_EXCLUDES
 from code_ai.tools.output import bound_text
+from code_ai.tools.schema import tool_schema
 
 
 class SearchCodeTool:
     name = "search_code"
     description = "Search bounded text or regex matches in workspace source files."
     capabilities = frozenset({ToolCapability.LOCAL_READ})
-    input_schema = {
-        "type": "object",
-        "properties": {
-            "query": {"type": "string"},
-            "path": {"type": "string"},
-            "case_sensitive": {"type": "boolean"},
-            "regex": {"type": "boolean"},
-            "include_globs": {"type": "array", "items": {"type": "string"}},
-            "exclude_globs": {"type": "array", "items": {"type": "string"}},
-            "max_matches": {"type": "integer", "minimum": 1, "maximum": 1000},
-            "context_lines": {"type": "integer", "minimum": 0, "maximum": 5},
-            "include_hidden": {"type": "boolean"},
-            "use_default_excludes": {"type": "boolean"},
+    input_schema = tool_schema(
+        {
+            "query": {
+                "type": "string",
+                "description": "Literal text to search for across workspace files.",
+            },
+            "path": {
+                "type": "string",
+                "description": "Workspace-relative directory to search. Defaults to the root.",
+            },
         },
-        "required": ["query"],
-        "additionalProperties": False,
-    }
+        required=("query",),
+    )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         query = str(arguments.get("query") or "")

@@ -7,6 +7,7 @@ from typing import Any
 from code_ai.core.errors import ToolArgumentError, ToolExecutionError
 from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.filesystem.common import sha256_bytes, sha256_file
+from code_ai.tools.schema import tool_schema
 
 
 class WriteFileTool:
@@ -15,18 +16,19 @@ class WriteFileTool:
         "Atomically write a UTF-8 text file inside the workspace with optional hash guards."
     )
     capabilities = frozenset({ToolCapability.LOCAL_WRITE})
-    input_schema = {
-        "type": "object",
-        "properties": {
-            "path": {"type": "string"},
-            "content": {"type": "string"},
-            "expected_sha256": {"type": "string"},
-            "expected_new_file": {"type": "boolean"},
-            "create_dirs": {"type": "boolean"},
+    input_schema = tool_schema(
+        {
+            "path": {
+                "type": "string",
+                "description": "Workspace-relative path of the file to write.",
+            },
+            "content": {
+                "type": "string",
+                "description": "Full UTF-8 contents to write to the file.",
+            },
         },
-        "required": ["path", "content"],
-        "additionalProperties": False,
-    }
+        required=("path", "content"),
+    )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         path_value = str(arguments.get("path", ""))

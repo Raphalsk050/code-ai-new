@@ -265,7 +265,10 @@ class AgentOrchestrator:
         if state.stall_rounds >= limit:
             await self.event_bus.emit(
                 "turn.stalled",
-                {"stall_rounds": state.stall_rounds, "tool_calls_executed": state.tool_calls_executed},
+                {
+                    "stall_rounds": state.stall_rounds,
+                    "tool_calls_executed": state.tool_calls_executed,
+                },
                 source="core.orchestrator",
             )
             return await self._wind_down(state, reason="model_stalled")

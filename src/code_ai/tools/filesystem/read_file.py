@@ -6,23 +6,22 @@ from code_ai.core.errors import ToolArgumentError
 from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.filesystem.common import read_text_file
 from code_ai.tools.output import bound_text
+from code_ai.tools.schema import tool_schema
 
 
 class ReadFileTool:
     name = "read_file"
     description = "Read a UTF-8 text file inside the workspace, optionally bounded to a line range."
     capabilities = frozenset({ToolCapability.LOCAL_READ})
-    input_schema = {
-        "type": "object",
-        "properties": {
-            "path": {"type": "string"},
-            "start_line": {"type": "integer", "minimum": 1},
-            "end_line": {"type": "integer", "minimum": 1},
-            "max_chars": {"type": "integer", "minimum": 1},
+    input_schema = tool_schema(
+        {
+            "path": {
+                "type": "string",
+                "description": "Workspace-relative path of the text file to read.",
+            },
         },
-        "required": ["path"],
-        "additionalProperties": False,
-    }
+        required=("path",),
+    )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         path_value = str(arguments.get("path", ""))

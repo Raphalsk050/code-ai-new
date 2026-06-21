@@ -4,41 +4,22 @@ from typing import Any
 
 from code_ai.core.errors import ToolArgumentError
 from code_ai.tools.base import ToolCapability, ToolContext
+from code_ai.tools.schema import tool_schema
 
 
 class FinishDiscoveryTool:
     name = "finish_discovery"
     description = "Request transition out of local discovery with a bounded evidence summary."
     capabilities = frozenset({ToolCapability.INTERNAL_TRANSITION})
-    input_schema = {
-        "type": "object",
-        "properties": {
-            "summary": {"type": "string"},
-            "relevant_paths": {"type": "array", "items": {"type": "string"}},
-            "observed_patterns": {"type": "array", "items": {"type": "string"}},
-            "project_commands": {"type": "array", "items": {"type": "string"}},
-            "unresolved_questions": {"type": "array", "items": {"type": "string"}},
-            "external_knowledge_gaps": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "question": {"type": "string"},
-                        "why_local_files_are_insufficient": {"type": "string"},
-                        "decision_depends_on": {"type": "string"},
-                    },
-                    "required": [
-                        "question",
-                        "why_local_files_are_insufficient",
-                        "decision_depends_on",
-                    ],
-                    "additionalProperties": False,
-                },
+    input_schema = tool_schema(
+        {
+            "summary": {
+                "type": "string",
+                "description": "Summary of what local discovery established before moving on.",
             },
         },
-        "required": ["summary"],
-        "additionalProperties": False,
-    }
+        required=("summary",),
+    )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         summary = str(arguments.get("summary") or "").strip()
@@ -49,7 +30,7 @@ class FinishDiscoveryTool:
             context.workspace.resolve(path, must_exist=True)
         gaps = arguments.get("external_knowledge_gaps") or []
         if not isinstance(gaps, list):
-            raise ToolArgumentError("external_knowledge_gaps must be a list.")
+            gaps = []
         return {
             "summary": summary,
             "relevant_paths": relevant_paths,

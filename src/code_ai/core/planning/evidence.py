@@ -325,7 +325,15 @@ def _records_from_payload(
                 metadata={"query": payload.get("query")},
             )
         ]
-    if tool_name in {"control_terminal", "read_screen"}:
+    if tool_name in {
+        "control_terminal",
+        "start_terminal",
+        "send_terminal_text",
+        "terminal_enter",
+        "interrupt_terminal",
+        "terminate_terminal",
+        "read_screen",
+    }:
         return [
             EvidenceRecord(
                 **common,
@@ -334,7 +342,7 @@ def _records_from_payload(
                 metadata={"session_id": payload.get("session_id")},
             )
         ]
-    if tool_name == "finish_discovery":
+    if tool_name in {"finish_discovery", "request_external_gap"}:
         return [
             EvidenceRecord(
                 **common,

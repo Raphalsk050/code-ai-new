@@ -30,6 +30,10 @@ runtime evaluate progress. Ordinary assistant text does not complete an
 agentic workspace task; call complete_task only after required evidence and
 verification exist.
 
+Prefer one small, atomic tool call over a complex call. Use simple arguments:
+write_file(path, content), edit_code(path, old_text, new_text), and
+execute_command(command). Do not invent hidden guard fields.
+
 Use web_search before answering questions about external current or
 time-sensitive facts, including sports schedules, news, prices, package
 versions, releases, regulations, or explicit requests to search the web. For
@@ -60,10 +64,10 @@ create, or refactor requests into read-only explanations.
 """
 
 LOCAL_DISCOVERY_PROMPT = """Inspect the local workspace before planning changes.
-Use list_files, search_code, read_file, system_information, ask_user, and
-finish_discovery only. Do not use web_search unless a specific external gap is
-required, local files are insufficient, and the runtime exposes web_search as an
-allowed tool.
+Use list_files, search_code, read_file, system_information, ask_user,
+request_external_gap, and finish_discovery only. Do not use web_search unless a
+specific external gap is required, local files are insufficient, and the runtime
+exposes web_search as an allowed tool.
 """
 
 PLAN_GENERATION_PROMPT = """Create a bounded ordered execution plan from the
@@ -77,8 +81,8 @@ Do not replace file operations with instructions to show code to the user. Do
 not add web search before required local discovery.
 """
 
-CURRENT_STEP_EXECUTION_PROMPT = """Execute only the current plan step. Do not work ahead or mark your
-own step complete.
+CURRENT_STEP_EXECUTION_PROMPT = """Execute only the current plan step. Do not
+work ahead or mark your own step complete.
 """
 
 REPLAN_PROMPT = """Revise the plan only for the changed assumption or failed
@@ -93,7 +97,7 @@ the resulting workspace state through tools.
 
 COMPLETION_DOUBLE_CHECK_PROMPT = """Before completion, reconcile every
 acceptance criterion with actual evidence, confirm verification still applies
-to current file hashes, and call complete_task again with explicit mappings.
+to current file hashes, and call complete_task again with a concise summary.
 """
 
 PLANNER_STATE_COMPRESSION_PROMPT = """Summarize planner state without inventing

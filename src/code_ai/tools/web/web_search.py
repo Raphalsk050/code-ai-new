@@ -6,6 +6,7 @@ from typing import Any
 from code_ai.core.errors import ToolArgumentError, ToolExecutionError
 from code_ai.core.internet_intent import requires_current_web_search
 from code_ai.tools.base import ToolCapability, ToolContext
+from code_ai.tools.schema import tool_schema
 from code_ai.tools.web.backend import DDGSWebSearchBackend, WebSearchBackend, fetch_page_text
 
 
@@ -17,19 +18,15 @@ class WebSearchTool:
         "research, or host-approved external gaps."
     )
     capabilities = frozenset({ToolCapability.WEB})
-    input_schema = {
-        "type": "object",
-        "properties": {
-            "query": {"type": "string"},
-            "max_results": {"type": "integer", "minimum": 1, "maximum": 10},
-            "region": {"type": "string"},
-            "time_filter": {"type": "string"},
-            "timeout": {"type": "number", "minimum": 1},
-            "fetch_top_n": {"type": "integer", "minimum": 0, "maximum": 3},
+    input_schema = tool_schema(
+        {
+            "query": {
+                "type": "string",
+                "description": "Search query describing the external information needed.",
+            },
         },
-        "required": ["query"],
-        "additionalProperties": False,
-    }
+        required=("query",),
+    )
 
     def __init__(self, backend: WebSearchBackend | None = None) -> None:
         self._backend = backend or DDGSWebSearchBackend()

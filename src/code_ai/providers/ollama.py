@@ -66,8 +66,8 @@ def _ollama_reasoning_delta(data: dict[str, Any], message: dict[str, Any]) -> st
     return ""
 
 
-def messages_to_ollama(messages: list[Message]) -> list[dict[str, str]]:
-    normalized: list[dict[str, str]] = []
+def messages_to_ollama(messages: list[Message]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
     for message in messages:
         if message.role == "tool":
             normalized.append(
@@ -81,8 +81,16 @@ def messages_to_ollama(messages: list[Message]) -> list[dict[str, str]]:
                     ),
                 }
             )
-        else:
-            normalized.append({"role": message.role, "content": message.content})
+            continue
+        entry: dict[str, Any] = {"role": message.role, "content": message.content}
+        if message.tool_calls:
+            # Replay tool calls structurally so the model keeps invoking tools
+            # instead of echoing them back as text in its next turn.
+            entry["tool_calls"] = [
+                {"function": {"name": call.name, "arguments": call.arguments}}
+                for call in message.tool_calls
+            ]
+        normalized.append(entry)
     return normalized
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any, Literal
@@ -49,13 +50,29 @@ class Message:
     content: str
     tool_call_id: str | None = None
     name: str | None = None
+    tool_calls: list[ToolCall] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        data = {"role": self.role, "content": self.content}
+        data: dict[str, Any] = {"role": self.role, "content": self.content}
         if self.tool_call_id:
             data["tool_call_id"] = self.tool_call_id
         if self.name:
             data["name"] = self.name
+        if self.tool_calls:
+            # OpenAI Chat Completions shape: structured calls on the assistant
+            # message, never serialized into ``content`` (which would teach the
+            # model to emit tool calls as prose instead of invoking them).
+            data["tool_calls"] = [
+                {
+                    "id": call.id,
+                    "type": "function",
+                    "function": {
+                        "name": call.name,
+                        "arguments": json.dumps(call.arguments, default=str),
+                    },
+                }
+                for call in self.tool_calls
+            ]
         return data
 
 

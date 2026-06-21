@@ -45,8 +45,24 @@ async def test_write_read_and_edit_code_are_hash_guarded(tmp_path) -> None:
     read = ReadFileTool()
     edit = EditCodeTool()
 
+    assert set(write.input_schema["properties"]) == {"path", "content"}
+    assert set(write.input_schema["required"]) == {"path", "content"}
+    assert set(edit.input_schema["properties"]) == {
+        "path",
+        "old_text",
+        "new_text",
+        "expected_occurrences",
+        "expected_sha256",
+    }
+    # strict-mode: optionals stay declared but nullable; required stays minimal.
+    assert edit.input_schema["properties"]["expected_occurrences"]["type"] == [
+        "integer",
+        "null",
+    ]
+    assert "edits" not in edit.input_schema["properties"]
+
     written = await write.execute(
-        {"path": "src/app.py", "content": "print('old')\n", "expected_new_file": True},
+        {"path": "src/app.py", "content": "print('old')\n"},
         context,
     )
     assert written["new_sha256"]
@@ -59,13 +75,28 @@ async def test_write_read_and_edit_code_are_hash_guarded(tmp_path) -> None:
         {
             "path": "src/app.py",
             "expected_sha256": readback["sha256"],
-            "edits": [{"old": "old", "new": "new"}],
+            "old_text": "old",
+            "new_text": "new",
         },
         context,
     )
     assert edited["changed"]
     assert "-print('old')" in edited["diff"]
     assert "+print('new')" in edited["diff"]
+
+
+async def test_edit_code_keeps_legacy_edits_compatibility(tmp_path) -> None:
+    context = make_context(tmp_path)
+    path = tmp_path / "a.txt"
+    path.write_text("one two\n", encoding="utf-8")
+
+    edited = await EditCodeTool().execute(
+        {"path": "a.txt", "edits": [{"old": "two", "new": "three"}]},
+        context,
+    )
+
+    assert edited["changed"]
+    assert path.read_text(encoding="utf-8") == "one three\n"
 
 
 async def test_edit_code_failure_leaves_original_file_intact(tmp_path) -> None:
