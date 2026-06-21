@@ -29,6 +29,7 @@ from code_ai.ui.terminal.widgets import (
     load_code_ai_logo,
     normalize_banner_font,
     render_conversation_line,
+    render_plan,
     resolve_spinner,
     spinner_color,
     working_label,
@@ -142,6 +143,67 @@ def create_terminal_app(application, *, config_path: Path | None = None):
         def _render_idle(self) -> None:
             self.update(Text(self._style.frames[0], style=WORKING_IDLE_STYLE))
 
+    class PlanPanel(Static):
+        """Checklist of planned steps shown beside the conversation.
+
+        Cards are driven straight from the plan snapshot in the view model
+        (done / running / pending / failed). The running card's marker is the
+        live spinner, so its timer only runs while a step is in progress.
+        """
+
+        TICK = 0.08
+
+        def __init__(self, style: SpinnerStyle, **kwargs: Any) -> None:
+            super().__init__("", **kwargs)
+            self._style = style
+            self._steps: list[dict[str, str]] = []
+            self._progress = "-"
+            self._status = ""
+            self._frame = 0
+            self._running = False
+            self._timer = None
+
+        def on_mount(self) -> None:
+            self._timer = self.set_interval(self.TICK, self._tick, pause=True)
+            self._paint()
+
+        def set_style(self, style: SpinnerStyle) -> None:
+            self._style = style
+            self._paint()
+
+        def update_plan(
+            self, steps: list[dict[str, str]], progress: str, status: str
+        ) -> None:
+            self._steps = steps
+            self._progress = progress
+            self._status = status
+            has_running = any(step.get("status") == "running" for step in steps)
+            if has_running and not self._running:
+                self._running = True
+                self._frame = 0
+                if self._timer is not None:
+                    self._timer.resume()
+            elif not has_running and self._running:
+                self._running = False
+                if self._timer is not None:
+                    self._timer.pause()
+            self._paint()
+
+        def _tick(self) -> None:
+            self._frame += 1
+            self._paint()
+
+        def _paint(self) -> None:
+            frames = self._style.frames
+            glyph = frames[self._frame % len(frames)]
+            if self._style.pulse:
+                color = spinner_color((self._frame * self.TICK) / WORKING_PULSE_PERIOD)
+            else:
+                color = WORKING_BASE_COLOR
+            self.update(
+                render_plan(self._steps, self._progress, self._status, glyph, color)
+            )
+
     class CodeAITerminalApp(App[None]):
         CSS_PATH = "theme.tcss"
         BINDINGS = [
@@ -172,6 +234,12 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                         yield Static("SESSION", classes="panel-title")
                         yield Static("", id="session-info")
                     yield RichLog(id="conversation", wrap=True, highlight=False, markup=False)
+                    with Vertical(id="plan"):
+                        yield Static("PLAN", classes="panel-title")
+                        yield PlanPanel(
+                            resolve_spinner(application.session.config.terminal_spinner),
+                            id="plan-body",
+                        )
                 yield WorkingIndicator(
                     resolve_spinner(application.session.config.terminal_spinner),
                     id="working-indicator",
@@ -435,9 +503,9 @@ def create_terminal_app(application, *, config_path: Path | None = None):
 
         def _refresh_spinner(self) -> None:
             config = application.session.config
-            self.query_one("#working-indicator", WorkingIndicator).set_style(
-                resolve_spinner(config.terminal_spinner)
-            )
+            style = resolve_spinner(config.terminal_spinner)
+            self.query_one("#working-indicator", WorkingIndicator).set_style(style)
+            self.query_one("#plan-body", PlanPanel).set_style(style)
 
         def _persist_spinner(self, spinner: str) -> None:
             config = application.session.config
@@ -498,7 +566,10 @@ def create_terminal_app(application, *, config_path: Path | None = None):
 
         async def action_clear(self) -> None:
             self.vm.conversation.clear()
+            self.vm.plan_visible = False
+            self.vm.plan_steps = []
             self.query_one("#conversation", RichLog).clear()
+            self._refresh_status()
 
         async def action_quit(self) -> None:
             await application.close()
@@ -514,6 +585,10 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             working = self.vm.status in WORKING_STATES
             self.query_one("#working-indicator", WorkingIndicator).set_running(
                 working, working_label(self.vm.status)
+            )
+            self.query_one("#plan").display = self.vm.plan_visible
+            self.query_one("#plan-body", PlanPanel).update_plan(
+                self.vm.plan_steps, self.vm.plan_progress, self.vm.plan_status
             )
 
         def _session_text(self) -> str:
