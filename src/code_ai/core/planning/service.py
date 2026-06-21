@@ -7,6 +7,7 @@ from code_ai.config.models import PlannerConfig
 from code_ai.core.errors import ToolExecutionError
 from code_ai.core.planning.evidence import EvidenceLedger, EvidenceRecord
 from code_ai.core.planning.models import (
+    AgentPlan,
     CompletionClaim,
     EvidenceType,
     ExecutionPlan,
@@ -67,6 +68,10 @@ class PlannerService:
         self.phase = PlanningPhase.UNDERSTAND
         self.profile: TaskProfile | None = None
         self.plan: ExecutionPlan | None = None
+        # The model-authored checklist shown in the task sidebar. It stays None
+        # until the model calls submit_plan with concrete steps, so the panel is
+        # only shown once a real plan exists (never the deterministic skeleton).
+        self.agent_plan: AgentPlan | None = None
         self.ledger = EvidenceLedger(session_id=session_id)
         self.approved_external_gaps: tuple[ApprovedExternalGap, ...] = ()
         self.approved_external_gap = False
@@ -95,6 +100,7 @@ class PlannerService:
         self.plan = ExecutionPlan.for_profile(
             self.profile, max_steps=self.config.max_plan_steps
         )
+        self.agent_plan = None
         self.ledger = EvidenceLedger(session_id=self.session_id)
         self.approved_external_gaps = ()
         self.approved_external_gap = self.profile.allows_web_first
@@ -117,11 +123,9 @@ class PlannerService:
             self.profile.model_dump(mode="json"),
             source="core.planner",
         )
-        await self.event_bus.emit(
-            "planning.plan.created",
-            self.plan_snapshot(),
-            source="core.planner",
-        )
+        # The deterministic skeleton drives policy and completion gating, but it is
+        # never surfaced as a plan: the sidebar is reserved for the model-authored
+        # steps submitted via submit_plan. Advance the internal cursor silently.
         await self._mark_current_step_started()
 
     def should_auto_list_workspace(self) -> bool:
@@ -180,6 +184,9 @@ class PlannerService:
         payload: dict[str, Any],
         success: bool,
     ) -> list[EvidenceRecord]:
+        if tool_name == "submit_plan":
+            await self.submit_agent_plan(payload.get("steps"))
+            return []
         before = self.progress_signature()
         step_id = self.current_step.step_id if self.current_step else None
         records = self.ledger.record_tool_result(
@@ -202,6 +209,7 @@ class PlannerService:
         # loop would reset the guard forever.
         if self.progress_signature() != before:
             self.no_progress_rounds = 0
+            await self._advance_agent_plan()
         return records
 
     async def record_policy_denial(
@@ -258,6 +266,20 @@ class PlannerService:
         required_evidence = [
             item.value for item in current.required_evidence
         ] if current else []
+        if self.agent_plan is None:
+            plan_lines = (
+                "Task checklist: not submitted yet.\n"
+                "FIRST ACTION: call submit_plan with the concrete ordered steps you "
+                "will take for this task before any other tool call. The steps are "
+                "shown to the user as the live checklist, so make them specific to "
+                "this request.\n"
+            )
+        else:
+            plan_lines = (
+                f"Task checklist: {self.agent_plan.snapshot()['progress']} "
+                f"(current: {self.agent_plan.current_step.title if self.agent_plan.current_step else 'done'}).\n"
+                "Call submit_plan again only if your approach genuinely changes.\n"
+            )
         return (
             "Runtime task state. Treat this as authoritative host state, not a user request.\n"
             f"Original objective: {self.profile.objective}\n"
@@ -274,7 +296,8 @@ class PlannerService:
             f"Approved external gaps: {[gap.to_dict() for gap in self.approved_external_gaps]}\n"
             f"Recent evidence: {self.ledger.compact_recent(limit=8)}\n"
             f"Recommended tools now: {sorted(recommended_tool_names)}\n"
-            "Rules: prefer the recommended tools, work on the current step, and do not "
+            + plan_lines
+            + "Rules: prefer the recommended tools, work on the current step, and do not "
             "claim completion from prose. For workspace changes, call write_file or "
             "edit_code; for completion, call complete_task after verification evidence exists."
         )
@@ -430,26 +453,73 @@ class PlannerService:
         )
 
     def plan_snapshot(self) -> dict[str, Any]:
-        if not self.plan:
-            return {
-                "mode": self.mode.value,
-                "phase": self.phase.value,
-                "profile": self.profile.model_dump(mode="json") if self.profile else None,
-            }
-        data = self.plan.snapshot()
-        data.update(
-            {
-                "mode": self.mode.value,
-                "phase": self.phase.value,
-                "changed_paths": self.ledger.current_changed_paths(),
-                "latest_verification_passed": self.ledger.latest_verification_passed,
-                "approved_external_gaps": [
-                    gap.to_dict() for gap in self.approved_external_gaps
-                ],
-                "profile": self.profile.model_dump(mode="json") if self.profile else None,
-            }
-        )
+        # Step-level fields (current_step, completed/remaining, progress, status)
+        # come only from the model-authored plan, so the sidebar stays empty and
+        # hidden until the model submits one. The deterministic skeleton remains
+        # internal and never reaches the UI.
+        data: dict[str, Any] = {
+            "mode": self.mode.value,
+            "phase": self.phase.value,
+            "changed_paths": self.ledger.current_changed_paths(),
+            "latest_verification_passed": self.ledger.latest_verification_passed,
+            "approved_external_gaps": [
+                gap.to_dict() for gap in self.approved_external_gaps
+            ],
+            "profile": self.profile.model_dump(mode="json") if self.profile else None,
+        }
+        if self.agent_plan:
+            data.update(self.agent_plan.snapshot())
         return data
+
+    async def submit_agent_plan(self, steps: object) -> None:
+        """Adopt the model-authored steps and reveal the task sidebar.
+
+        The first submission emits ``planning.plan.created`` (the panel appears);
+        a later submission emits ``planning.plan.revised`` (the model corrected or
+        re-scoped its plan). Steps with no usable title are ignored.
+        """
+        titles = _coerce_plan_step_titles(steps)
+        if not titles:
+            return
+        first_time = self.agent_plan is None
+        self.agent_plan = AgentPlan.from_titles(
+            titles, max_steps=self.config.max_plan_steps
+        )
+        snapshot = self.plan_snapshot()
+        await self.event_bus.emit(
+            "planning.plan.created" if first_time else "planning.plan.revised",
+            snapshot,
+            source="core.planner",
+        )
+        await self.event_bus.emit(
+            "planning.step.started",
+            snapshot,
+            source="core.planner",
+        )
+
+    async def _advance_agent_plan(self) -> None:
+        """Move the sidebar cursor one model-declared step forward on real progress.
+
+        Each genuine forward signal (new evidence, a phase/step transition) walks
+        the model's checklist ahead by one. The last step stays running until
+        completion settles the whole plan, so the panel always shows a live step.
+        """
+        if not self.agent_plan or self.agent_plan.status != PlanStatus.ACTIVE:
+            return
+        if not self.agent_plan.advance():
+            return
+        snapshot = self.plan_snapshot()
+        await self.event_bus.emit(
+            "planning.step.completed",
+            snapshot,
+            source="core.planner",
+        )
+        if self.agent_plan.current_step:
+            await self.event_bus.emit(
+                "planning.step.started",
+                snapshot,
+                source="core.planner",
+            )
 
     async def _advance_after_evidence(
         self,
@@ -535,11 +605,6 @@ class PlannerService:
             return
         self.current_step.status = PlanStepStatus.COMPLETED
         self.plan.updated_at = utc_now_iso()
-        await self.event_bus.emit(
-            "planning.step.completed",
-            self.plan_snapshot(),
-            source="core.planner",
-        )
         if self.current_step_index_is_last():
             return
         self.plan.current_step_index += 1
@@ -565,11 +630,6 @@ class PlannerService:
                 step.status = PlanStepStatus.COMPLETED
                 step.last_error = None
                 self.plan.updated_at = utc_now_iso()
-                await self.event_bus.emit(
-                    "planning.step.completed",
-                    self.plan_snapshot(),
-                    source="core.planner",
-                )
                 return
 
     async def _move_to_step_kind(self, kind: PlanStepKind, phase: PlanningPhase) -> None:
@@ -591,11 +651,6 @@ class PlannerService:
             self.current_step.status = PlanStepStatus.IN_PROGRESS
         self.current_step.attempt_count += 1
         self.plan.updated_at = utc_now_iso()
-        await self.event_bus.emit(
-            "planning.step.started",
-            self.plan_snapshot(),
-            source="core.planner",
-        )
 
     async def _mark_current_step_failed(self, message: str) -> None:
         if not self.plan or not self.current_step:
@@ -603,11 +658,6 @@ class PlannerService:
         self.current_step.status = PlanStepStatus.FAILED
         self.current_step.last_error = message
         self.plan.updated_at = utc_now_iso()
-        await self.event_bus.emit(
-            "planning.step.failed",
-            self.plan_snapshot(),
-            source="core.planner",
-        )
 
     async def _emit_phase(self, phase: PlanningPhase) -> None:
         self.phase = phase
@@ -622,6 +672,8 @@ class PlannerService:
             self.current_step.status = PlanStepStatus.COMPLETED
             self.plan.status = PlanStatus.COMPLETED
             self.plan.updated_at = utc_now_iso()
+        if self.agent_plan:
+            self.agent_plan.complete_all()
         changed_paths = self.ledger.current_changed_paths()
         verification = (
             f"Verified by evidence {self.ledger.latest_verification_evidence_id}."
@@ -757,6 +809,29 @@ _EXTERNAL_DECISION_MARKERS = {
     "version",
     "versao",
 }
+
+
+def _coerce_plan_step_titles(steps: object) -> list[str]:
+    """Extract ordered step titles from a submit_plan payload.
+
+    Accepts a list of plain strings or of objects carrying ``title``/``step``/
+    ``description``, so weaker models that wrap each step in an object still
+    produce a usable plan. Empty or untitled entries are dropped.
+    """
+    if not isinstance(steps, list):
+        return []
+    titles: list[str] = []
+    for item in steps:
+        if isinstance(item, str):
+            title = item.strip()
+        elif isinstance(item, dict):
+            raw = item.get("title") or item.get("step") or item.get("description")
+            title = str(raw).strip() if raw is not None else ""
+        else:
+            title = ""
+        if title:
+            titles.append(title)
+    return titles
 
 
 def _coerce_external_gap_requests(gaps: object) -> tuple[ApprovedExternalGap, ...]:

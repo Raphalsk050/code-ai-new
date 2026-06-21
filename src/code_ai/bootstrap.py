@@ -22,7 +22,12 @@ from code_ai.providers.models import Message
 from code_ai.tools.base import ToolContext
 from code_ai.tools.filesystem import EditCodeTool, ListFilesTool, ReadFileTool, WriteFileTool
 from code_ai.tools.interaction import AskUserTool
-from code_ai.tools.internal import CompleteTaskTool, FinishDiscoveryTool, RequestExternalGapTool
+from code_ai.tools.internal import (
+    CompleteTaskTool,
+    FinishDiscoveryTool,
+    RequestExternalGapTool,
+    SubmitPlanTool,
+)
 from code_ai.tools.process import ExecuteCommandTool
 from code_ai.tools.registry import ToolRegistry
 from code_ai.tools.review import (
@@ -67,6 +72,7 @@ def build_tool_registry() -> ToolRegistry:
         CodeReviewTool(),
         BuildReviewTool(),
         AskUserTool(),
+        SubmitPlanTool(),
         FinishDiscoveryTool(),
         RequestExternalGapTool(),
         CompleteTaskTool(),

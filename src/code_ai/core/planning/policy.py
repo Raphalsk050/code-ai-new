@@ -35,6 +35,7 @@ DEFAULT_CAPABILITIES_BY_NAME: dict[str, frozenset[ToolCapability]] = {
     ),
     "web_search": frozenset({ToolCapability.WEB}),
     "ask_user": frozenset({ToolCapability.INTERACTION}),
+    "submit_plan": frozenset({ToolCapability.INTERNAL_TRANSITION}),
     "finish_discovery": frozenset({ToolCapability.INTERNAL_TRANSITION}),
     "request_external_gap": frozenset({ToolCapability.INTERNAL_TRANSITION}),
     "complete_task": frozenset({ToolCapability.INTERNAL_COMPLETION}),
