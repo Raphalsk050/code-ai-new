@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 from functools import partial
 from pathlib import Path
+from time import monotonic
 from typing import Any
+
+from rich.text import Text
 
 from code_ai.bootstrap import build_application
 from code_ai.config.loader import persist_config_updates
@@ -16,10 +19,28 @@ from code_ai.ui.terminal.slash_commands import (
 from code_ai.ui.terminal.view_models import TerminalViewModel
 from code_ai.ui.terminal.widgets import (
     CODE_AI_BANNER_FONT_OPTIONS,
+    WORKING_BASE_COLOR,
+    WORKING_IDLE_STYLE,
+    WORKING_LABEL_STYLE,
+    WORKING_PULSE_PERIOD,
+    WORKING_SPINNERS,
+    WORKING_STATES,
+    SpinnerStyle,
     load_code_ai_logo,
     normalize_banner_font,
     render_conversation_line,
+    resolve_spinner,
+    spinner_color,
+    working_label,
 )
+
+# Labels shown in the permission-mode dropdown next to the input, mapped to the
+# config values consumed by AppConfig.permission_mode.
+_PERMISSION_MODE_OPTIONS = [
+    ("perm: solicitar", "ask"),
+    ("perm: automático", "auto"),
+    ("perm: ignorar", "bypass"),
+]
 
 
 def create_terminal_app(application, *, config_path: Path | None = None):
@@ -27,7 +48,9 @@ def create_terminal_app(application, *, config_path: Path | None = None):
     from textual.command import SimpleCommand
     from textual.containers import Container, Horizontal, Vertical
     from textual.suggester import Suggester
-    from textual.widgets import Footer, Header, Input, RichLog, Static
+    from textual.widgets import Footer, Header, Input, RichLog, Select, Static
+
+    from code_ai.ui.terminal.approval import TerminalApprovalGateway
 
     class SlashCommandSuggester(Suggester):
         async def get_suggestion(self, value: str) -> str | None:
@@ -42,6 +65,83 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 return
             super().action_cursor_left(select)
 
+    class WorkingIndicator(Static):
+        """Animated "the agent is busy" indicator shown below the conversation.
+
+        A single fast timer drives everything: frames advance at the selected
+        style's interval while the color pulse is derived from wall-clock time,
+        so even single-glyph styles stay silky. The timer is paused whenever the
+        agent is idle, so it costs nothing when nothing is happening.
+        """
+
+        TICK = 0.06
+
+        def __init__(self, style: SpinnerStyle, **kwargs: Any) -> None:
+            super().__init__("", **kwargs)
+            self._style = style
+            self._label = "working"
+            self._active = False
+            self._frame = 0
+            self._start = 0.0
+            self._last_frame = 0.0
+            self._timer = None
+
+        def on_mount(self) -> None:
+            self._timer = self.set_interval(self.TICK, self._tick, pause=True)
+            self._render_idle()
+
+        def set_style(self, style: SpinnerStyle) -> None:
+            self._style = style
+            self._frame = 0
+            if self._active:
+                self._render_active()
+            else:
+                self._render_idle()
+
+        def set_running(self, running: bool, label: str = "working") -> None:
+            self._label = label
+            if running and not self._active:
+                self._active = True
+                now = monotonic()
+                self._start = now
+                self._last_frame = now
+                self._frame = 0
+                if self._timer is not None:
+                    self._timer.resume()
+                self._render_active(now)
+            elif not running and self._active:
+                self._active = False
+                if self._timer is not None:
+                    self._timer.pause()
+                self._render_idle()
+
+        def _tick(self) -> None:
+            now = monotonic()
+            if now - self._last_frame >= self._style.interval:
+                self._frame += 1
+                self._last_frame = now
+            self._render_active(now)
+
+        def _render_active(self, now: float | None = None) -> None:
+            now = monotonic() if now is None else now
+            frames = self._style.frames
+            glyph = frames[self._frame % len(frames)]
+            if self._style.pulse:
+                color = spinner_color((now - self._start) / WORKING_PULSE_PERIOD)
+            else:
+                color = WORKING_BASE_COLOR
+            seconds = int(now - self._start)
+            text = Text()
+            text.append(glyph, style=f"bold {color}")
+            text.append(
+                f"  {self._label} ({seconds}s · ctrl+c to interrupt)",
+                style=WORKING_LABEL_STYLE,
+            )
+            self.update(text)
+
+        def _render_idle(self) -> None:
+            self.update(Text(self._style.frames[0], style=WORKING_IDLE_STYLE))
+
     class CodeAITerminalApp(App[None]):
         CSS_PATH = "theme.tcss"
         BINDINGS = [
@@ -53,6 +153,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
         def __init__(self) -> None:
             super().__init__()
             self.vm = TerminalViewModel()
+            self.vm.permission_mode = application.session.config.permission_mode
             self.controller = TerminalController(application, self.vm)
             self.follow_output = True
 
@@ -71,18 +172,31 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                         yield Static("SESSION", classes="panel-title")
                         yield Static("", id="session-info")
                     yield RichLog(id="conversation", wrap=True, highlight=False, markup=False)
+                yield WorkingIndicator(
+                    resolve_spinner(application.session.config.terminal_spinner),
+                    id="working-indicator",
+                )
                 suggestions = Static("", id="command-suggestions")
                 suggestions.display = False
                 yield suggestions
-                yield CommandInput(
-                    placeholder="you>",
-                    id="input",
-                    suggester=SlashCommandSuggester(case_sensitive=True),
-                )
+                with Horizontal(id="input-row"):
+                    yield Select(
+                        _PERMISSION_MODE_OPTIONS,
+                        value=application.session.config.permission_mode,
+                        allow_blank=False,
+                        id="mode-select",
+                    )
+                    yield CommandInput(
+                        placeholder="you>",
+                        id="input",
+                        suggester=SlashCommandSuggester(case_sensitive=True),
+                    )
             yield Footer()
 
         async def on_mount(self) -> None:
             application.subscribe(self._on_event)
+            # Route gated tool calls through an interactive approve/deny modal.
+            application.orchestrator.approval_gateway = TerminalApprovalGateway(self)
             self._apply_configured_terminal_theme()
             self.theme_changed_signal.subscribe(self, self._persist_terminal_theme)
             await application.start()
@@ -104,6 +218,9 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 "tool.call.started",
                 "tool.call.completed",
                 "tool.call.failed",
+                "tool.approval.requested",
+                "tool.approval.resolved",
+                "permission.mode.changed",
                 "planning.plan.created",
                 "planning.plan.revised",
                 "planning.step.started",
@@ -142,6 +259,9 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 await self.controller.set_planner_mode(mode)
                 self._append_conversation_line(f"command> Planner mode set to {mode}")
                 return
+            if text.strip() == "/mode" or text.strip().startswith("/mode "):
+                await self._handle_mode_command(text.strip())
+                return
             if text.strip() == "/deep-plan":
                 self._append_conversation_line(await self.controller.deep_plan())
                 return
@@ -170,6 +290,8 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                     self._apply_configured_terminal_theme()
                 if stripped.startswith("/config banner-font "):
                     self._refresh_logo()
+                if stripped.startswith("/config spinner "):
+                    self._refresh_spinner()
                 return
             asyncio.create_task(self.controller.submit(text))
 
@@ -180,6 +302,71 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 "Change the banner art font",
                 self.action_change_banner_font,
             )
+            yield SystemCommand(
+                "Working Spinner",
+                "Change the working-indicator animation",
+                self.action_change_spinner,
+            )
+
+        async def on_select_changed(self, event: Select.Changed) -> None:
+            if event.select.id != "mode-select":
+                return
+            value = event.value
+            if not isinstance(value, str):
+                return
+            await self._apply_permission_mode(value)
+
+        async def _handle_mode_command(self, text: str) -> None:
+            modes = {"ask", "auto", "bypass"}
+            parts = text.split(maxsplit=1)
+            requested = parts[1].strip().lower() if len(parts) > 1 else ""
+            if requested not in modes:
+                current = application.session.config.permission_mode
+                self._append_conversation_line(
+                    "command> Permission modes:\n"
+                    "  ask    - prompt before tools that write/run; escalate denials\n"
+                    "  auto   - run allowed tools freely; only ask when policy blocks\n"
+                    "  bypass - never prompt (run everything)\n"
+                    f"current: {current}\n"
+                    "usage: /mode ask | /mode auto | /mode bypass"
+                )
+                return
+            await self._apply_permission_mode(requested)
+
+        async def _apply_permission_mode(self, requested: str) -> None:
+            # No-op when already active (e.g. the dropdown's initial Changed on
+            # mount, or a re-selection of the current mode); just keep widgets synced.
+            if requested == application.session.config.permission_mode:
+                self.vm.permission_mode = requested
+                self._sync_mode_select(requested)
+                return
+            try:
+                await self.controller.set_permission_mode(requested)
+            except Exception as exc:
+                self._append_conversation_line(f"warning> Could not set mode: {exc}")
+                self._sync_mode_select(application.session.config.permission_mode)
+                return
+            self.vm.permission_mode = requested
+            self._sync_mode_select(requested)
+            try:
+                persist_config_updates(
+                    application.session.config,
+                    {"permission_mode": requested},
+                    explicit_path=config_path,
+                )
+            except Exception as exc:
+                self._append_conversation_line(
+                    f"warning> Mode set for this session but not persisted: {exc}"
+                )
+            self._refresh_status()
+
+        def _sync_mode_select(self, mode: str) -> None:
+            try:
+                select = self.query_one("#mode-select", Select)
+            except Exception:
+                return
+            if select.value != mode:
+                select.value = mode
 
         def _set_command_suggestions(self, text: str) -> None:
             suggestions = self.query_one("#command-suggestions", Static)
@@ -246,6 +433,45 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 placeholder="Search for banner fonts...",
             )
 
+        def _refresh_spinner(self) -> None:
+            config = application.session.config
+            self.query_one("#working-indicator", WorkingIndicator).set_style(
+                resolve_spinner(config.terminal_spinner)
+            )
+
+        def _persist_spinner(self, spinner: str) -> None:
+            config = application.session.config
+            if config.terminal_spinner == spinner:
+                self._refresh_spinner()
+                return
+            try:
+                validated = persist_config_updates(
+                    config,
+                    {"terminal_spinner": spinner},
+                    explicit_path=config_path,
+                )
+            except Exception as exc:
+                self._append_conversation_line(
+                    f"warning> Could not persist spinner: {exc}"
+                )
+                return
+            config.terminal_spinner = validated.terminal_spinner
+            self._refresh_spinner()
+
+        def action_change_spinner(self) -> None:
+            self.search_commands(
+                [
+                    SimpleCommand(
+                        style.label,
+                        partial(self._persist_spinner, style.key),
+                        f"Use the '{style.label}' working animation ("
+                        f"{''.join(style.frames)}).",
+                    )
+                    for style in WORKING_SPINNERS.values()
+                ],
+                placeholder="Search for working spinners...",
+            )
+
         def _persist_terminal_theme(self, theme) -> None:
             theme_name = getattr(theme, "name", self.theme)
             config = application.session.config
@@ -281,10 +507,14 @@ def create_terminal_app(application, *, config_path: Path | None = None):
         def _refresh_status(self) -> None:
             self.query_one("#statusline", Static).update(
                 f"{self.vm.status} | {self.vm.phase} | {application.session.config.model} | "
-                f"{application.session.config.workspace.name} | plan {self.vm.plan_progress} | "
-                f"ctx {self.vm.active_context_tokens}"
+                f"{application.session.config.workspace.name} | perm {self.vm.permission_mode} | "
+                f"plan {self.vm.plan_progress} | ctx {self.vm.active_context_tokens}"
             )
             self.query_one("#session-info", Static).update(self._session_text())
+            working = self.vm.status in WORKING_STATES
+            self.query_one("#working-indicator", WorkingIndicator).set_running(
+                working, working_label(self.vm.status)
+            )
 
         def _session_text(self) -> str:
             config = application.session.config
@@ -296,6 +526,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 f"provider: {config.base_url}\n"
                 f"model: {config.model}\n"
                 f"api mode: {config.api_mode}\n"
+                f"permission: {self.vm.permission_mode}\n"
                 f"planner: {self.vm.planner_mode}\n"
                 f"plan progress: {self.vm.plan_progress}\n"
                 f"current step: {self.vm.current_step}\n"

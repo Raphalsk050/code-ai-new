@@ -69,6 +69,22 @@ def test_terminal_banner_font_loads_from_config_file(tmp_path) -> None:
     assert config.terminal_banner_font == "future_1"
 
 
+def test_terminal_spinner_loads_from_config_file(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "api_mode": "ollama",
+                "workspace": str(tmp_path),
+                "terminal_spinner": "braille-full",
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(explicit_path=config_path)
+    assert config.terminal_spinner == "braille-full"
+
+
 def test_invalid_budget_is_rejected(tmp_path) -> None:
     config_path = tmp_path / "config.json"
     config_path.write_text(
@@ -103,6 +119,102 @@ def test_redacted_config_output_hides_api_key(tmp_path) -> None:
     assert "sk-real-secret" not in rendered
     assert "<redacted>" in rendered
     assert '"max_context_tokens": 256000' in rendered
+
+
+def test_sampling_loads_from_config_file(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "api_mode": "completions",
+                "base_url": "http://localhost:11434/v1",
+                "workspace": str(tmp_path),
+                "sampling": {
+                    "temperature": 0.6,
+                    "top_p": 0.95,
+                    "presence_penalty": 0.0,
+                    "top_k": 20,
+                    "min_p": 0,
+                    "extra_body": {"repetition_penalty": 1.05},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(explicit_path=config_path)
+    sampling = config.sampling
+    assert sampling.temperature == 0.6
+    assert sampling.top_k == 20
+
+    chat = sampling.chat_completion_kwargs()
+    assert chat["temperature"] == 0.6
+    assert chat["top_p"] == 0.95
+    assert chat["presence_penalty"] == 0.0
+    # top_k/min_p are not OpenAI fields -> forwarded via extra_body alongside passthrough.
+    assert chat["extra_body"] == {"repetition_penalty": 1.05, "top_k": 20, "min_p": 0.0}
+
+    responses = sampling.responses_kwargs()
+    assert "presence_penalty" not in responses
+    assert responses["extra_body"]["top_k"] == 20
+
+
+def test_sampling_omits_unset_fields(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "api_mode": "completions",
+                "workspace": str(tmp_path),
+                "sampling": {
+                    "temperature": None,
+                    "top_p": None,
+                    "presence_penalty": None,
+                    "top_k": None,
+                    "min_p": None,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(explicit_path=config_path)
+    assert config.sampling.chat_completion_kwargs() == {}
+
+
+def test_sampling_reasoning_controls_for_responses(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "api_mode": "responses",
+                "base_url": "https://api.openai.com/v1",
+                "api_key": "sk-test",
+                "workspace": str(tmp_path),
+                "sampling": {"reasoning_effort": "high", "reasoning_summary": "auto"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(explicit_path=config_path)
+    assert config.sampling.responses_kwargs()["reasoning"] == {
+        "effort": "high",
+        "summary": "auto",
+    }
+
+
+def test_sampling_rejects_invalid_reasoning_effort(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "api_mode": "completions",
+                "workspace": str(tmp_path),
+                "sampling": {"reasoning_effort": "turbo"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigurationError):
+        load_config(explicit_path=config_path)
 
 
 def test_config_init_accepts_overrides_after_subcommand(tmp_path) -> None:

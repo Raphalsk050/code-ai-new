@@ -319,7 +319,12 @@ class FakeCodeBlockThenToolsProvider:
 
 async def test_mutation_task_rejects_code_block_until_tools_verify_and_complete(tmp_path) -> None:
     config = AppConfig.from_mapping(
-        {"api_mode": "ollama", "workspace": str(tmp_path), "model": "fake"}
+        {
+            "api_mode": "ollama",
+            "workspace": str(tmp_path),
+            "model": "fake",
+            "permission_mode": "bypass",
+        }
     )
     provider = FakeCodeBlockThenToolsProvider(tmp_path)
     app = build_application(config=config, provider=provider)

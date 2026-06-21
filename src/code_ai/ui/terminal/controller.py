@@ -28,6 +28,9 @@ class TerminalController:
     async def set_planner_mode(self, mode: str) -> None:
         await self.app.set_planner_mode(mode)
 
+    async def set_permission_mode(self, mode: str) -> None:
+        await self.app.set_permission_mode(mode)
+
     async def deep_plan(self) -> str:
         return await self.app.request_deep_plan(write_to_workspace=False)
 

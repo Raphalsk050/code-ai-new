@@ -24,6 +24,10 @@ edit_code. Do not substitute a code block, patch, diff, or explanation for a
 workspace modification. Do not claim that a command succeeded unless a tool
 returned that result.
 
+Whenever the task requires creating or modifying files, do not write the code in the chat. Go directly to the tool call (write_file or edit_code).
+
+It is forbidden to provide “previews,” “examples,” or “code blocks” in the chat that replace the actual action in the workspace. If you need to explain what you are doing, do so after executing the tool, or keep it concise, but never use the chat as a substitute for modifying the file. The only source of truth must be the file on disk, not the text in the chat.
+
 Work only on the current runtime task state when it is provided. Use only the
 allowed tools, gather the required evidence for the current step, and let the
 runtime evaluate progress. Ordinary assistant text does not complete an

@@ -1,0 +1,154 @@
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+
+from code_ai.bootstrap import build_application
+from code_ai.config.models import AppConfig
+from code_ai.core.approval import (
+    ApprovalDecision,
+    ApprovalScope,
+    DenyAllGateway,
+    _StaticGateway,
+    call_signature,
+)
+from code_ai.core.planning.policy import PolicyDecision
+from code_ai.providers.models import (
+    ModelRequest,
+    ModelResponse,
+    ProviderCapabilities,
+    ProviderEvent,
+    ToolCall,
+)
+
+
+class _StubProvider:
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        return ProviderCapabilities(streaming=True, tool_calling=True)
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        yield ProviderEvent(kind="completed", response=ModelResponse(text=""))
+
+    async def complete(self, request: ModelRequest) -> ModelResponse:
+        return ModelResponse(text="")
+
+    async def close(self) -> None:
+        return None
+
+
+def _app(tmp_path, permission_mode: str, gateway=None):
+    config = AppConfig.from_mapping(
+        {
+            "api_mode": "ollama",
+            "workspace": str(tmp_path),
+            "model": "fake",
+            "permission_mode": permission_mode,
+        }
+    )
+    app = build_application(config=config, provider=_StubProvider())
+    if gateway is not None:
+        app.orchestrator.approval_gateway = gateway
+    return app
+
+
+_DENIED = PolicyDecision(False, "blocked in this phase", set())
+_ALLOWED = PolicyDecision(True, "allowed", set())
+
+
+def _call(name: str = "execute_command", **arguments) -> ToolCall:
+    return ToolCall(id="call-1", name=name, arguments=arguments or {"command": "pip install x"})
+
+
+# --------------------------------------------------------------------------- #
+# Pure helpers
+# --------------------------------------------------------------------------- #
+def test_call_signature_keys_execute_command_on_program() -> None:
+    assert (
+        call_signature("execute_command", {"command": "pip install rich"})
+        == "execute_command:pip"
+    )
+    assert (
+        call_signature("execute_command", {"argv": ["mkdir", "-p", "a"]})
+        == "execute_command:mkdir"
+    )
+    assert call_signature("write_file", {"path": "a.py"}) == "write_file"
+
+
+def test_approval_decision_flags() -> None:
+    assert ApprovalDecision.allow_once().approved is True
+    assert ApprovalDecision.allow_once().remember is False
+    assert ApprovalDecision.allow_session().remember is True
+    assert ApprovalDecision.deny().approved is False
+    assert ApprovalDecision.deny().scope is ApprovalScope.DENY
+
+
+# --------------------------------------------------------------------------- #
+# Orchestrator authorization
+# --------------------------------------------------------------------------- #
+async def test_ask_mode_prompts_and_allow_once_overrides_policy_denial(tmp_path) -> None:
+    gateway = _StaticGateway(ApprovalDecision.allow_once())
+    app = _app(tmp_path, "ask", gateway)
+    auth = await app.orchestrator._authorize_call(_call(), _DENIED, None)
+    assert auth.allowed is True
+    assert auth.overrode_policy is True
+    assert len(gateway.requests) == 1
+    # allow_once does not persist; the signature is not remembered.
+    assert app.orchestrator._session_allowlist == set()
+
+
+async def test_allow_session_is_remembered_and_skips_second_prompt(tmp_path) -> None:
+    gateway = _StaticGateway(ApprovalDecision.allow_session())
+    app = _app(tmp_path, "ask", gateway)
+    first = await app.orchestrator._authorize_call(_call(), _DENIED, None)
+    assert first.allowed is True
+    assert "execute_command:pip" in app.orchestrator._session_allowlist
+    second = await app.orchestrator._authorize_call(_call(), _DENIED, None)
+    assert second.allowed is True
+    # The gateway was only consulted once; the second call used the allowlist.
+    assert len(gateway.requests) == 1
+
+
+async def test_deny_keeps_tool_blocked(tmp_path) -> None:
+    gateway = _StaticGateway(ApprovalDecision.deny("nope"))
+    app = _app(tmp_path, "ask", gateway)
+    auth = await app.orchestrator._authorize_call(_call(), _ALLOWED, None)
+    assert auth.allowed is False
+    assert "nope" in auth.reason
+
+
+async def test_ask_mode_does_not_prompt_for_read_only_allowed_tool(tmp_path) -> None:
+    gateway = _StaticGateway(ApprovalDecision.deny())
+    app = _app(tmp_path, "ask", gateway)
+    auth = await app.orchestrator._authorize_call(_call("list_files", path="."), _ALLOWED, None)
+    assert auth.allowed is True
+    assert gateway.requests == []
+
+
+async def test_auto_mode_runs_allowed_sensitive_tool_without_prompt(tmp_path) -> None:
+    gateway = _StaticGateway(ApprovalDecision.deny())
+    app = _app(tmp_path, "auto", gateway)
+    auth = await app.orchestrator._authorize_call(_call(), _ALLOWED, None)
+    assert auth.allowed is True
+    assert gateway.requests == []
+
+
+async def test_auto_mode_escalates_policy_denial_to_user(tmp_path) -> None:
+    gateway = _StaticGateway(ApprovalDecision.allow_once())
+    app = _app(tmp_path, "auto", gateway)
+    auth = await app.orchestrator._authorize_call(_call(), _DENIED, None)
+    assert auth.allowed is True
+    assert len(gateway.requests) == 1
+
+
+async def test_bypass_mode_never_prompts(tmp_path) -> None:
+    gateway = _StaticGateway(ApprovalDecision.deny())
+    app = _app(tmp_path, "bypass", gateway)
+    auth = await app.orchestrator._authorize_call(_call(), _DENIED, None)
+    assert auth.allowed is True
+    assert gateway.requests == []
+
+
+async def test_deny_all_gateway_blocks_when_no_ui(tmp_path) -> None:
+    app = _app(tmp_path, "ask", DenyAllGateway())
+    auth = await app.orchestrator._authorize_call(_call(), _DENIED, None)
+    assert auth.allowed is False

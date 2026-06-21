@@ -5,11 +5,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from code_ai.config.defaults import DEFAULT_BUDGETS, DEFAULT_PLANNER
+from code_ai.config.defaults import DEFAULT_BUDGETS, DEFAULT_PLANNER, DEFAULT_SAMPLING
 from code_ai.core.errors import ConfigurationError
 from code_ai.util.redaction import redact_mapping
 
 SUPPORTED_API_MODES = {"responses", "completions", "ollama"}
+SUPPORTED_PERMISSION_MODES = {"ask", "auto", "bypass"}
+SUPPORTED_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
+SUPPORTED_REASONING_SUMMARIES = {"auto", "concise", "detailed"}
 
 
 def normalize_api_mode(value: str) -> str:
@@ -150,13 +153,165 @@ def _resolve_tool_policy(data: dict[str, Any] | None) -> str:
     return str(DEFAULT_PLANNER["tool_policy"])
 
 
+def _opt_float(value: Any) -> float | None:
+    return None if value is None else float(value)
+
+
+def _opt_int(value: Any) -> int | None:
+    return None if value is None else int(value)
+
+
+def _opt_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    return text or None
+
+
+@dataclass(slots=True)
+class SamplingConfig:
+    """Model sampling and reasoning controls shared by every provider.
+
+    Standard fields map directly onto the OpenAI request body. ``top_k`` and
+    ``min_p`` are not part of the OpenAI schema, so they are forwarded through
+    ``extra_body`` for OpenAI-compatible servers (vLLM, SGLang, ...).
+    ``reasoning_effort``/``reasoning_summary`` only apply to the Responses API.
+    Any value left as ``None`` is omitted so the endpoint default applies.
+    """
+
+    temperature: float | None = None
+    top_p: float | None = None
+    presence_penalty: float | None = None
+    frequency_penalty: float | None = None
+    top_k: int | None = None
+    min_p: float | None = None
+    reasoning_effort: str | None = None
+    reasoning_summary: str | None = None
+    extra_body: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any] | None) -> SamplingConfig:
+        values = dict(DEFAULT_SAMPLING)
+        if data:
+            values.update(data)
+        extra = values.get("extra_body") or {}
+        if not isinstance(extra, dict):
+            raise ConfigurationError("sampling.extra_body must be a JSON object.")
+        return cls(
+            temperature=_opt_float(values.get("temperature")),
+            top_p=_opt_float(values.get("top_p")),
+            presence_penalty=_opt_float(values.get("presence_penalty")),
+            frequency_penalty=_opt_float(values.get("frequency_penalty")),
+            top_k=_opt_int(values.get("top_k")),
+            min_p=_opt_float(values.get("min_p")),
+            reasoning_effort=_opt_str(values.get("reasoning_effort")),
+            reasoning_summary=_opt_str(values.get("reasoning_summary")),
+            extra_body=dict(extra),
+        )
+
+    def validate(self) -> None:
+        if self.temperature is not None and not 0.0 <= self.temperature <= 2.0:
+            raise ConfigurationError("sampling.temperature must be between 0.0 and 2.0.")
+        if self.top_p is not None and not 0.0 < self.top_p <= 1.0:
+            raise ConfigurationError("sampling.top_p must be within (0.0, 1.0].")
+        if self.min_p is not None and not 0.0 <= self.min_p <= 1.0:
+            raise ConfigurationError("sampling.min_p must be between 0.0 and 1.0.")
+        if self.top_k is not None and self.top_k < 0:
+            raise ConfigurationError("sampling.top_k must be zero or positive.")
+        for name, value in (
+            ("presence_penalty", self.presence_penalty),
+            ("frequency_penalty", self.frequency_penalty),
+        ):
+            if value is not None and not -2.0 <= value <= 2.0:
+                raise ConfigurationError(f"sampling.{name} must be between -2.0 and 2.0.")
+        if (
+            self.reasoning_effort is not None
+            and self.reasoning_effort not in SUPPORTED_REASONING_EFFORTS
+        ):
+            raise ConfigurationError(
+                "sampling.reasoning_effort must be one of "
+                f"{sorted(SUPPORTED_REASONING_EFFORTS)}."
+            )
+        if (
+            self.reasoning_summary is not None
+            and self.reasoning_summary not in SUPPORTED_REASONING_SUMMARIES
+        ):
+            raise ConfigurationError(
+                "sampling.reasoning_summary must be one of "
+                f"{sorted(SUPPORTED_REASONING_SUMMARIES)}."
+            )
+
+    def _extra_body_with_passthrough(self) -> dict[str, Any]:
+        extra_body = dict(self.extra_body)
+        if self.top_k is not None:
+            extra_body.setdefault("top_k", self.top_k)
+        if self.min_p is not None:
+            extra_body.setdefault("min_p", self.min_p)
+        return extra_body
+
+    def chat_completion_kwargs(self) -> dict[str, Any]:
+        """Sampling kwargs for the OpenAI Chat Completions endpoint."""
+        kwargs: dict[str, Any] = {}
+        if self.temperature is not None:
+            kwargs["temperature"] = self.temperature
+        if self.top_p is not None:
+            kwargs["top_p"] = self.top_p
+        if self.presence_penalty is not None:
+            kwargs["presence_penalty"] = self.presence_penalty
+        if self.frequency_penalty is not None:
+            kwargs["frequency_penalty"] = self.frequency_penalty
+        extra_body = self._extra_body_with_passthrough()
+        if extra_body:
+            kwargs["extra_body"] = extra_body
+        return kwargs
+
+    def responses_kwargs(self) -> dict[str, Any]:
+        """Sampling kwargs for the OpenAI Responses endpoint."""
+        kwargs: dict[str, Any] = {}
+        if self.temperature is not None:
+            kwargs["temperature"] = self.temperature
+        if self.top_p is not None:
+            kwargs["top_p"] = self.top_p
+        # presence/frequency penalties are not part of the Responses schema.
+        reasoning: dict[str, Any] = {}
+        if self.reasoning_effort is not None:
+            reasoning["effort"] = self.reasoning_effort
+        if self.reasoning_summary is not None:
+            reasoning["summary"] = self.reasoning_summary
+        if reasoning:
+            kwargs["reasoning"] = reasoning
+        extra_body = self._extra_body_with_passthrough()
+        if extra_body:
+            kwargs["extra_body"] = extra_body
+        return kwargs
+
+    def ollama_options(self) -> dict[str, Any]:
+        """Sampling options for the native Ollama ``/api/chat`` endpoint."""
+        options: dict[str, Any] = {}
+        if self.temperature is not None:
+            options["temperature"] = self.temperature
+        if self.top_p is not None:
+            options["top_p"] = self.top_p
+        if self.top_k is not None:
+            options["top_k"] = self.top_k
+        if self.min_p is not None:
+            options["min_p"] = self.min_p
+        if self.presence_penalty is not None:
+            options["presence_penalty"] = self.presence_penalty
+        if self.frequency_penalty is not None:
+            options["frequency_penalty"] = self.frequency_penalty
+        return options
+
+
 @dataclass(slots=True)
 class AppConfig:
     api_key: str = ""
     api_mode: str = "responses"
     base_url: str = "http://localhost:11434/v1"
+    permission_mode: str = "ask"
     budgets: BudgetConfig = field(default_factory=BudgetConfig)
     planner: PlannerConfig = field(default_factory=PlannerConfig)
+    sampling: SamplingConfig = field(default_factory=SamplingConfig)
     language: str = "en"
     model: str = "gemma4:31b-cloud"
     show_ui: bool = True
@@ -170,6 +325,7 @@ class AppConfig:
     headless_event_format: str = "text"
     terminal_theme: str = "textual-dark"
     terminal_banner_font: str = "tarty2"
+    terminal_spinner: str = "ascii"
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> AppConfig:
@@ -179,13 +335,18 @@ class AppConfig:
         planner = PlannerConfig.from_mapping(
             data.get("planner") if isinstance(data.get("planner"), dict) else None
         )
+        sampling = SamplingConfig.from_mapping(
+            data.get("sampling") if isinstance(data.get("sampling"), dict) else None
+        )
         workspace = Path(str(data.get("workspace", Path.cwd()))).expanduser()
         config = cls(
             api_key=str(data.get("api_key", "")),
             api_mode=normalize_api_mode(str(data.get("api_mode", "responses"))),
             base_url=str(data.get("base_url", "http://localhost:11434/v1")),
+            permission_mode=str(data.get("permission_mode", "ask")).strip().lower(),
             budgets=budgets,
             planner=planner,
+            sampling=sampling,
             language=str(data.get("language", "en")),
             model=str(data.get("model", "gemma4:31b-cloud")),
             show_ui=bool(data.get("show_ui", True)),
@@ -199,6 +360,7 @@ class AppConfig:
             headless_event_format=str(data.get("headless_event_format", "text")),
             terminal_theme=str(data.get("terminal_theme", "textual-dark")),
             terminal_banner_font=str(data.get("terminal_banner_font", "tarty2")),
+            terminal_spinner=str(data.get("terminal_spinner", "ascii")),
         )
         config.validate()
         return config
@@ -207,6 +369,12 @@ class AppConfig:
         self.api_mode = normalize_api_mode(self.api_mode)
         if self.api_mode not in SUPPORTED_API_MODES:
             raise ConfigurationError(f"Unsupported api_mode: {self.api_mode}.")
+        self.permission_mode = self.permission_mode.strip().lower()
+        if self.permission_mode not in SUPPORTED_PERMISSION_MODES:
+            raise ConfigurationError(
+                f"Unsupported permission_mode: {self.permission_mode}. "
+                f"Choose one of {sorted(SUPPORTED_PERMISSION_MODES)}."
+            )
         if not self.model.strip():
             raise ConfigurationError("model must be non-empty.")
         if not self.workspace.exists() or not self.workspace.is_dir():
@@ -214,6 +382,7 @@ class AppConfig:
         self.workspace = self.workspace.resolve()
         self.budgets.validate()
         self.planner.validate()
+        self.sampling.validate()
         parsed = urlparse(self.base_url)
         if self.api_mode in {"responses", "completions", "ollama"} and parsed.scheme not in {
             "http",
@@ -231,6 +400,8 @@ class AppConfig:
             raise ConfigurationError("terminal_theme must be non-empty.")
         if not self.terminal_banner_font.strip():
             raise ConfigurationError("terminal_banner_font must be non-empty.")
+        if not self.terminal_spinner.strip():
+            raise ConfigurationError("terminal_spinner must be non-empty.")
         if (
             self.api_mode in {"responses", "completions"}
             and not self.api_key

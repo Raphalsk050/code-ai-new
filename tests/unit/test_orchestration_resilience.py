@@ -21,7 +21,14 @@ from code_ai.tools.registry import ToolRegistry
 
 
 def _config(tmp_path, **overrides) -> AppConfig:
-    data = {"api_mode": "ollama", "workspace": str(tmp_path), "model": "fake"}
+    # These tests exercise tool execution directly, not the permission flow, so
+    # they run in bypass mode (no interactive approver is attached).
+    data = {
+        "api_mode": "ollama",
+        "workspace": str(tmp_path),
+        "model": "fake",
+        "permission_mode": "bypass",
+    }
     data.update(overrides)
     return AppConfig.from_mapping(data)
 

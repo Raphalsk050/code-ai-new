@@ -85,6 +85,22 @@ class CodeAIApplication:
             raise RuntimeError("Planner is not configured.")
         await self.orchestrator.planner.set_mode(PlannerMode(mode))
 
+    async def set_permission_mode(self, mode: str) -> None:
+        from code_ai.config.models import SUPPORTED_PERMISSION_MODES
+
+        normalized = mode.strip().lower()
+        if normalized not in SUPPORTED_PERMISSION_MODES:
+            raise ValueError(
+                f"Unsupported permission mode: {mode}. "
+                f"Choose one of {sorted(SUPPORTED_PERMISSION_MODES)}."
+            )
+        # The orchestrator reads config.permission_mode live, so updating it in
+        # place takes effect on the next tool call.
+        self.session.config.permission_mode = normalized
+        await self.event_bus.emit(
+            "permission.mode.changed", {"mode": normalized}, source="app"
+        )
+
     async def request_deep_plan(self, *, write_to_workspace: bool = False) -> str:
         if not self.orchestrator.planner:
             raise RuntimeError("Planner is not configured.")

@@ -50,6 +50,43 @@ def _is_transient_exception(exc: Exception) -> bool:
     return status in {408, 409, 429, 500, 502, 503, 504}
 
 
+# Field names an endpoint may reject when it does not understand a sampling
+# control we sent. Used to decide whether a failed request can be retried
+# without sampling kwargs rather than surfaced as a hard error.
+_SAMPLING_ERROR_HINTS = (
+    "temperature",
+    "top_p",
+    "top_k",
+    "min_p",
+    "presence_penalty",
+    "frequency_penalty",
+    "extra_body",
+    "reasoning",
+    "unsupported parameter",
+    "unsupported value",
+    "unknown field",
+)
+
+
+def _looks_like_sampling_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(hint in text for hint in _SAMPLING_ERROR_HINTS)
+
+
+def _reasoning_delta(value: Any) -> str:
+    """Extract reasoning text from an OpenAI-compatible delta/message.
+
+    Reasoning models served through vLLM/SGLang and similar OpenAI-compatible
+    backends expose chain-of-thought in a non-standard ``reasoning_content``
+    (sometimes ``reasoning``) field alongside the regular ``content``.
+    """
+    for key in ("reasoning_content", "reasoning"):
+        text = object_get(value, key, "")
+        if text:
+            return str(text)
+    return ""
+
+
 class OpenAIChatCompletionsProvider:
     """OpenAI-compatible Chat Completions adapter."""
 
@@ -77,6 +114,7 @@ class OpenAIChatCompletionsProvider:
             image_support=False,
         )
         self._stream_options_supported = True
+        self._sampling_supported = True
 
     @property
     def capabilities(self) -> ProviderCapabilities:
@@ -128,6 +166,8 @@ class OpenAIChatCompletionsProvider:
             kwargs["tool_choice"] = "auto"
         if self._stream_options_supported:
             kwargs["stream_options"] = {"include_usage": True}
+        if self._sampling_supported:
+            kwargs.update(self._config.sampling.chat_completion_kwargs())
 
         try:
             stream = await self._client.chat.completions.create(**kwargs)
@@ -141,12 +181,22 @@ class OpenAIChatCompletionsProvider:
                 async for event in self._stream_once(request):
                     yield event
                 return
+            if self._sampling_supported and _looks_like_sampling_error(exc):
+                self._sampling_supported = False
+                yield ProviderEvent(
+                    kind="warning",
+                    warning="Endpoint rejected sampling parameters; retrying without them.",
+                )
+                async for event in self._stream_once(request):
+                    yield event
+                return
             if _is_transient_exception(exc):
                 raise TransientProviderError(str(exc)) from exc
             raise
 
         tool_fragments: dict[int, dict[str, str]] = {}
         text_parts: list[str] = []
+        reasoning_parts: list[str] = []
         usage: TokenUsage | None = None
         finish = FinishReason.UNKNOWN
         async for chunk in stream:
@@ -157,6 +207,10 @@ class OpenAIChatCompletionsProvider:
             choice = choices[0]
             finish = _finish_reason(object_get(choice, "finish_reason")) or finish
             delta = object_get(choice, "delta", {})
+            reasoning = _reasoning_delta(delta)
+            if reasoning:
+                reasoning_parts.append(reasoning)
+                yield ProviderEvent(kind="reasoning_delta", reasoning_delta=reasoning)
             content = object_get(delta, "content", "")
             if content:
                 text_parts.append(content)
@@ -184,6 +238,7 @@ class OpenAIChatCompletionsProvider:
             )
         response = ModelResponse(
             text="".join(text_parts),
+            reasoning="".join(reasoning_parts),
             tool_calls=tool_calls,
             usage=usage,
             finish_reason=FinishReason.TOOL_CALLS if tool_calls else finish,

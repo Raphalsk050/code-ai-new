@@ -132,8 +132,11 @@ class NativeOllamaProvider:
         }
         if request.tools:
             payload["tools"] = tools_to_chat(request.tools)
+        options = self._config.sampling.ollama_options()
         if request.max_output_tokens:
-            payload["options"] = {"num_predict": request.max_output_tokens}
+            options["num_predict"] = request.max_output_tokens
+        if options:
+            payload["options"] = options
 
         text_parts: list[str] = []
         reasoning_parts: list[str] = []
