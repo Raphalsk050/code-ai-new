@@ -44,6 +44,17 @@ Screen {
   padding: 1;
 }
 
+#plan {
+  width: 38;
+  min-width: 30;
+  border: solid #8892a0;
+  padding: 1;
+}
+
+#plan-body {
+  height: 1fr;
+}
+
 #working-indicator {
   height: 1;
   padding: 0 1;

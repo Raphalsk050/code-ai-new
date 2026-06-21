@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from code_ai.events.models import EventEnvelope
+from code_ai.ui.terminal.widgets import build_plan_steps, plan_is_active
 
 
 @dataclass(slots=True)
@@ -18,10 +19,17 @@ class TerminalViewModel:
     plan_progress: str = "-"
     current_step: str = "-"
     latest_verification_status: str = "unknown"
+    plan_visible: bool = False
+    plan_status: str = ""
+    plan_steps: list[dict[str, str]] = field(default_factory=list)
 
     def apply(self, event: EventEnvelope) -> None:
         if event.event_type == "status.changed":
             self.status = str(event.payload.get("state", self.status))
+            # The turn returning to an idle state means the plan is done with
+            # (answered, finished, or stopped): collapse the plan panel.
+            if self.status in {"READY", "FAILED", "CLOSED"}:
+                self.plan_visible = False
         elif event.event_type == "phase.changed":
             self.phase = str(event.payload.get("phase", self.phase))
         elif event.event_type == "planning.mode.changed":
@@ -67,6 +75,8 @@ class TerminalViewModel:
             missing = event.payload.get("missing_requirements", [])
             self.conversation.append(f"completion> rejected: {missing}")
         elif event.event_type == "assistant.final":
+            # Final evidence reached: collapse the plan panel as the turn closes.
+            self.plan_visible = False
             self.conversation.append(f"ai> {event.payload.get('text', '')}")
         elif event.event_type == "user.message":
             self.conversation.append(f"you> {event.payload.get('text', '')}")
@@ -137,6 +147,12 @@ class TerminalViewModel:
         verification = payload.get("latest_verification_passed")
         if verification is not None:
             self.latest_verification_status = "passed" if verification else "not current"
+        self.plan_status = str(payload.get("status", self.plan_status))
+        steps = build_plan_steps(payload)
+        if steps:
+            self.plan_steps = steps
+        # Show the panel only while a defined plan is actively being worked on.
+        self.plan_visible = plan_is_active(payload) and bool(steps)
 
 
 def _web_search_detail(result: dict[object, object]) -> str:

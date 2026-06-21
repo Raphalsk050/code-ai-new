@@ -183,6 +183,85 @@ def spinner_color(progress: float) -> str:
     return f"#{red:02x}{green:02x}{blue:02x}"
 
 
+# --- Plan panel (planned-steps checklist beside the conversation) -----------
+# Per-step marker glyphs and colors. The running step's glyph is supplied by
+# the live spinner instead of a fixed marker.
+_PLAN_MARKERS = {"done": "✓", "pending": "○", "failed": "✗"}
+_PLAN_TITLE_STYLES = {
+    "done": "#7b8493",
+    "running": "bold #d7dee8",
+    "pending": "#9aa4b2",
+    "failed": "#e0a0a0",
+}
+_PLAN_MARKER_STYLES = {"done": "#48d17a", "pending": "#56606e", "failed": "#e05252"}
+_PLAN_SUB_STYLE = "#56606e"
+_PLAN_HEADER_STYLE = "#8892a0"
+_PLAN_TITLE_WIDTH = 32
+
+
+def plan_is_active(payload: dict[object, object]) -> bool:
+    """True when the plan snapshot describes a plan still being worked on."""
+    return str(payload.get("status") or "") == "ACTIVE"
+
+
+def build_plan_steps(payload: dict[object, object]) -> list[dict[str, str]]:
+    """Reconstruct the ordered step list from a plan snapshot payload.
+
+    ``completed_steps`` and ``remaining_steps`` are both emitted in plan order,
+    and steps run sequentially, so the completed ones are always the prefix.
+    The current step is flagged running (or failed) and the rest pending.
+    """
+    completed = [str(title) for title in (payload.get("completed_steps") or [])]
+    remaining = [str(title) for title in (payload.get("remaining_steps") or [])]
+    current = payload.get("current_step")
+    current_label = None if current is None else str(current)
+    current_status = str(payload.get("current_step_status") or "")
+
+    steps: list[dict[str, str]] = [{"title": title, "status": "done"} for title in completed]
+    for title in remaining:
+        if current_label is not None and title == current_label:
+            status = "failed" if current_status == "FAILED" else "running"
+        else:
+            status = "pending"
+        steps.append({"title": title, "status": status})
+    return steps
+
+
+def _truncate_title(title: str, width: int = _PLAN_TITLE_WIDTH) -> str:
+    return title if len(title) <= width else title[: width - 1] + "…"
+
+
+def render_plan(
+    steps: list[dict[str, str]],
+    progress: str,
+    plan_status: str,
+    running_glyph: str,
+    running_color: str,
+) -> Text:
+    """Render the plan checklist as a Rich Text for the plan panel Static."""
+    text = Text()
+    header = f"{progress}"
+    if plan_status:
+        header += f" · {plan_status.lower()}"
+    text.append(header + "\n", style=_PLAN_HEADER_STYLE)
+
+    for index, step in enumerate(steps):
+        status = step.get("status", "pending")
+        title = _truncate_title(step.get("title", ""))
+        if status == "running":
+            marker, marker_style = running_glyph, f"bold {running_color}"
+        else:
+            marker = _PLAN_MARKERS.get(status, "○")
+            marker_style = _PLAN_MARKER_STYLES.get(status, "#56606e")
+        text.append(marker + " ", style=marker_style)
+        text.append(title, style=_PLAN_TITLE_STYLES.get(status, "#9aa4b2"))
+        if status == "running":
+            text.append("\n  executando", style=_PLAN_SUB_STYLE)
+        if index < len(steps) - 1:
+            text.append("\n")
+    return text
+
+
 FALLBACK_CODE_AI_LOGO_TEXT = "code.ai"
 FALLBACK_CODE_AI_LOGO_ART = "       \n█▀▀ █▀█ █▀▄ █▀▀ ░ ▄▀█ █ \n█▄▄ █▄█ █▄▀ ██▄ ▄ █▀█ █ \n       "
 
