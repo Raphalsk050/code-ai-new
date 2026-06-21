@@ -5,7 +5,13 @@ import asyncio
 from code_ai.config.models import AppConfig
 from code_ai.events.bus import AsyncEventBus
 from code_ai.tools.base import ToolContext
-from code_ai.tools.internal import CompleteTaskTool, FinishDiscoveryTool, RequestExternalGapTool
+from code_ai.core.errors import ToolArgumentError
+from code_ai.tools.internal import (
+    CompleteTaskTool,
+    FinishDiscoveryTool,
+    RequestExternalGapTool,
+    SubmitPlanTool,
+)
 from code_ai.util.paths import WorkspacePolicy
 
 
@@ -51,6 +57,32 @@ async def test_request_external_gap_returns_planner_gap_payload(tmp_path) -> Non
     assert "current version" in result["external_knowledge_gaps"][0][
         "why_local_files_are_insufficient"
     ]
+
+
+async def test_submit_plan_returns_cleaned_step_titles(tmp_path) -> None:
+    context = make_context(tmp_path)
+    tool = SubmitPlanTool()
+
+    assert tool.input_schema["required"] == ["steps"]
+    assert tool.input_schema["properties"]["steps"]["type"] == "array"
+
+    result = await tool.execute(
+        {"steps": ["  Read ROADMAP.md ", "", "Implement the section"]}, context
+    )
+
+    assert result["steps"] == ["Read ROADMAP.md", "Implement the section"]
+
+
+async def test_submit_plan_rejects_empty_steps(tmp_path) -> None:
+    context = make_context(tmp_path)
+    tool = SubmitPlanTool()
+
+    try:
+        await tool.execute({"steps": []}, context)
+    except ToolArgumentError:
+        pass
+    else:  # pragma: no cover - the call must raise
+        raise AssertionError("expected ToolArgumentError for empty steps")
 
 
 async def test_complete_task_defaults_to_success_with_summary_only(tmp_path) -> None:

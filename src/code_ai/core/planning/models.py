@@ -274,6 +274,101 @@ class ExecutionPlan(BaseModel):
         }
 
 
+class AgentPlanStep(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    status: PlanStepStatus = PlanStepStatus.PENDING
+
+    @field_validator("title")
+    @classmethod
+    def _title_must_not_be_empty(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("plan step title must be non-empty")
+        return normalized
+
+
+class AgentPlan(BaseModel):
+    """The concrete, model-authored checklist shown in the task sidebar.
+
+    Distinct from :class:`ExecutionPlan`, which is the deterministic skeleton
+    that drives tool policy and completion gating. This holds the steps the model
+    itself declared it will follow, so the UI reflects real intent instead of
+    generic templates, and it only exists once the model has defined those steps.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    steps: list[AgentPlanStep]
+    current_index: int = 0
+    status: PlanStatus = PlanStatus.ACTIVE
+
+    @model_validator(mode="after")
+    def _validate(self) -> AgentPlan:
+        if not self.steps:
+            raise ValueError("agent plan must contain at least one step")
+        self.current_index = max(0, min(self.current_index, len(self.steps) - 1))
+        return self
+
+    @classmethod
+    def from_titles(cls, titles: list[str], *, max_steps: int = 20) -> AgentPlan:
+        cleaned = [title.strip() for title in titles if title and title.strip()]
+        if not cleaned:
+            raise ValueError("agent plan requires at least one non-empty step")
+        if len(cleaned) > max_steps:
+            cleaned = cleaned[:max_steps]
+        steps = [AgentPlanStep(title=title) for title in cleaned]
+        steps[0].status = PlanStepStatus.IN_PROGRESS
+        return cls(steps=steps)
+
+    @property
+    def current_step(self) -> AgentPlanStep | None:
+        if self.status != PlanStatus.ACTIVE:
+            return None
+        return self.steps[self.current_index]
+
+    def advance(self) -> bool:
+        """Mark the running step done and move to the next, if any.
+
+        Returns ``True`` when the cursor moved forward. The final step stays
+        ``IN_PROGRESS`` until :meth:`complete_all` settles the whole plan, so the
+        sidebar keeps showing a live step rather than an empty tail.
+        """
+        if self.status != PlanStatus.ACTIVE:
+            return False
+        if self.current_index >= len(self.steps) - 1:
+            return False
+        self.steps[self.current_index].status = PlanStepStatus.COMPLETED
+        self.current_index += 1
+        self.steps[self.current_index].status = PlanStepStatus.IN_PROGRESS
+        return True
+
+    def complete_all(self) -> None:
+        for step in self.steps:
+            step.status = PlanStepStatus.COMPLETED
+        self.current_index = len(self.steps) - 1
+        self.status = PlanStatus.COMPLETED
+
+    def snapshot(self) -> dict[str, object]:
+        completed = [
+            step.title for step in self.steps if step.status == PlanStepStatus.COMPLETED
+        ]
+        current = self.current_step
+        return {
+            "status": self.status.value,
+            "progress": f"{len(completed)}/{len(self.steps)}",
+            "current_step": current.title if current else None,
+            "current_step_status": current.status.value if current else "",
+            "completed_steps": completed,
+            "remaining_steps": [
+                step.title
+                for step in self.steps
+                if step.status != PlanStepStatus.COMPLETED
+            ],
+        }
+
+
 class CompletionClaim(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

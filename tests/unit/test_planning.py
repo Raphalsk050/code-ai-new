@@ -252,3 +252,89 @@ async def test_completion_requires_file_change_and_verification_evidence() -> No
 
     assert rejected.accepted is False
     assert any("file-change" in item for item in rejected.missing_requirements)
+
+
+def _capture(bus: AsyncEventBus) -> list:
+    events: list = []
+    bus.subscribe(lambda event: events.append(event))
+    return events
+
+
+async def test_begin_turn_does_not_reveal_a_plan_before_the_model_authors_one() -> None:
+    bus = AsyncEventBus(session_id="session")
+    events = _capture(bus)
+    service = PlannerService(
+        config=PlannerConfig(), event_bus=bus, session_id="session"
+    )
+
+    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+
+    # No plan/step events yet: the sidebar stays hidden until submit_plan, and the
+    # snapshot carries no step fields the UI could render.
+    assert not [e for e in events if e.event_type.startswith("planning.plan")]
+    assert not [e for e in events if e.event_type.startswith("planning.step")]
+    assert service.agent_plan is None
+    assert "current_step" not in service.plan_snapshot()
+
+
+async def test_submit_plan_reveals_model_authored_steps() -> None:
+    bus = AsyncEventBus(session_id="session")
+    events = _capture(bus)
+    service = PlannerService(
+        config=PlannerConfig(), event_bus=bus, session_id="session"
+    )
+    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+
+    await service.record_tool_result(
+        tool_call_id="plan_1",
+        tool_name="submit_plan",
+        payload={"steps": ["Read example.py", "Write the new module", "Run the tests"]},
+        success=True,
+    )
+
+    created = [e for e in events if e.event_type == "planning.plan.created"]
+    assert len(created) == 1
+    snapshot = service.plan_snapshot()
+    assert snapshot["current_step"] == "Read example.py"
+    assert snapshot["remaining_steps"] == [
+        "Read example.py",
+        "Write the new module",
+        "Run the tests",
+    ]
+    assert snapshot["progress"] == "0/3"
+
+
+async def test_agent_plan_advances_on_real_progress() -> None:
+    bus = AsyncEventBus(session_id="session")
+    service = PlannerService(
+        config=PlannerConfig(), event_bus=bus, session_id="session"
+    )
+    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+    await service.submit_agent_plan(["Inspect files", "Write the module", "Verify"])
+
+    await service.record_tool_result(
+        tool_call_id="list_1",
+        tool_name="list_files",
+        payload={"path": ".", "entries": ["a"], "skipped_count": 0},
+        success=True,
+    )
+
+    snapshot = service.plan_snapshot()
+    assert snapshot["completed_steps"] == ["Inspect files"]
+    assert snapshot["current_step"] == "Write the module"
+
+
+async def test_resubmitting_plan_emits_revised() -> None:
+    bus = AsyncEventBus(session_id="session")
+    events = _capture(bus)
+    service = PlannerService(
+        config=PlannerConfig(), event_bus=bus, session_id="session"
+    )
+    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+
+    await service.submit_agent_plan(["First plan step"])
+    await service.submit_agent_plan(["Revised step one", "Revised step two"])
+
+    assert len([e for e in events if e.event_type == "planning.plan.created"]) == 1
+    assert len([e for e in events if e.event_type == "planning.plan.revised"]) == 1
+    assert service.plan_snapshot()["current_step"] == "Revised step one"
