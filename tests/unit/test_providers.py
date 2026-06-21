@@ -184,6 +184,25 @@ def test_responses_input_replays_tool_calls_as_function_call_items() -> None:
     assert items[2]["call_id"] == "call_1"
 
 
+def test_responses_input_types_content_by_role() -> None:
+    # The Responses API discriminates content parts by role: user/system input is
+    # "input_text", assistant (model output) must be "output_text". Mixing them up
+    # fails strict schema validation (invalid_union) on servers like LM Studio.
+    items = _responses_input(
+        ModelRequest(
+            model="m",
+            messages=[
+                Message(role="system", content="be helpful"),
+                Message(role="user", content="ola"),
+                Message(role="assistant", content="Olá!"),
+            ],
+        )
+    )
+    assert items[0]["content"][0]["type"] == "input_text"
+    assert items[1]["content"][0]["type"] == "input_text"
+    assert items[2]["content"][0]["type"] == "output_text"
+
+
 def test_chat_completions_message_carries_structured_tool_calls() -> None:
     import json
 

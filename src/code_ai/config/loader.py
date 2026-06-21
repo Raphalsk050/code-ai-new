@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from code_ai.config.defaults import DEFAULT_CONFIG
+from code_ai.config.defaults import DEFAULT_CONFIG, PLACEHOLDER_API_KEY
 from code_ai.config.models import AppConfig
 from code_ai.core.errors import ConfigurationError
 
@@ -63,12 +63,13 @@ def config_init(
         raise ConfigurationError(f"Configuration already exists: {target}")
     target.parent.mkdir(parents=True, exist_ok=True)
     data = dict(DEFAULT_CONFIG)
-    data["api_key"] = ""
+    data["api_key"] = PLACEHOLDER_API_KEY
     data["workspace"] = str((workspace or Path.cwd()).resolve())
     if overrides:
         for key, value in overrides.items():
             if value is not None:
                 data[key] = value
+    _ensure_api_key_placeholder(data)
     target.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return target
 
@@ -89,10 +90,16 @@ def persist_config_updates(
         data.update(_read_config_file(target))
     else:
         data = config.to_dict()
-        data["api_key"] = ""
 
     data.update(changes)
     validated = AppConfig.from_mapping(data)
+    _ensure_api_key_placeholder(data)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return validated
+
+
+def _ensure_api_key_placeholder(data: dict[str, Any]) -> None:
+    """Never persist a blank api_key — fall back to the generic placeholder."""
+    if not str(data.get("api_key", "")).strip():
+        data["api_key"] = PLACEHOLDER_API_KEY

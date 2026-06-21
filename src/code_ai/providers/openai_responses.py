@@ -38,10 +38,15 @@ def _responses_input(request: ModelRequest) -> list[dict[str, Any]]:
             )
             continue
         if message.content:
+            # The Responses API discriminates content parts by role: model output
+            # (assistant) must be "output_text", while user/system input is
+            # "input_text". Sending "input_text" for an assistant turn fails schema
+            # validation with invalid_union on strict servers (e.g. LM Studio).
+            part_type = "output_text" if message.role == "assistant" else "input_text"
             items.append(
                 {
                     "role": message.role,
-                    "content": [{"type": "input_text", "text": message.content}],
+                    "content": [{"type": part_type, "text": message.content}],
                 }
             )
         # Replay tool calls as structured function_call items so the model keeps

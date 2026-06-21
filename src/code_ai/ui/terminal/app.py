@@ -28,6 +28,7 @@ from code_ai.ui.terminal.widgets import (
     SpinnerStyle,
     load_code_ai_logo,
     normalize_banner_font,
+    render_context_meter,
     render_conversation_line,
     render_plan,
     resolve_spinner,
@@ -229,6 +230,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                     )
                     yield Static("Any model. Real tools. Local control.", id="subtitle")
                     yield Static("READY", id="statusline")
+                    yield Static("", id="context-meter")
                 with Horizontal(id="main"):
                     with Vertical(id="session"):
                         yield Static("SESSION", classes="panel-title")
@@ -579,7 +581,14 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self.query_one("#statusline", Static).update(
                 f"{self.vm.status} | {self.vm.phase} | {application.session.config.model} | "
                 f"{application.session.config.workspace.name} | perm {self.vm.permission_mode} | "
-                f"plan {self.vm.plan_progress} | ctx {self.vm.active_context_tokens}"
+                f"plan {self.vm.plan_progress}"
+            )
+            self.query_one("#context-meter", Static).update(
+                render_context_meter(
+                    self.vm.context_used,
+                    self.vm.context_budget,
+                    self.vm.context_threshold,
+                )
             )
             self.query_one("#session-info", Static).update(self._session_text())
             working = self.vm.status in WORKING_STATES

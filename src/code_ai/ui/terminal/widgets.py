@@ -320,6 +320,78 @@ def load_code_ai_logo(font: str = CODE_AI_LOGO_FONT) -> Text:
     return style_banner_art(render_banner_art(load_banner_source(), font=font))
 
 
+# --- Context usage meter (top-of-screen fill bar) ---------------------------
+# Bar width in cells and the fill/marker glyphs.
+_CONTEXT_METER_WIDTH = 28
+_CONTEXT_FILLED = "█"
+_CONTEXT_EMPTY = "░"
+_CONTEXT_THRESHOLD_MARK = "┊"
+# Color ramp by fill fraction: calm below 60%, warm as it approaches the
+# auto-compaction threshold, hot once the threshold is reached.
+_CONTEXT_CALM = "#48d17a"
+_CONTEXT_WARN = "#ff9f1c"
+_CONTEXT_HOT = "#e05252"
+_CONTEXT_LABEL_STYLE = "#8892a0"
+_CONTEXT_DETAIL_STYLE = "#9aa4b2"
+_CONTEXT_TRACK_STYLE = "#2b3440"
+
+
+def _humanize_tokens(value: int) -> str:
+    if value >= 1000:
+        return f"{value / 1000:.1f}k".replace(".0k", "k")
+    return str(value)
+
+
+def _context_fill_color(fraction: float, threshold: float) -> str:
+    if fraction >= threshold:
+        return _CONTEXT_HOT
+    if fraction >= 0.6:
+        return _CONTEXT_WARN
+    return _CONTEXT_CALM
+
+
+def render_context_meter(
+    used: int | None,
+    budget: int | None,
+    threshold: float,
+    width: int = _CONTEXT_METER_WIDTH,
+) -> Text:
+    """Render the top-of-screen context-usage bar as Rich Text.
+
+    The bar fills with use, recolors as it nears ``threshold`` (where the
+    orchestrator auto-compacts), and marks the threshold column so the user can
+    see how much headroom is left before compaction kicks in.
+    """
+    text = Text()
+    text.append("context ", style=_CONTEXT_LABEL_STYLE)
+    if not used or not budget or budget <= 0:
+        text.append("tokens unavailable", style=_CONTEXT_DETAIL_STYLE)
+        return text
+
+    fraction = used / budget
+    clamped = min(1.0, max(0.0, fraction))
+    filled = round(clamped * width)
+    color = _context_fill_color(fraction, threshold)
+    threshold_index = int(threshold * width)
+
+    text.append("[", style=_CONTEXT_TRACK_STYLE)
+    for index in range(width):
+        if index < filled:
+            text.append(_CONTEXT_FILLED, style=color)
+        elif index == threshold_index:
+            text.append(_CONTEXT_THRESHOLD_MARK, style=_CONTEXT_WARN)
+        else:
+            text.append(_CONTEXT_EMPTY, style=_CONTEXT_TRACK_STYLE)
+    text.append("] ", style=_CONTEXT_TRACK_STYLE)
+
+    text.append(f"{round(fraction * 100)}%", style=color)
+    text.append(
+        f"  {_humanize_tokens(used)}/{_humanize_tokens(budget)}",
+        style=_CONTEXT_DETAIL_STYLE,
+    )
+    return text
+
+
 def render_conversation_line(line: str) -> str | Text:
     if line.startswith("thinking> ") or line.startswith("model> thinking"):
         return Text(line, style=THINKING_LINE_STYLE)

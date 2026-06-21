@@ -54,6 +54,11 @@ SLASH_COMMANDS = [
         "/config model ",
     ),
     SlashCommand(
+        "/config api-key <key>",
+        "Persist the provider API key (redacted). Restart required.",
+        "/config api-key ",
+    ),
+    SlashCommand(
         "/config api-mode <responses|completions|ollama>",
         "Persist API mode. Restart required.",
         "/config api-mode ",
@@ -202,6 +207,20 @@ def handle_config_command(application: Any, command_text: str, *, config_path: P
             changes={"terminal_spinner": spinner},
             live_fields={"terminal_spinner"},
             restart_required=False,
+        )
+    if action == "api-key":
+        # Pull the key straight from the command text (not the shlex-split parts)
+        # so it is stored exactly as typed and never echoed back to the log.
+        key = command_text.split("api-key", 1)[1].strip().strip("'\"")
+        if not key:
+            return "command> Usage: /config api-key <key>"
+        try:
+            persist_config_updates(config, {"api_key": key}, explicit_path=config_path)
+        except Exception as exc:
+            return f"command> Config not changed: {exc}"
+        config.api_key = key
+        return (
+            "command> Updated api_key=<redacted>. Restart Code-AI to apply this setting."
         )
     if action == "api-mode":
         if len(parts) != 3:

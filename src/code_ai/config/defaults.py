@@ -5,6 +5,11 @@ from pathlib import Path
 DEFAULT_CONFIG_DIRNAME = ".code-ai"
 DEFAULT_CONFIG_FILENAME = "config.json"
 
+# Written into a saved config.json when no real api_key is set, so the field is
+# never left blank. Treated as "unset" at runtime (see config.models), so it
+# never reaches a provider and never satisfies the non-local key requirement.
+PLACEHOLDER_API_KEY = "REPLACE-WITH-YOUR-API-KEY"
+
 
 def default_config_path() -> Path:
     return Path.home() / DEFAULT_CONFIG_DIRNAME / DEFAULT_CONFIG_FILENAME
@@ -68,7 +73,7 @@ DEFAULT_PLANNER: dict[str, object] = {
 
 
 DEFAULT_CONFIG: dict[str, object] = {
-    "api_key": "",
+    "api_key": PLACEHOLDER_API_KEY,
     "api_mode": "responses",
     "base_url": "http://localhost:11434/v1",
     "permission_mode": "ask",

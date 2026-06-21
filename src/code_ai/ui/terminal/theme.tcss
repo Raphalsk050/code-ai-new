@@ -26,6 +26,11 @@ Screen {
   color: #48d17a;
 }
 
+#context-meter {
+  height: 1;
+  color: #d7dee8;
+}
+
 #main {
   height: 1fr;
 }
