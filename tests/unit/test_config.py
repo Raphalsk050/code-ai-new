@@ -5,7 +5,14 @@ import json
 import pytest
 
 from code_ai.cli.main import build_parser
-from code_ai.config.loader import default_config_path, load_config, redacted_config_json
+from code_ai.config.defaults import PLACEHOLDER_API_KEY
+from code_ai.config.loader import (
+    config_init,
+    default_config_path,
+    load_config,
+    persist_config_updates,
+    redacted_config_json,
+)
 from code_ai.core.errors import ConfigurationError
 
 
@@ -215,6 +222,30 @@ def test_sampling_rejects_invalid_reasoning_effort(tmp_path) -> None:
     )
     with pytest.raises(ConfigurationError):
         load_config(explicit_path=config_path)
+
+
+def test_config_init_writes_placeholder_api_key_treated_as_unset(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    config_init(config_path, workspace=tmp_path)
+
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    # The file never carries a blank api_key — just a generic placeholder...
+    assert saved["api_key"] == PLACEHOLDER_API_KEY
+    # ...which is treated as "unset" once loaded, so it never reaches a provider.
+    config = load_config(explicit_path=config_path)
+    assert config.api_key == ""
+
+
+def test_persisting_change_keeps_placeholder_when_key_unset(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    config_init(config_path, workspace=tmp_path)
+
+    config = load_config(explicit_path=config_path)
+    persist_config_updates(config, {"model": "other-model"}, explicit_path=config_path)
+
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved["model"] == "other-model"
+    assert saved["api_key"] == PLACEHOLDER_API_KEY
 
 
 def test_config_init_accepts_overrides_after_subcommand(tmp_path) -> None:

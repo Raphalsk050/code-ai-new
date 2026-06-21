@@ -5,7 +5,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from code_ai.config.defaults import DEFAULT_BUDGETS, DEFAULT_PLANNER, DEFAULT_SAMPLING
+from code_ai.config.defaults import (
+    DEFAULT_BUDGETS,
+    DEFAULT_PLANNER,
+    DEFAULT_SAMPLING,
+    PLACEHOLDER_API_KEY,
+)
 from code_ai.core.errors import ConfigurationError
 from code_ai.util.redaction import redact_mapping
 
@@ -20,6 +25,12 @@ def normalize_api_mode(value: str) -> str:
     if mode == "chat_completions":
         return "completions"
     return mode
+
+
+def normalize_api_key(value: str) -> str:
+    """Treat the saved placeholder as "unset" so runtime logic ignores it."""
+    cleaned = value.strip()
+    return "" if cleaned == PLACEHOLDER_API_KEY else cleaned
 
 
 def _is_local_base_url(base_url: str) -> bool:
@@ -340,7 +351,7 @@ class AppConfig:
         )
         workspace = Path(str(data.get("workspace", Path.cwd()))).expanduser()
         config = cls(
-            api_key=str(data.get("api_key", "")),
+            api_key=normalize_api_key(str(data.get("api_key", ""))),
             api_mode=normalize_api_mode(str(data.get("api_mode", "responses"))),
             base_url=str(data.get("base_url", "http://localhost:11434/v1")),
             permission_mode=str(data.get("permission_mode", "ask")).strip().lower(),

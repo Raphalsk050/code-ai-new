@@ -13,6 +13,9 @@ class TerminalViewModel:
     activity: str = "idle"
     conversation: list[str] = field(default_factory=list)
     active_context_tokens: str = "tokens unavailable"
+    context_used: int | None = None
+    context_budget: int | None = None
+    context_threshold: float = 0.82
     cumulative_usage: str = "0"
     planner_mode: str = "auto"
     permission_mode: str = "ask"
@@ -135,6 +138,13 @@ class TerminalViewModel:
             estimated = event.payload.get("active_context_estimated")
             if active is not None:
                 self.active_context_tokens = f"{'~' if estimated else ''}{active}"
+                self.context_used = int(active)
+            budget = event.payload.get("context_budget")
+            if budget is not None:
+                self.context_budget = int(budget)
+            threshold = event.payload.get("context_threshold")
+            if threshold is not None:
+                self.context_threshold = float(threshold)
             cumulative = event.payload.get("cumulative")
             if isinstance(cumulative, dict):
                 self.cumulative_usage = str(cumulative.get("total_tokens", "0"))

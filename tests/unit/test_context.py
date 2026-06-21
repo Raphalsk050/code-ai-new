@@ -4,7 +4,19 @@ from code_ai.context.compression import ContextCompressor
 from code_ai.context.conversation import ConversationState
 from code_ai.context.token_counting import TokenCounter
 from code_ai.events.bus import AsyncEventBus
-from code_ai.providers.models import Message, ToolCall
+from code_ai.providers.models import Message, ModelRequest, ModelResponse, ToolCall
+
+
+class _StubProvider:
+    """Minimal provider that records the summary request and returns canned text."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.requests: list[ModelRequest] = []
+
+    async def complete(self, request: ModelRequest) -> ModelResponse:
+        self.requests.append(request)
+        return ModelResponse(text=self.text)
 
 
 def test_add_assistant_keeps_tool_calls_structured_not_text() -> None:
@@ -57,3 +69,64 @@ async def test_compression_preserves_recent_request_and_resets_remote_state() ->
     assert conversation.previous_response_id is None
     assert conversation.messages[-1].content == "current request"
     assert any("Compressed context summary" in message.content for message in conversation.messages)
+
+
+async def test_compression_uses_model_summary_when_provider_available() -> None:
+    bus = AsyncEventBus(session_id="session")
+    conversation = ConversationState()
+    for index in range(20):
+        conversation.messages.append(
+            Message(role="user", content=f"old message {index} " + ("x" * 200))
+        )
+    conversation.messages.append(Message(role="user", content="current request"))
+
+    provider = _StubProvider(text="Task: build X. Files: a.py edited. Next: run tests.")
+    compressor = ContextCompressor(
+        counter=TokenCounter(model="unknown-local-model"),
+        max_context_tokens=4096,
+        threshold=0.1,
+        target=0.8,
+        output_reserve=512,
+        event_bus=bus,
+        provider=provider,
+        model="unknown-local-model",
+    )
+
+    result = await compressor.ensure_capacity(conversation, [])
+
+    assert result.compressed
+    assert len(provider.requests) == 1
+    summary = next(m for m in conversation.messages if "Compressed context summary" in m.content)
+    # The model's summary text is retained verbatim, not the heuristic truncation.
+    assert "Next: run tests." in summary.content
+    assert conversation.messages[-1].content == "current request"
+
+
+async def test_compression_falls_back_to_heuristic_when_summary_call_fails() -> None:
+    bus = AsyncEventBus(session_id="session")
+    conversation = ConversationState()
+    for index in range(20):
+        conversation.messages.append(Message(role="user", content=f"old {index} " + ("x" * 200)))
+    conversation.messages.append(Message(role="user", content="current request"))
+
+    class _FailingProvider:
+        async def complete(self, request: ModelRequest) -> ModelResponse:
+            raise RuntimeError("provider offline")
+
+    compressor = ContextCompressor(
+        counter=TokenCounter(model="unknown-local-model"),
+        max_context_tokens=4096,
+        threshold=0.1,
+        target=0.8,
+        output_reserve=512,
+        event_bus=bus,
+        provider=_FailingProvider(),
+        model="unknown-local-model",
+    )
+
+    result = await compressor.ensure_capacity(conversation, [])
+
+    # A provider failure must never block the turn — the heuristic summary stands in.
+    assert result.compressed
+    assert any("Compressed context summary" in m.content for m in conversation.messages)
+    assert conversation.messages[-1].content == "current request"

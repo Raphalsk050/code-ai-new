@@ -725,6 +725,8 @@ class AgentOrchestrator:
             {
                 "active_context_tokens": compression.active_tokens,
                 "active_context_estimated": compression.estimated,
+                "context_budget": self.compressor.budget,
+                "context_threshold": self.compressor.threshold,
                 "cumulative": self.usage.to_dict(),
             },
             source="context",

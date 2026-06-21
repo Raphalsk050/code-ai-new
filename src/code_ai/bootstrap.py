@@ -104,6 +104,8 @@ def build_application(
         target=config.context_compression_target,
         output_reserve=config.output_token_reserve,
         event_bus=event_bus,
+        provider=provider,
+        model=config.model,
     )
     terminal_manager = PersistentTerminalManager()
     review_service = ReviewService(provider=provider, config=config, event_bus=event_bus)
