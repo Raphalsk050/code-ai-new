@@ -101,6 +101,17 @@ class TerminalViewModel:
                 self.conversation[-1] += text
             else:
                 self.conversation.append("thinking> " + text)
+        elif event.event_type == "tool.calls.recovered":
+            # A weak model printed its tool call as text, which already streamed
+            # into the chat as the last ai>/working> line. Replace that raw line
+            # with the cleaned prose (or drop it entirely) so the chat shows the
+            # recovered tool running, not the raw call markup.
+            cleaned = str(event.payload.get("text") or "").strip()
+            if self.conversation and self.conversation[-1].startswith(("ai> ", "working> ")):
+                if cleaned:
+                    self.conversation[-1] = f"ai> {cleaned}"
+                else:
+                    self.conversation.pop()
         elif event.event_type == "model.response.completed":
             tool_calls = event.payload.get("tool_calls")
             if tool_calls:

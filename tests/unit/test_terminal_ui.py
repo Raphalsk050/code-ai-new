@@ -188,6 +188,44 @@ def test_terminal_styles_thinking_lines_darker_gray() -> None:
     assert answer == "ai> done"
 
 
+def test_view_model_replaces_recovered_tool_call_text() -> None:
+    from code_ai.ui.terminal.view_models import TerminalViewModel
+
+    view_model = TerminalViewModel()
+    # The raw tool-call markup streamed into the chat as an ai> line.
+    view_model.conversation.append('ai> Sure. <tool_call>{"name": "read_file"}</tool_call>')
+    event = EventEnvelope.create(
+        event_type="tool.calls.recovered",
+        session_id="fake-session",
+        sequence=1,
+        payload={"count": 1, "names": ["read_file"], "text": "Sure."},
+        source="core.orchestrator",
+    )
+
+    view_model.apply(event)
+
+    assert view_model.conversation[-1] == "ai> Sure."
+
+
+def test_view_model_drops_pure_tool_call_text_on_recovery() -> None:
+    from code_ai.ui.terminal.view_models import TerminalViewModel
+
+    view_model = TerminalViewModel()
+    view_model.conversation.append("you> read it")
+    view_model.conversation.append('ai> <tool_call>{"name": "read_file"}</tool_call>')
+    event = EventEnvelope.create(
+        event_type="tool.calls.recovered",
+        session_id="fake-session",
+        sequence=1,
+        payload={"count": 1, "names": ["read_file"], "text": ""},
+        source="core.orchestrator",
+    )
+
+    view_model.apply(event)
+
+    assert view_model.conversation == ["you> read it"]
+
+
 def test_terminal_view_model_shows_command_output() -> None:
     from code_ai.ui.terminal.view_models import TerminalViewModel
 
