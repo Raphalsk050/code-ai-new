@@ -43,10 +43,22 @@ Screen {
   padding: 1;
 }
 
-#conversation {
+#conversation-pane {
   width: 1fr;
   border: solid #8892a0;
   padding: 1;
+}
+
+#conversation {
+  width: 1fr;
+  height: 1fr;
+  padding: 0;
+}
+
+#stream-tail {
+  height: auto;
+  max-height: 16;
+  color: #d7dee8;
 }
 
 #plan {

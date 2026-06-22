@@ -219,6 +219,10 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self.vm.permission_mode = application.session.config.permission_mode
             self.controller = TerminalController(application, self.vm)
             self.follow_output = True
+            # Number of conversation lines already flushed to the append-only log.
+            # Streaming only mutates the last line, so we keep the tail in a
+            # separate Static and never re-render the whole transcript per event.
+            self._committed = 0
 
         def compose(self) -> ComposeResult:
             yield Header(show_clock=True)
@@ -235,7 +239,15 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                     with Vertical(id="session"):
                         yield Static("SESSION", classes="panel-title")
                         yield Static("", id="session-info")
-                    yield RichLog(id="conversation", wrap=True, highlight=False, markup=False)
+                    with Vertical(id="conversation-pane"):
+                        yield RichLog(
+                            id="conversation",
+                            wrap=True,
+                            highlight=False,
+                            markup=False,
+                            max_lines=2000,
+                        )
+                        yield Static("", id="stream-tail")
                     with Vertical(id="plan"):
                         yield Static("PLAN", classes="panel-title")
                         yield PlanPanel(
@@ -278,35 +290,31 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self._render_event(event)
 
         def _render_event(self, event) -> None:
-            conversation = self.query_one("#conversation", RichLog)
-            if event.event_type in {
-                "user.message",
-                "model.request.started",
-                "model.thinking.delta",
-                "model.stream.delta",
-                "model.response.completed",
-                "tool.call.started",
-                "tool.call.completed",
-                "tool.call.failed",
-                "tool.approval.requested",
-                "tool.approval.resolved",
-                "permission.mode.changed",
-                "planning.plan.created",
-                "planning.plan.revised",
-                "planning.step.started",
-                "planning.step.completed",
-                "planning.step.failed",
-                "planning.evidence.recorded",
-                "planning.policy.denied",
-                "planning.completion.rejected",
-                "assistant.final",
-                "warning",
-                "error",
-            }:
-                conversation.clear()
-                for line in self.vm.conversation[-300:]:
-                    conversation.write(render_conversation_line(line))
+            self._sync_conversation()
             self._refresh_status()
+
+        def _sync_conversation(self) -> None:
+            """Incrementally reflect the conversation buffer into the UI.
+
+            The RichLog is append-only: every conversation line except the last
+            is written exactly once and never touched again, so the cost per
+            event is proportional to the number of *new* lines, not the whole
+            transcript. The last line may still be growing from streaming
+            deltas, so it is shown live in the ``#stream-tail`` Static and only
+            committed to the log once a newer line supersedes it.
+            """
+            convo = self.vm.conversation
+            log = self.query_one("#conversation", RichLog)
+            commit_upto = max(0, len(convo) - 1)
+            if self._committed > commit_upto:
+                # The buffer shrank (e.g. cleared): rebuild from scratch.
+                log.clear()
+                self._committed = 0
+            while self._committed < commit_upto:
+                log.write(render_conversation_line(convo[self._committed]))
+                self._committed += 1
+            tail = self.query_one("#stream-tail", Static)
+            tail.update(render_conversation_line(convo[-1]) if convo else "")
 
         async def on_input_changed(self, event: Input.Changed) -> None:
             self._set_command_suggestions(event.value)
@@ -448,10 +456,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             if not text:
                 return
             self.vm.conversation.extend(text.splitlines())
-            conversation = self.query_one("#conversation", RichLog)
-            conversation.clear()
-            for line in self.vm.conversation[-300:]:
-                conversation.write(render_conversation_line(line))
+            self._sync_conversation()
             self._refresh_status()
 
         def _apply_configured_terminal_theme(self) -> None:
@@ -571,6 +576,8 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self.vm.plan_visible = False
             self.vm.plan_steps = []
             self.query_one("#conversation", RichLog).clear()
+            self.query_one("#stream-tail", Static).update("")
+            self._committed = 0
             self._refresh_status()
 
         async def action_quit(self) -> None:
