@@ -8,6 +8,7 @@ from typing import Any
 
 from code_ai.config.models import AppConfig
 from code_ai.core.errors import ProviderError, TransientProviderError
+from code_ai.providers.base import build_openai_http_client
 from code_ai.providers.models import (
     FinishReason,
     ModelRequest,
@@ -104,6 +105,7 @@ class OpenAIChatCompletionsProvider:
             base_url=config.base_url,
             timeout=config.budgets.model_timeout(),
             max_retries=0,
+            http_client=build_openai_http_client(config),
         )
         self._capabilities = ProviderCapabilities(
             streaming=True,
