@@ -157,6 +157,49 @@ async def test_model_step_budget_winds_down_gracefully(tmp_path) -> None:
     assert "turn.budget_exhausted" in events
 
 
+class TextToolCallThenAnswerProvider(_BaseProvider):
+    """First reply prints the tool call as text (no structured tool_calls)."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        if self.calls == 1:
+            blob = '<tool_call>{"name": "read_file", "arguments": {"path": "note.txt"}}</tool_call>'
+            yield ProviderEvent(kind="text_delta", text_delta=blob)
+            yield ProviderEvent(
+                kind="completed",
+                response=ModelResponse(text=blob, finish_reason=FinishReason.STOP),
+            )
+            return
+        self.tool_feedback = "".join(
+            m.content for m in request.messages if m.role == "tool"
+        )
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text="here is the note", finish_reason=FinishReason.STOP),
+        )
+
+
+async def test_text_emitted_tool_call_is_recovered_and_executed(tmp_path) -> None:
+    (tmp_path / "note.txt").write_text("secret note\n", encoding="utf-8")
+    provider = TextToolCallThenAnswerProvider()
+    app = build_application(config=_config(tmp_path, planner={"enabled": False}), provider=provider)
+    events: list[str] = []
+    app.subscribe(lambda event: events.append(event.event_type))
+
+    await app.start()
+    result = await app.submit_user_message("read note.txt")
+    await app.close()
+
+    # The call printed as text was promoted to a real tool call and executed,
+    # rather than being shown to the user as the final answer.
+    assert "tool.calls.recovered" in events
+    assert "secret note" in provider.tool_feedback
+    assert result.text == "here is the note"
+
+
 class TwoFileMutationProvider(_BaseProvider):
     def __init__(self) -> None:
         self.calls = 0

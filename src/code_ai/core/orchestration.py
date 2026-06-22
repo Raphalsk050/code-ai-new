@@ -40,6 +40,7 @@ from code_ai.providers.models import (
     ToolCall,
     ToolResult,
 )
+from code_ai.providers.tool_recovery import recover_tool_calls_from_text
 from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.output import bound_text
 from code_ai.tools.registry import ToolRegistry
@@ -232,6 +233,7 @@ class AgentOrchestrator:
             self.usage.add(response.usage)
             if response.response_id:
                 self.conversation.previous_response_id = response.response_id
+            await self._recover_text_tool_calls(response, tool_definitions)
             await self._emit_response_completed(response)
 
             if not response.tool_calls:
@@ -271,6 +273,37 @@ class AgentOrchestrator:
         if response.text:
             self.conversation.add_assistant(response.text, response.tool_calls)
         return await self._finish_turn(response.text, response, state)
+
+    async def _recover_text_tool_calls(
+        self, response: ModelResponse, tool_definitions: list
+    ) -> None:
+        """Promote tool calls that a weak model printed as text into real calls.
+
+        When the model returns no structured tool calls but did offer text that
+        encodes a call to a tool we actually exposed this step, rewrite the
+        response so the runtime executes it instead of surfacing the raw markup
+        as the final chat answer.
+        """
+        if response.tool_calls or not tool_definitions:
+            return
+        known_names = {definition.name for definition in tool_definitions}
+        recovered, cleaned = recover_tool_calls_from_text(response.text, known_names)
+        if not recovered:
+            return
+        response.tool_calls = recovered
+        response.text = cleaned
+        response.finish_reason = FinishReason.TOOL_CALLS
+        await self.event_bus.emit(
+            "tool.calls.recovered",
+            {
+                "count": len(recovered),
+                "names": [call.name for call in recovered],
+                # The cleaned prose so the UI can replace the raw call text it
+                # already streamed into the chat.
+                "text": cleaned,
+            },
+            source="core.orchestrator",
+        )
 
     # ------------------------------------------------------------------ #
     # Convergence guard: stop tool-call loops that make no real progress
