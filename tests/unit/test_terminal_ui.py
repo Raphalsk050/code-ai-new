@@ -87,6 +87,55 @@ async def test_terminal_enter_submits_input_and_renders_events(tmp_path) -> None
         assert "ai> ok" in terminal_app.vm.conversation
 
 
+async def test_streaming_deltas_do_not_rerender_whole_transcript(tmp_path) -> None:
+    from textual.widgets import RichLog
+
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        log = terminal_app.query_one("#conversation", RichLog)
+        writes = 0
+        original_write = log.write
+
+        def counting_write(*args, **kwargs):
+            nonlocal writes
+            writes += 1
+            return original_write(*args, **kwargs)
+
+        log.write = counting_write  # type: ignore[method-assign]
+
+        # Two finalized lines followed by 50 streaming deltas on one answer line.
+        await fake_app.emit("user.message", {"text": "hi"})
+        await fake_app.emit("model.request.started", {})
+        for index in range(50):
+            await fake_app.emit("model.stream.delta", {"text": f"{index} "})
+        await pilot.pause(0.05)
+
+        # Only the two finalized lines were ever written to the append-only log;
+        # the 50 deltas mutate a single line shown live in the tail, not the log.
+        assert writes == 2
+        assert terminal_app._committed == len(terminal_app.vm.conversation) - 1
+        # The whole stream collapsed into one live line held in the tail Static.
+        assert terminal_app.vm.conversation[-1].startswith("ai> ")
+        assert "49" in terminal_app.vm.conversation[-1]
+
+
+async def test_clear_resets_incremental_render_state(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        await fake_app.emit("user.message", {"text": "one"})
+        await fake_app.emit("tool.call.started", {"name": "read_file"})
+        await pilot.pause(0.05)
+        assert terminal_app._committed > 0
+
+        await terminal_app.action_clear()
+        assert terminal_app._committed == 0
+        assert terminal_app.vm.conversation == []
+
+
 def test_terminal_logo_loads_from_banner_resource() -> None:
     from code_ai.ui.terminal.widgets import (
         BANNER_RESOURCE,
