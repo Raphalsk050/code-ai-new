@@ -44,6 +44,23 @@ _PERMISSION_MODE_OPTIONS = [
     ("perm: ignorar", "bypass"),
 ]
 
+# How many rows of the live streaming line the (non-scrolling) tail strip shows.
+_STREAM_TAIL_MAX_ROWS = 14
+
+
+def render_stream_tail(line: str):
+    """Render the live streaming line, keeping its newest rows visible.
+
+    The tail Static cannot scroll, so a streaming answer taller than the strip
+    would otherwise clip its newest (bottom) text off-screen and look frozen.
+    Show only the final rows while it streams; the complete text lands in the
+    scrollable log once the turn finishes.
+    """
+    rows = line.split("\n")
+    if len(rows) > _STREAM_TAIL_MAX_ROWS:
+        line = "\n".join(rows[-_STREAM_TAIL_MAX_ROWS:])
+    return render_conversation_line(line)
+
 
 def create_terminal_app(application, *, config_path: Path | None = None):
     from textual.app import App, ComposeResult, SystemCommand
@@ -296,25 +313,42 @@ def create_terminal_app(application, *, config_path: Path | None = None):
         def _sync_conversation(self) -> None:
             """Incrementally reflect the conversation buffer into the UI.
 
-            The RichLog is append-only: every conversation line except the last
-            is written exactly once and never touched again, so the cost per
-            event is proportional to the number of *new* lines, not the whole
-            transcript. The last line may still be growing from streaming
-            deltas, so it is shown live in the ``#stream-tail`` Static and only
-            committed to the log once a newer line supersedes it.
+            The RichLog is append-only: each line is written exactly once, so
+            the cost per event is proportional to the number of *new* lines, not
+            the whole transcript.
+
+            While the agent is working the last line may still be growing from
+            streaming deltas, so it is held live in the ``#stream-tail`` Static
+            and kept out of the log (re-rendering a growing line every delta is
+            what used to freeze the terminal). As soon as the agent goes idle
+            that line is final: it is committed to the log and the tail cleared,
+            so a finished answer lands in the conversation instead of being
+            stranded in the strip below it.
             """
             convo = self.vm.conversation
             log = self.query_one("#conversation", RichLog)
-            commit_upto = max(0, len(convo) - 1)
-            if self._committed > commit_upto:
-                # The buffer shrank (e.g. cleared): rebuild from scratch.
+            tail = self.query_one("#stream-tail", Static)
+
+            if self._committed > len(convo):
+                # The buffer shrank (only happens on clear, which also resets the
+                # counter): rebuild defensively so the log never shows dead lines.
                 log.clear()
                 self._committed = 0
+
+            # Hold the last line back in the live tail only while the agent is
+            # working AND that line is still uncommitted (freshly streaming).
+            # Lines already in the append-only log are never pulled back, so a
+            # new turn starting (status flips to working before its first line
+            # arrives) cannot trigger a flicker or a full re-render.
+            working = self.vm.status in WORKING_STATES
+            held_back = working and self._committed < len(convo)
+            commit_upto = len(convo) - 1 if held_back else len(convo)
+
             while self._committed < commit_upto:
                 log.write(render_conversation_line(convo[self._committed]))
                 self._committed += 1
-            tail = self.query_one("#stream-tail", Static)
-            tail.update(render_conversation_line(convo[-1]) if convo else "")
+
+            tail.update(render_stream_tail(convo[-1]) if held_back else "")
 
         async def on_input_changed(self, event: Input.Changed) -> None:
             self._set_command_suggestions(event.value)
