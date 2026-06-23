@@ -92,9 +92,15 @@ class PlannerToolPolicy:
 
         The planner still *recommends* a focused set via the task context block;
         it no longer hides tools and risks blocking a misclassified task.
+
+        A CONVERSATION intent is deliberately *not* a hard gate here. The intent
+        is inferred from brittle surface keywords, so an implementation request
+        phrased outside the marker set (e.g. "faça um jogo pong", "make a game")
+        is misread as chat. Hiding every tool then forces a tool-less request:
+        the model, still told to call ``write_file``/``edit_code``, prints the
+        call as text and it leaks into the chat. Staying fail-open keeps the
+        tools available so the model uses the structured channel instead.
         """
-        if profile.intent == TaskIntent.CONVERSATION:
-            return set()
         if mode == PlannerMode.PLAN:
             return self._by_capabilities(
                 names,

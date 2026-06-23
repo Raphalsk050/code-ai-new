@@ -45,6 +45,11 @@ SLASH_COMMANDS = [
     SlashCommand("/plan-status", "Show planner phase and current step."),
     SlashCommand("/replan", "Request a bounded replan on the next turn."),
     SlashCommand("/cancel", "Cancel the active turn."),
+    SlashCommand(
+        "/debug <on|off|status>",
+        "Log raw model requests/responses for parser debugging.",
+        "/debug ",
+    ),
     SlashCommand("/clear", "Clear the conversation view."),
     SlashCommand("/quit", "Close Code-AI."),
     SlashCommand("/config show", "Show redacted active config."),
@@ -268,6 +273,46 @@ def handle_config_command(application: Any, command_text: str, *, config_path: P
             restart_required=True,
         )
     return f"command> Unknown config action: {action}"
+
+
+def handle_debug_command(
+    application: Any, command_text: str, *, config_path: Path | None
+) -> str:
+    """Toggle raw model request/response logging for parser debugging.
+
+    The flag lives on the active config object the providers already hold, so
+    turning it on/off takes effect on the very next model call without a restart.
+    It is also persisted so a debugging session survives a restart.
+    """
+    from code_ai.providers.debug import session_log_dir
+
+    parts = command_text.split()
+    action = parts[1].strip().lower() if len(parts) > 1 else "status"
+    config = application.session.config
+
+    if action == "status":
+        state = "on" if config.debug else "off"
+        return f"command> Debug logging is {state}. Session logs: {session_log_dir()}"
+
+    if action in {"on", "off"}:
+        enabled = action == "on"
+        result = _apply_config_change(
+            application,
+            config_path=config_path,
+            changes={"debug": enabled},
+            live_fields={"debug"},
+            restart_required=False,
+        )
+        if result.startswith("command> Config not changed"):
+            return result
+        if enabled:
+            return (
+                "command> Debug logging on. Raw model requests/responses will be "
+                f"written to {session_log_dir()} (one numbered file per call)."
+            )
+        return "command> Debug logging off."
+
+    return "command> Usage: /debug <on|off|status>"
 
 
 def _apply_config_change(

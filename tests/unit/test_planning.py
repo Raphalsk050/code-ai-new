@@ -58,6 +58,31 @@ def test_task_profile_keeps_greeting_as_toolless_conversation() -> None:
     ) == set()
 
 
+def test_advisory_keeps_tools_for_misclassified_implementation_request() -> None:
+    # "faça um jogo pong" sits outside the mutation-marker set, so the surface
+    # classifier mislabels it CONVERSATION. Advisory mode must still expose the
+    # tools; otherwise the model is handed a tool-less request, prints the
+    # edit_code/write_file call as text, and it leaks into the chat.
+    profile = TaskProfile.from_user_text("faça um jogo pong em python")
+    service = PlannerService(
+        config=PlannerConfig(),  # advisory is the default
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    service.profile = profile
+
+    assert profile.intent == "conversation"
+    allowed = service.policy.allowed_tool_names(
+        registry=make_registry(),
+        profile=profile,
+        mode=service.mode,
+        phase=service.phase,
+        current_step=None,
+        advisory=True,
+    )
+    assert {"write_file", "edit_code"} <= allowed
+
+
 def test_task_profile_treats_read_request_as_local_inspection() -> None:
     profile = TaskProfile.from_user_text("read the note")
 

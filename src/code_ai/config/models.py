@@ -325,6 +325,7 @@ class AppConfig:
     sampling: SamplingConfig = field(default_factory=SamplingConfig)
     language: str = "en"
     model: str = "gemma4:31b-cloud"
+    debug: bool = False
     show_ui: bool = True
     ssl_verification: bool = False
     use_remote_conversation_state: bool = True
@@ -360,6 +361,7 @@ class AppConfig:
             sampling=sampling,
             language=str(data.get("language", "en")),
             model=str(data.get("model", "gemma4:31b-cloud")),
+            debug=bool(data.get("debug", False)),
             show_ui=bool(data.get("show_ui", True)),
             ssl_verification=bool(data.get("ssl_verification", False)),
             use_remote_conversation_state=bool(data.get("use_remote_conversation_state", True)),
