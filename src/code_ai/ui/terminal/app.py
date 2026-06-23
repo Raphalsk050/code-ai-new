@@ -78,6 +78,21 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             return command_completion(value)
 
     class CommandInput(Input):
+        """Single-line prompt with shell-style history recall.
+
+        Submitted prompts (commands and messages alike) are pushed onto a
+        history stack; Up walks back through older entries and Down walks
+        forward, restoring the in-progress draft once you step past the newest
+        entry — exactly how a terminal behaves.
+        """
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            self._history: list[str] = []
+            # None means "not browsing"; the live draft is whatever is typed.
+            self._history_index: int | None = None
+            self._draft = ""
+
         def action_cursor_left(self, select: bool = False) -> None:
             completion = command_completion(self.value)
             if not select and self.cursor_at_end and completion:
@@ -85,6 +100,54 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 self.cursor_position = len(completion)
                 return
             super().action_cursor_left(select)
+
+        def remember(self, text: str) -> None:
+            """Record a submitted entry and reset the browse cursor."""
+            entry = text.rstrip("\n")
+            # Skip blanks and consecutive duplicates, like a shell history.
+            if entry.strip() and (not self._history or self._history[-1] != entry):
+                self._history.append(entry)
+            self._history_index = None
+            self._draft = ""
+
+        def _recall(self, value: str) -> None:
+            self.value = value
+            self.cursor_position = len(value)
+
+        def _history_prev(self) -> bool:
+            """Step to the previous (older) entry; True if anything happened."""
+            if not self._history:
+                return False
+            if self._history_index is None:
+                # Entering history: stash the unsent draft to restore later.
+                self._draft = self.value
+                self._history_index = len(self._history) - 1
+            elif self._history_index > 0:
+                self._history_index -= 1
+            # else: already at the oldest entry — hold position.
+            self._recall(self._history[self._history_index])
+            return True
+
+        def _history_next(self) -> bool:
+            """Step to the next (newer) entry; True if anything happened."""
+            if self._history_index is None:
+                return False
+            if self._history_index < len(self._history) - 1:
+                self._history_index += 1
+                self._recall(self._history[self._history_index])
+            else:
+                # Past the newest entry: drop back to the saved draft.
+                self._history_index = None
+                self._recall(self._draft)
+            return True
+
+        async def on_key(self, event) -> None:
+            if event.key == "up" and self._history_prev():
+                event.prevent_default()
+                event.stop()
+            elif event.key == "down" and self._history_next():
+                event.prevent_default()
+                event.stop()
 
     class WorkingIndicator(Static):
         """Animated "the agent is busy" indicator shown below the conversation.
@@ -357,6 +420,8 @@ def create_terminal_app(application, *, config_path: Path | None = None):
 
         async def on_input_submitted(self, event: Input.Submitted) -> None:
             text = event.value
+            if isinstance(event.input, CommandInput):
+                event.input.remember(text)
             event.input.value = ""
             self._set_command_suggestions("")
             if text.strip() == "/quit":
