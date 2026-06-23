@@ -256,6 +256,49 @@ async def test_streamed_xml_tool_call_never_leaks_into_chat(tmp_path) -> None:
     assert result.text == "here is the note"
 
 
+class InlineThinkProvider(_BaseProvider):
+    """Streams <think> reasoning inline in the content, like a local Qwen."""
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        blob = "<think>\nThe user said hi, I should greet back.\n</think>\nHello there!"
+        for piece in (blob[i : i + 5] for i in range(0, len(blob), 5)):
+            yield ProviderEvent(kind="text_delta", text_delta=piece)
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text=blob, finish_reason=FinishReason.STOP),
+        )
+
+
+async def test_inline_think_block_never_leaks_into_chat(tmp_path) -> None:
+    provider = InlineThinkProvider()
+    app = build_application(config=_config(tmp_path, planner={"enabled": False}), provider=provider)
+    answer_deltas: list[str] = []
+    thinking_deltas: list[str] = []
+
+    def _capture(event) -> None:
+        if event.event_type == "model.stream.delta":
+            answer_deltas.append(str(event.payload.get("text", "")))
+        elif event.event_type == "model.thinking.delta":
+            thinking_deltas.append(str(event.payload.get("text", "")))
+
+    app.subscribe(_capture)
+
+    await app.start()
+    result = await app.submit_user_message("hi")
+    await app.close()
+
+    answer_stream = "".join(answer_deltas)
+    # The reasoning and its tags stay out of the visible answer channel.
+    assert "<think>" not in answer_stream
+    assert "</think>" not in answer_stream
+    assert "I should greet back" not in answer_stream
+    # Reasoning was routed to the thinking channel instead.
+    assert "I should greet back" in "".join(thinking_deltas)
+    # The final answer is clean prose, no tags.
+    assert result.text.strip() == "Hello there!"
+    assert "<think>" not in result.text
+
+
 class MalformedThenCleanProvider(_BaseProvider):
     """First reply is an unparseable tool call; the retry produces a real answer."""
 

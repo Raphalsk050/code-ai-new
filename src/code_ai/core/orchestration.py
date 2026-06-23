@@ -40,6 +40,7 @@ from code_ai.providers.models import (
     ToolCall,
     ToolResult,
 )
+from code_ai.providers.reasoning import ReasoningTagFilter, split_reasoning_tags
 from code_ai.providers.tool_recovery import (
     ToolCallStreamFilter,
     looks_like_attempted_tool_call,
@@ -480,22 +481,38 @@ class AgentOrchestrator:
     ) -> ModelResponse:
         reasoning_parts: list[str] = []
         completed: ModelResponse | None = None
-        # Hold embedded tool-call markup back from the visible chat while still
-        # accumulating the full text so the call can be recovered and executed.
+        # Two streaming guards on the visible text: peel inline <think> reasoning
+        # off into the thinking channel, then hold any embedded tool-call markup
+        # back from the chat. Both keep the full text flowing for recovery.
+        reasoning_filter = ReasoningTagFilter()
         text_filter = ToolCallStreamFilter()
+
+        async def _emit_visible_answer(answer: str) -> None:
+            streamed_sink.append(answer)
+            visible = text_filter.feed(answer)
+            if visible:
+                await self._emit_text_delta(visible)
+
         async for event in self.provider.stream(request):
             self._raise_if_cancelled(cancel_event)
             if event.kind == "text_delta":
-                streamed_sink.append(event.text_delta)
-                visible = text_filter.feed(event.text_delta)
-                if visible:
-                    await self._emit_text_delta(visible)
+                answer, thought = reasoning_filter.feed(event.text_delta)
+                if thought:
+                    reasoning_parts.append(thought)
+                    await self._emit_reasoning_delta(thought)
+                if answer:
+                    await _emit_visible_answer(answer)
                 continue
             await self._emit_provider_event(event)
             if event.kind == "reasoning_delta":
                 reasoning_parts.append(event.reasoning_delta)
             elif event.kind == "completed" and event.response:
                 completed = event.response
+
+        _, reasoning_tail = reasoning_filter.flush()
+        if reasoning_tail:
+            reasoning_parts.append(reasoning_tail)
+            await self._emit_reasoning_delta(reasoning_tail)
         tail = text_filter.flush()
         if tail:
             await self._emit_text_delta(tail)
@@ -506,6 +523,12 @@ class AgentOrchestrator:
                 reasoning="".join(reasoning_parts),
                 finish_reason=FinishReason.UNKNOWN,
             )
+        # Strip any <think> block the provider left inline so reasoning never
+        # pollutes the answer, conversation history, or tool-call recovery.
+        answer, inline_reasoning = split_reasoning_tags(completed.text)
+        completed.text = answer
+        if inline_reasoning and not completed.reasoning:
+            completed.reasoning = inline_reasoning
         if not completed.text and streamed_sink:
             completed.text = "".join(streamed_sink)
         if not completed.reasoning and reasoning_parts:
@@ -854,15 +877,18 @@ class AgentOrchestrator:
             source="provider",
         )
 
+    async def _emit_reasoning_delta(self, text: str) -> None:
+        await self.event_bus.emit(
+            "model.thinking.delta",
+            {"text": text},
+            source="provider",
+        )
+
     async def _emit_provider_event(self, event: ProviderEvent) -> None:
         if event.kind == "text_delta":
             await self._emit_text_delta(event.text_delta)
         elif event.kind == "reasoning_delta":
-            await self.event_bus.emit(
-                "model.thinking.delta",
-                {"text": event.reasoning_delta},
-                source="provider",
-            )
+            await self._emit_reasoning_delta(event.reasoning_delta)
         elif event.kind == "warning" and event.warning:
             await self.event_bus.emit("warning", {"message": event.warning}, source="provider")
         elif event.kind == "usage" and event.usage:
