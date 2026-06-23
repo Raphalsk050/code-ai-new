@@ -9,6 +9,7 @@ from typing import Any
 from code_ai.config.models import AppConfig
 from code_ai.core.errors import ProviderError, TransientProviderError
 from code_ai.providers.base import build_openai_http_client
+from code_ai.providers.debug import ModelDebugLogger
 from code_ai.providers.models import (
     FinishReason,
     ModelRequest,
@@ -171,6 +172,10 @@ class OpenAIChatCompletionsProvider:
         if self._sampling_supported:
             kwargs.update(self._config.sampling.chat_completion_kwargs())
 
+        debug = ModelDebugLogger.for_request(self._config, provider="openai_chat_completions")
+        if debug:
+            debug.log_request(kwargs)
+
         try:
             stream = await self._client.chat.completions.create(**kwargs)
         except Exception as exc:
@@ -202,6 +207,8 @@ class OpenAIChatCompletionsProvider:
         usage: TokenUsage | None = None
         finish = FinishReason.UNKNOWN
         async for chunk in stream:
+            if debug:
+                debug.log_raw_chunk(chunk)
             usage = _usage_from_object(object_get(chunk, "usage")) or usage
             choices = object_get(chunk, "choices", []) or []
             if not choices:
@@ -246,6 +253,8 @@ class OpenAIChatCompletionsProvider:
             finish_reason=FinishReason.TOOL_CALLS if tool_calls else finish,
             raw_provider_name="openai_chat_completions",
         )
+        if debug:
+            debug.log_response(response)
         yield ProviderEvent(kind="completed", response=response, usage=usage)
 
     async def close(self) -> None:

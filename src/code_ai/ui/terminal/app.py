@@ -15,6 +15,7 @@ from code_ai.ui.terminal.controller import TerminalController
 from code_ai.ui.terminal.slash_commands import (
     command_completion,
     handle_config_command,
+    handle_debug_command,
     render_suggestions,
 )
 from code_ai.ui.terminal.view_models import TerminalViewModel
@@ -387,6 +388,11 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 return
             if text.strip() == "/cancel":
                 await self.controller.cancel()
+                return
+            if text.strip() == "/debug" or text.strip().startswith("/debug "):
+                self._append_conversation_line(
+                    handle_debug_command(application, text.strip(), config_path=config_path)
+                )
                 return
             if text.strip() == "/status":
                 self.query_one("#conversation", RichLog).write(self._session_text())

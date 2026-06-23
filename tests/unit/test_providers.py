@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from code_ai.config.models import AppConfig
 from code_ai.providers.models import Message, ModelRequest, ProviderCapabilities, ToolCall
 from code_ai.providers.ollama import (
     _ollama_reasoning_delta,
@@ -38,6 +39,7 @@ class _FakeOpenAIClient:
 def _responses_provider(events: list[dict[str, object]]) -> OpenAIResponsesProvider:
     provider = object.__new__(OpenAIResponsesProvider)
     provider._client = _FakeOpenAIClient(events)
+    provider._config = AppConfig()
     provider._remote_state_supported = False
     provider._sampling_supported = False
     provider._capabilities = ProviderCapabilities(remote_conversation_state=False)

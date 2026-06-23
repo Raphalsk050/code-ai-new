@@ -7,6 +7,7 @@ from urllib.parse import urljoin
 
 from code_ai.config.models import AppConfig
 from code_ai.core.errors import ProviderError, UnsupportedProviderCapability
+from code_ai.providers.debug import ModelDebugLogger
 from code_ai.providers.models import (
     FinishReason,
     Message,
@@ -138,6 +139,10 @@ class NativeOllamaProvider:
         if options:
             payload["options"] = options
 
+        debug = ModelDebugLogger.for_request(self._config, provider="ollama")
+        if debug:
+            debug.log_request(payload)
+
         text_parts: list[str] = []
         reasoning_parts: list[str] = []
         tool_calls: list[ToolCall] = []
@@ -148,6 +153,8 @@ class NativeOllamaProvider:
                 async for line in response.aiter_lines():
                     if not line:
                         continue
+                    if debug:
+                        debug.log_raw_chunk(line)
                     data = json.loads(line)
                     if "error" in data:
                         message = str(data["error"])
@@ -170,16 +177,19 @@ class NativeOllamaProvider:
         except Exception as exc:
             raise ProviderError(f"Ollama request failed: {exc}") from exc
 
+        response = ModelResponse(
+            text="".join(text_parts),
+            reasoning="".join(reasoning_parts),
+            tool_calls=tool_calls,
+            usage=usage,
+            finish_reason=FinishReason.TOOL_CALLS if tool_calls else FinishReason.STOP,
+            raw_provider_name="ollama",
+        )
+        if debug:
+            debug.log_response(response)
         yield ProviderEvent(
             kind="completed",
-            response=ModelResponse(
-                text="".join(text_parts),
-                reasoning="".join(reasoning_parts),
-                tool_calls=tool_calls,
-                usage=usage,
-                finish_reason=FinishReason.TOOL_CALLS if tool_calls else FinishReason.STOP,
-                raw_provider_name="ollama",
-            ),
+            response=response,
             usage=usage,
         )
 

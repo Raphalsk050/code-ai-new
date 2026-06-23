@@ -303,9 +303,17 @@ class AgentOrchestrator:
         natural-language reasoning summary — which may merely mention a tool or
         quote a JSON blob — from being misread as an actual call.
         """
-        if response.tool_calls or not tool_definitions:
+        if response.tool_calls:
             return
         known_names = {definition.name for definition in tool_definitions}
+        if not known_names:
+            # The step offered no tools (e.g. a turn misclassified as chat).
+            # Fall back to the full registry so leaked call markup is still
+            # recovered instead of surfacing raw in the chat. Recovery only
+            # accepts markup naming a real tool, so prose stays untouched.
+            known_names = set(self.tool_registry.names())
+        if not known_names:
+            return
         recovered, cleaned_text = recover_tool_calls_from_text(
             response.text, known_names
         )

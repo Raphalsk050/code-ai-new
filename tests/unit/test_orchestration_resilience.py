@@ -200,6 +200,37 @@ async def test_text_emitted_tool_call_is_recovered_and_executed(tmp_path) -> Non
     assert result.text == "here is the note"
 
 
+async def test_recovery_falls_back_to_registry_when_no_tools_offered(tmp_path) -> None:
+    # A turn misclassified as chat can reach the model with an empty tool list.
+    # If the model still prints a call as text, recovery must fall back to the
+    # full registry so the markup is stripped instead of leaking into the chat.
+    app = build_application(config=_config(tmp_path), provider=_BaseProvider())
+    orchestrator = app.orchestrator
+    await app.start()
+    recovered_events: list[dict] = []
+    app.subscribe(
+        lambda event: recovered_events.append(event.payload)
+        if event.event_type == "tool.calls.recovered"
+        else None
+    )
+
+    leaked = (
+        "Sure, I'll handle it.\n<tool_call>\n<function=read_file>\n"
+        "<parameter=path>note.txt</parameter>\n</function>\n</tool_call>"
+    )
+    response = ModelResponse(text=leaked, finish_reason=FinishReason.STOP)
+
+    # An empty tool_definitions is exactly the misclassified-turn case.
+    await orchestrator._recover_text_tool_calls(response, tool_definitions=[])
+    await app.close()
+
+    assert [call.name for call in response.tool_calls] == ["read_file"]
+    assert "<tool_call>" not in response.text
+    assert "<function=" not in response.text
+    assert response.text.strip() == "Sure, I'll handle it."
+    assert recovered_events and recovered_events[0]["names"] == ["read_file"]
+
+
 class StreamedXmlToolCallProvider(_BaseProvider):
     """Streams a Qwen-style XML tool call as text deltas, then a clean answer."""
 
