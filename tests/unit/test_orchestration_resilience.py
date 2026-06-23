@@ -200,6 +200,103 @@ async def test_text_emitted_tool_call_is_recovered_and_executed(tmp_path) -> Non
     assert result.text == "here is the note"
 
 
+class StreamedXmlToolCallProvider(_BaseProvider):
+    """Streams a Qwen-style XML tool call as text deltas, then a clean answer."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.tool_feedback = ""
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        if self.calls == 1:
+            blob = (
+                "Let me read it.\n<tool_call>\n<function=read_file>\n"
+                "<parameter=path>note.txt</parameter>\n</function>\n</tool_call>"
+            )
+            # Stream it in fragments so markers straddle delta boundaries.
+            for piece in (blob[i : i + 7] for i in range(0, len(blob), 7)):
+                yield ProviderEvent(kind="text_delta", text_delta=piece)
+            yield ProviderEvent(
+                kind="completed",
+                response=ModelResponse(text=blob, finish_reason=FinishReason.STOP),
+            )
+            return
+        self.tool_feedback = "".join(m.content for m in request.messages if m.role == "tool")
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text="here is the note", finish_reason=FinishReason.STOP),
+        )
+
+
+async def test_streamed_xml_tool_call_never_leaks_into_chat(tmp_path) -> None:
+    (tmp_path / "note.txt").write_text("secret note\n", encoding="utf-8")
+    provider = StreamedXmlToolCallProvider()
+    app = build_application(config=_config(tmp_path, planner={"enabled": False}), provider=provider)
+    deltas: list[str] = []
+
+    def _capture(event) -> None:
+        if event.event_type == "model.stream.delta":
+            deltas.append(str(event.payload.get("text", "")))
+
+    app.subscribe(_capture)
+
+    await app.start()
+    result = await app.submit_user_message("read note.txt")
+    await app.close()
+
+    streamed = "".join(deltas)
+    # The visible stream must carry the prose but none of the call markup.
+    assert "Let me read it." in streamed
+    assert "<tool_call>" not in streamed
+    assert "<function=" not in streamed
+    assert "<parameter=" not in streamed
+    # The call still executed and the turn finished with the real answer.
+    assert "secret note" in provider.tool_feedback
+    assert result.text == "here is the note"
+
+
+class MalformedThenCleanProvider(_BaseProvider):
+    """First reply is an unparseable tool call; the retry produces a real answer."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        if self.calls == 1:
+            # Names a tool that does not exist, so recovery cannot promote it.
+            blob = "<tool_call>\n<function=frobnicate>\n<parameter=x>1</parameter>\n</function>"
+            yield ProviderEvent(kind="text_delta", text_delta=blob)
+            yield ProviderEvent(
+                kind="completed",
+                response=ModelResponse(text=blob, finish_reason=FinishReason.STOP),
+            )
+            return
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text="done now", finish_reason=FinishReason.STOP),
+        )
+
+
+async def test_malformed_tool_call_is_retried_not_surfaced(tmp_path) -> None:
+    provider = MalformedThenCleanProvider()
+    app = build_application(config=_config(tmp_path, planner={"enabled": False}), provider=provider)
+    events: list[str] = []
+    app.subscribe(lambda event: events.append(event.event_type))
+
+    await app.start()
+    result = await app.submit_user_message("do the thing")
+    await app.close()
+
+    # The unparseable call triggered a re-prompt rather than leaking as the
+    # answer, and the second attempt's clean reply is what the user receives.
+    assert "tool.call.malformed" in events
+    assert provider.calls == 2
+    assert result.text == "done now"
+    assert "frobnicate" not in result.text
+
+
 class TwoFileMutationProvider(_BaseProvider):
     def __init__(self) -> None:
         self.calls = 0

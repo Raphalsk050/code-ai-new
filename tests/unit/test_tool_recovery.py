@@ -1,8 +1,20 @@
 from __future__ import annotations
 
-from code_ai.providers.tool_recovery import recover_tool_calls_from_text
+from code_ai.providers.tool_recovery import (
+    ToolCallStreamFilter,
+    looks_like_attempted_tool_call,
+    recover_tool_calls_from_text,
+)
 
 KNOWN = {"read_file", "write_file", "list_files"}
+
+
+def _stream(deltas: list[str]) -> tuple[str, bool]:
+    """Feed ``deltas`` through the filter; return (visible_text, suppressed)."""
+    flt = ToolCallStreamFilter()
+    visible = "".join(flt.feed(delta) for delta in deltas)
+    visible += flt.flush()
+    return visible, flt.suppressed
 
 
 def test_recovers_hermes_style_tool_call_tag() -> None:
@@ -162,3 +174,72 @@ def test_unknown_xml_function_is_not_executed() -> None:
 
     assert calls == []
     assert "<function=rm_rf>" in cleaned
+
+
+# --------------------------------------------------------------------------- #
+# Streaming suppression
+# --------------------------------------------------------------------------- #
+
+
+def test_stream_filter_suppresses_pure_tool_call() -> None:
+    text = "<tool_call>\n<function=edit_code>\n<parameter=path>a.py</parameter>\n</function>"
+    visible, suppressed = _stream(list(text))
+
+    assert visible == ""
+    assert suppressed is True
+
+
+def test_stream_filter_emits_prose_before_a_call() -> None:
+    visible, suppressed = _stream(
+        ["I will ", "edit it.\n<tool", "_call>\n<func", "tion=edit_code>x</tool_call>"]
+    )
+
+    assert visible == "I will edit it.\n"
+    assert suppressed is True
+
+
+def test_stream_filter_leaves_plain_prose_with_angle_brackets() -> None:
+    # A genuine answer containing < and > must stream through untouched.
+    visible, suppressed = _stream(["if a ", "< b and c ", "> d then stop"])
+
+    assert visible == "if a < b and c > d then stop"
+    assert suppressed is False
+
+
+def test_stream_filter_recovers_from_false_marker_start() -> None:
+    # "<to" looks like the start of <tool_call> but resolves to ordinary prose.
+    visible, suppressed = _stream(["see <to", "ggle> the flag"])
+
+    assert visible == "see <toggle> the flag"
+    assert suppressed is False
+
+
+def test_stream_filter_drops_truncated_marker_at_end() -> None:
+    # Stream cut off mid-marker must not leak the partial "<tool_ca".
+    visible, suppressed = _stream(["here goes <tool_ca"])
+
+    assert visible == "here goes "
+    assert suppressed is False
+
+
+def test_stream_filter_suppresses_fenced_tool_call() -> None:
+    visible, suppressed = _stream(["```tool_call\n{\"name\": \"read_file\"}\n```"])
+
+    assert visible == ""
+    assert suppressed is True
+
+
+# --------------------------------------------------------------------------- #
+# Attempt detection (drives retries)
+# --------------------------------------------------------------------------- #
+
+
+def test_attempt_detector_flags_markup() -> None:
+    assert looks_like_attempted_tool_call("blah <tool_call> ...")
+    assert looks_like_attempted_tool_call("<function=read_file>")
+    assert looks_like_attempted_tool_call("```tool_call\n{}\n```")
+
+
+def test_attempt_detector_ignores_plain_prose() -> None:
+    assert not looks_like_attempted_tool_call("Here is the answer to your question.")
+    assert not looks_like_attempted_tool_call("")

@@ -53,9 +53,100 @@ _FUNCTION_BLOCK = re.compile(
 _PARAMETER_BLOCK = re.compile(
     r"<parameter\s*=\s*([^>\s]+)\s*>(.*?)(?:</parameter>|\Z)", re.DOTALL | re.IGNORECASE
 )
+# Opening markers that begin an embedded tool call. Seeing any of these means
+# the model is emitting a call into its content and the markup must be kept out
+# of the visible chat. ``<tool_call>`` also covers fenced ```tool_call blocks.
+_STREAM_MARKERS = ("<tool_call>", "<function=", "```tool_call")
+# A leftover ``<tool_call>`` opener with nothing parseable still signals an
+# attempt, so retry detection looks for the markers anywhere in the text.
+_ATTEMPT_MARKER = re.compile(
+    r"<tool_call>|<function\s*=|```tool_call", re.IGNORECASE
+)
+
 # Keys different models use for the call name and its arguments.
 _NAME_KEYS = ("name", "tool", "tool_name", "function_name")
 _ARGS_KEYS = ("arguments", "parameters", "args", "input", "params")
+
+
+def looks_like_attempted_tool_call(text: str) -> bool:
+    """True when ``text`` contains tool-call markup, parseable or not.
+
+    Used after recovery fails to tell a malformed/truncated call attempt (worth
+    a retry) apart from a genuine prose answer (which should be surfaced as-is).
+    """
+    return bool(text) and _ATTEMPT_MARKER.search(text) is not None
+
+
+class ToolCallStreamFilter:
+    """Keep embedded tool-call markup out of the visible token stream.
+
+    Local models print tool calls into the assistant content instead of using
+    the structured channel. We still need the full text to recover and execute
+    the call, but it must never reach the chat. ``feed`` releases only the text
+    that cannot be the beginning of a tool-call marker; the moment a marker is
+    confirmed it suppresses everything that follows for the rest of the response.
+    """
+
+    __slots__ = ("_held", "_suppressed")
+
+    def __init__(self) -> None:
+        self._held = ""
+        self._suppressed = False
+
+    @property
+    def suppressed(self) -> bool:
+        """Whether a marker has been seen and the rest is being withheld."""
+        return self._suppressed
+
+    def feed(self, delta: str) -> str:
+        """Return the portion of ``delta`` that is safe to show in the chat."""
+        if self._suppressed:
+            return ""
+        buffer = self._held + delta
+        self._held = ""
+        emitted: list[str] = []
+        while buffer:
+            # A marker starts with '<' (XML/tag forms) or '`' (fenced form).
+            starts = [pos for pos in (buffer.find("<"), buffer.find("`")) if pos != -1]
+            if not starts:
+                emitted.append(buffer)
+                buffer = ""
+                break
+            index = min(starts)
+            emitted.append(buffer[:index])
+            candidate = buffer[index:]
+            status = _marker_status(candidate)
+            if status == "full":
+                self._suppressed = True
+                return "".join(emitted)
+            if status == "prefix":
+                # Could still grow into a marker; hold it until more text arrives.
+                self._held = candidate
+                return "".join(emitted)
+            # A lone '<'/'`' that cannot begin a marker: emit it and keep scanning.
+            emitted.append(candidate[0])
+            buffer = candidate[1:]
+        return "".join(emitted)
+
+    def flush(self) -> str:
+        """Release held text at end of stream, dropping incomplete markers.
+
+        Any held text is, by construction, a marker prefix. If the stream ends
+        mid-marker it is a truncated tool call and must not leak; the full text
+        is still available to :func:`recover_tool_calls_from_text`.
+        """
+        self._held = ""
+        return ""
+
+
+def _marker_status(candidate: str) -> str:
+    """Classify ``candidate`` (text starting at '<' or '`') against the markers."""
+    lowered = candidate.lower()
+    if any(lowered.startswith(marker) for marker in _STREAM_MARKERS):
+        return "full"
+    if any(marker.startswith(lowered) for marker in _STREAM_MARKERS):
+        return "prefix"
+    return "no"
 
 
 def recover_tool_calls_from_text(
