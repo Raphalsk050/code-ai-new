@@ -520,3 +520,55 @@ async def test_terminal_banner_font_command_updates_logo_and_persists(tmp_path) 
         assert fake_app.session.config.terminal_banner_font == "future_1"
         assert saved["terminal_banner_font"] == "future_1"
         assert str(logo.render()) != before
+
+
+async def test_up_arrow_recalls_previous_submitted_entries(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", Input)
+
+        input_widget.value = "first message"
+        await pilot.press("enter")
+        input_widget.value = "second message"
+        await pilot.press("enter")
+        await pilot.pause(0.1)
+
+        # Up walks back from newest to oldest.
+        await pilot.press("up")
+        assert input_widget.value == "second message"
+        await pilot.press("up")
+        assert input_widget.value == "first message"
+        # Already at the oldest entry — Up holds position.
+        await pilot.press("up")
+        assert input_widget.value == "first message"
+
+        # Down walks forward and restores the empty draft past the newest entry.
+        await pilot.press("down")
+        assert input_widget.value == "second message"
+        await pilot.press("down")
+        assert input_widget.value == ""
+
+
+async def test_history_preserves_unsent_draft_and_skips_duplicates(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", Input)
+
+        input_widget.value = "ls"
+        await pilot.press("enter")
+        # Submitting the same entry twice must not create a duplicate slot.
+        input_widget.value = "ls"
+        await pilot.press("enter")
+        await pilot.pause(0.1)
+
+        # Start typing a fresh draft, then browse history and come back.
+        input_widget.value = "draft in progress"
+        await pilot.press("up")
+        assert input_widget.value == "ls"
+        # A single Up reached the oldest, proving the duplicate was collapsed.
+        await pilot.press("down")
+        assert input_widget.value == "draft in progress"
