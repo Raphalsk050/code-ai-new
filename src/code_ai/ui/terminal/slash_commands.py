@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import shlex
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 from code_ai.config.loader import persist_config_updates, redacted_config_json
 from code_ai.config.models import (
     SUPPORTED_API_MODES,
+    SUPPORTED_REASONING_EFFORTS,
     normalize_api_mode,
 )
 from code_ai.ui.terminal.widgets import (
@@ -88,6 +89,11 @@ SLASH_COMMANDS = [
         "/config language ",
     ),
     SlashCommand(
+        "/config effort <none|minimal|low|medium|high|xhigh>",
+        "Persist and switch reasoning_effort (OpenAI Responses API).",
+        "/config effort ",
+    ),
+    SlashCommand(
         "/config theme <name>",
         "Persist and switch the terminal theme.",
         "/config theme ",
@@ -106,6 +112,13 @@ SLASH_COMMANDS = [
 
 API_MODE_SUGGESTIONS = ("responses", "completions", "ollama")
 LANGUAGE_SUGGESTIONS = ("en", "pt", "pt-BR")
+# Ordered low-to-high so the picker reads like a dial; gated to the values the
+# SamplingConfig validator accepts.
+REASONING_EFFORT_SUGGESTIONS = tuple(
+    effort
+    for effort in ("none", "minimal", "low", "medium", "high", "xhigh")
+    if effort in SUPPORTED_REASONING_EFFORTS
+)
 TERMINAL_THEME_SUGGESTIONS = (
     "textual-dark",
     "textual-light",
@@ -189,6 +202,31 @@ def handle_config_command(application: Any, command_text: str, *, config_path: P
             live_fields={"language"},
             restart_required=False,
         )
+    if action == "effort":
+        if len(parts) != 3:
+            return (
+                "command> Usage: /config effort "
+                "<none|minimal|low|medium|high|xhigh>"
+            )
+        effort = parts[2].strip().lower()
+        if effort not in SUPPORTED_REASONING_EFFORTS:
+            return (
+                f"command> Unsupported reasoning effort: {parts[2]}. "
+                f"Choose one of {list(REASONING_EFFORT_SUGGESTIONS)}."
+            )
+        # reasoning_effort lives under the nested ``sampling`` block, so persist
+        # the whole block with the new value and apply it on the live config the
+        # providers already hold (they read sampling fresh on every call).
+        sampling = asdict(config.sampling)
+        sampling["reasoning_effort"] = effort
+        try:
+            validated = persist_config_updates(
+                config, {"sampling": sampling}, explicit_path=config_path
+            )
+        except Exception as exc:
+            return f"command> Config not changed: {exc}"
+        config.sampling = validated.sampling
+        return f"command> Updated reasoning_effort={effort}. Applied now."
     if action == "theme":
         if len(parts) != 3:
             return "command> Usage: /config theme <name>"
@@ -360,6 +398,18 @@ def _value_suggestions(prefix: str) -> list[SlashCommand]:
             )
             for language in LANGUAGE_SUGGESTIONS
             if language.lower().startswith(value_prefix.lower())
+        ]
+
+    effort_prefix = "/config effort "
+    if prefix.startswith(effort_prefix):
+        value_prefix = prefix[len(effort_prefix) :].strip().lower()
+        return [
+            SlashCommand(
+                f"/config effort {effort}",
+                "Persist and switch reasoning_effort (OpenAI Responses API).",
+            )
+            for effort in REASONING_EFFORT_SUGGESTIONS
+            if effort.startswith(value_prefix)
         ]
 
     theme_prefix = "/config theme "
