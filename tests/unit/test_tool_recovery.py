@@ -87,3 +87,78 @@ def test_plain_prose_is_left_untouched() -> None:
 
     assert calls == []
     assert cleaned == text
+
+
+def test_recovers_qwen_xml_function_call() -> None:
+    # Qwen3 / Qwen-Coder emit tool calls as XML with no JSON payload.
+    text = (
+        "Let me read it.\n"
+        "<tool_call>\n"
+        "<function=read_file>\n"
+        "<parameter=path>main.py</parameter>\n"
+        "</function>\n"
+        "</tool_call>"
+    )
+    calls, cleaned = recover_tool_calls_from_text(text, KNOWN)
+
+    assert len(calls) == 1
+    assert calls[0].name == "read_file"
+    assert calls[0].arguments == {"path": "main.py"}
+    assert cleaned == "Let me read it."
+
+
+def test_qwen_xml_parameters_are_typed() -> None:
+    # Numeric / boolean / JSON parameter values should not stay strings.
+    text = (
+        "<tool_call><function=read_file>"
+        "<parameter=path>a.py</parameter>"
+        "<parameter=start>3</parameter>"
+        "<parameter=recurse>true</parameter>"
+        "</function></tool_call>"
+    )
+    calls, _ = recover_tool_calls_from_text(text, KNOWN)
+
+    assert calls[0].arguments == {"path": "a.py", "start": 3, "recurse": True}
+
+
+def test_recovers_bare_xml_function_without_tool_call_wrapper() -> None:
+    text = "<function=list_files>\n<parameter=path>.</parameter>\n</function>"
+    calls, cleaned = recover_tool_calls_from_text(text, KNOWN)
+
+    assert calls[0].name == "list_files"
+    assert calls[0].arguments == {"path": "."}
+    assert cleaned == ""
+
+
+def test_recovers_xml_when_closing_tags_are_missing() -> None:
+    # Truncated stream: opening tags only, no </parameter>/</function>/</tool_call>.
+    text = "<tool_call>\n<function=read_file>\n<parameter=path>main.py</parameter>"
+    calls, cleaned = recover_tool_calls_from_text(text, KNOWN)
+
+    assert calls[0].arguments == {"path": "main.py"}
+    assert "<tool_call>" not in cleaned
+
+
+def test_recovers_python_repr_dict_with_single_quotes() -> None:
+    text = "<tool_call>{'name': 'read_file', 'arguments': {'path': 'main.py'}}</tool_call>"
+    calls, cleaned = recover_tool_calls_from_text(text, KNOWN)
+
+    assert calls[0].name == "read_file"
+    assert calls[0].arguments == {"path": "main.py"}
+    assert "<tool_call>" not in cleaned
+
+
+def test_strips_orphan_open_tag_after_recovery() -> None:
+    # A dangling <tool_call> opener must not survive in the cleaned prose.
+    text = '<tool_call>\n{"name": "read_file", "arguments": {"path": "main.py"}}'
+    _, cleaned = recover_tool_calls_from_text(text, KNOWN)
+
+    assert "<tool_call>" not in cleaned
+
+
+def test_unknown_xml_function_is_not_executed() -> None:
+    text = "<tool_call><function=rm_rf><parameter=path>/</parameter></function></tool_call>"
+    calls, cleaned = recover_tool_calls_from_text(text, KNOWN)
+
+    assert calls == []
+    assert "<function=rm_rf>" in cleaned
