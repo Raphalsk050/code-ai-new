@@ -522,6 +522,41 @@ async def test_terminal_banner_font_command_updates_logo_and_persists(tmp_path) 
         assert str(logo.render()) != before
 
 
+def test_config_effort_command_persists_and_updates_active_config(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    config_path = tmp_path / "config.json"
+    result = handle_config_command(
+        fake_app,
+        "/config effort high",
+        config_path=config_path,
+    )
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert "Applied now" in result
+    assert fake_app.session.config.sampling.reasoning_effort == "high"
+    assert saved["sampling"]["reasoning_effort"] == "high"
+
+
+def test_config_effort_command_rejects_unknown_value(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    config_path = tmp_path / "config.json"
+    result = handle_config_command(
+        fake_app,
+        "/config effort turbo",
+        config_path=config_path,
+    )
+    assert "Unsupported reasoning effort" in result
+    assert fake_app.session.config.sampling.reasoning_effort is None
+    assert not config_path.exists()
+
+
+def test_config_effort_completes_and_suggests_values() -> None:
+    assert command_completion("/config eff") == "/config effort "
+    assert command_completion("/config effort hi") == "/config effort high"
+    rendered = render_suggestions("/config effort ")
+    assert "/config effort minimal" in rendered
+    assert "/config effort xhigh" in rendered
+
+
 async def test_up_arrow_recalls_previous_submitted_entries(tmp_path) -> None:
     fake_app = FakeTerminalApplication(tmp_path)
     terminal_app = create_terminal_app(fake_app)
