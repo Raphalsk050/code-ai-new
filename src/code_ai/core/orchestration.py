@@ -40,7 +40,11 @@ from code_ai.providers.models import (
     ToolCall,
     ToolResult,
 )
-from code_ai.providers.tool_recovery import recover_tool_calls_from_text
+from code_ai.providers.tool_recovery import (
+    ToolCallStreamFilter,
+    looks_like_attempted_tool_call,
+    recover_tool_calls_from_text,
+)
 from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.output import bound_text
 from code_ai.tools.registry import ToolRegistry
@@ -48,6 +52,9 @@ from code_ai.tools.registry import ToolRegistry
 ToolContextFactory = Callable[[asyncio.Event | None], ToolContext]
 
 _MODEL_STEP_MAX_RETRIES = 200
+# How many times to re-prompt a model that printed a tool call as text but in a
+# shape we could not parse, before giving up and surfacing its best-effort text.
+_MAX_TOOL_FORMAT_RETRIES = 2
 _TOOL_GUARD_POLL_SECONDS = 2.0
 _TOOL_GUARD_GRACE_SECONDS = 10.0
 _ALLOWED_POLICY = PolicyDecision(True, "allowed", set())
@@ -81,6 +88,7 @@ class _TurnState:
     progress_signature: tuple[object, ...] = ()
     stall_rounds: int = 0
     stall_nudged: bool = False
+    tool_format_retries: int = 0
     seen_call_fingerprints: set[str] = field(default_factory=set)
 
 
@@ -237,6 +245,8 @@ class AgentOrchestrator:
             await self._emit_response_completed(response)
 
             if not response.tool_calls:
+                if await self._retry_malformed_tool_call(response, state):
+                    continue
                 outcome = await self._handle_no_tool_response(response, state)
                 if outcome is not None:
                     return outcome
@@ -303,6 +313,51 @@ class AgentOrchestrator:
                 "text": cleaned,
             },
             source="core.orchestrator",
+        )
+
+    async def _retry_malformed_tool_call(
+        self, response: ModelResponse, state: _TurnState
+    ) -> bool:
+        """Re-prompt a model that emitted an unparseable tool call as text.
+
+        Recovery already ran: if structured calls exist, or the text holds no
+        tool-call markup, there is nothing to retry. Otherwise the model tried to
+        call a tool but botched the format (wrong tool name, broken JSON, a
+        truncated block). Rather than surface that markup as the final answer we
+        drop it, nudge the model toward the proper format, and let the loop run
+        another step. Bounded by ``_MAX_TOOL_FORMAT_RETRIES`` so a model that
+        cannot comply still terminates with a best-effort reply.
+        """
+        if response.tool_calls:
+            return False
+        if not looks_like_attempted_tool_call(response.text):
+            return False
+        if state.tool_format_retries >= _MAX_TOOL_FORMAT_RETRIES:
+            return False
+        state.tool_format_retries += 1
+        # Do not persist the malformed markup as the assistant turn; only keep
+        # the correction so the next attempt is not anchored to broken output.
+        self.conversation.add_user(self._tool_format_correction_text())
+        await self.event_bus.emit(
+            "tool.call.malformed",
+            {
+                "attempt": state.tool_format_retries,
+                "max_attempts": _MAX_TOOL_FORMAT_RETRIES,
+            },
+            source="core.orchestrator",
+        )
+        await self.set_state(
+            AgentState.CALLING_MODEL, phase="retrying_malformed_tool_call"
+        )
+        return True
+
+    @staticmethod
+    def _tool_format_correction_text() -> str:
+        return (
+            "Your previous message tried to call a tool but the call could not be "
+            "parsed. Do not print the call as text. Invoke the tool through the "
+            "function-calling interface, using the exact tool name and valid JSON "
+            "arguments. If no tool is needed, answer the user directly instead."
         )
 
     # ------------------------------------------------------------------ #
@@ -425,15 +480,25 @@ class AgentOrchestrator:
     ) -> ModelResponse:
         reasoning_parts: list[str] = []
         completed: ModelResponse | None = None
+        # Hold embedded tool-call markup back from the visible chat while still
+        # accumulating the full text so the call can be recovered and executed.
+        text_filter = ToolCallStreamFilter()
         async for event in self.provider.stream(request):
             self._raise_if_cancelled(cancel_event)
-            await self._emit_provider_event(event)
             if event.kind == "text_delta":
                 streamed_sink.append(event.text_delta)
-            elif event.kind == "reasoning_delta":
+                visible = text_filter.feed(event.text_delta)
+                if visible:
+                    await self._emit_text_delta(visible)
+                continue
+            await self._emit_provider_event(event)
+            if event.kind == "reasoning_delta":
                 reasoning_parts.append(event.reasoning_delta)
             elif event.kind == "completed" and event.response:
                 completed = event.response
+        tail = text_filter.flush()
+        if tail:
+            await self._emit_text_delta(tail)
 
         if completed is None:
             return ModelResponse(
@@ -781,14 +846,17 @@ class AgentOrchestrator:
             source="context",
         )
 
+    async def _emit_text_delta(self, text: str) -> None:
+        channel = "working" if self._requires_tool_for_progress() else "answer"
+        await self.event_bus.emit(
+            "model.stream.delta",
+            {"text": text, "channel": channel},
+            source="provider",
+        )
+
     async def _emit_provider_event(self, event: ProviderEvent) -> None:
         if event.kind == "text_delta":
-            channel = "working" if self._requires_tool_for_progress() else "answer"
-            await self.event_bus.emit(
-                "model.stream.delta",
-                {"text": event.text_delta, "channel": channel},
-                source="provider",
-            )
+            await self._emit_text_delta(event.text_delta)
         elif event.kind == "reasoning_delta":
             await self.event_bus.emit(
                 "model.thinking.delta",
