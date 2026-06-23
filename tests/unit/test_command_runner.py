@@ -86,10 +86,10 @@ async def test_execute_command_rejects_shell_mode(tmp_path) -> None:
 
 
 async def test_execute_command_does_not_inherit_api_key(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("API_KEY", "secret-value")
+    monkeypatch.setenv("OPENAI_API_KEY", "secret-value")
     context = make_context(tmp_path)
     tool = ExecuteCommandTool()
-    script = "import os; print(os.environ.get('API_KEY', 'missing'))"
+    script = "import os; print(os.environ.get('OPENAI_API_KEY', 'missing'))"
     result = await tool.execute(
         {"command": f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"},
         context,
