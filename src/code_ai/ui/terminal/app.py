@@ -366,6 +366,9 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             # Route gated tool calls through an interactive approve/deny modal.
             application.orchestrator.approval_gateway = TerminalApprovalGateway(self)
             self._apply_configured_terminal_theme()
+            self._apply_session_collapsed(
+                application.session.config.terminal_session_collapsed
+            )
             self.theme_changed_signal.subscribe(self, self._persist_terminal_theme)
             await application.start()
             self._refresh_status()
@@ -547,10 +550,28 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             Only the panel's title and details hide; the toggle button stays
             visible (its arrow flips) so the panel can always be reopened. The
             conversation pane is ``width: 1fr`` and reclaims the freed space.
+            The choice is persisted so it survives a restart.
             """
-            session = self.query_one("#session")
-            collapsed = not session.has_class("collapsed")
-            session.set_class(collapsed, "collapsed")
+            collapsed = not self.query_one("#session").has_class("collapsed")
+            self._apply_session_collapsed(collapsed)
+            config = application.session.config
+            if config.terminal_session_collapsed == collapsed:
+                return
+            try:
+                validated = persist_config_updates(
+                    config,
+                    {"terminal_session_collapsed": collapsed},
+                    explicit_path=config_path,
+                )
+            except Exception as exc:
+                self._append_conversation_line(
+                    f"warning> Could not persist session panel state: {exc}"
+                )
+                return
+            config.terminal_session_collapsed = validated.terminal_session_collapsed
+
+        def _apply_session_collapsed(self, collapsed: bool) -> None:
+            self.query_one("#session").set_class(collapsed, "collapsed")
             self.query_one("#toggle-session", Button).label = "›" if collapsed else "‹"
 
         async def on_select_changed(self, event: Select.Changed) -> None:

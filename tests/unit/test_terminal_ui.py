@@ -609,28 +609,44 @@ async def test_history_preserves_unsent_draft_and_skips_duplicates(tmp_path) -> 
         assert input_widget.value == "draft in progress"
 
 
-async def test_toggle_button_collapses_and_restores_session_panel(tmp_path) -> None:
+async def test_toggle_button_collapses_and_persists_session_panel(tmp_path) -> None:
     from textual.widgets import Button
 
     fake_app = FakeTerminalApplication(tmp_path)
-    terminal_app = create_terminal_app(fake_app)
+    config_path = tmp_path / "config.json"
+    terminal_app = create_terminal_app(fake_app, config_path=config_path)
 
     async with terminal_app.run_test(size=(120, 44)) as pilot:
         session = terminal_app.query_one("#session")
         button = terminal_app.query_one("#toggle-session", Button)
         assert not session.has_class("collapsed")
 
-        # Pressing the toggle collapses the panel and flips the arrow.
+        # Pressing the toggle collapses the panel, flips the arrow, and persists.
         terminal_app.action_toggle_session()
         await pilot.pause(0.1)
         assert session.has_class("collapsed")
         assert str(button.label) == "›"
+        assert fake_app.session.config.terminal_session_collapsed is True
+        saved = json.loads(config_path.read_text(encoding="utf-8"))
+        assert saved["terminal_session_collapsed"] is True
 
-        # Toggling again restores it.
+        # Toggling again restores it and persists the restored state.
         terminal_app.action_toggle_session()
         await pilot.pause(0.1)
         assert not session.has_class("collapsed")
         assert str(button.label) == "‹"
+        saved = json.loads(config_path.read_text(encoding="utf-8"))
+        assert saved["terminal_session_collapsed"] is False
+
+
+async def test_session_panel_starts_collapsed_when_configured(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    fake_app.session.config.terminal_session_collapsed = True
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(120, 44)) as pilot:
+        await pilot.pause(0.1)
+        assert terminal_app.query_one("#session").has_class("collapsed")
 
 
 def test_config_help_command_lists_config_commands_as_text(tmp_path) -> None:

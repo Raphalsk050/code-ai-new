@@ -93,4 +93,5 @@ DEFAULT_CONFIG: dict[str, object] = {
     "terminal_theme": "textual-dark",
     "terminal_banner_font": "tarty2",
     "terminal_spinner": "ascii",
+    "terminal_session_collapsed": False,
 }
