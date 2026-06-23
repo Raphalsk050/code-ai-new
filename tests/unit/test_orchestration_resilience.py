@@ -299,6 +299,51 @@ async def test_inline_think_block_never_leaks_into_chat(tmp_path) -> None:
     assert "<think>" not in result.text
 
 
+class ThinkWrappedToolCallProvider(_BaseProvider):
+    """Emits a tool call inside an unterminated <think> block, then answers."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.tool_feedback = ""
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        if self.calls == 1:
+            # No closing </think>, so the call markup lands in the reasoning.
+            blob = (
+                "<think>\nI'll read it.\n<tool_call>\n<function=read_file>\n"
+                "<parameter=path>note.txt</parameter>\n</function>\n</tool_call>"
+            )
+            yield ProviderEvent(kind="text_delta", text_delta=blob)
+            yield ProviderEvent(
+                kind="completed",
+                response=ModelResponse(text=blob, finish_reason=FinishReason.STOP),
+            )
+            return
+        self.tool_feedback = "".join(m.content for m in request.messages if m.role == "tool")
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text="here is the note", finish_reason=FinishReason.STOP),
+        )
+
+
+async def test_tool_call_inside_think_block_is_recovered_and_executed(tmp_path) -> None:
+    (tmp_path / "note.txt").write_text("secret note\n", encoding="utf-8")
+    provider = ThinkWrappedToolCallProvider()
+    app = build_application(config=_config(tmp_path, planner={"enabled": False}), provider=provider)
+    events: list[str] = []
+    app.subscribe(lambda event: events.append(event.event_type))
+
+    await app.start()
+    result = await app.submit_user_message("read note.txt")
+    await app.close()
+
+    # The call hidden in the reasoning channel must still run, not stall the turn.
+    assert "tool.calls.recovered" in events
+    assert "secret note" in provider.tool_feedback
+    assert result.text == "here is the note"
+
+
 class MalformedThenCleanProvider(_BaseProvider):
     """First reply is an unparseable tool call; the retry produces a real answer."""
 
