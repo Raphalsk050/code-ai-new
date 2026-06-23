@@ -344,6 +344,50 @@ async def test_tool_call_inside_think_block_is_recovered_and_executed(tmp_path) 
     assert result.text == "here is the note"
 
 
+class ReasoningMentionsToolProvider(_BaseProvider):
+    """A real model: structured channel unused, reasoning is natural language.
+
+    Its reasoning quotes a JSON blob that names a tool but it is NOT calling
+    anything — it answers directly. This must not be misread as a tool call.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        reasoning = (
+            'I considered {"name": "read_file", "arguments": {"path": "a.py"}} '
+            "but the user only wants an explanation, so I will answer directly."
+        )
+        yield ProviderEvent(kind="reasoning_delta", reasoning_delta=reasoning)
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(
+                text="read_file opens a file and returns its contents.",
+                reasoning=reasoning,
+                finish_reason=FinishReason.STOP,
+            ),
+        )
+
+
+async def test_natural_language_reasoning_is_not_misread_as_tool_call(tmp_path) -> None:
+    provider = ReasoningMentionsToolProvider()
+    app = build_application(config=_config(tmp_path, planner={"enabled": False}), provider=provider)
+    events: list[str] = []
+    app.subscribe(lambda event: events.append(event.event_type))
+
+    await app.start()
+    result = await app.submit_user_message("what does read_file do?")
+    await app.close()
+
+    # No explicit tool-call markup in the reasoning, so nothing is recovered and
+    # the model only ran once: its direct answer is surfaced as-is.
+    assert "tool.calls.recovered" not in events
+    assert provider.calls == 1
+    assert result.text == "read_file opens a file and returns its contents."
+
+
 class MalformedThenCleanProvider(_BaseProvider):
     """First reply is an unparseable tool call; the retry produces a real answer."""
 
