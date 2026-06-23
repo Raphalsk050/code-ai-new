@@ -168,6 +168,41 @@ def test_strips_orphan_open_tag_after_recovery() -> None:
     assert "<tool_call>" not in cleaned
 
 
+def test_xml_parameter_value_containing_closing_tags_is_preserved() -> None:
+    # Editing code/XML/templates puts literal </parameter> and </function> inside
+    # a value. Positional parsing (Cline-style lastIndexOf) must not truncate it.
+    text = (
+        "<tool_call><function=edit_code>"
+        "<parameter=path>a.py</parameter>"
+        "<parameter=new_text>x = 1\n"
+        "# literal </parameter> and </function> in the value\n"
+        "y = 2</parameter>"
+        "</function></tool_call>"
+    )
+    calls, _ = recover_tool_calls_from_text(text, {"edit_code"})
+
+    assert len(calls) == 1
+    new_text = calls[0].arguments["new_text"]
+    assert "</parameter> and </function> in the value" in new_text
+    assert new_text.endswith("y = 2")
+    assert calls[0].arguments["path"] == "a.py"
+
+
+def test_xml_multiple_params_with_angle_brackets_in_values() -> None:
+    text = (
+        "<tool_call><function=edit_code>"
+        "<parameter=old_text>if a < b and c > d:</parameter>"
+        "<parameter=new_text>if a <= b and c >= d:</parameter>"
+        "</function></tool_call>"
+    )
+    calls, _ = recover_tool_calls_from_text(text, {"edit_code"})
+
+    assert calls[0].arguments == {
+        "old_text": "if a < b and c > d:",
+        "new_text": "if a <= b and c >= d:",
+    }
+
+
 def test_unknown_xml_function_is_not_executed() -> None:
     text = "<tool_call><function=rm_rf><parameter=path>/</parameter></function></tool_call>"
     calls, cleaned = recover_tool_calls_from_text(text, KNOWN)
