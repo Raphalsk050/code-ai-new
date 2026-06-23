@@ -49,6 +49,10 @@ SLASH_COMMANDS = [
     SlashCommand("/quit", "Close Code-AI."),
     SlashCommand("/config show", "Show redacted active config."),
     SlashCommand(
+        "/config models",
+        "List models offered by your provider and pick one.",
+    ),
+    SlashCommand(
         "/config model <name>",
         "Persist and switch the model for future calls.",
         "/config model ",
@@ -152,6 +156,14 @@ def handle_config_command(application: Any, command_text: str, *, config_path: P
     config = application.session.config
     if action == "show":
         return redacted_config_json(config)
+    if action == "models":
+        # The interactive picker lives in the terminal UI (it fetches the catalog
+        # and opens a searchable list). Reaching here means there is no UI to host
+        # the picker, so point the user at the direct form instead.
+        return (
+            "command> Run /config models inside the terminal UI to pick from your "
+            "provider's models, or use /config model <name> to set one directly."
+        )
     if action == "model":
         if len(parts) < 3:
             return "command> Usage: /config model <name>"

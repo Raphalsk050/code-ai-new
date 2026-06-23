@@ -10,6 +10,7 @@ from rich.text import Text
 
 from code_ai.bootstrap import build_application
 from code_ai.config.loader import persist_config_updates
+from code_ai.providers.model_listing import list_available_models
 from code_ai.ui.terminal.controller import TerminalController
 from code_ai.ui.terminal.slash_commands import (
     command_completion,
@@ -393,6 +394,9 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             if text.strip() == "/help":
                 self._append_conversation_line(render_suggestions("/"))
                 return
+            if text.strip() == "/config models":
+                await self._select_model_interactive()
+                return
             if text.strip().startswith("/config"):
                 stripped = text.strip()
                 self._append_conversation_line(
@@ -580,6 +584,47 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 ],
                 placeholder="Search for working spinners...",
             )
+
+        async def _select_model_interactive(self) -> None:
+            config = application.session.config
+            self._append_conversation_line(
+                f"command> Fetching models from {config.base_url} ..."
+            )
+            try:
+                models = await list_available_models(config)
+            except Exception as exc:
+                self._append_conversation_line(f"warning> Could not list models: {exc}")
+                return
+            current = config.model
+            self.search_commands(
+                [
+                    SimpleCommand(
+                        f"{model} (current)" if model == current else model,
+                        partial(self._persist_model, model),
+                        f"Switch the active model to {model}.",
+                    )
+                    for model in models
+                ],
+                placeholder="Search for a model...",
+            )
+
+        def _persist_model(self, model: str) -> None:
+            config = application.session.config
+            if config.model == model:
+                self._append_conversation_line(f"command> Model already set to {model}.")
+                return
+            try:
+                validated = persist_config_updates(
+                    config,
+                    {"model": model},
+                    explicit_path=config_path,
+                )
+            except Exception as exc:
+                self._append_conversation_line(f"warning> Could not switch model: {exc}")
+                return
+            config.model = validated.model
+            self._append_conversation_line(f"command> Updated model={config.model}. Applied now.")
+            self._refresh_status()
 
         def _persist_terminal_theme(self, theme) -> None:
             theme_name = getattr(theme, "name", self.theme)
