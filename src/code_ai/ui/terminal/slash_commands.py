@@ -53,6 +53,7 @@ SLASH_COMMANDS = [
     ),
     SlashCommand("/clear", "Clear the conversation view."),
     SlashCommand("/quit", "Close Code-AI."),
+    SlashCommand("/config help", "Browse and pick a /config command to run."),
     SlashCommand("/config show", "Show redacted active config."),
     SlashCommand(
         "/config models",
@@ -134,6 +135,21 @@ TERMINAL_THEME_SUGGESTIONS = (
 )
 
 
+def config_commands(*, include_help: bool = False) -> list[SlashCommand]:
+    """The ``/config`` subcommands, in declaration order.
+
+    Powers both the interactive ``/config help`` picker and its headless text
+    fallback. ``/config help`` itself is omitted by default so the picker does
+    not list a way back into itself.
+    """
+    return [
+        item
+        for item in SLASH_COMMANDS
+        if item.command.startswith("/config")
+        and (include_help or item.command != "/config help")
+    ]
+
+
 def command_suggestions(prefix: str, *, limit: int = 8) -> list[SlashCommand]:
     text = prefix.lstrip()
     if not text.startswith("/"):
@@ -172,6 +188,14 @@ def handle_config_command(application: Any, command_text: str, *, config_path: P
 
     action = parts[1]
     config = application.session.config
+    if action == "help":
+        lines = "\n".join(
+            f"{item.command:<48} {item.description}" for item in config_commands()
+        )
+        return (
+            "command> Config commands (run /config help in the terminal UI to "
+            "pick one interactively):\n" + lines
+        )
     if action == "show":
         return redacted_config_json(config)
     if action == "models":

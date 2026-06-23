@@ -14,6 +14,7 @@ from code_ai.providers.model_listing import list_available_models
 from code_ai.ui.terminal.controller import TerminalController
 from code_ai.ui.terminal.slash_commands import (
     command_completion,
+    config_commands,
     handle_config_command,
     handle_debug_command,
     render_suggestions,
@@ -465,22 +466,60 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             if text.strip() == "/help":
                 self._append_conversation_line(render_suggestions("/"))
                 return
-            if text.strip() == "/config models":
-                await self._select_model_interactive()
-                return
             if text.strip().startswith("/config"):
-                stripped = text.strip()
-                self._append_conversation_line(
-                    handle_config_command(application, stripped, config_path=config_path)
-                )
-                if stripped.startswith("/config theme "):
-                    self._apply_configured_terminal_theme()
-                if stripped.startswith("/config banner-font "):
-                    self._refresh_logo()
-                if stripped.startswith("/config spinner "):
-                    self._refresh_spinner()
+                await self._dispatch_config(text.strip())
                 return
             asyncio.create_task(self.controller.submit(text))
+
+        async def _dispatch_config(self, stripped: str) -> None:
+            """Run a ``/config ...`` line, including its UI side effects.
+
+            Shared by the typed prompt and the ``/config help`` picker so both
+            paths behave identically (open sub-pickers, repaint the logo, etc.).
+            """
+            if stripped == "/config help":
+                self.action_config_help()
+                return
+            if stripped == "/config models":
+                await self._select_model_interactive()
+                return
+            self._append_conversation_line(
+                handle_config_command(application, stripped, config_path=config_path)
+            )
+            if stripped.startswith("/config theme "):
+                self._apply_configured_terminal_theme()
+            if stripped.startswith("/config banner-font "):
+                self._refresh_logo()
+            if stripped.startswith("/config spinner "):
+                self._refresh_spinner()
+
+        def action_config_help(self) -> None:
+            """Open a searchable palette of /config commands to pick from."""
+            self.search_commands(
+                [
+                    SimpleCommand(
+                        item.command,
+                        partial(self._use_config_command, item),
+                        item.description,
+                    )
+                    for item in config_commands()
+                ],
+                placeholder="Search config commands...",
+            )
+
+        def _use_config_command(self, item) -> None:
+            input_widget = self.query_one("#input", CommandInput)
+            if "<" in item.command:
+                # Needs a value: drop the command stem into the prompt (cursor at
+                # the end) so the user types the argument and presses Enter.
+                input_widget.value = item.completion_text
+                input_widget.cursor_position = len(input_widget.value)
+                input_widget.focus()
+                self._set_command_suggestions(input_widget.value)
+                return
+            # No argument to fill — run it right away.
+            self._set_command_suggestions("")
+            asyncio.create_task(self._dispatch_config(item.completion_text.strip()))
 
         def get_system_commands(self, screen) -> Any:
             yield from super().get_system_commands(screen)
