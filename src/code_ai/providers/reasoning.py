@@ -9,6 +9,20 @@ marker — leak straight into the chat.
 This module routes the text between the tags to the reasoning channel, strips
 the tags, and returns the answer text. It tolerates tags split across streamed
 delta boundaries, so it can run incrementally on a token stream.
+
+Self-healing for interleaved tool calls
+---------------------------------------
+Qwen 3.x routinely emits a tool call *before* it closes ``</think>`` — the call
+markup appears while the model is still nominally "thinking". Left alone the
+call would be buried in the reasoning channel and never executed. Following the
+documented chat-template fix (inject ``</think>`` right before the first
+``<tool_call>``), this filter treats a tool-call marker seen inside a think
+block as an implicit close: the reasoning ends and the call markup flows out on
+the answer channel, where the normal tool-call recovery picks it up.
+
+References:
+- https://allanchan339.github.io/bug-fixes/2026/05/02/Qwen36-27B-updated-jinja.html
+- https://github.com/vllm-project/vllm/issues/31871
 """
 
 from __future__ import annotations
@@ -16,6 +30,9 @@ from __future__ import annotations
 # Open/close tag pairs we recognise. ``<thinking>`` is a common variant.
 _THINK_OPEN = ("<think>", "<thinking>")
 _THINK_CLOSE = ("</think>", "</thinking>")
+# Tool-call openers that imply the think block is over even without a closing
+# tag. ``<tool_call>`` also covers the fenced ```tool_call form.
+_TOOL_OPEN = ("<tool_call>", "<function=", "```tool_call")
 
 
 class ReasoningTagFilter:
@@ -39,36 +56,41 @@ class ReasoningTagFilter:
         answer: list[str] = []
         reasoning: list[str] = []
         while buffer:
-            markers = _THINK_CLOSE if self._in_think else _THINK_OPEN
             sink = reasoning if self._in_think else answer
-            index = buffer.find("<")
-            if index == -1:
+            starts = [pos for pos in (buffer.find("<"), buffer.find("`")) if pos != -1]
+            if not starts:
                 sink.append(buffer)
                 break
+            index = min(starts)
             sink.append(buffer[:index])
             candidate = buffer[index:]
-            status, marker = _tag_status(candidate, markers)
-            if status == "full":
-                self._in_think = not self._in_think
+            action, marker = self._classify(candidate)
+            if action == "enter":
+                self._in_think = True
                 buffer = candidate[len(marker):]
-                continue
-            if status == "prefix":
-                # Could still complete into a tag once more text arrives.
+            elif action == "close":
+                # A real </think> (or a stray one seen outside a block): drop it.
+                self._in_think = False
+                buffer = candidate[len(marker):]
+            elif action == "heal":
+                # Tool call inside a think block: end reasoning here but keep the
+                # markup so it is re-scanned and emitted on the answer channel.
+                self._in_think = False
+                buffer = candidate
+            elif action == "hold":
                 self._held = candidate
                 break
-            # A '<' that cannot begin the tag we are looking for: keep it and
-            # carry on. This preserves stray angle brackets and unrelated markup
-            # (e.g. a tool call) so downstream filters still see it intact.
-            sink.append("<")
-            buffer = candidate[1:]
+            else:  # "literal": a '<'/'`' that begins no marker we care about.
+                sink.append(candidate[0])
+                buffer = candidate[1:]
         return "".join(answer), "".join(reasoning)
 
     def flush(self) -> tuple[str, str]:
         """Release held text at end of stream as ``(answer, reasoning)``.
 
-        Leftover text is, by construction, an incomplete tag prefix. Inside a
-        think block it is reasoning; otherwise a truncated open tag we drop so a
-        partial ``<thin`` never leaks into the answer.
+        Leftover text is, by construction, an incomplete marker prefix. Inside a
+        think block it is reasoning; otherwise a truncated tag we drop so a
+        partial ``<thin`` or ``</thi`` never leaks into the answer.
         """
         held = self._held
         self._held = ""
@@ -76,17 +98,35 @@ class ReasoningTagFilter:
             return "", held
         return "", ""
 
+    def _classify(self, candidate: str) -> tuple[str, str]:
+        """Classify text starting at '<'/'`' into an action and the marker hit."""
+        lowered = candidate.lower()
+        if self._in_think:
+            for marker in _THINK_CLOSE:
+                if lowered.startswith(marker):
+                    return "close", marker
+            for marker in _TOOL_OPEN:
+                if lowered.startswith(marker):
+                    return "heal", marker
+            if _is_prefix(lowered, (*_THINK_CLOSE, *_TOOL_OPEN)):
+                return "hold", ""
+            return "literal", ""
+        for marker in _THINK_OPEN:
+            if lowered.startswith(marker):
+                return "enter", marker
+        # A stray close tag outside any block (e.g. left over after a healed tool
+        # call) must be swallowed rather than shown.
+        for marker in _THINK_CLOSE:
+            if lowered.startswith(marker):
+                return "close", marker
+        if _is_prefix(lowered, (*_THINK_OPEN, *_THINK_CLOSE)):
+            return "hold", ""
+        return "literal", ""
 
-def _tag_status(candidate: str, markers: tuple[str, ...]) -> tuple[str, str]:
-    """Classify text starting at '<' against ``markers``."""
-    lowered = candidate.lower()
-    for marker in markers:
-        if lowered.startswith(marker):
-            return "full", marker
-    for marker in markers:
-        if marker.startswith(lowered):
-            return "prefix", marker
-    return "no", ""
+
+def _is_prefix(candidate: str, markers: tuple[str, ...]) -> bool:
+    """True when ``candidate`` could still grow into one of ``markers``."""
+    return any(marker.startswith(candidate) for marker in markers)
 
 
 def split_reasoning_tags(text: str) -> tuple[str, str]:
