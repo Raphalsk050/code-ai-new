@@ -45,14 +45,16 @@ _FENCE = re.compile(
     r"```(?:json|tool_call|tool_calls|python)?\s*(.*?)```", re.DOTALL | re.IGNORECASE
 )
 # Qwen/Qwen-Coder XML function-call shape: <function=NAME> ... </function> with
-# <parameter=KEY>VALUE</parameter> children. The closing tags are optional for
-# the same truncation reasons as above.
-_FUNCTION_BLOCK = re.compile(
-    r"<function\s*=\s*([^>\s]+)\s*>(.*?)(?:</function>|\Z)", re.DOTALL | re.IGNORECASE
-)
-_PARAMETER_BLOCK = re.compile(
-    r"<parameter\s*=\s*([^>\s]+)\s*>(.*?)(?:</parameter>|\Z)", re.DOTALL | re.IGNORECASE
-)
+# <parameter=KEY>VALUE</parameter> children. We match only the *opening* tags and
+# slice values positionally (delimited by the next sibling opener, closing tag
+# found with rfind). A regex like ``<parameter=k>(.*?)</parameter>`` truncates a
+# value that itself contains ``</parameter>``/``</function>`` — which happens
+# whenever the model edits code, XML, or templates. This mirrors Cline's parser,
+# which uses lastIndexOf on the content slice for exactly this reason.
+_FUNCTION_OPEN = re.compile(r"<function\s*=\s*([^>\s]+)\s*>", re.IGNORECASE)
+_PARAMETER_OPEN = re.compile(r"<parameter\s*=\s*([^>\s]+)\s*>", re.IGNORECASE)
+_FUNCTION_CLOSE = "</function>"
+_PARAMETER_CLOSE = "</parameter>"
 # Opening markers that begin an embedded tool call. Seeing any of these means
 # the model is emitting a call into its content and the markup must be kept out
 # of the visible chat. ``<tool_call>`` also covers fenced ```tool_call blocks.
@@ -179,11 +181,11 @@ def recover_tool_calls_from_text(
 
     # Bare Qwen/Hermes XML function blocks that were not wrapped in <tool_call>.
     if not extracted:
-        for match in _FUNCTION_BLOCK.finditer(text):
-            calls = _extract_xml_function(match.group(1), match.group(2), names)
+        for name, body, span in _iter_xml_functions(text):
+            calls = _extract_xml_function(name, body, names)
             if calls:
                 extracted.extend(calls)
-                spans.append(match.span())
+                spans.append(span)
 
     if not extracted:
         for span, blob in _iter_json_blobs(text):
@@ -229,10 +231,33 @@ def _loads_relaxed(blob: str) -> object | None:
         return None
 
 
+def _iter_xml_functions(blob: str) -> Iterator[tuple[str, str, tuple[int, int]]]:
+    """Yield ``(name, body, (start, end))`` for each ``<function=..>`` block.
+
+    Blocks are delimited positionally: a function body runs to the next
+    ``<function=`` opener (or end of input), then a trailing ``</function>`` is
+    removed with ``rfind`` so the close tag inside a parameter value does not cut
+    the body short.
+    """
+    opens = list(_FUNCTION_OPEN.finditer(blob))
+    for index, match in enumerate(opens):
+        name = match.group(1).strip()
+        body_start = match.end()
+        next_start = opens[index + 1].start() if index + 1 < len(opens) else len(blob)
+        body = blob[body_start:next_start]
+        close = body.rfind(_FUNCTION_CLOSE)
+        if close != -1:
+            end = body_start + close + len(_FUNCTION_CLOSE)
+            body = body[:close]
+        else:
+            end = next_start
+        yield name, body, (match.start(), end)
+
+
 def _extract_xml_calls(blob: str, names: set[str]) -> list[tuple[str, dict]]:
     calls: list[tuple[str, dict]] = []
-    for match in _FUNCTION_BLOCK.finditer(blob):
-        calls.extend(_extract_xml_function(match.group(1), match.group(2), names))
+    for name, body, _span in _iter_xml_functions(blob):
+        calls.extend(_extract_xml_function(name, body, names))
     return calls
 
 
@@ -243,10 +268,20 @@ def _extract_xml_function(
     if name not in names:
         return []
     arguments: dict = {}
-    for param in _PARAMETER_BLOCK.finditer(body):
-        key = param.group(1).strip()
-        if key:
-            arguments[key] = _coerce_scalar(param.group(2).strip())
+    opens = list(_PARAMETER_OPEN.finditer(body))
+    for index, match in enumerate(opens):
+        key = match.group(1).strip()
+        if not key:
+            continue
+        value_start = match.end()
+        next_start = opens[index + 1].start() if index + 1 < len(opens) else len(body)
+        segment = body[value_start:next_start]
+        # Strip the *last* </parameter> in the segment so a value containing the
+        # close tag (code, XML, templates) is preserved rather than truncated.
+        close = segment.rfind(_PARAMETER_CLOSE)
+        if close != -1:
+            segment = segment[:close]
+        arguments[key] = _coerce_scalar(segment.strip())
     return [(name, arguments)]
 
 
