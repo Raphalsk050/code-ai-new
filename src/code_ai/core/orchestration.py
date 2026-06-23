@@ -294,15 +294,28 @@ class AgentOrchestrator:
         encodes a call to a tool we actually exposed this step, rewrite the
         response so the runtime executes it instead of surfacing the raw markup
         as the final chat answer.
+
+        Weak local models also mash the channels together: a call can land inside
+        (or right after an unterminated) ``<think>`` block, so the markup ends up
+        in the reasoning rather than the answer. We therefore recover from both
+        the answer and the reasoning text; otherwise the call silently vanishes
+        and the turn dies with nothing executed.
         """
         if response.tool_calls or not tool_definitions:
             return
         known_names = {definition.name for definition in tool_definitions}
-        recovered, cleaned = recover_tool_calls_from_text(response.text, known_names)
+        recovered_text, cleaned_text = recover_tool_calls_from_text(
+            response.text, known_names
+        )
+        recovered_reasoning, cleaned_reasoning = recover_tool_calls_from_text(
+            response.reasoning, known_names
+        )
+        recovered = recovered_text + recovered_reasoning
         if not recovered:
             return
         response.tool_calls = recovered
-        response.text = cleaned
+        response.text = cleaned_text
+        response.reasoning = cleaned_reasoning
         response.finish_reason = FinishReason.TOOL_CALLS
         await self.event_bus.emit(
             "tool.calls.recovered",
@@ -311,7 +324,7 @@ class AgentOrchestrator:
                 "names": [call.name for call in recovered],
                 # The cleaned prose so the UI can replace the raw call text it
                 # already streamed into the chat.
-                "text": cleaned,
+                "text": cleaned_text,
             },
             source="core.orchestrator",
         )
@@ -331,7 +344,9 @@ class AgentOrchestrator:
         """
         if response.tool_calls:
             return False
-        if not looks_like_attempted_tool_call(response.text):
+        if not looks_like_attempted_tool_call(
+            response.text
+        ) and not looks_like_attempted_tool_call(response.reasoning):
             return False
         if state.tool_format_retries >= _MAX_TOOL_FORMAT_RETRIES:
             return False
