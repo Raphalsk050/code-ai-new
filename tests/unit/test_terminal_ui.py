@@ -609,6 +609,30 @@ async def test_history_preserves_unsent_draft_and_skips_duplicates(tmp_path) -> 
         assert input_widget.value == "draft in progress"
 
 
+async def test_toggle_button_collapses_and_restores_session_panel(tmp_path) -> None:
+    from textual.widgets import Button
+
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(120, 44)) as pilot:
+        session = terminal_app.query_one("#session")
+        button = terminal_app.query_one("#toggle-session", Button)
+        assert not session.has_class("collapsed")
+
+        # Pressing the toggle collapses the panel and flips the arrow.
+        terminal_app.action_toggle_session()
+        await pilot.pause(0.1)
+        assert session.has_class("collapsed")
+        assert str(button.label) == "›"
+
+        # Toggling again restores it.
+        terminal_app.action_toggle_session()
+        await pilot.pause(0.1)
+        assert not session.has_class("collapsed")
+        assert str(button.label) == "‹"
+
+
 def test_config_help_command_lists_config_commands_as_text(tmp_path) -> None:
     fake_app = FakeTerminalApplication(tmp_path)
     result = handle_config_command(fake_app, "/config help", config_path=None)

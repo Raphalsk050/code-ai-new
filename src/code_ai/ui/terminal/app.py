@@ -70,7 +70,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
     from textual.command import SimpleCommand
     from textual.containers import Container, Horizontal, Vertical
     from textual.suggester import Suggester
-    from textual.widgets import Footer, Header, Input, RichLog, Select, Static
+    from textual.widgets import Button, Footer, Header, Input, RichLog, Select, Static
 
     from code_ai.ui.terminal.approval import TerminalApprovalGateway
 
@@ -294,6 +294,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             ("ctrl+c", "cancel_or_quit", "Cancel/Quit"),
             ("ctrl+q", "quit", "Quit"),
             ("ctrl+l", "clear", "Clear"),
+            ("ctrl+b", "toggle_session", "Session panel"),
         ]
 
         def __init__(self) -> None:
@@ -320,7 +321,9 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                     yield Static("", id="context-meter")
                 with Horizontal(id="main"):
                     with Vertical(id="session"):
-                        yield Static("SESSION", classes="panel-title")
+                        with Horizontal(id="session-header"):
+                            yield Static("SESSION", classes="panel-title", id="session-title")
+                            yield Button("‹", id="toggle-session", classes="collapse-btn")
                         yield Static("", id="session-info")
                     with Vertical(id="conversation-pane"):
                         yield RichLog(
@@ -533,6 +536,22 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 "Change the working-indicator animation",
                 self.action_change_spinner,
             )
+
+        async def on_button_pressed(self, event: Button.Pressed) -> None:
+            if event.button.id == "toggle-session":
+                self.action_toggle_session()
+
+        def action_toggle_session(self) -> None:
+            """Collapse the left SESSION panel to a thin strip, or restore it.
+
+            Only the panel's title and details hide; the toggle button stays
+            visible (its arrow flips) so the panel can always be reopened. The
+            conversation pane is ``width: 1fr`` and reclaims the freed space.
+            """
+            session = self.query_one("#session")
+            collapsed = not session.has_class("collapsed")
+            session.set_class(collapsed, "collapsed")
+            self.query_one("#toggle-session", Button).label = "›" if collapsed else "‹"
 
         async def on_select_changed(self, event: Select.Changed) -> None:
             if event.select.id != "mode-select":
