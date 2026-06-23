@@ -297,20 +297,23 @@ class AgentOrchestrator:
 
         Weak local models also mash the channels together: a call can land inside
         (or right after an unterminated) ``<think>`` block, so the markup ends up
-        in the reasoning rather than the answer. We therefore recover from both
-        the answer and the reasoning text; otherwise the call silently vanishes
-        and the turn dies with nothing executed.
+        in the reasoning rather than the answer. We fall back to the reasoning
+        channel only when the answer yielded nothing *and* the reasoning carries
+        explicit ``<tool_call>``/``<function=`` markup. That keeps a real model's
+        natural-language reasoning summary — which may merely mention a tool or
+        quote a JSON blob — from being misread as an actual call.
         """
         if response.tool_calls or not tool_definitions:
             return
         known_names = {definition.name for definition in tool_definitions}
-        recovered_text, cleaned_text = recover_tool_calls_from_text(
+        recovered, cleaned_text = recover_tool_calls_from_text(
             response.text, known_names
         )
-        recovered_reasoning, cleaned_reasoning = recover_tool_calls_from_text(
-            response.reasoning, known_names
-        )
-        recovered = recovered_text + recovered_reasoning
+        cleaned_reasoning = response.reasoning
+        if not recovered and looks_like_attempted_tool_call(response.reasoning):
+            recovered, cleaned_reasoning = recover_tool_calls_from_text(
+                response.reasoning, known_names
+            )
         if not recovered:
             return
         response.tool_calls = recovered
