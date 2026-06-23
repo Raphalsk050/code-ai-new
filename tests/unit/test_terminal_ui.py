@@ -607,3 +607,48 @@ async def test_history_preserves_unsent_draft_and_skips_duplicates(tmp_path) -> 
         # A single Up reached the oldest, proving the duplicate was collapsed.
         await pilot.press("down")
         assert input_widget.value == "draft in progress"
+
+
+def test_config_help_command_lists_config_commands_as_text(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    result = handle_config_command(fake_app, "/config help", config_path=None)
+    # Lists the other config commands but does not list a way back into itself.
+    assert "/config show" in result
+    assert "/config effort" in result
+    assert "/config model " in result
+    assert "/config help" not in result.replace("run /config help", "")
+
+
+async def test_config_help_picker_prefills_arg_commands(tmp_path) -> None:
+    from code_ai.ui.terminal.slash_commands import SlashCommand
+
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(110, 44)) as pilot:
+        input_widget = terminal_app.query_one("#input", Input)
+
+        # A command that needs a value drops its stem into the prompt for editing.
+        terminal_app._use_config_command(
+            SlashCommand("/config model <name>", "x", "/config model ")
+        )
+        await pilot.pause(0.1)
+        assert input_widget.value == "/config model "
+        assert input_widget.cursor_position == len(input_widget.value)
+
+
+async def test_config_help_picker_runs_argless_commands(tmp_path) -> None:
+    from code_ai.ui.terminal.slash_commands import SlashCommand
+
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(110, 44)) as pilot:
+        input_widget = terminal_app.query_one("#input", Input)
+
+        # An argument-free command runs immediately instead of pre-filling.
+        terminal_app._use_config_command(SlashCommand("/config show", "x"))
+        await pilot.pause(0.1)
+        assert input_widget.value == ""
+        # /config show appends the redacted config to the conversation.
+        assert any('"model"' in line for line in terminal_app.vm.conversation)
