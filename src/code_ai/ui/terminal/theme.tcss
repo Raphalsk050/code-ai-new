@@ -43,6 +43,45 @@ Screen {
   padding: 1;
 }
 
+#session-header {
+  height: 1;
+  width: 1fr;
+}
+
+#session-title {
+  width: 1fr;
+}
+
+.collapse-btn {
+  width: 3;
+  min-width: 3;
+  height: 1;
+  border: none;
+  padding: 0;
+  color: #ff9f1c;
+  background: transparent;
+}
+
+.collapse-btn:hover {
+  background: #1b2530;
+}
+
+/* Collapsed: shrink to a thin strip showing only the expand button. */
+#session.collapsed {
+  width: 5;
+  min-width: 5;
+  max-width: 5;
+  padding: 1 0;
+}
+
+#session.collapsed #session-title {
+  display: none;
+}
+
+#session.collapsed #session-info {
+  display: none;
+}
+
 #conversation-pane {
   width: 1fr;
   border: solid #8892a0;
