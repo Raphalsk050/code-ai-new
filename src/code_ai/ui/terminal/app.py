@@ -364,7 +364,9 @@ def create_terminal_app(application, *, config_path: Path | None = None):
         async def on_mount(self) -> None:
             application.subscribe(self._on_event)
             # Route gated tool calls through an interactive approve/deny modal.
-            application.orchestrator.approval_gateway = TerminalApprovalGateway(self)
+            application.orchestrator.approval_gateway = TerminalApprovalGateway(
+                self, application.session.config
+            )
             self._apply_configured_terminal_theme()
             self._apply_session_collapsed(
                 application.session.config.terminal_session_collapsed

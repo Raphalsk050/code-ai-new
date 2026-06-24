@@ -32,6 +32,14 @@ class ExecuteCommandTool:
                 "type": "number",
                 "description": "Soft timeout in seconds, clamped to the runtime budget.",
             },
+            "reason": {
+                "type": "string",
+                "description": (
+                    "One or two plain-language sentences explaining why this command is being "
+                    "run and what it accomplishes. Shown to the user in the approval prompt "
+                    "before they decide whether to allow it."
+                ),
+            },
         },
         required=("command",),
     )

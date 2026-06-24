@@ -26,6 +26,14 @@ class WriteFileTool:
                 "type": "string",
                 "description": "Full UTF-8 contents to write to the file.",
             },
+            "reason": {
+                "type": "string",
+                "description": (
+                    "One or two plain-language sentences explaining why this file is being "
+                    "created/overwritten and what it accomplishes. Shown to the user in the "
+                    "approval prompt before they decide whether to allow it."
+                ),
+            },
         },
         required=("path", "content"),
     )

@@ -146,6 +146,19 @@ def _render_info(request: ApprovalRequest) -> str:
     return "\n".join(lines)
 
 
+def _render_justification(request: ApprovalRequest) -> str:
+    """The model's own explanation of why this call is needed, if it gave one.
+
+    Comes from the optional ``reason`` argument on write_file/edit_code/
+    execute_command — purely informational, never used by the tools
+    themselves. Gated behind /config learn so users who don't want the extra
+    text can turn it off.
+    """
+
+    reason = request.arguments.get("reason")
+    return reason.strip() if isinstance(reason, str) else ""
+
+
 class ApprovalModal(ModalScreen[ApprovalDecision]):
     """Blocking approve/deny dialog for a single gated tool call."""
 
@@ -156,16 +169,20 @@ class ApprovalModal(ModalScreen[ApprovalDecision]):
         ("3", "allow_session", "Always allow"),
     ]
 
-    def __init__(self, request: ApprovalRequest) -> None:
+    def __init__(self, request: ApprovalRequest, *, learn_enabled: bool = True) -> None:
         super().__init__()
         self._request = request
+        self._learn_enabled = learn_enabled
 
     def compose(self) -> ComposeResult:
         meta, body = _render_preview(self._request)
         info = _render_info(self._request)
+        justification = _render_justification(self._request) if self._learn_enabled else ""
         with Vertical(id="approval-dialog"):
             yield Static(_render_title(self._request), id="approval-title")
             yield Static(meta, id="approval-meta")
+            if justification:
+                yield Static(f"Why: {justification}", id="approval-justification")
             with ScrollableContainer(id="approval-body"):
                 yield Static(body, id="approval-code")
             if info:
@@ -205,8 +222,9 @@ class TerminalApprovalGateway:
     resolves. A dismissal without a value is treated as a denial.
     """
 
-    def __init__(self, app) -> None:
+    def __init__(self, app, config) -> None:
         self._app = app
+        self._config = config
 
     async def request_approval(self, request: ApprovalRequest) -> ApprovalDecision:
         loop = asyncio.get_running_loop()
@@ -221,5 +239,7 @@ class TerminalApprovalGateway:
                 else ApprovalDecision.deny("Dismissed without a choice.")
             )
 
-        self._app.push_screen(ApprovalModal(request), _resolve)
+        # Read learn live so toggling /config learn applies to the very next prompt.
+        modal = ApprovalModal(request, learn_enabled=self._config.learn)
+        self._app.push_screen(modal, _resolve)
         return await future
