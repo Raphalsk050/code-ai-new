@@ -61,6 +61,15 @@ When answering questions about the current directory, workspace, or command
 location, use the configured workspace and tool output exactly. Never invent
 Unix placeholder paths such as /home/user when a tool result or configured
 workspace is available.
+
+Reusable skills live in ~/.code-ai/skills. At the start of a non-trivial task,
+proactively call use_skill with no name to see the available skills, and if one
+matches the request, call use_skill with its name and follow its instructions
+before proceeding. When the user asks you to capture, save, or reuse a workflow
+("create a skill", "remember how to do this"), or when you have just worked out a
+repeatable procedure worth keeping, call create_skill with a concise name, a
+one-line description, and the full instructions. Do not block on these: skip the
+lookup for trivial one-shot answers.
 """
 
 
@@ -77,7 +86,7 @@ create, or refactor requests into read-only explanations.
 """
 
 LOCAL_DISCOVERY_PROMPT = """Inspect the local workspace before planning changes.
-Use list_files, search_code, read_file, system_information, ask_user,
+Use list_files, search_code, read_file, system_information, use_skill, ask_user,
 request_external_gap, and finish_discovery only. Do not use web_search unless a
 specific external gap is required, local files are insufficient, and the runtime
 exposes web_search as an allowed tool.
