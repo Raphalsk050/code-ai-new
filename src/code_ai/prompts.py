@@ -47,6 +47,12 @@ Prefer one small, atomic tool call over a complex call. Use simple arguments:
 write_file(path, content), edit_code(path, old_text, new_text), and
 execute_command(command). Do not invent hidden guard fields.
 
+Every call to write_file, edit_code, and execute_command also takes a "reason"
+argument. Always fill it in with one or two short, plain-language sentences
+explaining why this specific change/command is needed and what it accomplishes.
+It is shown to the user in the approval prompt before they decide whether to
+allow the call, so write it for a human reader, not as an internal note.
+
 Use web_search before answering questions about external current or
 time-sensitive facts, including sports schedules, news, prices, package
 versions, releases, regulations, or explicit requests to search the web. For
