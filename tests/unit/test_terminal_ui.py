@@ -557,6 +557,46 @@ def test_config_effort_completes_and_suggests_values() -> None:
     assert "/config effort xhigh" in rendered
 
 
+def test_config_max_context_window_command_persists_and_updates_active_config(
+    tmp_path,
+) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    config_path = tmp_path / "config.json"
+    result = handle_config_command(
+        fake_app,
+        "/config max-context-window 128000",
+        config_path=config_path,
+    )
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert "Restart Code-AI" in result
+    assert fake_app.session.config.budgets.max_context_tokens == 128000
+    assert saved["budgets"]["max_context_tokens"] == 128000
+
+
+def test_config_max_context_window_command_rejects_non_integer(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    config_path = tmp_path / "config.json"
+    result = handle_config_command(
+        fake_app,
+        "/config max-context-window not-a-number",
+        config_path=config_path,
+    )
+    assert "Invalid token count" in result
+    assert not config_path.exists()
+
+
+def test_config_max_context_window_command_rejects_below_minimum(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    config_path = tmp_path / "config.json"
+    result = handle_config_command(
+        fake_app,
+        "/config max-context-window 1000",
+        config_path=config_path,
+    )
+    assert "Config not changed" in result
+    assert not config_path.exists()
+
+
 async def test_up_arrow_recalls_previous_submitted_entries(tmp_path) -> None:
     fake_app = FakeTerminalApplication(tmp_path)
     terminal_app = create_terminal_app(fake_app)

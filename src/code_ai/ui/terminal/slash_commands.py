@@ -109,6 +109,11 @@ SLASH_COMMANDS = [
         "Persist and switch the working-indicator animation.",
         "/config spinner ",
     ),
+    SlashCommand(
+        "/config max-context-window <tokens>",
+        "Persist the max context window size in tokens. Restart required.",
+        "/config max-context-window ",
+    ),
 ]
 
 API_MODE_SUGGESTIONS = ("responses", "completions", "ollama")
@@ -333,6 +338,29 @@ def handle_config_command(application: Any, command_text: str, *, config_path: P
             changes={"workspace": str(Path(parts[2]).expanduser().resolve())},
             live_fields=set(),
             restart_required=True,
+        )
+    if action == "max-context-window":
+        if len(parts) != 3:
+            return "command> Usage: /config max-context-window <tokens>"
+        try:
+            tokens = int(parts[2])
+        except ValueError:
+            return f"command> Invalid token count: {parts[2]}"
+        # max_context_tokens lives under the nested ``budgets`` block. The
+        # ContextCompressor reads it once at bootstrap, so this always
+        # requires a restart to take effect (unlike model/language/effort).
+        budgets = asdict(config.budgets)
+        budgets["max_context_tokens"] = tokens
+        try:
+            validated = persist_config_updates(
+                config, {"budgets": budgets}, explicit_path=config_path
+            )
+        except Exception as exc:
+            return f"command> Config not changed: {exc}"
+        config.budgets = validated.budgets
+        return (
+            f"command> Updated max_context_tokens={tokens}. "
+            "Restart Code-AI to apply this setting."
         )
     return f"command> Unknown config action: {action}"
 
