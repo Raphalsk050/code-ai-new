@@ -6,6 +6,7 @@ from code_ai.bootstrap import build_application
 from code_ai.config.models import AppConfig
 from code_ai.core.approval import (
     ApprovalDecision,
+    ApprovalRequest,
     ApprovalScope,
     DenyAllGateway,
     _StaticGateway,
@@ -72,6 +73,45 @@ def test_call_signature_keys_execute_command_on_program() -> None:
         == "execute_command:mkdir"
     )
     assert call_signature("write_file", {"path": "a.py"}) == "write_file"
+
+
+def test_render_preview_highlights_by_language() -> None:
+    from code_ai.ui.terminal.approval import _render_preview
+
+    meta, body = _render_preview(
+        ApprovalRequest("c", "write_file", {"path": "demo.py", "content": "def x():\n    return 1\n"}, "s")
+    )
+    assert "demo.py" in meta
+    assert body.lexer.name == "Python"
+    assert "return 1" in body.code
+
+
+def test_render_preview_uses_language_from_path() -> None:
+    from code_ai.ui.terminal.approval import _render_preview
+
+    _, ts = _render_preview(
+        ApprovalRequest("c", "edit_code", {"path": "app.ts", "new_text": "const x = 1"}, "s")
+    )
+    assert ts.lexer.name == "TypeScript"
+
+    _, cmd = _render_preview(
+        ApprovalRequest("c", "execute_command", {"command": "pip install rich"}, "s")
+    )
+    assert cmd.code == "pip install rich"
+
+    _, args = _render_preview(ApprovalRequest("c", "other_tool", {"foo": 1}, "s"))
+    assert args.lexer.name == "JSON"
+    assert '"foo"' in args.code
+
+
+def test_render_preview_survives_unknown_language() -> None:
+    from code_ai.ui.terminal.approval import _render_preview
+
+    # An extension Pygments has no lexer for must not raise.
+    meta, body = _render_preview(
+        ApprovalRequest("c", "write_file", {"path": "data.zzz", "content": "anything"}, "s")
+    )
+    assert body.code == "anything"
 
 
 def test_approval_decision_flags() -> None:
