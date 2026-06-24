@@ -156,8 +156,7 @@ ApprovalModal {
 #approval-dialog {
   width: 85%;
   max-width: 110;
-  height: auto;
-  max-height: 90%;
+  height: 90%;
   border: thick #ff9f1c;
   background: #111820;
   padding: 1 2;
@@ -177,8 +176,7 @@ ApprovalModal {
 /* Code preview: grows with the content but caps out and scrolls (both axes)
    when the file is taller/wider than the available room. */
 #approval-body {
-  height: auto;
-  max-height: 1fr;
+  height: 1fr;
   overflow: auto auto;
   scrollbar-size: 1 1;
   background: #111820;
