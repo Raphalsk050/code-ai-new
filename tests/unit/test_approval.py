@@ -151,6 +151,69 @@ def test_render_preview_falls_back_to_syntax_when_edit_is_a_noop() -> None:
     assert body.code == "x = 1"
 
 
+def test_render_justification_reads_reason_argument() -> None:
+    from code_ai.ui.terminal.approval import _render_justification
+
+    request = ApprovalRequest(
+        "c", "write_file", {"path": "a.py", "content": "x", "reason": "  Add the helper.  "}, "s"
+    )
+    assert _render_justification(request) == "Add the helper."
+
+
+def test_render_justification_is_empty_when_reason_missing() -> None:
+    from code_ai.ui.terminal.approval import _render_justification
+
+    request = ApprovalRequest("c", "write_file", {"path": "a.py", "content": "x"}, "s")
+    assert _render_justification(request) == ""
+
+
+async def test_approval_modal_shows_justification_when_learn_enabled() -> None:
+    from textual.app import App
+    from textual.widgets import Static
+
+    from code_ai.ui.terminal.approval import ApprovalModal
+
+    request = ApprovalRequest(
+        "c",
+        "write_file",
+        {"path": "a.py", "content": "x", "reason": "Add the helper."},
+        "s",
+    )
+
+    class _HostApp(App):
+        async def on_mount(self) -> None:
+            await self.push_screen(ApprovalModal(request, learn_enabled=True))
+
+    app = _HostApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        justification = app.screen.query_one("#approval-justification", Static)
+        assert "Add the helper." in str(justification.render())
+
+
+async def test_approval_modal_hides_justification_when_learn_disabled() -> None:
+    from textual.app import App
+    from textual.widgets import Static
+
+    from code_ai.ui.terminal.approval import ApprovalModal
+
+    request = ApprovalRequest(
+        "c",
+        "write_file",
+        {"path": "a.py", "content": "x", "reason": "Add the helper."},
+        "s",
+    )
+
+    class _HostApp(App):
+        async def on_mount(self) -> None:
+            await self.push_screen(ApprovalModal(request, learn_enabled=False))
+
+    app = _HostApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert len(app.screen.query("#approval-justification")) == 0
+
+
 def test_render_preview_survives_unknown_language() -> None:
     from code_ai.ui.terminal.approval import _render_preview
 

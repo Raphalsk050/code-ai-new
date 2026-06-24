@@ -613,6 +613,40 @@ def test_config_max_context_window_command_rejects_below_minimum(tmp_path) -> No
     assert not config_path.exists()
 
 
+def test_config_learn_command_persists_and_updates_active_config(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    config_path = tmp_path / "config.json"
+    result = handle_config_command(
+        fake_app,
+        "/config learn off",
+        config_path=config_path,
+    )
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert "Learn mode off" in result
+    assert fake_app.session.config.learn is False
+    assert saved["learn"] is False
+
+
+def test_config_learn_command_rejects_invalid_value(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    config_path = tmp_path / "config.json"
+    result = handle_config_command(
+        fake_app,
+        "/config learn maybe",
+        config_path=config_path,
+    )
+    assert "Usage: /config learn" in result
+    assert not config_path.exists()
+
+
+def test_config_learn_completes_and_suggests_values() -> None:
+    assert command_completion("/config lea") == "/config learn "
+    assert command_completion("/config learn of") == "/config learn off"
+    rendered = render_suggestions("/config learn ")
+    assert "/config learn on" in rendered
+    assert "/config learn off" in rendered
+
+
 async def test_up_arrow_recalls_previous_submitted_entries(tmp_path) -> None:
     fake_app = FakeTerminalApplication(tmp_path)
     terminal_app = create_terminal_app(fake_app)
