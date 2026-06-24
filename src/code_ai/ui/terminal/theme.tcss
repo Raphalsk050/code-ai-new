@@ -154,10 +154,10 @@ ApprovalModal {
 }
 
 #approval-dialog {
-  width: 80%;
-  max-width: 100;
+  width: 85%;
+  max-width: 110;
   height: auto;
-  max-height: 80%;
+  max-height: 90%;
   border: thick #ff9f1c;
   background: #111820;
   padding: 1 2;
@@ -169,9 +169,34 @@ ApprovalModal {
   padding-bottom: 1;
 }
 
+#approval-meta {
+  color: #9fb3c8;
+  padding-bottom: 1;
+}
+
+/* Code preview: grows with the content but caps out and scrolls (both axes)
+   when the file is taller/wider than the available room. */
 #approval-body {
   height: auto;
+  max-height: 1fr;
+  overflow: auto auto;
+  scrollbar-size: 1 1;
+  background: #111820;
+}
+
+#approval-code {
+  width: auto;
+  height: auto;
+}
+
+#approval-info {
+  color: #9fb3c8;
+  padding-top: 1;
+}
+
+#approval-keys {
   color: #d7dee8;
+  padding-top: 1;
   padding-bottom: 1;
 }
 
