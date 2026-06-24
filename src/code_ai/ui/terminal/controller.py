@@ -19,8 +19,14 @@ class TerminalController:
         if text.strip():
             await self.app.submit_user_message(text.strip())
 
-    async def compact(self) -> None:
-        await self.app.request_context_compression()
+    async def compact(self) -> str:
+        result = await self.app.request_context_compression()
+        if not result.compressed:
+            return "command> Nothing to compact — conversation is already short."
+        return (
+            "command> Compacted conversation context: "
+            f"{result.previous_tokens} → {result.active_tokens} tokens."
+        )
 
     async def cancel(self) -> None:
         await self.app.cancel_current_turn()

@@ -9,6 +9,7 @@ from textual.widgets import Input, Static
 
 import code_ai.ui.terminal as terminal_package
 from code_ai.config.models import AppConfig
+from code_ai.context.compression import CompressionResult
 from code_ai.core.orchestration import TurnResult
 from code_ai.core.state import AgentState
 from code_ai.events.models import EventEnvelope
@@ -48,8 +49,8 @@ class FakeTerminalApplication:
         await self.emit("model.stream.delta", {"text": "ok"})
         return TurnResult(text="ok", response=None)
 
-    async def request_context_compression(self) -> None:
-        return None
+    async def request_context_compression(self) -> CompressionResult:
+        return CompressionResult(True, 4000, False, 18000)
 
     async def cancel_current_turn(self) -> None:
         return None
@@ -85,6 +86,21 @@ async def test_terminal_enter_submits_input_and_renders_events(tmp_path) -> None
         assert fake_app.submitted == ["hello from tui"]
         assert "you> hello from tui" in terminal_app.vm.conversation
         assert "ai> ok" in terminal_app.vm.conversation
+
+
+async def test_compact_command_runs_immediately_and_reports_token_counts(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", Input)
+        input_widget.value = "/compact"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+
+        assert any(
+            "18000 → 4000 tokens" in line for line in terminal_app.vm.conversation
+        )
 
 
 async def test_streaming_deltas_do_not_rerender_whole_transcript(tmp_path) -> None:

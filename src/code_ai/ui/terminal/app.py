@@ -438,7 +438,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 await self.action_clear()
                 return
             if text.strip() == "/compact":
-                await self.controller.compact()
+                self._append_conversation_line(await self.controller.compact())
                 return
             if text.strip() in {"/auto", "/plan", "/act"}:
                 mode = text.strip().lstrip("/")

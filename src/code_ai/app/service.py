@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 
 from code_ai.app.session import ApplicationSession
-from code_ai.context.compression import ContextCompressor
+from code_ai.context.compression import CompressionResult, ContextCompressor
 from code_ai.core.orchestration import AgentOrchestrator, TurnResult
 from code_ai.core.planning import PlannerMode
 from code_ai.core.state import AgentState
@@ -70,15 +70,22 @@ class CodeAIApplication:
             )
             self._current_cancel.set()
 
-    async def request_context_compression(self) -> None:
+    async def request_context_compression(self) -> CompressionResult:
         await self.orchestrator.set_state(
             AgentState.COMPRESSING_CONTEXT, phase="manual_compression"
         )
-        await self.compressor.ensure_capacity(
+        # force=True: a manual /compact always runs right away, regardless of
+        # whether the conversation is already under the auto-compress threshold.
+        compression = await self.compressor.ensure_capacity(
             self.orchestrator.conversation,
             self.orchestrator.tool_registry.definitions(),
+            force=True,
         )
+        # Refresh the context-meter bar immediately; otherwise it would only
+        # catch up to the post-compaction token count on the next turn.
+        await self.orchestrator.emit_context_usage(compression)
         await self.orchestrator.set_state(AgentState.READY, phase="waiting_user")
+        return compression
 
     async def set_planner_mode(self, mode: str | PlannerMode) -> None:
         if not self.orchestrator.planner:
