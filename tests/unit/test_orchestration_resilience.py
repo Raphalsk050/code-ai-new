@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 from code_ai.bootstrap import build_application
 from code_ai.config.models import AppConfig
 from code_ai.core.errors import CancellationError, ProviderError, TransientProviderError
+from code_ai.core.memory import FailureMemoryStore
 from code_ai.providers.models import (
     FinishReason,
     ModelRequest,
@@ -28,6 +29,8 @@ def _config(tmp_path, **overrides) -> AppConfig:
         "workspace": str(tmp_path),
         "model": "fake",
         "permission_mode": "bypass",
+        # Keep learned failure memories out of the user's real config dir.
+        "memories_dir": str(tmp_path / "memories"),
     }
     data.update(overrides)
     return AppConfig.from_mapping(data)
@@ -444,7 +447,13 @@ class MalformedThenCleanProvider(_BaseProvider):
 
 async def test_malformed_tool_call_is_retried_not_surfaced(tmp_path) -> None:
     provider = MalformedThenCleanProvider()
-    app = build_application(config=_config(tmp_path, planner={"enabled": False}), provider=provider)
+    # Generator-less memory store: recording the malformed-call lesson must not
+    # fire a model meta-call through the scripted provider and skew the count.
+    app = build_application(
+        config=_config(tmp_path, planner={"enabled": False}),
+        provider=provider,
+        failure_memory=FailureMemoryStore(tmp_path / "mem"),
+    )
     events: list[str] = []
     app.subscribe(lambda event: events.append(event.event_type))
 

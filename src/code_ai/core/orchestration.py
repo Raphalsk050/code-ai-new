@@ -26,6 +26,7 @@ from code_ai.core.errors import (
     ProviderError,
     TransientProviderError,
 )
+from code_ai.core.memory import FailureMemoryStore
 from code_ai.core.planning import PlannerMode, PlannerService, PlanningPhase
 from code_ai.core.planning.policy import PolicyDecision
 from code_ai.core.state import AgentState
@@ -56,6 +57,11 @@ _MODEL_STEP_MAX_RETRIES = 200
 # How many times to re-prompt a model that printed a tool call as text but in a
 # shape we could not parse, before giving up and surfacing its best-effort text.
 _MAX_TOOL_FORMAT_RETRIES = 2
+# How many times to re-prompt a model that burned its entire output budget
+# (typically inside the reasoning channel) without emitting a tool call, before
+# giving up. Each retry hands back its own truncated thinking plus a nudge to
+# commit to one concrete action.
+_MAX_BUDGET_RETRIES = 2
 _TOOL_GUARD_POLL_SECONDS = 2.0
 _TOOL_GUARD_GRACE_SECONDS = 10.0
 _ALLOWED_POLICY = PolicyDecision(True, "allowed", set())
@@ -90,6 +96,7 @@ class _TurnState:
     stall_rounds: int = 0
     stall_nudged: bool = False
     tool_format_retries: int = 0
+    budget_overflow_retries: int = 0
     seen_call_fingerprints: set[str] = field(default_factory=set)
 
 
@@ -128,6 +135,7 @@ class AgentOrchestrator:
         tool_context_factory: ToolContextFactory,
         planner: PlannerService | None = None,
         approval_gateway: ApprovalGateway | None = None,
+        failure_memory: FailureMemoryStore | None = None,
     ) -> None:
         self.config = config
         self.provider = provider
@@ -138,6 +146,9 @@ class AgentOrchestrator:
         self.compressor = compressor
         self.tool_context_factory = tool_context_factory
         self.planner = planner
+        # Persistent cross-session memory of recurring failures; ``None`` keeps
+        # the loop fully functional, just without learning.
+        self.failure_memory = failure_memory
         # Interactive approver. Defaults to deny-all so non-interactive runs keep
         # the prior behaviour; the terminal UI swaps in a modal-backed gateway.
         self.approval_gateway: ApprovalGateway = approval_gateway or DenyAllGateway()
@@ -247,6 +258,8 @@ class AgentOrchestrator:
 
             if not response.tool_calls:
                 if await self._retry_malformed_tool_call(response, state):
+                    continue
+                if await self._retry_budget_overflow(response, request, state):
                     continue
                 outcome = await self._handle_no_tool_response(response, state)
                 if outcome is not None:
@@ -361,6 +374,20 @@ class AgentOrchestrator:
             return False
         if state.tool_format_retries >= _MAX_TOOL_FORMAT_RETRIES:
             return False
+        if state.tool_format_retries == 0:
+            # Learn from the first botched format this turn, not every retry.
+            await self._record_failure(
+                trigger="malformed_tool_call",
+                context=(
+                    "The model tried to call a tool but emitted unparseable markup "
+                    "as text instead of a structured function call. Offending "
+                    f"output:\n{bound_text(response.text or response.reasoning, 600)}"
+                ),
+                fallback_lesson=(
+                    "Invoke tools through the function-calling interface with valid "
+                    "JSON arguments; never print the tool call as text or prose."
+                ),
+            )
         state.tool_format_retries += 1
         # Do not persist the malformed markup as the assistant turn; only keep
         # the correction so the next attempt is not anchored to broken output.
@@ -386,6 +413,123 @@ class AgentOrchestrator:
             "function-calling interface, using the exact tool name and valid JSON "
             "arguments. If no tool is needed, answer the user directly instead."
         )
+
+    # ------------------------------------------------------------------ #
+    # Budget overflow: model burned its whole output budget without acting
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _is_truncated(response: ModelResponse, request: ModelRequest) -> bool:
+        """True when the model hit the output-token ceiling mid-generation.
+
+        ``finish_reason`` alone is unreliable: ollama/qwen report ``"stop"`` even
+        when truncated by length, so we also treat "used the entire output
+        budget" (provider-reported ``output_tokens`` reaching the requested cap)
+        as truncation.
+        """
+        if response.finish_reason == FinishReason.LENGTH:
+            return True
+        cap = request.max_output_tokens
+        usage = response.usage
+        if cap and usage and usage.output_tokens >= cap:
+            return True
+        return False
+
+    async def _retry_budget_overflow(
+        self, response: ModelResponse, request: ModelRequest, state: _TurnState
+    ) -> bool:
+        """Recover a turn where the model spent its whole budget without acting.
+
+        The classic failure: a thinking model pours the entire output budget into
+        the reasoning channel, emits no tool call and no answer, and the stream
+        ends — leaving the loop nothing to do, so the turn dies silently. Here we
+        detect the truncation, record the lesson, and hand the model back its own
+        truncated thinking plus a nudge to commit to one concrete action (and to
+        slice large file writes). Bounded by ``_MAX_BUDGET_RETRIES``.
+        """
+        if response.text:
+            # It produced a real answer; truncated or not, there is something to
+            # surface — let the normal no-tool path handle it.
+            return False
+        if not self._is_truncated(response, request):
+            return False
+
+        await self._record_failure(
+            trigger="token_budget_exceeded",
+            context=(
+                "The model used its entire output-token budget of "
+                f"{request.max_output_tokens} tokens producing reasoning without "
+                "emitting a tool call or a final answer. Truncated reasoning:\n"
+                f"{(response.reasoning or '').strip()[:600]}"
+            ),
+            fallback_lesson=(
+                "Do not spend the whole output budget thinking. Commit to one "
+                "concrete tool call early, and write large files incrementally "
+                "(create, then extend with edit_code) instead of emitting a huge "
+                "file in a single call."
+            ),
+        )
+
+        if state.budget_overflow_retries >= _MAX_BUDGET_RETRIES:
+            return False
+        state.budget_overflow_retries += 1
+        self.conversation.add_user(
+            self._budget_overflow_text(response.reasoning, request.max_output_tokens)
+        )
+        await self.event_bus.emit(
+            "model.budget_overflow",
+            {
+                "attempt": state.budget_overflow_retries,
+                "max_attempts": _MAX_BUDGET_RETRIES,
+                "output_token_cap": request.max_output_tokens,
+                "output_tokens": response.usage.output_tokens if response.usage else None,
+            },
+            source="core.orchestrator",
+        )
+        await self.set_state(AgentState.CALLING_MODEL, phase="retrying_budget_overflow")
+        return True
+
+    @staticmethod
+    def _budget_overflow_text(reasoning: str, cap: int | None) -> str:
+        limit = f"{cap} tokens" if cap else "the output-token limit"
+        recap = (reasoning or "").strip()
+        if recap:
+            recap = bound_text(recap, 1500)
+            thought = f"\n\nThis is what you were thinking when you ran out:\n{recap}"
+        else:
+            thought = ""
+        return (
+            f"You thought too much and ran out of output budget ({limit}) before "
+            "doing anything — no tool call and no answer reached me, so nothing "
+            "happened." + thought + "\n\nDo not re-think the whole problem. Pick the "
+            "single next concrete action and take it now as one tool call. If it is "
+            "a large file, do not emit it all at once: create or edit it in smaller "
+            "chunks (e.g. write a skeleton, then extend it with edit_code) so each "
+            "step fits the budget."
+        )
+
+    async def _record_failure(
+        self, *, trigger: str, context: str, fallback_lesson: str, signature: str | None = None
+    ) -> None:
+        """Persist a lesson for a recurring failure, if memory is enabled.
+
+        Never lets the learning path break the turn that triggered it: the store
+        already swallows generator errors, and we guard the call itself too.
+        """
+        if self.failure_memory is None:
+            return
+        try:
+            await self.failure_memory.record(
+                trigger=trigger,
+                context=context,
+                fallback_lesson=fallback_lesson,
+                signature=signature,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            await self.event_bus.emit(
+                "memory.record.failed",
+                {"error": str(exc)},
+                source="core.orchestrator",
+            )
 
     # ------------------------------------------------------------------ #
     # Convergence guard: stop tool-call loops that make no real progress
@@ -425,6 +569,19 @@ class AgentOrchestrator:
                     "tool_calls_executed": state.tool_calls_executed,
                 },
                 source="core.orchestrator",
+            )
+            await self._record_failure(
+                trigger="stall",
+                context=(
+                    "The model stalled: it kept producing the same non-progressing "
+                    f"output for {state.stall_rounds} rounds without advancing the "
+                    "task toward completion."
+                ),
+                fallback_lesson=(
+                    "When repeating yourself without progress, change approach: "
+                    "re-read the relevant files or break the task into a smaller, "
+                    "concrete next step instead of restating the plan."
+                ),
             )
             return await self._wind_down(state, reason="model_stalled")
         if state.stall_rounds >= limit // 2 and not state.stall_nudged:
@@ -728,6 +885,19 @@ class AgentOrchestrator:
                     "type": type(exc).__name__,
                 },
                 source="core.orchestrator",
+            )
+            await self._record_failure(
+                trigger="tool_error",
+                signature=f"tool_error:{call.name}",
+                context=(
+                    f"The tool '{call.name}' failed with: {bound_text(str(exc), 400)}. "
+                    f"Arguments: {bound_text(json.dumps(call.arguments, default=str), 400)}"
+                ),
+                fallback_lesson=(
+                    f"Before calling '{call.name}', validate its arguments against "
+                    "the workspace state (paths exist, JSON is well-formed) to avoid "
+                    "the error seen previously."
+                ),
             )
             return _ToolOutcome(
                 result=ToolResult(
