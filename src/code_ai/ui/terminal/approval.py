@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import json
 
+from rich.console import RenderableType
+from rich.style import Style
 from rich.syntax import Syntax
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Horizontal, ScrollableContainer, Vertical
 from textual.screen import ModalScreen
@@ -17,6 +21,15 @@ from code_ai.core.approval import ApprovalDecision, ApprovalRequest
 _SYNTAX_THEME = "monokai"
 _DIALOG_BG = "#111820"
 _MAX_PREVIEW_CHARS = 40000
+
+# Unified-diff line prefixes mapped to a Claude-Code-style background tint.
+# Context lines (a leading space) and hunk headers fall through to a dim default.
+_DIFF_LINE_STYLES = {
+    "+": Style(color="#a6e3a1", bgcolor="#1d3322"),
+    "-": Style(color="#f38ba8", bgcolor="#3a1620"),
+    "@": Style(color="#7aa2f7", bold=True),
+}
+_DIFF_CONTEXT_LINES = 3
 
 
 def _format_command(arguments: dict[str, object]) -> str:
@@ -62,13 +75,40 @@ def _syntax(code: str, *, path: str = "", lexer: str | None = None) -> Syntax:
     )
 
 
+def _render_diff(old_text: str, new_text: str) -> Text:
+    """Unified diff with Claude-Code-style red/green line backgrounds.
+
+    ``old_text``/``new_text`` come straight from the edit_code call, so the
+    diff is available before the tool ever touches the filesystem.
+    """
+
+    diff_lines = list(
+        difflib.unified_diff(
+            old_text.splitlines(),
+            new_text.splitlines(),
+            n=_DIFF_CONTEXT_LINES,
+            lineterm="",
+        )
+    )
+    # Drop the "--- "/"+++ " file headers; the dialog already shows the path.
+    diff_lines = [line for line in diff_lines if not line.startswith(("--- ", "+++ "))]
+
+    text = Text(no_wrap=True)
+    for index, line in enumerate(diff_lines):
+        if index:
+            text.append("\n")
+        style = _DIFF_LINE_STYLES.get(line[:1], "#9fb3c8")
+        text.append(line, style=style)
+    return text
+
+
 def _render_title(request: ApprovalRequest) -> str:
     if request.policy_denied:
         return f"⚠  Permission required — the policy blocked '{request.tool_name}'"
     return f"Permission required — run '{request.tool_name}'?"
 
 
-def _render_preview(request: ApprovalRequest) -> tuple[str, Syntax]:
+def _render_preview(request: ApprovalRequest) -> tuple[str, RenderableType]:
     """Return a one-line summary and a syntax-highlighted body for the call."""
 
     args = request.arguments
@@ -83,7 +123,10 @@ def _render_preview(request: ApprovalRequest) -> tuple[str, Syntax]:
     if tool == "edit_code":
         path = str(args.get("path", "") or "")
         new_text = str(args.get("new_text", "") or "")
+        old_text = args.get("old_text")
         meta = f"Edit:  {path}" if path else "Edit file"
+        if isinstance(old_text, str) and old_text != new_text:
+            return meta, _render_diff(old_text, new_text)
         return meta, _syntax(new_text, path=path)
 
     if tool == "execute_command":
