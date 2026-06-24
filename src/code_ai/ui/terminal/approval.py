@@ -3,12 +3,20 @@ from __future__ import annotations
 import asyncio
 import json
 
+from rich.syntax import Syntax
 from textual.app import ComposeResult
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, ScrollableContainer, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static
 
 from code_ai.core.approval import ApprovalDecision, ApprovalRequest
+
+# A dark Pygments theme that blends with the dialog background. The colours are
+# language-agnostic: Pygments ships lexers for every supported language and we
+# let it pick the right one from the file name (or the content itself).
+_SYNTAX_THEME = "monokai"
+_DIALOG_BG = "#111820"
+_MAX_PREVIEW_CHARS = 40000
 
 
 def _format_command(arguments: dict[str, object]) -> str:
@@ -21,27 +29,77 @@ def _format_command(arguments: dict[str, object]) -> str:
     return ""
 
 
+def _guess_lexer(path: str, code: str) -> str:
+    """Best-effort lexer name, agnostic of the language.
+
+    When a path is available we match on its extension; otherwise we let
+    Pygments analyse the content. Falls back to plain text on any failure so an
+    unknown language never breaks the dialog.
+    """
+
+    try:
+        if path:
+            return Syntax.guess_lexer(path, code)
+        from pygments.lexers import guess_lexer
+
+        return guess_lexer(code).aliases[0]
+    except Exception:
+        return "text"
+
+
+def _syntax(code: str, *, path: str = "", lexer: str | None = None) -> Syntax:
+    if len(code) > _MAX_PREVIEW_CHARS:
+        code = code[:_MAX_PREVIEW_CHARS] + "\n… (truncated)"
+    return Syntax(
+        code or "",
+        lexer or _guess_lexer(path, code),
+        theme=_SYNTAX_THEME,
+        line_numbers=True,
+        indent_guides=True,
+        word_wrap=False,
+        background_color=_DIALOG_BG,
+        padding=0,
+    )
+
+
 def _render_title(request: ApprovalRequest) -> str:
     if request.policy_denied:
         return f"⚠  Permission required — the policy blocked '{request.tool_name}'"
     return f"Permission required — run '{request.tool_name}'?"
 
 
-def _render_body(request: ApprovalRequest) -> str:
+def _render_preview(request: ApprovalRequest) -> tuple[str, Syntax]:
+    """Return a one-line summary and a syntax-highlighted body for the call."""
+
+    args = request.arguments
+    tool = request.tool_name
+
+    if tool == "write_file":
+        path = str(args.get("path", "") or "")
+        content = str(args.get("content", "") or "")
+        meta = f"Create / overwrite:  {path}" if path else "Create file"
+        return meta, _syntax(content, path=path)
+
+    if tool == "edit_code":
+        path = str(args.get("path", "") or "")
+        new_text = str(args.get("new_text", "") or "")
+        meta = f"Edit:  {path}" if path else "Edit file"
+        return meta, _syntax(new_text, path=path)
+
+    if tool == "execute_command":
+        command = _format_command(args)
+        return "Command", _syntax(command, lexer="console")
+
+    rendered = json.dumps(args, indent=2, default=str, ensure_ascii=False)
+    return "Arguments", _syntax(rendered, lexer="json")
+
+
+def _render_info(request: ApprovalRequest) -> str:
     lines: list[str] = []
-    command = _format_command(request.arguments) if request.tool_name == "execute_command" else ""
-    if command:
-        lines.append(f"Command:\n  {command}")
-    else:
-        rendered = json.dumps(request.arguments, indent=2, default=str, ensure_ascii=False)
-        lines.append("Arguments:")
-        lines.append(rendered[:1500])
     if request.capabilities:
         lines.append(f"Capabilities: {', '.join(request.capabilities)}")
     if request.reason:
         lines.append(f"Reason: {request.reason}")
-    lines.append("")
-    lines.append("[1] Deny   ·   [2] Allow once   ·   [3] Always allow (this session)")
     return "\n".join(lines)
 
 
@@ -60,9 +118,19 @@ class ApprovalModal(ModalScreen[ApprovalDecision]):
         self._request = request
 
     def compose(self) -> ComposeResult:
+        meta, body = _render_preview(self._request)
+        info = _render_info(self._request)
         with Vertical(id="approval-dialog"):
             yield Static(_render_title(self._request), id="approval-title")
-            yield Static(_render_body(self._request), id="approval-body")
+            yield Static(meta, id="approval-meta")
+            with ScrollableContainer(id="approval-body"):
+                yield Static(body, id="approval-code")
+            if info:
+                yield Static(info, id="approval-info")
+            yield Static(
+                "[1] Deny   ·   [2] Allow once   ·   [3] Always allow (this session)",
+                id="approval-keys",
+            )
             with Horizontal(id="approval-actions"):
                 yield Button("Deny (Esc)", variant="error", id="approval-deny")
                 yield Button("Allow once (2)", variant="primary", id="approval-once")
