@@ -104,6 +104,53 @@ def test_render_preview_uses_language_from_path() -> None:
     assert '"foo"' in args.code
 
 
+def test_render_preview_shows_diff_for_edit_code_with_old_text() -> None:
+    from rich.text import Text
+
+    from code_ai.ui.terminal.approval import _render_preview
+
+    meta, body = _render_preview(
+        ApprovalRequest(
+            "c",
+            "edit_code",
+            {
+                "path": "app.py",
+                "old_text": "def x():\n    return 1\n",
+                "new_text": "def x():\n    return 2\n",
+            },
+            "s",
+        )
+    )
+    assert "app.py" in meta
+    assert isinstance(body, Text)
+    rendered = body.plain
+    assert "-    return 1" in rendered
+    assert "+    return 2" in rendered
+
+
+def test_render_preview_falls_back_to_syntax_without_old_text() -> None:
+    from code_ai.ui.terminal.approval import _render_preview
+
+    _, body = _render_preview(
+        ApprovalRequest("c", "edit_code", {"path": "app.py", "new_text": "x = 1"}, "s")
+    )
+    assert body.code == "x = 1"
+
+
+def test_render_preview_falls_back_to_syntax_when_edit_is_a_noop() -> None:
+    from code_ai.ui.terminal.approval import _render_preview
+
+    _, body = _render_preview(
+        ApprovalRequest(
+            "c",
+            "edit_code",
+            {"path": "app.py", "old_text": "x = 1", "new_text": "x = 1"},
+            "s",
+        )
+    )
+    assert body.code == "x = 1"
+
+
 def test_render_preview_survives_unknown_language() -> None:
     from code_ai.ui.terminal.approval import _render_preview
 
