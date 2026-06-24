@@ -48,6 +48,14 @@ class EditCodeTool:
                 "type": "string",
                 "description": "Optional current-file SHA-256; edit aborts on mismatch.",
             },
+            "reason": {
+                "type": "string",
+                "description": (
+                    "One or two plain-language sentences explaining why this edit is needed and "
+                    "what it accomplishes. Shown to the user in the approval prompt before they "
+                    "decide whether to allow it."
+                ),
+            },
         },
         required=("path", "old_text", "new_text"),
     )

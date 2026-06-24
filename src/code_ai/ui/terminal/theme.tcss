@@ -173,6 +173,14 @@ ApprovalModal {
   padding-bottom: 1;
 }
 
+/* The model's own "why" explanation (/config learn). Distinct amber tone and
+   italics so it reads as didactic context, not file metadata or code. */
+#approval-justification {
+  color: #f5c84c;
+  text-style: italic;
+  padding-bottom: 1;
+}
+
 /* Code preview: grows with the content but caps out and scrolls (both axes)
    when the file is taller/wider than the available room. */
 #approval-body {

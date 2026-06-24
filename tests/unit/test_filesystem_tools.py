@@ -45,14 +45,16 @@ async def test_write_read_and_edit_code_are_hash_guarded(tmp_path) -> None:
     read = ReadFileTool()
     edit = EditCodeTool()
 
-    assert set(write.input_schema["properties"]) == {"path", "content"}
-    assert set(write.input_schema["required"]) == {"path", "content"}
+    assert set(write.input_schema["properties"]) == {"path", "content", "reason"}
+    # strict-mode requires every declared property (even nullable ones) in "required".
+    assert set(write.input_schema["required"]) == {"path", "content", "reason"}
     assert set(edit.input_schema["properties"]) == {
         "path",
         "old_text",
         "new_text",
         "expected_occurrences",
         "expected_sha256",
+        "reason",
     }
     # strict-mode: optionals stay declared but nullable; required stays minimal.
     assert edit.input_schema["properties"]["expected_occurrences"]["type"] == [

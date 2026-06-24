@@ -339,6 +339,7 @@ class AppConfig:
     terminal_banner_font: str = "tarty2"
     terminal_spinner: str = "ascii"
     terminal_session_collapsed: bool = False
+    learn: bool = True
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> AppConfig:
@@ -376,6 +377,7 @@ class AppConfig:
             terminal_banner_font=str(data.get("terminal_banner_font", "tarty2")),
             terminal_spinner=str(data.get("terminal_spinner", "ascii")),
             terminal_session_collapsed=bool(data.get("terminal_session_collapsed", False)),
+            learn=bool(data.get("learn", True)),
         )
         config.validate()
         return config
