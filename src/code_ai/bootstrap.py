@@ -40,6 +40,7 @@ from code_ai.tools.review import (
     TestReviewTool,
 )
 from code_ai.tools.search import SearchCodeTool
+from code_ai.tools.skills import CreateSkillTool, UseSkillTool
 from code_ai.tools.system import SystemInformationTool
 from code_ai.tools.terminal import (
     InterruptTerminalTool,
@@ -71,6 +72,8 @@ def build_tool_registry() -> ToolRegistry:
         ReadScreenTool(),
         SystemInformationTool(),
         WebSearchTool(),
+        UseSkillTool(),
+        CreateSkillTool(),
         ArchitectureReviewTool(),
         CodeReviewTool(),
         BuildReviewTool(),

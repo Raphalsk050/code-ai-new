@@ -37,6 +37,8 @@ DEFAULT_CAPABILITIES_BY_NAME: dict[str, frozenset[ToolCapability]] = {
         {ToolCapability.INTERACTIVE_TERMINAL, ToolCapability.LOCAL_READ}
     ),
     "web_search": frozenset({ToolCapability.WEB}),
+    "use_skill": frozenset({ToolCapability.LOCAL_READ}),
+    "create_skill": frozenset({ToolCapability.LOCAL_WRITE}),
     "ask_user": frozenset({ToolCapability.INTERACTION}),
     "submit_plan": frozenset({ToolCapability.INTERNAL_TRANSITION}),
     "finish_discovery": frozenset({ToolCapability.INTERNAL_TRANSITION}),
