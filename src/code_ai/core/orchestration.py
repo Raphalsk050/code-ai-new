@@ -223,7 +223,7 @@ class AgentOrchestrator:
             allowed = self._allowed_tool_names()
             tool_definitions = self.tool_registry.definitions(allowed)
             compression = await self.compressor.ensure_capacity(self.conversation, tool_definitions)
-            await self._emit_pre_request_usage(compression)
+            await self.emit_context_usage(compression)
 
             request = self._build_request(step, tool_definitions)
             await self.event_bus.emit(
@@ -866,7 +866,13 @@ class AgentOrchestrator:
     # ------------------------------------------------------------------ #
     # Event helpers
     # ------------------------------------------------------------------ #
-    async def _emit_pre_request_usage(self, compression: CompressionResult) -> None:
+    async def emit_context_usage(self, compression: CompressionResult) -> None:
+        """Publish the context-meter payload after a compression pass.
+
+        Called both before every model request and after a manual /compact, so
+        the UI's context bar reflects the post-compaction token count right
+        away instead of waiting for the next turn.
+        """
         await self.event_bus.emit(
             "usage.updated",
             {
