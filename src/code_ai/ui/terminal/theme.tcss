@@ -126,7 +126,8 @@ Screen {
 }
 
 #input-row {
-  height: 3;
+  height: auto;
+  min-height: 3;
 }
 
 #mode-select {
@@ -138,10 +139,15 @@ Screen {
   border: solid #ff9f1c;
 }
 
+/* Multi-line prompt: starts at one row and grows with the text up to a cap,
+   then scrolls internally so a long draft never pushes the layout around. */
 #input {
   width: 1fr;
-  height: 3;
+  height: auto;
+  min-height: 3;
+  max-height: 12;
   border: solid #8892a0;
+  background: #0b141d;
 }
 
 .panel-title {

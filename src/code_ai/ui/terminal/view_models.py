@@ -58,7 +58,14 @@ class TerminalViewModel:
         elif event.event_type == "planning.evidence.recorded":
             summary = str(event.payload.get("summary") or "")
             evidence_type = str(event.payload.get("type") or "evidence")
-            self.conversation.append(f"evidence> {evidence_type}: {summary[:180]}")
+            # COMPLETION_REQUESTED carries the full final report, which already
+            # renders in full via assistant.final. Echoing a hard 180-char slice
+            # of it here only dangles a half-word ("- Sw...") as the last line, so
+            # record it without the redundant (and mangled) summary.
+            if evidence_type == "COMPLETION_REQUESTED":
+                self.conversation.append(f"evidence> {evidence_type} recorded")
+            else:
+                self.conversation.append(f"evidence> {evidence_type}: {summary[:180]}")
         elif event.event_type == "permission.mode.changed":
             self.permission_mode = str(event.payload.get("mode", self.permission_mode))
             self.conversation.append(f"permission> mode set to {self.permission_mode}")

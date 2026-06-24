@@ -1,22 +1,11 @@
+from code_ai.prompts import ARCHITECTURE_PRINCIPLES
+
 ARCHITECTURE_REVIEW_PROMPT = (
     "You are reviewing the architecture of code that was just implemented. Judge how "
     "well-structured and organized it is, independently of programming language, "
     "framework, or paradigm. Evaluate against these properties of good architecture:\n"
-    "- Separation of concerns: each module, class, or function has a single, clear "
-    "responsibility and a reason to change.\n"
-    "- Cohesion and coupling: related logic lives together; unrelated logic is kept "
-    "apart; dependencies between units are few, explicit, and intentional.\n"
-    "- Dependency direction: high-level policy does not depend on low-level details; "
-    "abstractions sit at boundaries; there are no dependency cycles.\n"
-    "- Boundaries and encapsulation: implementation details are hidden behind stable "
-    "interfaces; internal changes do not leak across module borders.\n"
-    "- Layering and organization: the file/module layout is predictable and consistent; "
-    "names reveal intent; similar things are found in similar places.\n"
-    "- Appropriate abstraction: not over-engineered (needless indirection, premature "
-    "generalization) nor under-structured (duplicated logic, god objects, leaky state).\n"
-    "- Evolvability and testability: the design can absorb likely changes and be tested "
-    "in isolation without elaborate scaffolding.\n"
-    "Respect the conventions already present in the surrounding codebase rather than "
+    + ARCHITECTURE_PRINCIPLES
+    + "Respect the conventions already present in the surrounding codebase rather than "
     "imposing a foreign style. For each issue give its location, why it weakens the "
     "architecture, and a concrete, minimal change to fix it. Prioritize structural risks "
     "over cosmetic preferences."

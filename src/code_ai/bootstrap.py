@@ -6,19 +6,21 @@ from typing import Any
 
 from code_ai.app.service import CodeAIApplication
 from code_ai.app.session import ApplicationSession
+from code_ai.config.defaults import default_memories_dir
 from code_ai.config.loader import load_config
 from code_ai.config.models import AppConfig
 from code_ai.context.compression import ContextCompressor
 from code_ai.context.conversation import ConversationState
 from code_ai.context.token_counting import TokenCounter
 from code_ai.context.usage import UsageLedger
+from code_ai.core.memory import FailureMemoryStore
 from code_ai.core.orchestration import AgentOrchestrator
 from code_ai.core.planning import PlannerService
 from code_ai.events.bus import AsyncEventBus
-from code_ai.prompts import build_system_prompt
+from code_ai.prompts import build_failure_lesson_prompt, build_system_prompt
 from code_ai.providers.base import ModelProvider
 from code_ai.providers.factory import create_provider
-from code_ai.providers.models import Message
+from code_ai.providers.models import Message, ModelRequest
 from code_ai.tools.base import ToolContext
 from code_ai.tools.filesystem import EditCodeTool, ListFilesTool, ReadFileTool, WriteFileTool
 from code_ai.tools.git import GitReviewTool
@@ -96,17 +98,41 @@ def build_application(
     config_path: Path | None = None,
     cli_overrides: dict[str, Any] | None = None,
     provider: ModelProvider | None = None,
+    failure_memory: FailureMemoryStore | None = None,
 ) -> CodeAIApplication:
     config = config or load_config(explicit_path=config_path, cli_overrides=cli_overrides)
     event_bus = AsyncEventBus()
     provider = provider or create_provider(config)
     workspace = WorkspacePolicy.from_path(config.workspace)
     registry = build_tool_registry()
+
+    active_provider = provider
+
+    async def _generate_lesson(context: str) -> str:
+        # Bounded meta-call: distill one sentence, capped tight so the learning
+        # path can never itself blow the budget it is trying to teach about.
+        request = ModelRequest(
+            model=config.model,
+            messages=[Message(role="user", content=build_failure_lesson_prompt(context))],
+            max_output_tokens=256,
+        )
+        response = await active_provider.complete(request)
+        return response.text
+
+    memories_dir = Path(config.memories_dir) if config.memories_dir else default_memories_dir()
+    failure_memory = failure_memory or FailureMemoryStore(
+        memories_dir, lesson_generator=_generate_lesson
+    )
+
     conversation = ConversationState(
         messages=[
             Message(
                 role="system",
-                content=build_system_prompt(workspace=config.workspace, language=config.language),
+                content=build_system_prompt(
+                    workspace=config.workspace,
+                    language=config.language,
+                    lessons=failure_memory.render_for_prompt(),
+                ),
             )
         ]
     )
@@ -150,6 +176,7 @@ def build_application(
         compressor=compressor,
         tool_context_factory=tool_context,
         planner=planner,
+        failure_memory=failure_memory,
     )
     session = ApplicationSession(session_id=event_bus.session_id, config=config)
     return CodeAIApplication(

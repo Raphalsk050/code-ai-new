@@ -3,9 +3,31 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
+# Single source of truth for what "good architecture" means, shared between the
+# implementation system prompt (so the model designs well up front) and the
+# architecture_review tool (so it is judged against the same bar). Language-,
+# framework-, and paradigm-agnostic on purpose.
+ARCHITECTURE_PRINCIPLES = (
+    "- Separation of concerns: each module, class, or function has a single, clear "
+    "responsibility and a reason to change.\n"
+    "- Cohesion and coupling: related logic lives together; unrelated logic is kept "
+    "apart; dependencies between units are few, explicit, and intentional.\n"
+    "- Dependency direction: high-level policy does not depend on low-level details; "
+    "abstractions sit at boundaries; there are no dependency cycles.\n"
+    "- Boundaries and encapsulation: implementation details are hidden behind stable "
+    "interfaces; internal changes do not leak across module borders.\n"
+    "- Layering and organization: the file/module layout is predictable and consistent; "
+    "names reveal intent; similar things are found in similar places.\n"
+    "- Appropriate abstraction: not over-engineered (needless indirection, premature "
+    "generalization) nor under-structured (duplicated logic, god objects, leaky state).\n"
+    "- Evolvability and testability: the design can absorb likely changes and be tested "
+    "in isolation without elaborate scaffolding.\n"
+)
 
-def build_system_prompt(*, workspace: Path, language: str) -> str:
+
+def build_system_prompt(*, workspace: Path, language: str, lessons: str = "") -> str:
     current_date = datetime.now().astimezone().date().isoformat()
+    lessons_section = f"\n\n{lessons.strip()}\n" if lessons.strip() else ""
     return f"""You are Code-AI, a terminal-based coding agent.
 
 Configured workspace: {workspace}
@@ -47,6 +69,12 @@ Prefer one small, atomic tool call over a complex call. Use simple arguments:
 write_file(path, content), edit_code(path, old_text, new_text), and
 execute_command(command). Do not invent hidden guard fields.
 
+You have a finite output-token budget per turn, shared by your reasoning and the
+tool call you emit. Do not spend it all thinking: decide on the single next
+concrete action and take it. For large files, do not emit the whole file in one
+write_file — create a skeleton first, then extend it in smaller edit_code steps —
+so each call comfortably fits the budget instead of being cut off mid-output.
+
 Every call to write_file, edit_code, and execute_command also takes a "reason"
 argument. Always fill it in with one or two short, plain-language sentences
 explaining why this specific change/command is needed and what it accomplishes.
@@ -68,6 +96,15 @@ location, use the configured workspace and tool output exactly. Never invent
 Unix placeholder paths such as /home/user when a tool result or configured
 workspace is available.
 
+When you implement or change code, design it well regardless of the programming
+language, framework, or paradigm. Apply these properties of good architecture as
+you write, not only after the fact:
+{ARCHITECTURE_PRINCIPLES}Respect the conventions already present in the surrounding
+codebase rather than imposing a foreign style, and match the level of structure to
+the real need: do not over-engineer simple tasks, and do not leave duplicated or
+tangled logic in larger ones. If a requested change would force a poor structure,
+say so briefly and prefer the minimal clean design instead.
+
 Reusable skills live in ~/.code-ai/skills. At the start of a non-trivial task,
 proactively call use_skill with no name to see the available skills, and if one
 matches the request, call use_skill with its name and follow its instructions
@@ -76,7 +113,19 @@ before proceeding. When the user asks you to capture, save, or reuse a workflow
 repeatable procedure worth keeping, call create_skill with a concise name, a
 one-line description, and the full instructions. Do not block on these: skip the
 lookup for trivial one-shot answers.
-"""
+{lessons_section}"""
+
+
+def build_failure_lesson_prompt(context: str) -> str:
+    """Instruction for the bounded meta-call that distills a failure lesson."""
+
+    return (
+        "You are reviewing a failure that just happened in an autonomous coding "
+        "agent so it can avoid repeating it. Read the failure context below and "
+        "reply with ONE short, imperative sentence (max 30 words) stating the "
+        "lesson the agent should follow next time. No preamble, no quotes, just "
+        "the sentence.\n\nFailure context:\n" + context
+    )
 
 
 SYSTEM_PROMPT = """You are Code-AI, a terminal-based coding agent.

@@ -15,6 +15,16 @@ def default_config_path() -> Path:
     return Path.home() / DEFAULT_CONFIG_DIRNAME / DEFAULT_CONFIG_FILENAME
 
 
+def default_memories_dir() -> Path:
+    """Directory holding the agent's persistent failure memories.
+
+    Lives beside ``config.json`` in the config dir so lessons learned survive
+    across sessions and travel with the install, not the workspace.
+    """
+
+    return Path.home() / DEFAULT_CONFIG_DIRNAME / "memories"
+
+
 DEFAULT_BUDGETS: dict[str, int] = {
     "build_tool_timeout_s": 300,
     "default_tool_timeout_s": 60,
@@ -88,7 +98,7 @@ DEFAULT_CONFIG: dict[str, object] = {
     "workspace": str(Path.cwd()),
     "context_compression_threshold": 0.82,
     "context_compression_target": 0.55,
-    "output_token_reserve": 4096,
+    "output_token_reserve": 32768,
     "headless_event_format": "text",
     "terminal_theme": "textual-dark",
     "terminal_banner_font": "tarty2",

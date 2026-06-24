@@ -5,7 +5,8 @@ import json
 from importlib import resources
 from types import SimpleNamespace
 
-from textual.widgets import Input, Static
+from textual.widgets import Static, TextArea
+from textual.widgets.text_area import Selection
 
 import code_ai.ui.terminal as terminal_package
 from code_ai.config.models import AppConfig
@@ -78,7 +79,7 @@ async def test_terminal_enter_submits_input_and_renders_events(tmp_path) -> None
     terminal_app = create_terminal_app(fake_app)
 
     async with terminal_app.run_test(size=(100, 40)) as pilot:
-        input_widget = terminal_app.query_one("#input", Input)
+        input_widget = terminal_app.query_one("#input", TextArea)
         input_widget.value = "hello from tui"
         await pilot.press("enter")
         await pilot.pause(0.2)
@@ -88,12 +89,74 @@ async def test_terminal_enter_submits_input_and_renders_events(tmp_path) -> None
         assert "ai> ok" in terminal_app.vm.conversation
 
 
+async def test_ctrl_j_inserts_newline_and_enter_submits_multiline(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.focus()
+        # Ctrl+J adds a newline mid-prompt; Enter only sends once the whole
+        # multi-line draft is composed.
+        await pilot.press("l", "i", "n", "e", "1")
+        await pilot.press("ctrl+j")
+        await pilot.press("l", "i", "n", "e", "2")
+        assert input_widget.text == "line1\nline2"
+
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert fake_app.submitted == ["line1\nline2"]
+        assert input_widget.text == ""
+
+
+async def test_ctrl_c_copies_active_selection_instead_of_quitting(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)):
+        copied: list[str] = []
+        cleared: list[bool] = []
+        terminal_app.copy_to_clipboard = lambda text: copied.append(text)
+        terminal_app.screen.get_selected_text = lambda: "selected text"
+        terminal_app.screen.clear_selection = lambda: cleared.append(True)
+
+        # Ctrl+C copies the active selection (like a terminal) rather than
+        # cancelling/quitting the session.
+        await terminal_app.action_cancel_or_quit()
+
+        assert copied == ["selected text"]
+        assert cleared == [True]
+
+
+async def test_ctrl_c_copies_selection_made_inside_the_prompt(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        copied: list[str] = []
+        terminal_app.copy_to_clipboard = lambda text: copied.append(text)
+        # The prompt is a TextArea that keeps its selection internally, so the
+        # screen-level selection is empty even when the user has highlighted
+        # text inside the input.
+        terminal_app.screen.get_selected_text = lambda: None
+
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "hello world"
+        input_widget.focus()
+        await pilot.pause()
+        # Select "hello" inside the prompt, then copy with Ctrl+C.
+        input_widget.selection = Selection((0, 0), (0, 5))
+        await terminal_app.action_cancel_or_quit()
+
+        assert copied == ["hello"]
+
+
 async def test_compact_command_runs_immediately_and_reports_token_counts(tmp_path) -> None:
     fake_app = FakeTerminalApplication(tmp_path)
     terminal_app = create_terminal_app(fake_app)
 
     async with terminal_app.run_test(size=(100, 40)) as pilot:
-        input_widget = terminal_app.query_one("#input", Input)
+        input_widget = terminal_app.query_one("#input", TextArea)
         input_widget.value = "/compact"
         await pilot.press("enter")
         await pilot.pause(0.2)
@@ -104,22 +167,22 @@ async def test_compact_command_runs_immediately_and_reports_token_counts(tmp_pat
 
 
 async def test_streaming_deltas_do_not_rerender_whole_transcript(tmp_path) -> None:
-    from textual.widgets import RichLog
+    from textual.containers import VerticalScroll
 
     fake_app = FakeTerminalApplication(tmp_path)
     terminal_app = create_terminal_app(fake_app)
 
     async with terminal_app.run_test(size=(100, 40)) as pilot:
-        log = terminal_app.query_one("#conversation", RichLog)
-        writes = 0
-        original_write = log.write
+        log = terminal_app.query_one("#conversation", VerticalScroll)
+        mounts = 0
+        original_mount = log.mount
 
-        def counting_write(*args, **kwargs):
-            nonlocal writes
-            writes += 1
-            return original_write(*args, **kwargs)
+        def counting_mount(*args, **kwargs):
+            nonlocal mounts
+            mounts += 1
+            return original_mount(*args, **kwargs)
 
-        log.write = counting_write  # type: ignore[method-assign]
+        log.mount = counting_mount  # type: ignore[method-assign]
 
         # The agent is working (the model is streaming), as in a real turn.
         await fake_app.emit("status.changed", {"state": "CALLING_MODEL"})
@@ -130,9 +193,9 @@ async def test_streaming_deltas_do_not_rerender_whole_transcript(tmp_path) -> No
             await fake_app.emit("model.stream.delta", {"text": f"{index} "})
         await pilot.pause(0.05)
 
-        # Only the two finalized lines were ever written to the append-only log;
+        # Only the two finalized lines were ever mounted into the scrollback;
         # the 50 deltas mutate a single line shown live in the tail, not the log.
-        assert writes == 2
+        assert mounts == 2
         assert terminal_app._committed == len(terminal_app.vm.conversation) - 1
         # The whole stream collapsed into one live line held in the tail Static.
         assert terminal_app.vm.conversation[-1].startswith("ai> ")
@@ -142,7 +205,7 @@ async def test_streaming_deltas_do_not_rerender_whole_transcript(tmp_path) -> No
         # instead of being stranded in the live tail below it.
         await fake_app.emit("status.changed", {"state": "READY"})
         await pilot.pause(0.05)
-        assert writes == 3  # the final answer line was committed exactly once
+        assert mounts == 3  # the final answer line was committed exactly once
         assert terminal_app._committed == len(terminal_app.vm.conversation)
 
 
@@ -166,7 +229,7 @@ def test_stream_tail_passes_short_lines_through_unchanged() -> None:
 
 
 async def test_new_turn_start_does_not_rerender_committed_log(tmp_path) -> None:
-    from textual.widgets import RichLog
+    from textual.containers import VerticalScroll
 
     fake_app = FakeTerminalApplication(tmp_path)
     terminal_app = create_terminal_app(fake_app)
@@ -180,23 +243,23 @@ async def test_new_turn_start_does_not_rerender_committed_log(tmp_path) -> None:
         committed_before = terminal_app._committed
         assert committed_before == len(terminal_app.vm.conversation)
 
-        log = terminal_app.query_one("#conversation", RichLog)
-        writes = 0
-        original_write = log.write
+        log = terminal_app.query_one("#conversation", VerticalScroll)
+        mounts = 0
+        original_mount = log.mount
 
-        def counting_write(*args, **kwargs):
-            nonlocal writes
-            writes += 1
-            return original_write(*args, **kwargs)
+        def counting_mount(*args, **kwargs):
+            nonlocal mounts
+            mounts += 1
+            return original_mount(*args, **kwargs)
 
-        log.write = counting_write  # type: ignore[method-assign]
+        log.mount = counting_mount  # type: ignore[method-assign]
 
         # The next turn flips status to working *before* its first line arrives.
         # The already-committed answer must not be pulled back or re-rendered.
         await fake_app.emit("status.changed", {"state": "CALLING_MODEL"})
         await pilot.pause(0.05)
 
-        assert writes == 0
+        assert mounts == 0
         assert terminal_app._committed == committed_before
 
 
@@ -213,6 +276,50 @@ async def test_clear_resets_incremental_render_state(tmp_path) -> None:
         await terminal_app.action_clear()
         assert terminal_app._committed == 0
         assert terminal_app.vm.conversation == []
+
+
+async def test_conversation_history_is_drag_selectable(tmp_path) -> None:
+    from textual import events
+    from textual.containers import VerticalScroll
+    from textual.geometry import Offset
+
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    def forward(cls, sx, sy):
+        event = cls(
+            terminal_app.screen, sx, sy, 0, 0, 1, False, False, False,
+            screen_x=sx, screen_y=sy,
+        )
+        terminal_app.mouse_position = Offset(sx, sy)
+        terminal_app.screen._forward_event(event)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        # Settle a few static history lines into the scrollback.
+        await fake_app.emit("status.changed", {"state": "READY"})
+        await fake_app.emit("user.message", {"text": "first question here"})
+        await fake_app.emit("assistant.final", {"text": "an answer line here"})
+        await pilot.pause(0.05)
+
+        log = terminal_app.query_one("#conversation", VerticalScroll)
+        # Each committed line is its own selectable widget — the property that
+        # RichLog lacked, which is what stopped the history from selecting.
+        assert len(log.children) == len(terminal_app.vm.conversation)
+
+        # Drag across the history and confirm the screen selection extracts the
+        # text (RichLog always returned None/"" here).
+        region = log.children[0].region
+        forward(events.MouseDown, region.x + 2, region.y)
+        await pilot.pause()
+        for sx in range(region.x + 3, region.x + 12):
+            forward(events.MouseMove, sx, region.y)
+            await pilot.pause()
+        forward(events.MouseUp, region.x + 11, region.y)
+        await pilot.pause()
+
+        selected = terminal_app.screen.get_selected_text()
+        assert selected
+        assert "first q" in selected
 
 
 def test_terminal_logo_loads_from_banner_resource() -> None:
@@ -397,7 +504,7 @@ async def test_terminal_shows_slash_command_suggestions(tmp_path) -> None:
     terminal_app = create_terminal_app(fake_app)
 
     async with terminal_app.run_test(size=(100, 40)):
-        input_widget = terminal_app.query_one("#input", Input)
+        input_widget = terminal_app.query_one("#input", TextArea)
         input_widget.value = "/config"
         terminal_app._set_command_suggestions(input_widget.value)
         suggestions = terminal_app.query_one("#command-suggestions", Static)
@@ -419,19 +526,19 @@ def test_command_completion_completes_config_command_text() -> None:
     assert command_completion("/config banner-font fut") == "/config banner-font future_1"
 
 
-async def test_left_arrow_accepts_slash_command_completion(tmp_path) -> None:
+async def test_tab_accepts_slash_command_completion(tmp_path) -> None:
     fake_app = FakeTerminalApplication(tmp_path)
     terminal_app = create_terminal_app(fake_app)
 
     async with terminal_app.run_test(size=(100, 40)) as pilot:
-        input_widget = terminal_app.query_one("#input", Input)
+        input_widget = terminal_app.query_one("#input", TextArea)
         input_widget.value = "/config api-m"
-        input_widget.cursor_position = len(input_widget.value)
-        await pilot.press("left")
+        await pilot.press("tab")
         await pilot.pause(0.2)
 
         assert input_widget.value == "/config api-mode "
-        assert input_widget.cursor_position == len(input_widget.value)
+        # The cursor lands at the end of the accepted completion.
+        assert input_widget.cursor_at_end_of_text
 
 
 def test_config_model_command_persists_and_updates_active_config(tmp_path) -> None:
@@ -652,7 +759,7 @@ async def test_up_arrow_recalls_previous_submitted_entries(tmp_path) -> None:
     terminal_app = create_terminal_app(fake_app)
 
     async with terminal_app.run_test(size=(100, 40)) as pilot:
-        input_widget = terminal_app.query_one("#input", Input)
+        input_widget = terminal_app.query_one("#input", TextArea)
 
         input_widget.value = "first message"
         await pilot.press("enter")
@@ -681,7 +788,7 @@ async def test_history_preserves_unsent_draft_and_skips_duplicates(tmp_path) -> 
     terminal_app = create_terminal_app(fake_app)
 
     async with terminal_app.run_test(size=(100, 40)) as pilot:
-        input_widget = terminal_app.query_one("#input", Input)
+        input_widget = terminal_app.query_one("#input", TextArea)
 
         input_widget.value = "ls"
         await pilot.press("enter")
@@ -756,7 +863,7 @@ async def test_config_help_picker_prefills_arg_commands(tmp_path) -> None:
     terminal_app = create_terminal_app(fake_app)
 
     async with terminal_app.run_test(size=(110, 44)) as pilot:
-        input_widget = terminal_app.query_one("#input", Input)
+        input_widget = terminal_app.query_one("#input", TextArea)
 
         # A command that needs a value drops its stem into the prompt for editing.
         terminal_app._use_config_command(
@@ -764,7 +871,8 @@ async def test_config_help_picker_prefills_arg_commands(tmp_path) -> None:
         )
         await pilot.pause(0.1)
         assert input_widget.value == "/config model "
-        assert input_widget.cursor_position == len(input_widget.value)
+        # The cursor sits at the end so the user types the argument straight away.
+        assert input_widget.cursor_at_end_of_text
 
 
 async def test_config_help_picker_runs_argless_commands(tmp_path) -> None:
@@ -774,7 +882,7 @@ async def test_config_help_picker_runs_argless_commands(tmp_path) -> None:
     terminal_app = create_terminal_app(fake_app)
 
     async with terminal_app.run_test(size=(110, 44)) as pilot:
-        input_widget = terminal_app.query_one("#input", Input)
+        input_widget = terminal_app.query_one("#input", TextArea)
 
         # An argument-free command runs immediately instead of pre-filling.
         terminal_app._use_config_command(SlashCommand("/config show", "x"))
