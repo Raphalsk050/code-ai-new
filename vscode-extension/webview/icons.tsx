@@ -80,3 +80,42 @@ export const IconStop = ({ size = 14, className }: IconProps) => (
     <rect x="6" y="6" width="12" height="12" rx="2" />
   </svg>
 );
+
+export const IconBack = ({ size = 16, className }: IconProps) => (
+  <svg {...base(size)} className={className}>
+    <path d="M19 12H5M12 19l-7-7 7-7" />
+  </svg>
+);
+
+export const IconPlus = ({ size = 16, className }: IconProps) => (
+  <svg {...base(size)} className={className}>
+    <path d="M12 5v14M5 12h14" />
+  </svg>
+);
+
+export const IconTrash = ({ size = 14, className }: IconProps) => (
+  <svg {...base(size)} className={className}>
+    <path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+  </svg>
+);
+
+export const IconBroom = ({ size = 16, className }: IconProps) => (
+  <svg {...base(size)} className={className}>
+    <path d="M19.4 4.6 13 11M9 21l-5-5a3 3 0 0 1 0-4l3-3 6 6-3 3a3 3 0 0 1-4 0l1.5 1.5M5 16l3 3" />
+  </svg>
+);
+
+export const IconHistory = ({ size = 16, className }: IconProps) => (
+  <svg {...base(size)} className={className}>
+    <path d="M3 3v5h5" />
+    <path d="M3.05 13A9 9 0 1 0 6 5.3L3 8" />
+    <path d="M12 7v5l3 2" />
+  </svg>
+);
+
+export const IconFile = ({ size = 14, className }: IconProps) => (
+  <svg {...base(size)} className={className}>
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+    <path d="M14 2v6h6" />
+  </svg>
+);
