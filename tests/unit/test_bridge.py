@@ -84,6 +84,13 @@ class _StubApp:
     async def reset_conversation(self) -> None:
         self.reset_count += 1
 
+    def get_settings(self) -> dict:
+        return {"model": "m", "api_key_set": False}
+
+    async def update_settings(self, updates: dict) -> dict:
+        self.updated_settings = updates
+        return {"applied": list(updates), "restart_required": [], "errors": {}, "settings": {"model": "m"}}
+
     async def request_context_compression(self) -> CompressionResult:
         return CompressionResult(
             compressed=True, active_tokens=10, estimated=False, previous_tokens=30
@@ -162,6 +169,30 @@ async def test_new_conversation_resets_facade() -> None:
     (response,) = _messages(out)
     assert response["id"] == 9
     assert response["result"] == {"status": "ok"}
+
+
+async def test_get_settings_returns_snapshot() -> None:
+    app = _StubApp()
+    server, out = _server(app)
+    await server._handle_line(
+        json.dumps({"jsonrpc": "2.0", "id": 11, "method": "getSettings", "params": {}})
+    )
+    (response,) = _messages(out)
+    assert response["id"] == 11
+    assert response["result"] == {"model": "m", "api_key_set": False}
+
+
+async def test_update_settings_forwards_updates() -> None:
+    app = _StubApp()
+    server, out = _server(app)
+    await server._handle_line(
+        json.dumps({"jsonrpc": "2.0", "id": 12, "method": "updateSettings",
+                    "params": {"updates": {"model": "gpt"}}})
+    )
+    assert app.updated_settings == {"model": "gpt"}
+    (response,) = _messages(out)
+    assert response["id"] == 12
+    assert response["result"]["applied"] == ["model"]
 
 
 async def test_resolve_approval_releases_pending() -> None:

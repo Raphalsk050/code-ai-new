@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from dataclasses import asdict
+from pathlib import Path
+from typing import Any
 
 from code_ai.app.session import ApplicationSession
 from code_ai.context.compression import CompressionResult, ContextCompressor
@@ -130,6 +133,99 @@ class CodeAIApplication:
         await self.event_bus.emit(
             "permission.mode.changed", {"mode": normalized}, source="app"
         )
+
+    # -- settings (for the VSCode settings panel) --------------------------
+
+    # Top-level config fields that take effect on the next call once written.
+    _LIVE_SETTINGS = {"model", "language", "learn", "permission_mode", "terminal_theme"}
+    # Top-level fields the providers read once at bootstrap; need a restart.
+    _RESTART_SETTINGS = {"api_mode", "base_url", "api_key", "workspace"}
+
+    def get_settings(self) -> dict[str, Any]:
+        """Snapshot of the user-editable settings for the extension panel.
+
+        The API key is never returned; the panel only learns whether one is set.
+        """
+        from code_ai.config.models import (
+            SUPPORTED_API_MODES,
+            SUPPORTED_PERMISSION_MODES,
+        )
+
+        config = self.session.config
+        return {
+            "model": config.model,
+            "api_mode": config.api_mode,
+            "base_url": config.base_url,
+            "api_key_set": bool(config.api_key),
+            "language": config.language,
+            "permission_mode": config.permission_mode,
+            "reasoning_effort": config.sampling.reasoning_effort or "none",
+            "learn": config.learn,
+            "max_context_tokens": config.budgets.max_context_tokens,
+            "workspace": str(config.workspace),
+            "supported": {
+                "api_mode": sorted(SUPPORTED_API_MODES),
+                "permission_mode": sorted(SUPPORTED_PERMISSION_MODES),
+                "reasoning_effort": ["none", "minimal", "low", "medium", "high", "xhigh"],
+            },
+        }
+
+    async def update_settings(self, updates: dict[str, Any]) -> dict[str, Any]:
+        """Persist and apply a batch of settings from the panel.
+
+        Live fields take effect immediately; restart-only fields are written but
+        reported back so the UI can flag a restart. Each field is validated by
+        re-running the whole-config validator, so a bad value is rejected in
+        isolation without aborting the rest of the batch.
+        """
+        from code_ai.config.loader import persist_config_updates
+
+        config = self.session.config
+        applied: list[str] = []
+        restart: list[str] = []
+        errors: dict[str, str] = {}
+
+        for key, value in updates.items():
+            try:
+                if key in self._LIVE_SETTINGS or key in self._RESTART_SETTINGS:
+                    if key == "workspace":
+                        value = str(Path(str(value)).expanduser().resolve())
+                    if key == "api_key" and not str(value).strip():
+                        continue  # blank means "leave the stored key untouched"
+                    validated = persist_config_updates(config, {key: value})
+                    if key in self._LIVE_SETTINGS:
+                        setattr(config, key, getattr(validated, key))
+                        applied.append(key)
+                    else:
+                        if key == "api_key":
+                            config.api_key = str(value)
+                        restart.append(key)
+                elif key == "reasoning_effort":
+                    sampling = asdict(config.sampling)
+                    sampling["reasoning_effort"] = None if value == "none" else value
+                    validated = persist_config_updates(config, {"sampling": sampling})
+                    config.sampling = validated.sampling
+                    applied.append(key)
+                elif key == "max_context_tokens":
+                    budgets = asdict(config.budgets)
+                    budgets["max_context_tokens"] = int(value)
+                    persist_config_updates(config, {"budgets": budgets})
+                    restart.append(key)
+                else:
+                    errors[key] = "unknown setting"
+            except Exception as exc:
+                errors[key] = str(exc) or type(exc).__name__
+
+        if "permission_mode" in applied:
+            await self.event_bus.emit(
+                "permission.mode.changed", {"mode": config.permission_mode}, source="app"
+            )
+        return {
+            "applied": applied,
+            "restart_required": restart,
+            "errors": errors,
+            "settings": self.get_settings(),
+        }
 
     async def request_deep_plan(self, *, write_to_workspace: bool = False) -> str:
         if not self.orchestrator.planner:
