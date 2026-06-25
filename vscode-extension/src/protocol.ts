@@ -24,6 +24,8 @@ export type BridgeMethod =
   | "getSettings"
   | "updateSettings"
   | "explainCode"
+  | "analyzeRefactor"
+  | "planRefactor"
   | "cancel"
   | "compact"
   | "setPlannerMode"
@@ -54,6 +56,14 @@ export interface Settings {
   };
 }
 
+/** One architectural improvement suggested in refactor mode. */
+export interface RefactorImprovement {
+  id: string;
+  title: string;
+  rationale: string;
+  impact: string;
+}
+
 export interface UpdateSettingsResult {
   applied: string[];
   restart_required: string[];
@@ -79,7 +89,12 @@ export type HostToWebview =
   | { type: "event"; event: EventEnvelope }
   | { type: "editorContext"; context: EditorContext | null }
   | { type: "settings"; settings: Settings }
-  | { type: "settingsUpdated"; result: UpdateSettingsResult };
+  | { type: "settingsUpdated"; result: UpdateSettingsResult }
+  | { type: "refactorStatus"; status: "analyzing" | "idle" }
+  | { type: "refactorResult"; improvements: RefactorImprovement[]; path: string; language: string }
+  | { type: "refactorError"; message: string }
+  | { type: "refactorPlanning"; id: string }
+  | { type: "refactorPlanned"; id: string; markdown: string };
 
 export type PermissionMode = "ask" | "auto" | "bypass";
 
@@ -89,6 +104,8 @@ export type WebviewToHost =
   | { type: "getSettings" }
   | { type: "updateSettings"; updates: Record<string, unknown> }
   | { type: "setMode"; mode: AppMode; autoRunRefactor: boolean }
+  | { type: "analyzeRefactor" }
+  | { type: "planRefactor"; id: string; improvements: RefactorImprovement[] }
   | { type: "cancel" }
   | { type: "compact" }
   | { type: "resolveApproval"; call_id: string; scope: ApprovalScope; reason?: string }
