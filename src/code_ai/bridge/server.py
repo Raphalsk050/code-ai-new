@@ -136,6 +136,24 @@ class BridgeServer:
         )
         return {"markdown": markdown}
 
+    async def _h_analyze_refactor(self, params: dict[str, Any]) -> dict[str, Any]:
+        improvements = await self._app.analyze_refactor(
+            code=str(params.get("code") or ""),
+            path=str(params.get("path") or ""),
+            language=str(params.get("language") or ""),
+        )
+        return {"improvements": improvements}
+
+    async def _h_plan_refactor(self, params: dict[str, Any]) -> dict[str, Any]:
+        improvements = params.get("improvements")
+        markdown = await self._app.plan_refactor(
+            code=str(params.get("code") or ""),
+            path=str(params.get("path") or ""),
+            language=str(params.get("language") or ""),
+            improvements=improvements if isinstance(improvements, list) else [],
+        )
+        return {"markdown": markdown}
+
     async def _h_get_settings(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._app.get_settings()
 
@@ -186,6 +204,8 @@ class BridgeServer:
         "getSettings": _h_get_settings,
         "updateSettings": _h_update_settings,
         "explainCode": _h_explain_code,
+        "analyzeRefactor": _h_analyze_refactor,
+        "planRefactor": _h_plan_refactor,
         "cancel": _h_cancel,
         "compact": _h_compact,
         "setPlannerMode": _h_set_planner_mode,

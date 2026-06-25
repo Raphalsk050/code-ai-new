@@ -101,6 +101,67 @@ class CodeAIApplication:
         response = await self.provider.complete(request)
         return response.text or ""
 
+    async def analyze_refactor(
+        self, *, code: str, path: str = "", language: str = ""
+    ) -> list[dict[str, Any]]:
+        """Return a structured list of architectural improvements for a snippet.
+
+        One-off model call that produces a JSON array; parsed defensively so a
+        chatty model that wraps the array in prose or fences still works.
+        """
+        from code_ai.providers.models import Message, ModelRequest
+
+        if not code.strip():
+            return []
+        location = f" from `{path}`" if path else ""
+        system = Message(role="system", content=_REFACTOR_ANALYZE_SYSTEM)
+        user = Message(
+            role="user",
+            content=(
+                f"Analyze this {language} snippet{location} for architectural "
+                f"improvements.\n\n```{language}\n{code}\n```"
+            ),
+        )
+        request = ModelRequest(
+            model=self.session.config.model,
+            messages=[system, user],
+            max_output_tokens=2048,
+        )
+        response = await self.provider.complete(request)
+        return _parse_improvements(response.text or "")
+
+    async def plan_refactor(
+        self,
+        *,
+        code: str,
+        path: str = "",
+        language: str = "",
+        improvements: list[dict[str, Any]],
+    ) -> str:
+        """Return a detailed Markdown refactoring plan for the chosen improvements."""
+        from code_ai.providers.models import Message, ModelRequest
+
+        bullet_lines = "\n".join(
+            f"- {imp.get('title', '')}: {imp.get('rationale', '')}" for imp in improvements
+        )
+        location = f" (`{path}`)" if path else ""
+        system = Message(role="system", content=_REFACTOR_PLAN_SYSTEM)
+        user = Message(
+            role="user",
+            content=(
+                f"Produce a refactoring plan for this {language} snippet{location}.\n\n"
+                f"Selected improvements:\n{bullet_lines or '- (all suggested improvements)'}\n\n"
+                f"```{language}\n{code}\n```"
+            ),
+        )
+        request = ModelRequest(
+            model=self.session.config.model,
+            messages=[system, user],
+            max_output_tokens=4096,
+        )
+        response = await self.provider.complete(request)
+        return response.text or ""
+
     async def reset_conversation(self) -> None:
         """Start a fresh conversation, keeping the system prompt and tools.
 
@@ -322,6 +383,26 @@ class CodeAIApplication:
 ApplicationEventHandler = Callable[[EventEnvelope], Awaitable[None] | None]
 
 
+_REFACTOR_ANALYZE_SYSTEM = (
+    "You are a staff engineer reviewing a code snippet for architectural "
+    "improvements (separation of concerns, coupling, abstractions, error "
+    "handling, testability, naming, performance). Return ONLY a JSON array of at "
+    "most 5 objects, no prose and no code fences. Each object has: \"id\" (short "
+    "kebab-case slug), \"title\" (a few words), \"rationale\" (1-2 sentences on "
+    "why it matters), and \"impact\" (one of \"low\", \"medium\", \"high\"). If "
+    "the snippet is already clean, return an empty array []."
+)
+
+_REFACTOR_PLAN_SYSTEM = (
+    "You are a staff engineer writing a refactoring plan as GitHub-flavored "
+    "Markdown for review before any code changes. Structure it with these "
+    "sections: a top '# Refactoring plan' title; '## Why' (the motivation); "
+    "'## Proposed changes' (concrete, ordered changes); '## Affected areas' "
+    "(files/modules/functions touched); '## Architecture' (before/after, using a "
+    "fenced diagram or bullet list); '## Risks & mitigations'; and '## Steps' (a "
+    "checklist). Be thorough and specific to the snippet. Output only the Markdown."
+)
+
 _EXPLAIN_SYSTEM = (
     "You are a senior engineer explaining a code snippet inside an editor hover "
     "card. Be precise and concise. Respond in GitHub-flavored Markdown with this "
@@ -331,6 +412,43 @@ _EXPLAIN_SYSTEM = (
     "performance (omit it if there is nothing useful to add). Keep it compact — "
     "no preamble, no repetition of the code, no headings beyond the bold labels."
 )
+
+
+def _parse_improvements(text: str) -> list[dict[str, Any]]:
+    """Extract a normalized improvements list from a (possibly chatty) reply."""
+    import json
+    import re
+
+    raw = text.strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```[a-zA-Z]*\n?", "", raw)
+        raw = re.sub(r"\n?```$", "", raw).strip()
+    start, end = raw.find("["), raw.rfind("]")
+    if start == -1 or end <= start:
+        return []
+    try:
+        data = json.loads(raw[start : end + 1])
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for index, item in enumerate(data):
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        if not title:
+            continue
+        impact = str(item.get("impact") or "medium").strip().lower()
+        out.append(
+            {
+                "id": str(item.get("id") or f"imp-{index + 1}").strip(),
+                "title": title,
+                "rationale": str(item.get("rationale") or "").strip(),
+                "impact": impact if impact in {"low", "medium", "high"} else "medium",
+            }
+        )
+    return out
 
 
 def _render_plan_snapshot(snapshot: dict[str, object]) -> str:
