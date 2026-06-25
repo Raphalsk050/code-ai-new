@@ -3,7 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from importlib import resources
 
+from rich.console import Console, RenderableType
+from rich.markdown import Markdown
 from rich.text import Text
+
+from textual.content import Content
 
 try:
     from art import text2art
@@ -392,7 +396,55 @@ def render_context_meter(
     return text
 
 
-def render_conversation_line(line: str) -> str | Text:
+# Prefix the orchestrator uses for the assistant's prose answer. Streaming
+# deltas concatenate onto a single ``ai> `` buffer entry, so a finished answer is
+# one transcript line whose body (after the prefix) is the full Markdown source.
+ASSISTANT_LINE_PREFIX = "ai> "
+# Fallback render width when the conversation pane size is not known yet.
+_DEFAULT_MARKDOWN_WIDTH = 80
+
+
+def markdown_to_content(body: str, width: int) -> Content:
+    """Render Markdown to a Textual-native :class:`Content`.
+
+    The terminal chat mounts every transcript line as a selectable ``Static``,
+    which only works because plain lines become native ``Content`` visuals —
+    Textual's mouse machinery (hover, scroll, drag-to-select, copy) operates on
+    ``Content``/``Text`` visuals, not on wrapped Rich renderables (a
+    ``RichVisual`` returns ``None`` from ``get_selection`` and cannot be copied).
+
+    So instead of handing Textual a Rich ``Markdown`` object directly, render it
+    to styled segments here and rebuild them as a ``Content``: the answer still
+    shows headings, lists and highlighted code, but it stays selectable and
+    copyable like the rest of the conversation.
+    """
+    width = max(20, width)
+    console = Console(width=width)
+    segments = console.render(Markdown(body), console.options.update_width(width))
+    text = Text()
+    for segment in segments:
+        if segment.control:
+            continue
+        text.append(segment.text, segment.style)
+    text.rstrip()
+    return Content.from_rich_text(text)
+
+
+def render_conversation_line(
+    line: str, *, rich_markdown: bool = False, width: int | None = None
+) -> RenderableType:
+    """Render one committed transcript line.
+
+    With ``rich_markdown`` the assistant's answer is rendered as formatted
+    Markdown (headings, lists, fenced code with highlighting) to match the
+    VS Code extension's chat. It is left off while a line is still streaming —
+    partial Markdown (an unclosed code fence) renders badly — so the formatting
+    only kicks in once the turn finishes and the line is committed.
+    """
+    if rich_markdown and line.startswith(ASSISTANT_LINE_PREFIX):
+        body = line[len(ASSISTANT_LINE_PREFIX) :]
+        if body.strip():
+            return markdown_to_content(body, width or _DEFAULT_MARKDOWN_WIDTH)
     if line.startswith("thinking> ") or line.startswith("model> thinking"):
         return Text(line, style=THINKING_LINE_STYLE)
     return line
