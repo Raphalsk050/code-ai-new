@@ -114,6 +114,14 @@ export function applyEvent(state: ViewState, event: EventEnvelope): ViewState {
   const id = event.event_id;
 
   switch (event.event_type) {
+    // Synthetic client events (dispatched by the webview, not the bridge) and
+    // the bridge's own reset confirmation. `conversation.reset` clears the live
+    // transcript; `client.load` restores a saved one for viewing.
+    case "conversation.reset":
+      return { ...state, items: [], pendingApproval: null, contextTokens: "", status: "READY" };
+    case "client.load":
+      return { ...state, items: (p.items as Item[]) ?? [], pendingApproval: null };
+
     case "session.started":
       return { ...state, permissionMode: String(p.permission_mode ?? state.permissionMode) };
     case "status.changed":
