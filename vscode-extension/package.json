@@ -2,11 +2,11 @@
   "name": "code-ai",
   "displayName": "Code-AI",
   "description": "Drive the Code-AI agent from VSCode (skeleton: spawns the stdio JSON-RPC bridge).",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "code-ai",
   "private": true,
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.74.0"
   },
   "categories": [
     "Other"
@@ -70,7 +70,7 @@
     "@types/node": "^20.11.0",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
-    "@types/vscode": "^1.85.0",
+    "@types/vscode": "^1.74.0",
     "esbuild": "^0.20.0",
     "typescript": "^5.4.0"
   },
