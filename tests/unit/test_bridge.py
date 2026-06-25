@@ -84,6 +84,10 @@ class _StubApp:
     async def reset_conversation(self) -> None:
         self.reset_count += 1
 
+    async def explain_code(self, *, code: str, path: str = "", language: str = "") -> str:
+        self.explained = {"code": code, "path": path, "language": language}
+        return f"explained:{code}"
+
     def get_settings(self) -> dict:
         return {"model": "m", "api_key_set": False}
 
@@ -193,6 +197,19 @@ async def test_update_settings_forwards_updates() -> None:
     (response,) = _messages(out)
     assert response["id"] == 12
     assert response["result"]["applied"] == ["model"]
+
+
+async def test_explain_code_returns_markdown() -> None:
+    app = _StubApp()
+    server, out = _server(app)
+    await server._handle_line(
+        json.dumps({"jsonrpc": "2.0", "id": 13, "method": "explainCode",
+                    "params": {"code": "x = 1", "path": "a.py", "language": "python"}})
+    )
+    assert app.explained == {"code": "x = 1", "path": "a.py", "language": "python"}
+    (response,) = _messages(out)
+    assert response["id"] == 13
+    assert response["result"] == {"markdown": "explained:x = 1"}
 
 
 async def test_resolve_approval_releases_pending() -> None:

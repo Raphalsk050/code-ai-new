@@ -128,6 +128,14 @@ class BridgeServer:
         await self._app.reset_conversation()
         return {"status": "ok"}
 
+    async def _h_explain_code(self, params: dict[str, Any]) -> dict[str, Any]:
+        markdown = await self._app.explain_code(
+            code=str(params.get("code") or ""),
+            path=str(params.get("path") or ""),
+            language=str(params.get("language") or ""),
+        )
+        return {"markdown": markdown}
+
     async def _h_get_settings(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._app.get_settings()
 
@@ -177,6 +185,7 @@ class BridgeServer:
         "newConversation": _h_new_conversation,
         "getSettings": _h_get_settings,
         "updateSettings": _h_update_settings,
+        "explainCode": _h_explain_code,
         "cancel": _h_cancel,
         "compact": _h_compact,
         "setPlannerMode": _h_set_planner_mode,

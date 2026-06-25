@@ -69,6 +69,38 @@ class CodeAIApplication:
             self._current_task = None
             self._current_cancel = None
 
+    async def explain_code(self, *, code: str, path: str = "", language: str = "") -> str:
+        """Return a Markdown explanation of a code snippet (one-off model call).
+
+        Used by the extension's Explain mode to populate an editor hover. Runs
+        outside the conversation so it never pollutes the agent's history.
+        """
+        from code_ai.providers.models import Message, ModelRequest
+
+        if not code.strip():
+            return ""
+        language_directive = (
+            f"Write the explanation in {self.session.config.language}."
+            if self.session.config.language
+            else ""
+        )
+        system = Message(role="system", content=_EXPLAIN_SYSTEM + " " + language_directive)
+        location = f" from `{path}`" if path else ""
+        user = Message(
+            role="user",
+            content=(
+                f"Explain the following {language} snippet{location}.\n\n"
+                f"```{language}\n{code}\n```"
+            ),
+        )
+        request = ModelRequest(
+            model=self.session.config.model,
+            messages=[system, user],
+            max_output_tokens=1024,
+        )
+        response = await self.provider.complete(request)
+        return response.text or ""
+
     async def reset_conversation(self) -> None:
         """Start a fresh conversation, keeping the system prompt and tools.
 
@@ -288,6 +320,17 @@ class CodeAIApplication:
 
 
 ApplicationEventHandler = Callable[[EventEnvelope], Awaitable[None] | None]
+
+
+_EXPLAIN_SYSTEM = (
+    "You are a senior engineer explaining a code snippet inside an editor hover "
+    "card. Be precise and concise. Respond in GitHub-flavored Markdown with this "
+    "shape: a one-sentence summary in bold; a short '**What it does**' section "
+    "(2-4 bullets) covering control flow, inputs/outputs and side effects; and a "
+    "'**Suggestions**' section with 1-3 bullets on correctness, readability or "
+    "performance (omit it if there is nothing useful to add). Keep it compact — "
+    "no preamble, no repetition of the code, no headings beyond the bold labels."
+)
 
 
 def _render_plan_snapshot(snapshot: dict[str, object]) -> str:
