@@ -6,14 +6,18 @@ from typing import Any
 
 from code_ai.app.service import CodeAIApplication
 from code_ai.app.session import ApplicationSession
-from code_ai.config.defaults import default_memories_dir
+from code_ai.config.defaults import (
+    default_memories_dir,
+    global_knowledge_dir,
+    project_memories_dir,
+)
 from code_ai.config.loader import load_config
 from code_ai.config.models import AppConfig
 from code_ai.context.compression import ContextCompressor
 from code_ai.context.conversation import ConversationState
 from code_ai.context.token_counting import TokenCounter
 from code_ai.context.usage import UsageLedger
-from code_ai.core.memory import FailureMemoryStore
+from code_ai.core.memory import FailureMemoryStore, MemoryService, MemoryStore
 from code_ai.core.orchestration import AgentOrchestrator
 from code_ai.core.planning import PlannerService
 from code_ai.events.bus import AsyncEventBus
@@ -31,6 +35,7 @@ from code_ai.tools.internal import (
     RequestExternalGapTool,
     SubmitPlanTool,
 )
+from code_ai.tools.memory import RememberTool
 from code_ai.tools.process import ExecuteCommandTool
 from code_ai.tools.registry import ToolRegistry
 from code_ai.tools.review import (
@@ -83,6 +88,7 @@ def build_tool_registry() -> ToolRegistry:
         GenerateDocumentationTool(),
         GitReviewTool(),
         AskUserTool(),
+        RememberTool(),
         SubmitPlanTool(),
         FinishDiscoveryTool(),
         RequestExternalGapTool(),
@@ -124,6 +130,14 @@ def build_application(
         memories_dir, lesson_generator=_generate_lesson
     )
 
+    # Durable memory of user-stated and proactively-saved facts. ``user``/
+    # ``feedback`` live globally; ``project``/``reference`` are scoped to this
+    # workspace so unrelated projects never bleed into each other.
+    memory = MemoryService(
+        global_store=MemoryStore(global_knowledge_dir()),
+        project_store=MemoryStore(project_memories_dir(config.workspace)),
+    )
+
     conversation = ConversationState(
         messages=[
             Message(
@@ -132,6 +146,7 @@ def build_application(
                     workspace=config.workspace,
                     language=config.language,
                     lessons=failure_memory.render_for_prompt(),
+                    memories=memory.render_for_prompt(),
                 ),
             )
         ]
@@ -164,6 +179,7 @@ def build_application(
             cancel_event=cancel_event,
             review_service=review_service,
             terminal_manager=terminal_manager,
+            memory=memory,
         )
 
     orchestrator = AgentOrchestrator(
@@ -177,6 +193,7 @@ def build_application(
         tool_context_factory=tool_context,
         planner=planner,
         failure_memory=failure_memory,
+        memory=memory,
     )
     session = ApplicationSession(session_id=event_bus.session_id, config=config)
     return CodeAIApplication(

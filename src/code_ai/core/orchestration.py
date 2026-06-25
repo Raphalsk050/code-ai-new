@@ -26,11 +26,12 @@ from code_ai.core.errors import (
     ProviderError,
     TransientProviderError,
 )
-from code_ai.core.memory import FailureMemoryStore
+from code_ai.core.memory import FailureMemoryStore, MemoryService
 from code_ai.core.planning import PlannerMode, PlannerService, PlanningPhase
 from code_ai.core.planning.policy import PolicyDecision
 from code_ai.core.state import AgentState
 from code_ai.events.bus import AsyncEventBus
+from code_ai.prompts import build_system_prompt
 from code_ai.providers.base import ModelProvider
 from code_ai.providers.models import (
     FinishReason,
@@ -136,6 +137,7 @@ class AgentOrchestrator:
         planner: PlannerService | None = None,
         approval_gateway: ApprovalGateway | None = None,
         failure_memory: FailureMemoryStore | None = None,
+        memory: MemoryService | None = None,
     ) -> None:
         self.config = config
         self.provider = provider
@@ -149,6 +151,9 @@ class AgentOrchestrator:
         # Persistent cross-session memory of recurring failures; ``None`` keeps
         # the loop fully functional, just without learning.
         self.failure_memory = failure_memory
+        # Durable memory of user-stated and proactively-saved facts; ``None``
+        # simply means nothing is injected.
+        self.memory = memory
         # Interactive approver. Defaults to deny-all so non-interactive runs keep
         # the prior behaviour; the terminal UI swaps in a modal-backed gateway.
         self.approval_gateway: ApprovalGateway = approval_gateway or DenyAllGateway()
@@ -168,6 +173,32 @@ class AgentOrchestrator:
         if phase:
             await self.event_bus.emit("phase.changed", {"phase": phase}, source="core.orchestrator")
 
+    def _refresh_system_prompt(self) -> None:
+        """Rebuild the system message so freshly-learned lessons and memories are
+        actually seen by the model.
+
+        The system prompt is otherwise built once at startup and frozen for the
+        session, which means a lesson recorded mid-session (or a fact just saved
+        via ``remember``) would never reach the model until a restart — the
+        original cause of the agent repeating known mistakes. We rebuild in place
+        at well-defined points (turn start, after recording a failure, after a
+        ``remember`` call) rather than every step, to keep disk reads bounded.
+        """
+
+        if not self.conversation.messages:
+            return
+        lessons = self.failure_memory.render_for_prompt() if self.failure_memory else ""
+        memories = self.memory.render_for_prompt() if self.memory else ""
+        self.conversation.messages[0] = Message(
+            role="system",
+            content=build_system_prompt(
+                workspace=self.config.workspace,
+                language=self.config.language,
+                lessons=lessons,
+                memories=memories,
+            ),
+        )
+
     # ------------------------------------------------------------------ #
     # Turn entry point
     # ------------------------------------------------------------------ #
@@ -178,6 +209,9 @@ class AgentOrchestrator:
         cancel_event: asyncio.Event | None = None,
         context: str = "",
     ) -> TurnResult:
+        # Pull in any lessons/memories learned since this session's system prompt
+        # was built, so the model benefits from them on this turn.
+        self._refresh_system_prompt()
         await self.set_state(AgentState.CALLING_MODEL, phase="accepted_user_message")
         await self.event_bus.emit("user.message", {"text": text}, source="core.orchestrator")
         # Editor context (open file / selection forwarded by an embedding client)
@@ -282,6 +316,9 @@ class AgentOrchestrator:
             outcome = await self._execute_tool_batch(response, state)
             if outcome is not None:
                 return outcome
+            # A fact just saved via ``remember`` should inform the very next step.
+            if any(call.name == "remember" for call in response.tool_calls):
+                self._refresh_system_prompt()
             outcome = await self._note_tool_round(response, state)
             if outcome is not None:
                 return outcome
@@ -536,6 +573,9 @@ class AgentOrchestrator:
                 fallback_lesson=fallback_lesson,
                 signature=signature,
             )
+            # Surface the just-learned lesson immediately so a failure that
+            # recurs later in this same turn no longer slips past the model.
+            self._refresh_system_prompt()
         except Exception as exc:  # pragma: no cover - defensive
             await self.event_bus.emit(
                 "memory.record.failed",
