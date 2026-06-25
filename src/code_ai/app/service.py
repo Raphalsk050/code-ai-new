@@ -96,7 +96,10 @@ class CodeAIApplication:
         request = ModelRequest(
             model=self.session.config.model,
             messages=[system, user],
-            max_output_tokens=1024,
+            # Generous so reasoning models (which spend output budget on hidden
+            # thinking first) still have room to emit the answer — a tight cap
+            # makes them return empty text.
+            max_output_tokens=8192,
         )
         response = await self.provider.complete(request)
         return response.text or ""
@@ -125,7 +128,7 @@ class CodeAIApplication:
         request = ModelRequest(
             model=self.session.config.model,
             messages=[system, user],
-            max_output_tokens=2048,
+            max_output_tokens=8192,  # leave room past the reasoning budget
         )
         response = await self.provider.complete(request)
         return _parse_improvements(response.text or "")
@@ -157,7 +160,7 @@ class CodeAIApplication:
         request = ModelRequest(
             model=self.session.config.model,
             messages=[system, user],
-            max_output_tokens=4096,
+            max_output_tokens=16384,  # plan markdown + the reasoning budget
         )
         response = await self.provider.complete(request)
         return response.text or ""
