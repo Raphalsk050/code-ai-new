@@ -359,6 +359,92 @@ button { font-family: inherit; cursor: pointer; }
 }
 .ctx-remove:hover { color: var(--vscode-foreground); }
 
+/* ---- mode bar + switch ---- */
+.modebar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 14px; border-bottom: 1px solid var(--border);
+  background: var(--vscode-editor-background);
+}
+.mode-switch {
+  display: inline-flex; gap: 2px; padding: 2px; flex: 1;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--surface);
+}
+.mode-opt {
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  flex: 1; padding: 4px 8px; border: none; border-radius: 6px;
+  background: transparent; color: var(--muted); font-size: 12px;
+}
+.mode-opt:hover { color: var(--vscode-foreground); }
+.mode-opt.active {
+  background: var(--vscode-button-background); color: var(--vscode-button-foreground);
+}
+.modebar .perm { flex: none; }
+.modebar .perm select {
+  font-family: inherit; font-size: 11.5px; color: var(--vscode-foreground);
+  background: var(--vscode-dropdown-background, var(--surface));
+  border: 1px solid var(--vscode-dropdown-border, var(--border));
+  border-radius: 6px; padding: 3px 6px; cursor: pointer;
+}
+
+/* ---- mode hint (refactor/explain placeholder) ---- */
+.mode-hint {
+  margin: 56px auto; max-width: 380px; text-align: center; color: var(--muted);
+  padding: 0 20px;
+}
+.mode-hint .spark { color: var(--accent); margin-bottom: 12px; }
+.mode-hint h2 { font-size: 15px; margin: 0 0 10px; color: var(--vscode-foreground); }
+.mode-hint-line { margin: 6px 0; font-size: 12.5px; line-height: 1.5; }
+
+/* ---- home settings affordance ---- */
+.home-topbar { display: flex; justify-content: flex-end; padding: 8px 12px 0; }
+
+/* ---- settings screen ---- */
+.settings { display: flex; flex-direction: column; height: 100%; }
+.settings-bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 14px; border-bottom: 1px solid var(--border);
+}
+.settings-title { font-weight: 600; font-size: 13px; }
+.settings-save { margin-left: auto; font-size: 12px; padding: 5px 14px; }
+.settings-loading { padding: 40px; text-align: center; color: var(--muted); }
+.settings-body { flex: 1; overflow-y: auto; padding: 16px 18px 28px; max-width: 760px; width: 100%; margin: 0 auto; }
+.settings-section { margin-bottom: 22px; }
+.settings-section-head { margin-bottom: 10px; }
+.settings-section-head h3 {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--vscode-foreground); margin: 0; opacity: .85;
+}
+.settings-section-hint { font-size: 11.5px; color: var(--muted); }
+.settings-fields { display: flex; flex-direction: column; gap: 12px; }
+.settings-field { display: flex; flex-direction: column; gap: 5px; }
+.settings-field-label { font-size: 12px; color: var(--vscode-foreground); display: flex; align-items: center; gap: 7px; }
+.settings-field input, .settings-field select {
+  font-family: inherit; font-size: 12.5px; color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--border));
+  border-radius: 7px; padding: 6px 9px;
+}
+.settings-field input:focus, .settings-field select:focus { outline: none; border-color: var(--accent); }
+.restart-tag {
+  font-size: 9.5px; text-transform: uppercase; letter-spacing: .04em;
+  padding: 1px 6px; border-radius: 999px; color: var(--vscode-editorWarning-foreground, #d7a000);
+  background: color-mix(in srgb, #d7a000 14%, transparent);
+}
+.settings-toggle { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; padding: 2px 0; }
+.settings-toggle-text { display: flex; flex-direction: column; gap: 2px; }
+.settings-toggle-hint { font-size: 11.5px; color: var(--muted); }
+.switch {
+  flex: none; width: 34px; height: 20px; border-radius: 999px; border: none;
+  background: color-mix(in srgb, var(--muted) 45%, transparent); position: relative;
+  transition: background .15s ease; margin-top: 1px;
+}
+.switch.on { background: var(--accent); }
+.switch-knob {
+  position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
+  background: #fff; transition: transform .15s ease;
+}
+.switch.on .switch-knob { transform: translateX(14px); }
+.settings-note { font-size: 11.5px; color: var(--muted); margin-top: 4px; }
+
 /* ---- animations ---- */
 .spinner {
   display: inline-block; width: 12px; height: 12px; border-radius: 50%;
