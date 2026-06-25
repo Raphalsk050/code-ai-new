@@ -94,6 +94,47 @@ Screen {
   padding: 0;
 }
 
+/* Conversation layout — no visible dividers, only whitespace, indent and color.
+   Two things are real messages and sit at column 0 with the biggest spacing:
+     - .turn-user   (you>): green chip, 2 blank lines above — a new exchange
+     - .turn-answer (ai>):  orange chip + answer, 1 blank line above
+   Everything else is the agent's work trace: dimmed and indented into a quiet
+   side channel, packed tight (no per-line margin) so it never competes with the
+   messages around it. */
+#conversation .turn-user {
+  margin: 2 0 1 0;
+}
+#conversation .turn-answer {
+  margin-top: 1;
+}
+#conversation .turn-trace {
+  margin-left: 3;
+  color: #6b7280;
+}
+
+/* The model's reasoning, folded into a hideable "thinking" block — stripped of
+   the default Collapsible chrome so it sits quietly in the dim trace channel. */
+#conversation .thinking-block {
+  margin-left: 3;
+  width: 1fr;
+  height: auto;
+  background: transparent;
+  border-top: none;
+  padding: 0;
+}
+#conversation .thinking-block > CollapsibleTitle {
+  padding: 0;
+  color: #6b7280;
+}
+#conversation .thinking-block > CollapsibleTitle:hover {
+  color: #9aa4b2;
+  background: transparent;
+}
+#conversation .thinking-block Contents {
+  padding: 0 0 0 2;
+  color: #6b7280;
+}
+
 #stream-tail {
   height: auto;
   max-height: 16;
@@ -179,11 +220,12 @@ ApprovalModal {
   padding-bottom: 1;
 }
 
-/* The model's own "why" explanation (/config learn). Distinct amber tone and
-   italics so it reads as didactic context, not file metadata or code. */
+/* The model's own "why" explanation (/config learn). A distinct amber tone sets
+   it apart from file metadata or code; kept upright (not italic) and bold so the
+   reason — the most important line for the decision — reads clearly. */
 #approval-justification {
   color: #f5c84c;
-  text-style: italic;
+  text-style: bold;
   padding-bottom: 1;
 }
 
@@ -212,11 +254,18 @@ ApprovalModal {
   padding-bottom: 1;
 }
 
+/* A clear gap between the deny-feedback input and the action buttons. */
+#approval-feedback {
+  margin-bottom: 1;
+}
+
 #approval-actions {
   height: auto;
   align-horizontal: center;
 }
 
+/* Fixed equal width so the three buttons match regardless of label length. */
 #approval-actions Button {
   margin: 0 1;
+  width: 24;
 }
