@@ -166,6 +166,11 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, "dist")],
     };
+    // Render the UI first and unconditionally: the webview must never be blank,
+    // even if the bridge fails to spawn. Bridge errors are surfaced as events
+    // inside the already-rendered UI instead of leaving an empty panel.
+    this.webview = view.webview;
+    view.webview.html = renderHtml(view.webview, this.extensionUri);
 
     const config = vscode.workspace.getConfiguration("code-ai");
     const extraArgs = config.get<string[]>("args", []);
@@ -176,11 +181,12 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     try {
       client = new BridgeClient(command, [...extraArgs, "bridge"], cwd);
     } catch (err) {
-      vscode.window.showErrorMessage(`Code-AI: failed to spawn "${command}": ${String(err)}`);
+      const detail = `failed to spawn "${command}": ${String(err)}`;
+      vscode.window.showErrorMessage(`Code-AI: ${detail}`);
+      void view.webview.postMessage({ type: "event", event: syntheticError(detail) });
       return;
     }
     this.client = client;
-    this.webview = view.webview;
 
     client.on("event", (event: EventEnvelope) => {
       void view.webview.postMessage({ type: "event", event });
@@ -281,7 +287,6 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       this.webview = undefined;
       client.dispose();
     });
-    view.webview.html = renderHtml(view.webview, this.extensionUri);
   }
 }
 
