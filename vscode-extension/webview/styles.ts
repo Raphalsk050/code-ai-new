@@ -272,12 +272,94 @@ button { font-family: inherit; cursor: pointer; }
 .send-btn:disabled { opacity: .4; cursor: default; }
 .send-btn.stop { background: var(--vscode-errorForeground, #f85149); }
 
-/* ---- animations ---- */
-.caret {
-  display: inline-block; width: 7px; height: 1.05em; vertical-align: text-bottom;
-  margin-left: 2px; background: var(--accent); border-radius: 1px;
-  animation: blink 1s steps(2) infinite;
+/* ---- topbar icon buttons ---- */
+.icon-btn {
+  padding: 4px; width: 28px; height: 26px; justify-content: center;
+  background: transparent; color: var(--muted); border: 1px solid transparent;
+  border-radius: 6px;
 }
+.icon-btn:hover { background: var(--surface); color: var(--vscode-foreground); }
+.icon-btn.danger:hover {
+  color: var(--vscode-errorForeground, #f85149);
+  background: color-mix(in srgb, #f85149 12%, transparent);
+}
+.topbar-actions { display: inline-flex; align-items: center; gap: 2px; margin-left: 2px; }
+.brand .back-btn { margin-right: 2px; width: 24px; height: 24px; }
+
+/* ---- home / history screen ---- */
+.home { display: flex; flex-direction: column; height: 100%; overflow-y: auto; }
+.home-hero { text-align: center; padding: 40px 18px 20px; color: var(--muted); }
+.home-hero .spark { color: var(--accent); margin-bottom: 10px; }
+.home-hero h2 { font-size: 16px; margin: 0 0 4px; color: var(--vscode-foreground); }
+.home-sub { font-size: 12.5px; margin-bottom: 16px; }
+.home-new { margin: 0 auto; font-size: 12.5px; padding: 8px 16px; }
+.home-history { max-width: 820px; width: 100%; margin: 0 auto; padding: 8px 18px 24px; }
+.home-history-head {
+  display: flex; align-items: center; gap: 7px; color: var(--muted);
+  font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+  margin: 12px 0 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border);
+}
+.home-empty { color: var(--muted); font-size: 12.5px; padding: 10px 2px; }
+.history-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.history-item {
+  display: flex; align-items: center; gap: 10px; padding: 9px 11px;
+  border: 1px solid var(--border); border-radius: 9px; cursor: pointer;
+  background: var(--surface); transition: border-color .12s ease, background .12s ease;
+}
+.history-item:hover { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
+.history-item-main { flex: 1; min-width: 0; }
+.history-title {
+  font-size: 13px; font-weight: 500; color: var(--vscode-foreground);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.history-meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.history-del { flex: none; opacity: 0; }
+.history-item:hover .history-del { opacity: 1; }
+
+/* ---- slash command menu ---- */
+.composer-stack { position: relative; max-width: 820px; margin: 0 auto; }
+.cmd-menu {
+  position: absolute; left: 0; right: 0; bottom: calc(100% + 6px);
+  max-height: 240px; overflow-y: auto; z-index: 20;
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  box-shadow: 0 8px 28px rgba(0,0,0,0.35); padding: 4px;
+}
+.cmd-item {
+  display: flex; align-items: baseline; gap: 10px; padding: 6px 9px;
+  border-radius: 7px; cursor: pointer;
+}
+.cmd-item.active { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.cmd-name {
+  font-family: var(--vscode-editor-font-family, monospace); font-size: 12.5px;
+  color: var(--vscode-foreground); flex: none; min-width: 92px;
+}
+.cmd-desc { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---- editor context chip ---- */
+.ctx-chip {
+  display: inline-flex; align-items: center; gap: 7px; max-width: 820px;
+  margin: 0 auto 8px; padding: 4px 8px 4px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  border-radius: 999px; background: color-mix(in srgb, var(--accent) 8%, transparent);
+  font-size: 11.5px; color: var(--muted); width: fit-content;
+}
+.ctx-chip .ctx-label {
+  font-family: var(--vscode-editor-font-family, monospace);
+  color: var(--vscode-foreground); max-width: 360px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ctx-chip .ctx-kind {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .04em;
+  padding: 1px 6px; border-radius: 999px; background: var(--surface);
+}
+.ctx-remove {
+  border: none; background: transparent; color: var(--muted);
+  font-size: 15px; line-height: 1; padding: 0 2px; cursor: pointer;
+}
+.ctx-remove:hover { color: var(--vscode-foreground); }
+
+/* ---- animations ---- */
 .spinner {
   display: inline-block; width: 12px; height: 12px; border-radius: 50%;
   border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
@@ -293,7 +375,6 @@ button { font-family: inherit; cursor: pointer; }
 .typing em { margin-left: 6px; font-style: normal; font-size: 12px; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
-@keyframes blink { 50% { opacity: 0; } }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
 @keyframes bounce { 0%,60%,100% { transform: translateY(0); opacity:.4; } 30% { transform: translateY(-4px); opacity:1; } }
 
