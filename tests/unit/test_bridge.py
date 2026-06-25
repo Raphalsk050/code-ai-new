@@ -214,6 +214,7 @@ async def test_explain_code_returns_markdown() -> None:
         json.dumps({"jsonrpc": "2.0", "id": 13, "method": "explainCode",
                     "params": {"code": "x = 1", "path": "a.py", "language": "python"}})
     )
+    await asyncio.gather(*server._turn_tasks)  # AI handlers reply off the read loop
     assert app.explained == {"code": "x = 1", "path": "a.py", "language": "python"}
     (response,) = _messages(out)
     assert response["id"] == 13
@@ -227,6 +228,7 @@ async def test_analyze_refactor_returns_improvements() -> None:
         json.dumps({"jsonrpc": "2.0", "id": 14, "method": "analyzeRefactor",
                     "params": {"code": "def f(): pass", "path": "a.py", "language": "python"}})
     )
+    await asyncio.gather(*server._turn_tasks)
     (response,) = _messages(out)
     assert response["id"] == 14
     assert response["result"]["improvements"][0]["title"] == "T"
@@ -239,6 +241,7 @@ async def test_plan_refactor_returns_markdown() -> None:
         json.dumps({"jsonrpc": "2.0", "id": 15, "method": "planRefactor",
                     "params": {"code": "x", "improvements": [{"title": "T"}]}})
     )
+    await asyncio.gather(*server._turn_tasks)
     assert app.planned["improvements"] == [{"title": "T"}]
     (response,) = _messages(out)
     assert response["result"] == {"markdown": "# plan"}
