@@ -234,6 +234,8 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       vscode.window.showErrorMessage(`Code-AI bridge error: ${err.message}${hint}`);
     });
     client.on("exit", (code: number | null) => {
+      // Leave the busy state so the "working" heartbeat stops, then show why.
+      void view.webview.postMessage({ type: "event", event: syntheticStatus("DISCONNECTED") });
       void view.webview.postMessage({ type: "event", event: syntheticError(`bridge exited (${code})`) });
     });
 
@@ -384,6 +386,10 @@ function resolveCommand(configured: string, extensionUri: vscode.Uri): string {
     if (fs.existsSync(candidate)) return candidate;
   }
   return configured;
+}
+
+function syntheticStatus(state: string): EventEnvelope {
+  return { ...syntheticError(""), event_type: "status.changed", payload: { state } };
 }
 
 function syntheticError(message: string): EventEnvelope {

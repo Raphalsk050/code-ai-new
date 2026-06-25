@@ -30,6 +30,8 @@ export interface ViewState {
   pendingApproval: PendingApproval | null;
   contextTokens: string;
   permissionMode: string;
+  /** Seconds elapsed in the current turn, from the bridge heartbeat (0 = idle). */
+  heartbeat: number;
 }
 
 export const initialState: ViewState = {
@@ -39,6 +41,7 @@ export const initialState: ViewState = {
   pendingApproval: null,
   contextTokens: "",
   permissionMode: "ask",
+  heartbeat: 0,
 };
 
 const WORKING_STATES = new Set([
@@ -124,13 +127,22 @@ export function applyEvent(state: ViewState, event: EventEnvelope): ViewState {
 
     case "session.started":
       return { ...state, permissionMode: String(p.permission_mode ?? state.permissionMode) };
-    case "status.changed":
-      return { ...state, status: String(p.state ?? state.status) };
+    case "status.changed": {
+      const status = String(p.state ?? state.status);
+      // Reset the heartbeat when the turn leaves a working state.
+      return { ...state, status, heartbeat: isBusy(status) ? state.heartbeat : 0 };
+    }
+    case "turn.heartbeat":
+      return { ...state, heartbeat: Number(p.elapsed_s ?? 0) };
     case "phase.changed":
       return { ...state, phase: String(p.phase ?? state.phase) };
 
     case "user.message":
-      return { ...state, items: push(state.items, { kind: "user", id, text: String(p.text ?? "") }) };
+      return {
+        ...state,
+        heartbeat: 0,
+        items: push(state.items, { kind: "user", id, text: String(p.text ?? "") }),
+      };
 
     case "model.stream.delta": {
       const channel = String(p.channel ?? "answer");
