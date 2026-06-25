@@ -116,12 +116,17 @@ class BridgeServer:
 
     async def _h_submit(self, params: dict[str, Any]) -> dict[str, Any]:
         text = str(params.get("text") or "")
+        context = str(params.get("context") or "")
         # Turns stream their progress as events; accept and run in the
         # background so the read loop stays responsive (e.g. to cancel/approve).
-        task = asyncio.create_task(self._app.submit_user_message(text))
+        task = asyncio.create_task(self._app.submit_user_message(text, context=context))
         self._turn_tasks.add(task)
         task.add_done_callback(self._turn_tasks.discard)
         return {"status": "accepted"}
+
+    async def _h_new_conversation(self, params: dict[str, Any]) -> dict[str, Any]:
+        await self._app.reset_conversation()
+        return {"status": "ok"}
 
     async def _h_cancel(self, params: dict[str, Any]) -> dict[str, Any]:
         await self._app.cancel_current_turn()
@@ -160,6 +165,7 @@ class BridgeServer:
 
     _HANDLERS: dict[str, Any] = {
         "submitUserMessage": _h_submit,
+        "newConversation": _h_new_conversation,
         "cancel": _h_cancel,
         "compact": _h_compact,
         "setPlannerMode": _h_set_planner_mode,

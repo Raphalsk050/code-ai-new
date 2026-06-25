@@ -51,18 +51,40 @@ class CodeAIApplication:
         )
         await self.event_bus.emit("session.ready", {}, source="app")
 
-    async def submit_user_message(self, text: str) -> TurnResult:
+    async def submit_user_message(self, text: str, *, context: str = "") -> TurnResult:
         if self._current_task and not self._current_task.done():
             raise RuntimeError("A turn is already running.")
         self._current_cancel = asyncio.Event()
         self._current_task = asyncio.create_task(
-            self.orchestrator.run_turn(text, cancel_event=self._current_cancel)
+            self.orchestrator.run_turn(
+                text, cancel_event=self._current_cancel, context=context
+            )
         )
         try:
             return await self._current_task
         finally:
             self._current_task = None
             self._current_cancel = None
+
+    async def reset_conversation(self) -> None:
+        """Start a fresh conversation, keeping the system prompt and tools.
+
+        Powers the embedding "new conversation" action: any running turn is
+        cancelled and the transcript is dropped so the next message starts a
+        clean thread, while the leading system instructions are preserved.
+        """
+        if self._current_task and not self._current_task.done():
+            await self.cancel_current_turn()
+            try:
+                await self._current_task
+            except Exception:  # a cancelled turn may surface as an error; ignore
+                pass
+        messages = self.orchestrator.conversation.messages
+        preserved = messages[:1] if messages and messages[0].role == "system" else []
+        messages[:] = preserved
+        self.orchestrator.conversation.reset_remote_state()
+        await self.orchestrator.set_state(AgentState.READY, phase="waiting_user")
+        await self.event_bus.emit("conversation.reset", {}, source="app")
 
     async def cancel_current_turn(self) -> None:
         if self._current_cancel is not None:

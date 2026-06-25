@@ -171,9 +171,21 @@ class AgentOrchestrator:
     # ------------------------------------------------------------------ #
     # Turn entry point
     # ------------------------------------------------------------------ #
-    async def run_turn(self, text: str, *, cancel_event: asyncio.Event | None = None) -> TurnResult:
+    async def run_turn(
+        self,
+        text: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        context: str = "",
+    ) -> TurnResult:
         await self.set_state(AgentState.CALLING_MODEL, phase="accepted_user_message")
         await self.event_bus.emit("user.message", {"text": text}, source="core.orchestrator")
+        # Editor context (open file / selection forwarded by an embedding client)
+        # is added to the conversation so the model sees it, but it is *not*
+        # echoed as a `user.message` event — the transcript stays clean and only
+        # shows what the user actually typed.
+        if context:
+            self.conversation.add_user(context)
         self.conversation.add_user(text)
 
         state = _TurnState(
