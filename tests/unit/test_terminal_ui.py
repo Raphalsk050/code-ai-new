@@ -374,6 +374,33 @@ def test_terminal_styles_thinking_lines_darker_gray() -> None:
     assert answer == "ai> done"
 
 
+def test_assistant_line_renders_as_selectable_markdown_content() -> None:
+    from textual.content import Content
+
+    from code_ai.ui.terminal.widgets import render_conversation_line
+
+    # Committed answers format as Markdown but as native Textual Content, not a
+    # wrapped Rich renderable: Content is what keeps the line mouse-selectable and
+    # copyable (a RichVisual returns None from get_selection — it breaks copy).
+    answer = render_conversation_line(
+        "ai> # Title\n\n- **bold** item", rich_markdown=True, width=60
+    )
+    assert isinstance(answer, Content)
+    plain = answer.plain
+    # The formatting is applied (the leading "# " is gone) but the words — and so
+    # the text the user can select and copy — survive.
+    assert "# Title" not in plain
+    assert "Title" in plain and "bold" in plain and "item" in plain
+
+    # ...but the live-streaming path (no flag) stays plain so a half-written
+    # fence does not render as a broken Markdown block mid-stream.
+    streaming = render_conversation_line("ai> ```py\nprint(", rich_markdown=False)
+    assert streaming == "ai> ```py\nprint("
+
+    # An empty assistant line falls through to the plain string, not an empty box.
+    assert render_conversation_line("ai> ", rich_markdown=True) == "ai> "
+
+
 def test_view_model_replaces_recovered_tool_call_text() -> None:
     from code_ai.ui.terminal.view_models import TerminalViewModel
 
