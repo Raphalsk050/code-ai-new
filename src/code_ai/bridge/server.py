@@ -94,9 +94,30 @@ class BridgeServer:
         if handler is None:
             self._send_error(request_id, _METHOD_NOT_FOUND, f"Unknown method: {method}")
             return
+        # AI analyses (explain/refactor) drive a model call that can take up to
+        # the model timeout (180s). Run them off the read loop so the bridge
+        # stays responsive — otherwise a slow analysis would stall every other
+        # request (a second selection, a cancel) behind it.
+        if method in self._CONCURRENT_METHODS:
+            task = asyncio.create_task(self._run_and_reply(handler, params, request_id, method))
+            self._turn_tasks.add(task)
+            task.add_done_callback(self._turn_tasks.discard)
+            return
         try:
             result = await handler(self, params)
         except Exception as exc:  # surface handler failures as JSON-RPC errors
+            logger.exception("Bridge handler %s failed", method)
+            self._send_error(request_id, _INTERNAL_ERROR, str(exc) or type(exc).__name__)
+            return
+        if request_id is not None:
+            self._send({"jsonrpc": "2.0", "id": request_id, "result": result})
+
+    async def _run_and_reply(
+        self, handler: Any, params: dict[str, Any], request_id: Any, method: str
+    ) -> None:
+        try:
+            result = await handler(self, params)
+        except Exception as exc:
             logger.exception("Bridge handler %s failed", method)
             self._send_error(request_id, _INTERNAL_ERROR, str(exc) or type(exc).__name__)
             return
@@ -214,6 +235,9 @@ class BridgeServer:
         "answerQuestion": _h_answer_question,
         "shutdown": _h_shutdown,
     }
+
+    # Methods whose model call may run long; dispatched off the read loop.
+    _CONCURRENT_METHODS = frozenset({"explainCode", "analyzeRefactor", "planRefactor"})
 
 
 async def run_bridge(app: CodeAIApplication, *, stdin: TextIO, stdout: TextIO) -> int:
