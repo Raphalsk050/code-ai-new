@@ -52,11 +52,10 @@ function UserRow({ text }: { text: string }) {
   );
 }
 
-function AssistantRow({ text, streaming }: { text: string; streaming: boolean }) {
+function AssistantRow({ text }: { text: string; streaming: boolean }) {
   return (
     <Row role="assistant" name="Code-AI" avatar={<IconCI size={15} />}>
-      <Markdown text={text || (streaming ? "" : "")} />
-      {streaming && <span className="caret" />}
+      <Markdown text={text} />
     </Row>
   );
 }
