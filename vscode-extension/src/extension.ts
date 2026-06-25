@@ -47,65 +47,79 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   private mode: AppMode = "agent";
   private autoRunRefactor = false;
   private explainTimer?: NodeJS.Timeout;
-  private explainSeq = 0;
-  private explain: { uri: string; range: vscode.Range; hover: vscode.MarkdownString } | null = null;
+  // The current explain "job": a pre-warmed promise keyed by the exact selection
+  // range. The hover provider returns this promise so VSCode shows a loading
+  // hover that resolves into the explanation — and it survives the selection
+  // collapsing (e.g. when the user clicks to position the mouse).
+  private explainJob: {
+    uri: string;
+    rangeKey: string;
+    range: vscode.Range;
+    promise: Promise<vscode.MarkdownString>;
+  } | null = null;
   private refactorTimer?: NodeJS.Timeout;
   private refactorSeq = 0;
   private refactorTarget: { code: string; path: string; language: string } | null = null;
 
-  /** Hover provider entry point: only fires in explain mode over the analyzed range. */
-  provideExplainHover(doc: vscode.TextDocument, pos: vscode.Position): vscode.Hover | undefined {
-    const cached = this.explain;
-    if (this.mode !== "explain" || !cached) return undefined;
-    if (cached.uri !== doc.uri.toString() || !cached.range.contains(pos)) return undefined;
-    return new vscode.Hover(cached.hover, cached.range);
+  /**
+   * Hover provider entry point. In explain mode, when the user hovers over the
+   * selection we returned a (possibly still-pending) promise: VSCode renders a
+   * loading hover and swaps in the explanation when it resolves. Returning the
+   * promise — rather than a pre-popped hover — is what makes it reliable.
+   */
+  provideExplainHover(
+    doc: vscode.TextDocument,
+    pos: vscode.Position
+  ): vscode.ProviderResult<vscode.Hover> {
+    if (this.mode !== "explain") return undefined;
+    const job = this.explainJob;
+    if (!job || job.uri !== doc.uri.toString() || !job.range.contains(pos)) return undefined;
+    return job.promise.then((md) => new vscode.Hover(md, job.range));
   }
 
-  /** Debounced selection -> explainCode round-trip, then pop the hover. */
+  /** Debounced: pre-warm the explanation for the current selection. */
   private scheduleExplain(editor: vscode.TextEditor): void {
     if (this.explainTimer) clearTimeout(this.explainTimer);
     const sel = editor.selection;
-    if (!sel || sel.isEmpty) {
-      this.explain = null;
-      return;
-    }
-    this.explainTimer = setTimeout(() => void this.runExplain(editor, sel), 450);
+    // Keep the last job when the selection collapses (e.g. a click), so an
+    // already-computed explanation is still hoverable.
+    if (!sel || sel.isEmpty) return;
+    this.explainTimer = setTimeout(() => this.startExplain(editor, sel), 400);
   }
 
-  private async runExplain(editor: vscode.TextEditor, sel: vscode.Selection): Promise<void> {
-    const client = this.client;
-    if (!client || this.mode !== "explain") return;
+  private startExplain(editor: vscode.TextEditor, sel: vscode.Selection): void {
+    if (!this.client || this.mode !== "explain") return;
     const doc = editor.document;
     const code = doc.getText(sel);
     if (!code.trim()) return;
-
-    const seq = ++this.explainSeq;
-    const loading = new vscode.MarkdownString("$(loading~spin) Code-AI is analyzing the selection…");
-    loading.supportThemeIcons = true;
-    this.explain = { uri: doc.uri.toString(), range: new vscode.Range(sel.start, sel.end), hover: loading };
-    void vscode.commands.executeCommand("editor.action.showHover");
-
     const range = new vscode.Range(sel.start, sel.end);
+    const rangeKey = `${doc.uri.toString()}:${range.start.line}:${range.start.character}:${range.end.line}:${range.end.character}`;
+    if (this.explainJob?.rangeKey === rangeKey) return; // already computing/cached
+    const promise = this.computeExplain(code, doc);
+    this.explainJob = { uri: doc.uri.toString(), rangeKey, range, promise };
+    // Best-effort: pop the hover once ready, if the user is still on the editor.
+    void promise.then(() => {
+      if (this.explainJob?.rangeKey === rangeKey) {
+        void vscode.commands.executeCommand("editor.action.showHover");
+      }
+    });
+  }
+
+  private async computeExplain(code: string, doc: vscode.TextDocument): Promise<vscode.MarkdownString> {
     try {
-      const result = await client.request<{ markdown: string }>(
+      const result = await this.client!.request<{ markdown: string }>(
         "explainCode",
         { code, path: vscode.workspace.asRelativePath(doc.uri, false), language: doc.languageId },
         AI_REQUEST_TIMEOUT_MS
       );
-      if (seq !== this.explainSeq) return; // a newer selection superseded this one
       const md = new vscode.MarkdownString(result.markdown || "_No explanation available._");
-      md.isTrusted = false;
       md.supportThemeIcons = true;
-      this.explain = { uri: doc.uri.toString(), range, hover: md };
-      void vscode.commands.executeCommand("editor.action.showHover");
+      return md;
     } catch (err) {
       console.error("[code-ai] explainCode failed", err);
-      if (seq !== this.explainSeq) return;
-      // Surface the failure as a hover instead of silently showing nothing.
       const md = new vscode.MarkdownString(`**Code-AI** could not explain this selection.\n\n${String(err)}`);
       md.supportThemeIcons = true;
-      this.explain = { uri: doc.uri.toString(), range, hover: md };
-      void vscode.commands.executeCommand("editor.action.showHover");
+      return md;
     }
   }
 
@@ -267,7 +281,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         case "setMode":
           this.mode = message.mode;
           this.autoRunRefactor = message.autoRunRefactor;
-          if (this.mode !== "explain") this.explain = null;
+          if (this.mode !== "explain") this.explainJob = null;
           break;
         case "analyzeRefactor":
           void this.runAnalyzeRefactor();
@@ -300,7 +314,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       editorSubs.forEach((d) => d.dispose());
       if (this.explainTimer) clearTimeout(this.explainTimer);
       if (this.refactorTimer) clearTimeout(this.refactorTimer);
-      this.explain = null;
+      this.explainJob = null;
       this.refactorTarget = null;
       this.client = undefined;
       this.webview = undefined;
