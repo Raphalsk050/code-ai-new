@@ -36,6 +36,21 @@ DEFAULT_CAPABILITIES_BY_NAME: dict[str, frozenset[ToolCapability]] = {
     "read_screen": frozenset(
         {ToolCapability.INTERACTIVE_TERMINAL, ToolCapability.LOCAL_READ}
     ),
+    "screen_info": frozenset({ToolCapability.COMPUTER_CONTROL}),
+    "take_screenshot": frozenset(
+        {ToolCapability.COMPUTER_CONTROL, ToolCapability.LOCAL_WRITE}
+    ),
+    "move_mouse": frozenset({ToolCapability.COMPUTER_CONTROL}),
+    "click_mouse": frozenset({ToolCapability.COMPUTER_CONTROL}),
+    "drag_mouse": frozenset({ToolCapability.COMPUTER_CONTROL}),
+    "scroll_mouse": frozenset({ToolCapability.COMPUTER_CONTROL}),
+    "type_text": frozenset({ToolCapability.COMPUTER_CONTROL}),
+    "press_keys": frozenset({ToolCapability.COMPUTER_CONTROL}),
+    "open_application": frozenset({ToolCapability.COMPUTER_CONTROL}),
+    "activate_application": frozenset({ToolCapability.COMPUTER_CONTROL}),
+    "list_applications": frozenset(
+        {ToolCapability.COMPUTER_CONTROL, ToolCapability.LOCAL_READ}
+    ),
     "web_search": frozenset({ToolCapability.WEB}),
     "use_skill": frozenset({ToolCapability.LOCAL_READ}),
     "create_skill": frozenset({ToolCapability.LOCAL_WRITE}),
@@ -171,6 +186,7 @@ class PlannerToolPolicy:
                 {
                     ToolCapability.LOCAL_READ,
                     ToolCapability.LOCAL_WRITE,
+                    ToolCapability.COMPUTER_CONTROL,
                     ToolCapability.INTERACTION,
                     ToolCapability.INTERNAL_TRANSITION,
                     ToolCapability.INTERNAL_COMPLETION,
@@ -192,6 +208,7 @@ class PlannerToolPolicy:
                     ToolCapability.PROCESS,
                     ToolCapability.REVIEW,
                     ToolCapability.INTERACTIVE_TERMINAL,
+                    ToolCapability.COMPUTER_CONTROL,
                     ToolCapability.INTERNAL_TRANSITION,
                     ToolCapability.INTERNAL_COMPLETION,
                 },
@@ -207,6 +224,7 @@ class PlannerToolPolicy:
                     ToolCapability.LOCAL_READ,
                     ToolCapability.LOCAL_WRITE,
                     ToolCapability.PROCESS,
+                    ToolCapability.COMPUTER_CONTROL,
                     ToolCapability.INTERACTION,
                     ToolCapability.INTERNAL_TRANSITION,
                     ToolCapability.INTERNAL_COMPLETION,

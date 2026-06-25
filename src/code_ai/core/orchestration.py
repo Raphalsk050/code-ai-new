@@ -75,6 +75,7 @@ _APPROVAL_SENSITIVE_CAPABILITIES = frozenset(
         ToolCapability.LOCAL_WRITE,
         ToolCapability.PROCESS,
         ToolCapability.INTERACTIVE_TERMINAL,
+        ToolCapability.COMPUTER_CONTROL,
     }
 )
 
