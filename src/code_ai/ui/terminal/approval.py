@@ -11,7 +11,7 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Horizontal, ScrollableContainer, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Static
+from textual.widgets import Button, Input, Static
 
 from code_ai.core.approval import ApprovalDecision, ApprovalRequest
 
@@ -191,6 +191,10 @@ class ApprovalModal(ModalScreen[ApprovalDecision]):
                 "[1] Deny   ·   [2] Allow once   ·   [3] Always allow (this session)",
                 id="approval-keys",
             )
+            yield Input(
+                placeholder="On deny: tell the agent why, or what to do instead (optional)…",
+                id="approval-feedback",
+            )
             with Horizontal(id="approval-actions"):
                 yield Button("Deny (Esc)", variant="error", id="approval-deny")
                 yield Button("Allow once (2)", variant="primary", id="approval-once")
@@ -204,8 +208,20 @@ class ApprovalModal(ModalScreen[ApprovalDecision]):
         else:
             self.action_deny()
 
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        # Enter in the feedback field denies, carrying the typed text to the model.
+        if event.input.id == "approval-feedback":
+            self.action_deny()
+
     def action_deny(self) -> None:
-        self.dismiss(ApprovalDecision.deny("Denied by user."))
+        self.dismiss(ApprovalDecision.deny(self._deny_reason()))
+
+    def _deny_reason(self) -> str:
+        try:
+            feedback = self.query_one("#approval-feedback", Input).value.strip()
+        except Exception:
+            feedback = ""
+        return feedback or "Denied by user."
 
     def action_allow_once(self) -> None:
         self.dismiss(ApprovalDecision.allow_once())

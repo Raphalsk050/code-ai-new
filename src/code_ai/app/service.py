@@ -45,6 +45,7 @@ class CodeAIApplication:
                 "model": self.session.config.model,
                 "api_mode": self.session.config.api_mode,
                 "workspace": str(self.session.config.workspace),
+                "permission_mode": self.session.config.permission_mode,
             },
             source="app",
         )
