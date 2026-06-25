@@ -431,8 +431,25 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             text-selection can highlight and copy across the scrollback —
             something RichLog's Strips never supported. ``markup=False`` keeps
             literal text like ``tool> [..]`` from being parsed as console markup.
+
+            Assistant answers render as Markdown flattened to native Content (see
+            ``markdown_to_content``), so they stay selectable; the layout width is
+            taken from the live conversation pane so the Markdown wraps to fit.
             """
-            return Static(render_conversation_line(line), markup=False)
+            return Static(
+                render_conversation_line(
+                    line, rich_markdown=True, width=self._conversation_width()
+                ),
+                markup=False,
+            )
+
+        def _conversation_width(self) -> int | None:
+            """Content width of the conversation pane, if it is laid out yet."""
+            try:
+                width = self.query_one("#conversation", VerticalScroll).content_size.width
+            except Exception:
+                return None
+            return width or None
 
         def _sync_conversation(self) -> None:
             """Incrementally reflect the conversation buffer into the UI.
