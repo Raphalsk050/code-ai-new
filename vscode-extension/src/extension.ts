@@ -1,9 +1,16 @@
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
 
 import { BridgeClient } from "./bridge-client";
-import type { AppMode, EditorContext, EventEnvelope, WebviewToHost } from "./protocol";
+import type {
+  AppMode,
+  EditorContext,
+  EventEnvelope,
+  RefactorImprovement,
+  WebviewToHost,
+} from "./protocol";
 
 export function activate(context: vscode.ExtensionContext): void {
   const provider = new ChatViewProvider(context.extensionUri);
@@ -31,11 +38,15 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 
   // Shared with the hover provider and selection handlers (one bridge per view).
   private client?: BridgeClient;
+  private webview?: vscode.Webview;
   private mode: AppMode = "agent";
   private autoRunRefactor = false;
   private explainTimer?: NodeJS.Timeout;
   private explainSeq = 0;
   private explain: { uri: string; range: vscode.Range; hover: vscode.MarkdownString } | null = null;
+  private refactorTimer?: NodeJS.Timeout;
+  private refactorSeq = 0;
+  private refactorTarget: { code: string; path: string; language: string } | null = null;
 
   /** Hover provider entry point: only fires in explain mode over the analyzed range. */
   provideExplainHover(doc: vscode.TextDocument, pos: vscode.Position): vscode.Hover | undefined {
@@ -87,6 +98,69 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  private scheduleRefactor(): void {
+    if (this.refactorTimer) clearTimeout(this.refactorTimer);
+    this.refactorTimer = setTimeout(() => void this.runAnalyzeRefactor(), 550);
+  }
+
+  /** Analyze the active selection for architectural improvements. */
+  private async runAnalyzeRefactor(): Promise<void> {
+    const client = this.client;
+    const editor = vscode.window.activeTextEditor;
+    const sel = editor?.selection;
+    if (!client || !editor || !sel || sel.isEmpty) {
+      if (this.mode === "refactor" && !this.autoRunRefactor) {
+        this.webview?.postMessage({
+          type: "refactorError",
+          message: "Select code in the editor to analyze.",
+        });
+      }
+      return;
+    }
+    const doc = editor.document;
+    const target = {
+      code: doc.getText(sel),
+      path: vscode.workspace.asRelativePath(doc.uri, false),
+      language: doc.languageId,
+    };
+    this.refactorTarget = target;
+    const seq = ++this.refactorSeq;
+    this.webview?.postMessage({ type: "refactorStatus", status: "analyzing" });
+    try {
+      const r = await client.request<{ improvements: RefactorImprovement[] }>("analyzeRefactor", target);
+      if (seq !== this.refactorSeq) return;
+      this.webview?.postMessage({
+        type: "refactorResult",
+        improvements: r.improvements ?? [],
+        path: target.path,
+        language: target.language,
+      });
+    } catch (err) {
+      if (seq === this.refactorSeq) {
+        this.webview?.postMessage({ type: "refactorError", message: String(err) });
+      }
+    }
+  }
+
+  /** Generate a Markdown plan for the chosen improvements and open the preview. */
+  private async runPlanRefactor(id: string, improvements: RefactorImprovement[]): Promise<void> {
+    const client = this.client;
+    const target = this.refactorTarget;
+    if (!client || !target) {
+      this.webview?.postMessage({ type: "refactorError", message: "Nothing to plan — analyze a selection first." });
+      return;
+    }
+    this.webview?.postMessage({ type: "refactorPlanning", id });
+    try {
+      const r = await client.request<{ markdown: string }>("planRefactor", { ...target, improvements });
+      const markdown = r.markdown || "_The model returned an empty plan._";
+      await openMarkdownPreview(target.path, markdown);
+      this.webview?.postMessage({ type: "refactorPlanned", id, markdown });
+    } catch (err) {
+      this.webview?.postMessage({ type: "refactorError", message: String(err) });
+    }
+  }
+
   resolveWebviewView(view: vscode.WebviewView): void {
     view.webview.options = {
       enableScripts: true,
@@ -106,6 +180,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
     this.client = client;
+    this.webview = view.webview;
 
     client.on("event", (event: EventEnvelope) => {
       void view.webview.postMessage({ type: "event", event });
@@ -169,6 +244,12 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           this.autoRunRefactor = message.autoRunRefactor;
           if (this.mode !== "explain") this.explain = null;
           break;
+        case "analyzeRefactor":
+          void this.runAnalyzeRefactor();
+          break;
+        case "planRefactor":
+          void this.runPlanRefactor(message.id, message.improvements);
+          break;
       }
     });
 
@@ -182,6 +263,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         if (e.textEditor !== vscode.window.activeTextEditor) return;
         pushContext();
         if (this.mode === "explain") this.scheduleExplain(e.textEditor);
+        else if (this.mode === "refactor" && this.autoRunRefactor) this.scheduleRefactor();
       }),
       view.onDidChangeVisibility(() => {
         if (view.visible) pushContext();
@@ -192,8 +274,11 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     view.onDidDispose(() => {
       editorSubs.forEach((d) => d.dispose());
       if (this.explainTimer) clearTimeout(this.explainTimer);
+      if (this.refactorTimer) clearTimeout(this.refactorTimer);
       this.explain = null;
+      this.refactorTarget = null;
       this.client = undefined;
+      this.webview = undefined;
       client.dispose();
     });
     view.webview.html = renderHtml(view.webview, this.extensionUri);
@@ -215,6 +300,15 @@ function currentEditorContext(): EditorContext | null {
     context.endLine = sel.end.line + 1;
   }
   return context;
+}
+
+/** Write the plan to a temp Markdown file and open VSCode's preview on it. */
+async function openMarkdownPreview(sourcePath: string, markdown: string): Promise<void> {
+  const base = sourcePath ? path.basename(sourcePath).replace(/\W+/g, "-") : "selection";
+  const file = path.join(os.tmpdir(), `code-ai-refactor-${base}-${Date.now()}.md`);
+  await fs.promises.writeFile(file, markdown, "utf8");
+  const uri = vscode.Uri.file(file);
+  await vscode.commands.executeCommand("markdown.showPreview", uri);
 }
 
 /** Render an {@link EditorContext} into the preamble the model receives. */
