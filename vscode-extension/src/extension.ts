@@ -374,6 +374,24 @@ function renderHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
     `img-src ${webview.cspSource} https: data:; ` +
     `style-src ${webview.cspSource} 'unsafe-inline'; ` +
     `script-src 'nonce-${nonce}';`;
+  // The inline bootstrap turns a blank webview into a visible diagnostic: it
+  // catches load/runtime errors and, if the bundle never executes within 3s
+  // (CSP block, failed resource load, silent throw), prints what went wrong —
+  // so users can debug without the Webview Developer Tools (often locked down
+  // on corporate machines).
+  const boot =
+    "(function(){var SRC=" + JSON.stringify(String(scriptUri)) + ";" +
+    "function show(t){var r=document.getElementById('root');if(r){r.innerHTML=" +
+    "'<div style=\"padding:16px;font:12px ui-monospace,monospace;color:#f97583;white-space:pre-wrap;line-height:1.5\">'+" +
+    "'Code-AI could not start.\\n\\n'+t+'\\n\\nScript: '+SRC+'</div>';}}" +
+    "window.addEventListener('error',function(e){if(e&&e.target&&e.target!==window&&e.target.src){" +
+    "show('Failed to load: '+e.target.src+'\\n(blocked by Content-Security-Policy or the file is missing).');}" +
+    "else{show('JavaScript error: '+((e&&e.message)||'unknown')+(e&&e.filename?('\\n'+e.filename+':'+e.lineno):''));}},true);" +
+    "window.addEventListener('unhandledrejection',function(e){show('Unhandled promise rejection: '+" +
+    "((e&&e.reason&&e.reason.message)||String(e&&e.reason)));});" +
+    "setTimeout(function(){if(document.getElementById('ca-boot')){" +
+    "show('The webview bundle did not run within 3 seconds.\\nMost likely dist/webview.js failed to load (CSP) or is missing from the install.');}},3000);" +
+    "})();";
   return `<!DOCTYPE html>
 <html lang="en">
   <head>
@@ -383,7 +401,8 @@ function renderHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
     <title>Code-AI</title>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root"><div id="ca-boot" style="padding:16px;font:13px sans-serif;color:#888">Loading Code-AI…</div></div>
+    <script nonce="${nonce}">${boot}</script>
     <script nonce="${nonce}" src="${scriptUri}"></script>
   </body>
 </html>`;
