@@ -59,6 +59,13 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       void view.webview.postMessage({ type: "event", event: syntheticError(`bridge exited (${code})`) });
     });
 
+    // Active operating mode, kept in sync from the webview's mode switch. Used
+    // by selection-driven behaviour (explain/refactor) wired in later stages.
+    let mode: import("./protocol").AppMode = "agent";
+    let autoRunRefactor = false;
+    void mode;
+    void autoRunRefactor;
+
     view.webview.onDidReceiveMessage((message: WebviewToHost) => {
       switch (message.type) {
         case "submit": {
@@ -69,6 +76,20 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         case "newConversation":
           client.send("newConversation");
+          break;
+        case "getSettings":
+          client
+            .request("getSettings")
+            .then((settings) => view.webview.postMessage({ type: "settings", settings }))
+            .catch((err) => console.error("[code-ai] getSettings failed", err));
+          break;
+        case "updateSettings":
+          client
+            .request("updateSettings", { updates: message.updates })
+            .then((result) => view.webview.postMessage({ type: "settingsUpdated", result }))
+            .catch((err) =>
+              vscode.window.showErrorMessage(`Code-AI: failed to save settings: ${String(err)}`)
+            );
           break;
         case "cancel":
           client.send("cancel");
@@ -85,6 +106,12 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         case "setPermissionMode":
           client.send("setPermissionMode", { mode: message.mode });
+          break;
+        case "setMode":
+          // Stored so selection-driven behaviour (explain/refactor) knows which
+          // mode is active; the actual handlers are wired in later stages.
+          mode = message.mode;
+          autoRunRefactor = message.autoRunRefactor;
           break;
       }
     });

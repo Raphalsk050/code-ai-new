@@ -16,6 +16,7 @@ export class BridgeClient extends EventEmitter {
   private readonly proc: ChildProcessWithoutNullStreams;
   private buffer = "";
   private nextId = 1;
+  private readonly pending = new Map<number, (msg: any) => void>();
 
   constructor(command: string, args: string[], cwd?: string) {
     super();
@@ -44,6 +45,11 @@ export class BridgeClient extends EventEmitter {
       if (message.method === "event") {
         this.emit("event", message.params as EventEnvelope);
       } else if (message.id !== undefined) {
+        const resolve = this.pending.get(message.id);
+        if (resolve) {
+          this.pending.delete(message.id);
+          resolve(message);
+        }
         this.emit("response", message);
       }
     }
@@ -54,6 +60,23 @@ export class BridgeClient extends EventEmitter {
     const id = this.nextId++;
     this.write({ jsonrpc: "2.0", id, method, params });
     return id;
+  }
+
+  /** Send a request and resolve with its `result` (or reject on error/timeout). */
+  request<T = any>(method: BridgeMethod, params: Record<string, unknown> = {}, timeoutMs = 20000): Promise<T> {
+    const id = this.nextId++;
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`Bridge request "${method}" timed out`));
+      }, timeoutMs);
+      this.pending.set(id, (msg) => {
+        clearTimeout(timer);
+        if (msg.error) reject(new Error(msg.error.message ?? "bridge error"));
+        else resolve(msg.result as T);
+      });
+      this.write({ jsonrpc: "2.0", id, method, params });
+    });
   }
 
   private write(message: Record<string, unknown>): void {

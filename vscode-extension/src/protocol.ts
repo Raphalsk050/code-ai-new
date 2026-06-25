@@ -21,6 +21,8 @@ export type ApprovalScope = "once" | "session" | "deny";
 export type BridgeMethod =
   | "submitUserMessage"
   | "newConversation"
+  | "getSettings"
+  | "updateSettings"
   | "cancel"
   | "compact"
   | "setPlannerMode"
@@ -28,6 +30,35 @@ export type BridgeMethod =
   | "resolveApproval"
   | "answerQuestion"
   | "shutdown";
+
+/** The three operating modes; only `agent` shows the chat composer. */
+export type AppMode = "agent" | "refactor" | "explain";
+
+/** User-editable backend settings surfaced in the settings panel. */
+export interface Settings {
+  model: string;
+  api_mode: string;
+  base_url: string;
+  api_key_set: boolean;
+  language: string;
+  permission_mode: string;
+  reasoning_effort: string;
+  learn: boolean;
+  max_context_tokens: number;
+  workspace: string;
+  supported: {
+    api_mode: string[];
+    permission_mode: string[];
+    reasoning_effort: string[];
+  };
+}
+
+export interface UpdateSettingsResult {
+  applied: string[];
+  restart_required: string[];
+  errors: Record<string, string>;
+  settings: Settings;
+}
 
 /** A snapshot of what the user is looking at in the editor, attached to a turn. */
 export interface EditorContext {
@@ -45,13 +76,18 @@ export interface EditorContext {
 // Messages exchanged between the extension host and the webview.
 export type HostToWebview =
   | { type: "event"; event: EventEnvelope }
-  | { type: "editorContext"; context: EditorContext | null };
+  | { type: "editorContext"; context: EditorContext | null }
+  | { type: "settings"; settings: Settings }
+  | { type: "settingsUpdated"; result: UpdateSettingsResult };
 
 export type PermissionMode = "ask" | "auto" | "bypass";
 
 export type WebviewToHost =
   | { type: "submit"; text: string; includeContext?: boolean }
   | { type: "newConversation" }
+  | { type: "getSettings" }
+  | { type: "updateSettings"; updates: Record<string, unknown> }
+  | { type: "setMode"; mode: AppMode; autoRunRefactor: boolean }
   | { type: "cancel" }
   | { type: "compact" }
   | { type: "resolveApproval"; call_id: string; scope: ApprovalScope; reason?: string }
