@@ -128,6 +128,15 @@ class BridgeServer:
         await self._app.reset_conversation()
         return {"status": "ok"}
 
+    async def _h_get_settings(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._app.get_settings()
+
+    async def _h_update_settings(self, params: dict[str, Any]) -> dict[str, Any]:
+        updates = params.get("updates")
+        if not isinstance(updates, dict):
+            updates = {k: v for k, v in params.items() if k != "updates"}
+        return await self._app.update_settings(updates)
+
     async def _h_cancel(self, params: dict[str, Any]) -> dict[str, Any]:
         await self._app.cancel_current_turn()
         return {"status": "ok"}
@@ -166,6 +175,8 @@ class BridgeServer:
     _HANDLERS: dict[str, Any] = {
         "submitUserMessage": _h_submit,
         "newConversation": _h_new_conversation,
+        "getSettings": _h_get_settings,
+        "updateSettings": _h_update_settings,
         "cancel": _h_cancel,
         "compact": _h_compact,
         "setPlannerMode": _h_set_planner_mode,
