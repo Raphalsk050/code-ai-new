@@ -23,6 +23,7 @@ export type BridgeMethod =
   | "newConversation"
   | "getSettings"
   | "updateSettings"
+  | "explainCode"
   | "cancel"
   | "compact"
   | "setPlannerMode"
