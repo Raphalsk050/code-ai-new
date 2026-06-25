@@ -62,7 +62,8 @@
   "scripts": {
     "build": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "package": "node esbuild.mjs && npx --yes @vscode/vsce package --allow-missing-repository --skip-license"
   },
   "devDependencies": {
     "@types/diff": "^5.0.9",
