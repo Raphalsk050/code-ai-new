@@ -25,8 +25,11 @@ ARCHITECTURE_PRINCIPLES = (
 )
 
 
-def build_system_prompt(*, workspace: Path, language: str, lessons: str = "") -> str:
+def build_system_prompt(
+    *, workspace: Path, language: str, lessons: str = "", memories: str = ""
+) -> str:
     current_date = datetime.now().astimezone().date().isoformat()
+    memories_section = f"\n\n{memories.strip()}\n" if memories.strip() else ""
     lessons_section = f"\n\n{lessons.strip()}\n" if lessons.strip() else ""
     return f"""You are Code-AI, a terminal-based coding agent.
 
@@ -113,7 +116,21 @@ before proceeding. When the user asks you to capture, save, or reuse a workflow
 repeatable procedure worth keeping, call create_skill with a concise name, a
 one-line description, and the full instructions. Do not block on these: skip the
 lookup for trivial one-shot answers.
-{lessons_section}"""
+
+You have a persistent memory. Call the remember tool to save durable facts so you
+act on them in future turns and sessions. Save proactively, not only when asked:
+- When the user states a lasting preference or instruction ("always run tests
+  with pytest -q", "never touch the migrations", "my stack is FastAPI"), save it
+  with kind "feedback", or "user" for who they are.
+- When you discover something non-obvious about this project that will help later
+  (a build command, an architectural constraint, where a thing lives), save it
+  with kind "project", or "reference" for external pointers like URLs or tickets.
+Be selective: do not save trivia, secrets, or anything already evident from the
+code or git history. Prefer one concise self-contained sentence per fact, and
+resolve relative dates to absolute ones. Treat your saved memories and the
+"Lessons learned from past failures" below as binding: act on them and do not
+repeat a mistake you have already recorded.
+{memories_section}{lessons_section}"""
 
 
 def build_failure_lesson_prompt(context: str) -> str:

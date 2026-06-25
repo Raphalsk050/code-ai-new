@@ -56,7 +56,7 @@ class FailureMemory:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, object]) -> "FailureMemory":
+    def from_dict(cls, data: dict[str, object]) -> FailureMemory:
         return cls(
             signature=str(data.get("signature", "")),
             trigger=str(data.get("trigger", "")),
@@ -203,3 +203,195 @@ def _clip(text: str) -> str:
     if len(text) <= _MAX_LESSON_CHARS:
         return text
     return text[: _MAX_LESSON_CHARS - 1].rstrip() + "…"
+
+
+# --------------------------------------------------------------------------- #
+# General-purpose memory: facts the user stated and facts the agent decided are
+# worth keeping. Distinct from FailureMemory (which is auto-captured from
+# recurring failures); these are written explicitly via the ``remember`` tool.
+# --------------------------------------------------------------------------- #
+
+_MAX_MEMORY_CHARS = 600
+
+# Durable facts about the user / how to work — kept globally, valid everywhere.
+GLOBAL_KINDS = frozenset({"user", "feedback"})
+# Facts about the current project / external references — kept per-workspace.
+PROJECT_KINDS = frozenset({"project", "reference"})
+VALID_KINDS = GLOBAL_KINDS | PROJECT_KINDS
+
+
+@dataclass(slots=True)
+class Memory:
+    """A single durable fact the agent chose to remember."""
+
+    kind: str  # one of VALID_KINDS
+    content: str
+    source: str = "proactive"  # "user_stated" | "proactive"
+    created: float = field(default_factory=time.time)
+    updated: float = field(default_factory=time.time)
+
+    @property
+    def id(self) -> str:
+        # Content-addressed so the same fact never duplicates.
+        return hashlib.sha256(self.content.strip().encode("utf-8")).hexdigest()[:16]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "kind": self.kind,
+            "content": self.content,
+            "source": self.source,
+            "created": self.created,
+            "updated": self.updated,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> Memory:
+        return cls(
+            kind=str(data.get("kind", "")),
+            content=str(data.get("content", "")),
+            source=str(data.get("source", "proactive")),
+            created=float(data.get("created", time.time()) or 0.0),
+            updated=float(data.get("updated", time.time()) or 0.0),
+        )
+
+
+class MemoryStore:
+    """Reads and writes :class:`Memory` entries under a single directory.
+
+    One JSON file per memory, named by a hash of its content, so writes are
+    independent and identical facts collapse onto the same file (dedup).
+    Mirrors :class:`FailureMemoryStore`'s on-disk conventions.
+    """
+
+    def __init__(self, directory: Path, *, max_entries: int = 200) -> None:
+        self._dir = Path(directory)
+        self._max_entries = max_entries
+
+    # -- reads ---------------------------------------------------------------
+
+    def all(self, *, limit: int | None = None) -> list[Memory]:
+        """Return stored memories, most-recently-updated first."""
+
+        entries: list[Memory] = []
+        if not self._dir.exists():
+            return entries
+        for path in self._dir.glob("*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            entry = Memory.from_dict(data)
+            if entry.content:
+                entries.append(entry)
+        entries.sort(key=lambda e: e.updated, reverse=True)
+        if limit is not None:
+            return entries[:limit]
+        return entries
+
+    # -- writes --------------------------------------------------------------
+
+    def add(self, *, kind: str, content: str, source: str = "proactive") -> Memory:
+        """Persist a fact, refreshing it in place if the same content already exists."""
+
+        content = _clip_memory(content)
+        entry = Memory(kind=kind, content=content, source=source)
+        existing = self._load(entry.id)
+        if existing is not None:
+            # Same fact already known — just bump recency and keep the original.
+            existing.updated = time.time()
+            existing.kind = kind
+            self._save(existing)
+            return existing
+        self._save(entry)
+        self._prune()
+        return entry
+
+    # -- persistence ---------------------------------------------------------
+
+    def _path_for(self, memory_id: str) -> Path:
+        return self._dir / f"{memory_id}.json"
+
+    def _load(self, memory_id: str) -> Memory | None:
+        path = self._path_for(memory_id)
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return Memory.from_dict(data)
+
+    def _save(self, entry: Memory) -> None:
+        self._dir.mkdir(parents=True, exist_ok=True)
+        self._path_for(entry.id).write_text(
+            json.dumps(entry.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _prune(self) -> None:
+        entries = self.all()
+        if len(entries) <= self._max_entries:
+            return
+        for stale in entries[self._max_entries :]:
+            try:
+                self._path_for(stale.id).unlink()
+            except OSError:
+                continue
+
+
+class MemoryService:
+    """Routes memories to the right scope and renders them for the prompt.
+
+    ``user``/``feedback`` facts live in the global store (valid in any project);
+    ``project``/``reference`` facts live in the per-workspace store. Rendering
+    aggregates both so the model sees one coherent "Memory" section.
+    """
+
+    def __init__(self, *, global_store: MemoryStore, project_store: MemoryStore) -> None:
+        self._global = global_store
+        self._project = project_store
+
+    def _store_for(self, kind: str) -> MemoryStore:
+        return self._project if kind in PROJECT_KINDS else self._global
+
+    def add(self, *, kind: str, content: str, source: str = "proactive") -> Memory:
+        if kind not in VALID_KINDS:
+            raise ValueError(f"unknown memory kind: {kind!r}")
+        return self._store_for(kind).add(kind=kind, content=content, source=source)
+
+    def render_for_prompt(self, *, limit_per_group: int = 10) -> str:
+        """Render stored memories grouped by scope, or ``""`` if none."""
+
+        entries = [*self._global.all(), *self._project.all()]
+        if not entries:
+            return ""
+        entries.sort(key=lambda e: e.updated, reverse=True)
+
+        user_lines = [
+            f"- {e.content.strip()}"
+            for e in entries
+            if e.kind in GLOBAL_KINDS and e.content.strip()
+        ][:limit_per_group]
+        project_lines = [
+            f"- {e.content.strip()}"
+            for e in entries
+            if e.kind in PROJECT_KINDS and e.content.strip()
+        ][:limit_per_group]
+
+        sections: list[str] = []
+        if user_lines:
+            sections.append(
+                "What the user told you (persists across sessions):\n" + "\n".join(user_lines)
+            )
+        if project_lines:
+            sections.append(
+                "What you have learned about this project:\n" + "\n".join(project_lines)
+            )
+        return "\n\n".join(sections)
+
+
+def _clip_memory(text: str) -> str:
+    text = (text or "").strip()
+    if len(text) <= _MAX_MEMORY_CHARS:
+        return text
+    return text[: _MAX_MEMORY_CHARS - 1].rstrip() + "…"

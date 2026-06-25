@@ -21,6 +21,7 @@ class ToolCapability(StrEnum):
     INTERACTION = "interaction"
     INTERNAL_TRANSITION = "internal_transition"
     INTERNAL_COMPLETION = "internal_completion"
+    MEMORY = "memory"
 
 
 @dataclass(slots=True)
@@ -31,6 +32,7 @@ class ToolContext:
     cancel_event: asyncio.Event | None = None
     review_service: Any = None
     terminal_manager: Any = None
+    memory: Any = None
 
 
 class BaseTool(Protocol):
