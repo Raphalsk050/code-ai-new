@@ -3,7 +3,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 
 import { BridgeClient } from "./bridge-client";
-import type { EventEnvelope, WebviewToHost } from "./protocol";
+import type { EditorContext, EventEnvelope, WebviewToHost } from "./protocol";
 
 export function activate(context: vscode.ExtensionContext): void {
   const provider = new ChatViewProvider(context.extensionUri);
@@ -61,11 +61,20 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 
     view.webview.onDidReceiveMessage((message: WebviewToHost) => {
       switch (message.type) {
-        case "submit":
-          client.send("submitUserMessage", { text: message.text });
+        case "submit": {
+          const context =
+            message.includeContext === false ? "" : formatEditorContext(currentEditorContext());
+          client.send("submitUserMessage", { text: message.text, context });
+          break;
+        }
+        case "newConversation":
+          client.send("newConversation");
           break;
         case "cancel":
           client.send("cancel");
+          break;
+        case "compact":
+          client.send("compact");
           break;
         case "resolveApproval":
           client.send("resolveApproval", {
@@ -80,9 +89,59 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     });
 
-    view.onDidDispose(() => client.dispose());
+    // Keep the webview in sync with what the user is looking at, so it can show
+    // a context chip and let the user opt out before sending.
+    const pushContext = () =>
+      void view.webview.postMessage({ type: "editorContext", context: currentEditorContext() });
+    const editorSubs = [
+      vscode.window.onDidChangeActiveTextEditor(pushContext),
+      vscode.window.onDidChangeTextEditorSelection((e) => {
+        if (e.textEditor === vscode.window.activeTextEditor) pushContext();
+      }),
+      view.onDidChangeVisibility(() => {
+        if (view.visible) pushContext();
+      }),
+    ];
+    pushContext();
+
+    view.onDidDispose(() => {
+      editorSubs.forEach((d) => d.dispose());
+      client.dispose();
+    });
     view.webview.html = renderHtml(view.webview, this.extensionUri);
   }
+}
+
+/** Build an {@link EditorContext} from the active editor, or `null` if none. */
+function currentEditorContext(): EditorContext | null {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) return null;
+  const doc = editor.document;
+  if (doc.uri.scheme !== "file") return null; // skip output/diff/webview docs
+  const path = vscode.workspace.asRelativePath(doc.uri, false);
+  const sel = editor.selection;
+  const context: EditorContext = { path, language: doc.languageId };
+  if (sel && !sel.isEmpty) {
+    context.selection = doc.getText(sel);
+    context.startLine = sel.start.line + 1;
+    context.endLine = sel.end.line + 1;
+  }
+  return context;
+}
+
+/** Render an {@link EditorContext} into the preamble the model receives. */
+function formatEditorContext(context: EditorContext | null): string {
+  if (!context) return "";
+  const head = `[Editor context] Active file: ${context.path} (${context.language})`;
+  if (context.selection && context.startLine && context.endLine) {
+    return (
+      `${head}\nUser has selected lines ${context.startLine}-${context.endLine}:\n` +
+      "```" +
+      `${context.language}\n${context.selection}\n` +
+      "```"
+    );
+  }
+  return `${head}\nThe user currently has this file open (no selection).`;
 }
 
 /**
