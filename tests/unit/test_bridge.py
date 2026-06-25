@@ -59,6 +59,8 @@ class _StubApp:
         self.started = False
         self.closed = False
         self.submitted: list[str] = []
+        self.submitted_context: list[str] = []
+        self.reset_count = 0
         self.planner_mode: str | None = None
         self.permission_mode: str | None = None
 
@@ -75,8 +77,12 @@ class _StubApp:
     async def start(self) -> None:
         self.started = True
 
-    async def submit_user_message(self, text: str) -> None:
+    async def submit_user_message(self, text: str, *, context: str = "") -> None:
         self.submitted.append(text)
+        self.submitted_context.append(context)
+
+    async def reset_conversation(self) -> None:
+        self.reset_count += 1
 
     async def request_context_compression(self) -> CompressionResult:
         return CompressionResult(
@@ -126,9 +132,36 @@ async def test_submit_dispatches_to_facade_and_acks() -> None:
     await asyncio.gather(*server._turn_tasks)
 
     assert app.submitted == ["liste os arquivos"]
+    assert app.submitted_context == [""]
     (response,) = _messages(out)
     assert response["id"] == 7
     assert response["result"] == {"status": "accepted"}
+
+
+async def test_submit_forwards_editor_context() -> None:
+    app = _StubApp()
+    server, out = _server(app)
+    await server._handle_line(
+        json.dumps({"jsonrpc": "2.0", "id": 8, "method": "submitUserMessage",
+                    "params": {"text": "explain", "context": "[Editor context] foo.py"}})
+    )
+    await asyncio.gather(*server._turn_tasks)
+
+    assert app.submitted == ["explain"]
+    assert app.submitted_context == ["[Editor context] foo.py"]
+
+
+async def test_new_conversation_resets_facade() -> None:
+    app = _StubApp()
+    server, out = _server(app)
+    await server._handle_line(
+        json.dumps({"jsonrpc": "2.0", "id": 9, "method": "newConversation", "params": {}})
+    )
+
+    assert app.reset_count == 1
+    (response,) = _messages(out)
+    assert response["id"] == 9
+    assert response["result"] == {"status": "ok"}
 
 
 async def test_resolve_approval_releases_pending() -> None:
