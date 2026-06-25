@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from importlib import resources
 
@@ -59,7 +60,6 @@ CODE_AI_LOGO_STYLES = (
     "bold rgb(255,80,100)",
     "bold rgb(255,230,90)",
 )
-THINKING_LINE_STYLE = "#6b7280"
 
 # --- Working indicator ("the agent is busy" animation) ----------------------
 # AgentState values that mean the agent is actively doing something; the
@@ -430,23 +430,94 @@ def markdown_to_content(body: str, width: int) -> Content:
     return Content.from_rich_text(text)
 
 
+# Speaker chips: a colored "tag" (dark bold text on a colored background) marking
+# the only two things that are real *messages* — the user's prompt and the
+# agent's answer. Green is the statusline color, orange the permission button's
+# border, so the chat reads as part of the same palette. Everything else (the
+# model's thinking, tool calls, plans, evidence) is the agent's *work trace*:
+# subordinate, so it is dimmed and indented via "turn-trace" rather than chipped.
+_CHIP_TEXT_COLOR = "#071018"  # the screen background, for contrast on a bright chip
+_USER_COLOR = "#48d17a"  # statusline green
+_MODEL_COLOR = "#ff9f1c"  # permission-button / logo orange
+
+# Line prefixes that make up the agent's working trace. warning>/error> are left
+# out on purpose so problems keep full prominence instead of fading into it.
+_TRACE_PREFIXES = (
+    "model>",
+    "thinking>",
+    "working>",
+    "tool>",
+    "evidence>",
+    "plan>",
+    "approval>",
+    "policy>",
+    "completion>",
+    "permission>",
+)
+# Multi-line trace text (the model's reasoning) carries its own blank lines; they
+# are collapsed so the dim trace stays compact instead of sprawling.
+_BLANK_RUN = re.compile(r"\n[ \t]*\n+")
+
+
+def _chip(label: str, color: str) -> Content:
+    """A colored speaker chip (dark bold text on a colored background)."""
+    return Content.styled(f" {label} ", f"bold {_CHIP_TEXT_COLOR} on {color}")
+
+
+def thinking_body(line: str) -> str | None:
+    """Reasoning text for a ``thinking>`` line (blank lines collapsed), else None.
+
+    Used to fold the model's reasoning into a collapsible block at commit time,
+    mirroring the VS Code extension's hideable "Thinking" section. The live
+    streaming tail still shows it inline via :func:`render_conversation_line`.
+    """
+    prefix = "thinking> "
+    if not line.startswith(prefix):
+        return None
+    return _BLANK_RUN.sub("\n", line[len(prefix) :])
+
+
+def conversation_line_class(line: str) -> str:
+    """CSS class for a committed transcript line, driving the spacing hierarchy.
+
+    Only two things are real messages — the user prompt and the agent's answer —
+    and they get the biggest spacing. Everything else is the agent's work trace
+    ("turn-trace"): dimmed, indented and packed tight so it reads as subordinate.
+    """
+    if line.startswith("you> "):
+        return "turn-user"
+    if line.startswith(ASSISTANT_LINE_PREFIX):
+        return "turn-answer"
+    if line.startswith(_TRACE_PREFIXES):
+        return "turn-trace"
+    return ""
+
+
 def render_conversation_line(
     line: str, *, rich_markdown: bool = False, width: int | None = None
 ) -> RenderableType:
     """Render one committed transcript line.
 
-    With ``rich_markdown`` the assistant's answer is rendered as formatted
-    Markdown (headings, lists, fenced code with highlighting) to match the
-    VS Code extension's chat. It is left off while a line is still streaming —
-    partial Markdown (an unclosed code fence) renders badly — so the formatting
-    only kicks in once the turn finishes and the line is committed.
+    The user prompt and the agent's answer read as chipped messages: a green
+    ``you`` chip inline, an orange ``model`` chip above the formatted answer.
+    With ``rich_markdown`` the answer renders as Markdown (headings, lists,
+    fenced code) to match the VS Code extension; the formatting is left off while
+    the line is still streaming, since partial Markdown renders badly.
+
+    Every other line — the model's thinking, tool calls, plans — is returned as
+    plain text and dimmed/indented by its ``turn-trace`` CSS class.
     """
     if rich_markdown and line.startswith(ASSISTANT_LINE_PREFIX):
         body = line[len(ASSISTANT_LINE_PREFIX) :]
         if body.strip():
-            return markdown_to_content(body, width or _DEFAULT_MARKDOWN_WIDTH)
-    if line.startswith("thinking> ") or line.startswith("model> thinking"):
-        return Text(line, style=THINKING_LINE_STYLE)
+            answer = markdown_to_content(body, width or _DEFAULT_MARKDOWN_WIDTH)
+            return _chip("model", _MODEL_COLOR).append("\n").append(answer)
+    if line.startswith("you> "):
+        rest = line[len("you> ") :]
+        chip = _chip("you", _USER_COLOR)
+        return chip.append(Content.styled(f" {rest}", _USER_COLOR)) if rest else chip
+    if line.startswith(("thinking> ", "working> ")):
+        return _BLANK_RUN.sub("\n", line)
     return line
 
 
