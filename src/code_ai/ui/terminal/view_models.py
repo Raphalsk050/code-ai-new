@@ -122,7 +122,12 @@ class TerminalViewModel:
         elif event.event_type == "model.response.completed":
             tool_calls = event.payload.get("tool_calls")
             if tool_calls:
-                self.conversation.append("model> requested tool calls")
+                # Name each requested tool explicitly so the transcript shows
+                # *which* tool the model invoked, not just that it invoked one.
+                # The name is rendered as a chip downstream (see widgets.py).
+                for call in tool_calls:
+                    name = call.get("name") if isinstance(call, dict) else None
+                    self.conversation.append(f"model> requested {name or 'tool'} tool")
         elif event.event_type == "tool.call.started":
             self.conversation.append(f"tool> {event.payload.get('name')} started")
         elif event.event_type == "tool.call.completed":

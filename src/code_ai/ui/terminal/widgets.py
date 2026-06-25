@@ -439,6 +439,12 @@ def markdown_to_content(body: str, width: int) -> Content:
 _CHIP_TEXT_COLOR = "#071018"  # the screen background, for contrast on a bright chip
 _USER_COLOR = "#48d17a"  # statusline green
 _MODEL_COLOR = "#ff9f1c"  # permission-button / logo orange
+# Tool calls are actions, not messages: a cool cyan chip carries the tool name so
+# the eye can pick out *which* tool ran, distinct from the green/orange speakers.
+_TOOL_COLOR = "#4fc3dc"
+# Surrounding (non-chip) words on a tool line stay in the dim trace gray so the
+# chip is the only thing that pops, matching the .turn-trace CSS color.
+_TRACE_TEXT_STYLE = "#6b7280"
 
 # Line prefixes that make up the agent's working trace. warning>/error> are left
 # out on purpose so problems keep full prominence instead of fading into it.
@@ -457,6 +463,10 @@ _TRACE_PREFIXES = (
 # Multi-line trace text (the model's reasoning) carries its own blank lines; they
 # are collapsed so the dim trace stays compact instead of sprawling.
 _BLANK_RUN = re.compile(r"\n[ \t]*\n+")
+
+# "model> requested <name> tool" — the name is chipped as the tool that ran.
+_TOOL_REQUEST = re.compile(r"^model> requested (?P<name>\S+) tool$")
+_TOOL_LINE_PREFIX = "tool> "
 
 
 def _chip(label: str, color: str) -> Content:
@@ -516,6 +526,26 @@ def render_conversation_line(
         rest = line[len("you> ") :]
         chip = _chip("you", _USER_COLOR)
         return chip.append(Content.styled(f" {rest}", _USER_COLOR)) if rest else chip
+    request = _TOOL_REQUEST.match(line)
+    if request:
+        # The model asked to run a tool: keep the dim "model> requested … tool"
+        # framing, only the tool name is tinted so the eye lands on which tool.
+        return (
+            Content.styled("model> requested ", _TRACE_TEXT_STYLE)
+            .append(Content.styled(request["name"], f"bold {_TOOL_COLOR}"))
+            .append(Content.styled(" tool", _TRACE_TEXT_STYLE))
+        )
+    if line.startswith(_TOOL_LINE_PREFIX):
+        # A tool's lifecycle ("tool> <name> started/completed …"): tint only the
+        # tool name, status stays in the dim trace gray.
+        rest = line[len(_TOOL_LINE_PREFIX) :]
+        name, sep, status = rest.partition(" ")
+        result = Content.styled(_TOOL_LINE_PREFIX, _TRACE_TEXT_STYLE).append(
+            Content.styled(name, f"bold {_TOOL_COLOR}")
+        )
+        if sep:
+            result = result.append(Content.styled(f" {status}", _TRACE_TEXT_STYLE))
+        return result
     if line.startswith(("thinking> ", "working> ")):
         return _BLANK_RUN.sub("\n", line)
     return line

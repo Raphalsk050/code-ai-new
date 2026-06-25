@@ -280,7 +280,7 @@ class PlannerService:
                 f"(current: {self.agent_plan.current_step.title if self.agent_plan.current_step else 'done'}).\n"
                 "Call submit_plan again only if your approach genuinely changes.\n"
             )
-        return (
+        header = (
             "Runtime task state. Treat this as authoritative host state, not a user request.\n"
             f"Original objective: {self.profile.objective}\n"
             f"Acceptance criteria: {self.profile.acceptance_criteria}\n"
@@ -297,7 +297,29 @@ class PlannerService:
             f"Recent evidence: {self.ledger.compact_recent(limit=8)}\n"
             f"Recommended tools now: {sorted(recommended_tool_names)}\n"
             + plan_lines
-            + "Rules: prefer the recommended tools, work on the current step, and do not "
+        )
+        if self.mode == PlannerMode.PLAN:
+            # Plan mode = think, don't touch. The model investigates with read-only
+            # tools and delivers a thorough plan as its answer; write/process tools
+            # are denied by policy, so it must not attempt them or claim completion.
+            return header + (
+                "PLAN MODE — produce a plan, do not change anything.\n"
+                "Rules:\n"
+                "- Investigate first with read-only tools (read_file, search_code, "
+                "list_files) until you genuinely understand the task and the code it "
+                "touches. Do not guess.\n"
+                "- Do NOT call write_file, edit_code, execute_command, or "
+                "complete_task — they are disabled in plan mode and will be rejected.\n"
+                "- Deliver a deep, concrete plan as your final answer: the approach "
+                "and trade-offs, the exact files/functions to change with what each "
+                "change does, edge cases and risks, and how the result will be "
+                "verified. Number the steps so they can be executed in order.\n"
+                "- Use ask_user only if a genuine ambiguity blocks planning.\n"
+                "- End by telling the user to switch to act mode (/act) to execute "
+                "the plan."
+            )
+        return header + (
+            "Rules: prefer the recommended tools, work on the current step, and do not "
             "claim completion from prose. For workspace changes, call write_file or "
             "edit_code; for completion, call complete_task after verification evidence exists."
         )

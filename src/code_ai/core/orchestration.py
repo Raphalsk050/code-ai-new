@@ -27,7 +27,7 @@ from code_ai.core.errors import (
     TransientProviderError,
 )
 from code_ai.core.memory import FailureMemoryStore, MemoryService
-from code_ai.core.planning import PlannerMode, PlannerService, PlanningPhase
+from code_ai.core.planning import PlannerService, PlanningPhase
 from code_ai.core.planning.policy import PolicyDecision
 from code_ai.core.state import AgentState
 from code_ai.events.bus import AsyncEventBus
@@ -264,8 +264,11 @@ class AgentOrchestrator:
                 {"path": ".", "max_depth": 2, "max_entries": 250},
                 state,
             )
-        if self.planner.mode == PlannerMode.PLAN:
-            return await self._finish_turn(self._planner_summary_text(), None, state)
+        # PLAN mode used to short-circuit here, returning a canned summary of the
+        # internal skeleton without ever calling the model — so the user's actual
+        # request was never read and the turn looked frozen. Instead, fall through
+        # to the model loop: the model investigates and authors a real plan, while
+        # the tool policy keeps write/process tools denied so nothing is mutated.
         return None
 
     # ------------------------------------------------------------------ #
@@ -1295,22 +1298,6 @@ class AgentOrchestrator:
 
     def _requires_tool_for_progress(self) -> bool:
         return bool(self.planner and self.planner.requires_tool_for_progress())
-
-    def _planner_summary_text(self) -> str:
-        if not (self.planner and self.planner.plan):
-            return "Plan mode is active, but no plan is available."
-        snapshot = self.planner.plan_snapshot()
-        steps = [
-            f"{index + 1}. {step.title} [{step.kind.value}]"
-            for index, step in enumerate(self.planner.plan.steps)
-        ]
-        return (
-            "Plan mode is active. No workspace mutations were performed.\n"
-            f"Objective: {self.planner.plan.objective}\n"
-            f"Phase: {snapshot.get('phase')}\n"
-            "Steps:\n"
-            + "\n".join(steps)
-        )
 
     @staticmethod
     def _raise_if_cancelled(cancel_event: asyncio.Event | None) -> None:

@@ -357,6 +357,10 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             # Streaming only mutates the last line, so we keep the tail in a
             # separate Static and never re-render the whole transcript per event.
             self._committed = 0
+            # Armed by a first Ctrl+Q that could not shut down cleanly (e.g. the
+            # model is hung mid-request); a second Ctrl+Q while armed force-quits.
+            self._force_quit_armed = False
+            self._close_task: asyncio.Task[None] | None = None
 
         def compose(self) -> ComposeResult:
             yield Header(show_clock=True)
@@ -556,8 +560,9 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             if text.strip() == "/mode" or text.strip().startswith("/mode "):
                 await self._handle_mode_command(text.strip())
                 return
-            if text.strip() == "/deep-plan":
-                self._append_conversation_line(await self.controller.deep_plan())
+            if text.strip() == "/deep-plan" or text.strip().startswith("/deep-plan "):
+                objective = text.strip()[len("/deep-plan") :].strip()
+                await self._start_deep_plan(objective)
                 return
             if text.strip() == "/plan-status":
                 self._append_conversation_line(self.controller.plan_status())
@@ -584,6 +589,24 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 await self._dispatch_config(text.strip())
                 return
             asyncio.create_task(self.controller.submit(text))
+
+        async def _start_deep_plan(self, objective: str) -> None:
+            """Switch to plan mode and, if an objective was given, plan it now.
+
+            Mirrors Cline's Plan mode: ``/deep-plan <objective>`` flips the planner
+            into plan mode and submits the objective in one go, so the model
+            investigates and authors a thorough plan without touching the
+            workspace. Bare ``/deep-plan`` just arms plan mode for the next message.
+            """
+            await self.controller.set_planner_mode("plan")
+            if not objective:
+                self._append_conversation_line(
+                    "command> Plan mode on. Type /deep-plan <objetivo> (ou só "
+                    "descreva o que quer planejar) e eu monto o plano sem alterar "
+                    "nada. Depois use /act para executar."
+                )
+                return
+            asyncio.create_task(self.controller.submit(objective))
 
         async def _dispatch_config(self, stripped: str) -> None:
             """Run a ``/config ...`` line, including its UI side effects.
@@ -953,8 +976,45 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self._refresh_status()
 
         async def action_quit(self) -> None:
-            await application.close()
+            # A second Ctrl+Q while armed bails out immediately, no matter what the
+            # backend is doing — the graceful close keeps running in the background.
+            if self._force_quit_armed:
+                self.exit()
+                return
+            # First press: attempt a graceful shutdown, but never let it freeze the
+            # terminal. If close() does not finish promptly (the usual cause is the
+            # model hanging mid-request, which the cancel signal can't interrupt
+            # until the HTTP call returns), arm force-quit and tell the user to
+            # press again — mirroring how Claude Code handles a stuck exit.
+            # Shield so a timeout leaves the close running in the background
+            # instead of cancelling it half-way (which could leave the HTTP client
+            # half-closed); keep a reference so the task isn't GC'd while pending.
+            self._close_task = asyncio.ensure_future(application.close())
+            try:
+                await asyncio.wait_for(asyncio.shield(self._close_task), timeout=2.0)
+            except asyncio.TimeoutError:
+                self._arm_force_quit()
+                return
+            except Exception:
+                # A failed close still shouldn't trap the user in the terminal.
+                self.exit()
+                return
             self.exit()
+
+        def _arm_force_quit(self) -> None:
+            self._force_quit_armed = True
+            self.notify(
+                "Saída travada — o modelo não respondeu. "
+                "Pressione Ctrl+Q novamente para forçar a saída.",
+                severity="warning",
+                timeout=5.0,
+            )
+            # Disarm after a short window so a much later Ctrl+Q starts over with a
+            # fresh graceful-close attempt instead of force-quitting unexpectedly.
+            self.set_timer(5.0, self._disarm_force_quit)
+
+        def _disarm_force_quit(self) -> None:
+            self._force_quit_armed = False
 
         def _refresh_status(self) -> None:
             self.query_one("#statusline", Static).update(
