@@ -55,6 +55,20 @@ window run the command **“Code-AI: Open”** (Cmd/Ctrl-Shift-P).
 
 The bridge runs with the first workspace folder as its cwd.
 
+## Install from VSIX
+
+`npm run package` builds the bundles and produces a `code-ai-<version>.vsix`. Install it with
+**"Extensions: Install from VSIX…"** (or `code --install-extension code-ai-<version>.vsix`). The VSIX
+ships only the compiled `dist/` bundles, so no `npm install` is needed on the target machine.
+
+## Troubleshooting
+
+**The panel is blank (the view opens but nothing renders).** This is almost always VSCode's webview
+renderer, not the extension — common on Linux with hardware acceleration enabled. Confirm by opening a
+Markdown preview (`Ctrl+Shift+V`): if that is also blank, disable hardware acceleration via
+**"Preferences: Configure Runtime Arguments"** → set `"disable-hardware-acceleration": true` and fully
+restart VSCode (equivalently, launch with `code --disable-gpu`).
+
 ## Keyboard
 
 - **Cmd/Ctrl+Enter** in the composer sends the prompt.
