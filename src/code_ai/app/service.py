@@ -323,19 +323,6 @@ class CodeAIApplication:
             "settings": self.get_settings(),
         }
 
-    async def request_deep_plan(self, *, write_to_workspace: bool = False) -> str:
-        if not self.orchestrator.planner:
-            raise RuntimeError("Planner is not configured.")
-        if write_to_workspace:
-            return "command> Writing plan files is not enabled in this build."
-        snapshot = self.orchestrator.planner.plan_snapshot()
-        await self.event_bus.emit(
-            "planning.plan.created",
-            snapshot,
-            source="app",
-        )
-        return _render_plan_snapshot(snapshot)
-
     async def approve_or_start_plan_execution(self) -> None:
         await self.set_planner_mode(PlannerMode.ACT)
 
@@ -452,17 +439,3 @@ def _parse_improvements(text: str) -> list[dict[str, Any]]:
             }
         )
     return out
-
-
-def _render_plan_snapshot(snapshot: dict[str, object]) -> str:
-    if "current_step" not in snapshot:
-        return "command> No active plan."
-    return (
-        "command> Plan snapshot\n"
-        f"mode: {snapshot.get('mode')}\n"
-        f"phase: {snapshot.get('phase')}\n"
-        f"progress: {snapshot.get('progress')}\n"
-        f"current: {snapshot.get('current_step')}\n"
-        f"changed paths: {snapshot.get('changed_paths', [])}\n"
-        f"verification passed: {snapshot.get('latest_verification_passed')}"
-    )
