@@ -16,7 +16,8 @@ export class BridgeClient extends EventEmitter {
   private readonly proc: ChildProcessWithoutNullStreams;
   private buffer = "";
   private nextId = 1;
-  private readonly pending = new Map<number, (msg: any) => void>();
+  private dead: string | null = null;
+  private readonly pending = new Map<number, (err: Error | null, msg?: any) => void>();
 
   constructor(command: string, args: string[], cwd?: string) {
     super();
@@ -25,8 +26,21 @@ export class BridgeClient extends EventEmitter {
     this.proc.stdout.on("data", (chunk: string) => this.onStdout(chunk));
     this.proc.stderr.setEncoding("utf8");
     this.proc.stderr.on("data", (chunk: string) => this.emit("stderr", chunk));
-    this.proc.on("exit", (code) => this.emit("exit", code));
-    this.proc.on("error", (err) => this.emit("error", err));
+    this.proc.on("exit", (code) => {
+      this.fail(`bridge process exited (code ${code})`);
+      this.emit("exit", code);
+    });
+    this.proc.on("error", (err) => {
+      this.fail(`bridge process error: ${err.message}`);
+      this.emit("error", err);
+    });
+  }
+
+  /** Mark the bridge dead and reject every in-flight request right away. */
+  private fail(reason: string): void {
+    this.dead = reason;
+    for (const [, settle] of this.pending) settle(new Error(reason));
+    this.pending.clear();
   }
 
   private onStdout(chunk: string): void {
@@ -45,10 +59,10 @@ export class BridgeClient extends EventEmitter {
       if (message.method === "event") {
         this.emit("event", message.params as EventEnvelope);
       } else if (message.id !== undefined) {
-        const resolve = this.pending.get(message.id);
-        if (resolve) {
+        const settle = this.pending.get(message.id);
+        if (settle) {
           this.pending.delete(message.id);
-          resolve(message);
+          settle(null, message);
         }
         this.emit("response", message);
       }
@@ -64,15 +78,17 @@ export class BridgeClient extends EventEmitter {
 
   /** Send a request and resolve with its `result` (or reject on error/timeout). */
   request<T = any>(method: BridgeMethod, params: Record<string, unknown> = {}, timeoutMs = 20000): Promise<T> {
+    if (this.dead) return Promise.reject(new Error(this.dead));
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`Bridge request "${method}" timed out`));
+        reject(new Error(`Bridge request "${method}" timed out after ${Math.round(timeoutMs / 1000)}s`));
       }, timeoutMs);
-      this.pending.set(id, (msg) => {
+      this.pending.set(id, (err, msg) => {
         clearTimeout(timer);
-        if (msg.error) reject(new Error(msg.error.message ?? "bridge error"));
+        if (err) reject(err);
+        else if (msg.error) reject(new Error(msg.error.message ?? "bridge error"));
         else resolve(msg.result as T);
       });
       this.write({ jsonrpc: "2.0", id, method, params });
