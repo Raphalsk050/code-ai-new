@@ -35,7 +35,7 @@ import {
   IconSettings,
   IconStop,
 } from "./icons";
-import { ItemView, TypingIndicator } from "./messages";
+import { formatElapsed, ItemView, TypingIndicator } from "./messages";
 import { ModeSwitch } from "./mode-switch";
 import { applyEvent, initialState, isBusy, Item, ViewState } from "./reducer";
 import { INITIAL_REFACTOR, RefactorPanel, RefactorViewState } from "./refactor";
@@ -354,6 +354,11 @@ function App(): JSX.Element {
           </button>
           <span className={`dot ${busy ? "busy" : ""}`} />
           Code-AI
+          {busy && (
+            <span className="heartbeat" title="The agent is working — this ticks while the process is alive">
+              working {formatElapsed(state.heartbeat)}
+            </span>
+          )}
         </div>
         <div className="meta">
           {state.contextTokens && <span className="pill">{state.contextTokens} tok</span>}
@@ -489,7 +494,7 @@ function AgentBody({
           ) : (
             state.items.map((item) => <ItemView key={item.id} item={item} />)
           )}
-          {showTyping && <TypingIndicator status={state.status} />}
+          {showTyping && <TypingIndicator status={state.status} heartbeat={state.heartbeat} />}
         </div>
       </div>
       {state.pendingApproval && <ApprovalModal approval={state.pendingApproval} onResolve={resolveApproval} />}

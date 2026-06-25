@@ -34,6 +34,11 @@ body {
 .statusbar .brand { display: flex; align-items: center; gap: 7px; font-weight: 600; }
 .statusbar .brand .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
 .statusbar .brand .dot.busy { animation: pulse 1.1s ease-in-out infinite; }
+.statusbar .brand .heartbeat {
+  margin-left: 8px; font-weight: 400; font-size: 11px; color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.typing-clock { color: var(--accent); font-variant-numeric: tabular-nums; }
 .statusbar .meta { margin-left: auto; display: flex; align-items: center; gap: 10px; color: var(--muted); }
 .statusbar .meta .pill {
   padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px;
