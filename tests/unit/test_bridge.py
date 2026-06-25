@@ -88,6 +88,14 @@ class _StubApp:
         self.explained = {"code": code, "path": path, "language": language}
         return f"explained:{code}"
 
+    async def analyze_refactor(self, *, code: str, path: str = "", language: str = "") -> list:
+        self.analyzed = {"code": code, "path": path, "language": language}
+        return [{"id": "x", "title": "T", "rationale": "R", "impact": "high"}]
+
+    async def plan_refactor(self, *, code: str, path: str = "", language: str = "", improvements: list) -> str:
+        self.planned = {"code": code, "improvements": improvements}
+        return "# plan"
+
     def get_settings(self) -> dict:
         return {"model": "m", "api_key_set": False}
 
@@ -210,6 +218,50 @@ async def test_explain_code_returns_markdown() -> None:
     (response,) = _messages(out)
     assert response["id"] == 13
     assert response["result"] == {"markdown": "explained:x = 1"}
+
+
+async def test_analyze_refactor_returns_improvements() -> None:
+    app = _StubApp()
+    server, out = _server(app)
+    await server._handle_line(
+        json.dumps({"jsonrpc": "2.0", "id": 14, "method": "analyzeRefactor",
+                    "params": {"code": "def f(): pass", "path": "a.py", "language": "python"}})
+    )
+    (response,) = _messages(out)
+    assert response["id"] == 14
+    assert response["result"]["improvements"][0]["title"] == "T"
+
+
+async def test_plan_refactor_returns_markdown() -> None:
+    app = _StubApp()
+    server, out = _server(app)
+    await server._handle_line(
+        json.dumps({"jsonrpc": "2.0", "id": 15, "method": "planRefactor",
+                    "params": {"code": "x", "improvements": [{"title": "T"}]}})
+    )
+    assert app.planned["improvements"] == [{"title": "T"}]
+    (response,) = _messages(out)
+    assert response["result"] == {"markdown": "# plan"}
+
+
+def test_parse_improvements_handles_fenced_and_prose() -> None:
+    from code_ai.app.service import _parse_improvements
+
+    text = (
+        "Sure! Here are the improvements:\n```json\n"
+        '[{"id": "a", "title": "Extract helper", "rationale": "why", "impact": "HIGH"},'
+        ' {"title": ""}, {"id": "b", "title": "Rename", "impact": "weird"}]\n```'
+    )
+    out = _parse_improvements(text)
+    assert [i["id"] for i in out] == ["a", "b"]
+    assert out[0]["impact"] == "high"  # normalized lower-case
+    assert out[1]["impact"] == "medium"  # invalid impact falls back
+
+
+def test_parse_improvements_empty_on_garbage() -> None:
+    from code_ai.app.service import _parse_improvements
+
+    assert _parse_improvements("no json here") == []
 
 
 async def test_resolve_approval_releases_pending() -> None:
