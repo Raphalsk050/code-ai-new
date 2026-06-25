@@ -102,10 +102,21 @@ body {
   margin: 0 0 10px; padding: 12px 14px; overflow-x: auto;
   background: var(--vscode-textCodeBlock-background, rgba(127,127,127,0.12));
   border: 1px solid var(--border); border-radius: var(--radius);
+  line-height: 1.5;
 }
+.markdown pre.has-line-numbers { display: flex; padding: 12px 0; }
 .markdown pre code {
   font-family: var(--vscode-editor-font-family, monospace); font-size: 12.5px;
-  background: none; border: none; padding: 0;
+  background: none; border: none; padding: 0; line-height: inherit;
+}
+.markdown pre.has-line-numbers code { flex: 1; padding: 0 14px; min-width: max-content; }
+.code-gutter {
+  flex: none; padding: 0 12px 0 14px; text-align: right; white-space: pre;
+  font-family: var(--vscode-editor-font-family, monospace); font-size: 12.5px;
+  line-height: inherit; color: var(--muted); opacity: .55; user-select: none;
+  position: sticky; left: 0;
+  background: var(--vscode-textCodeBlock-background, rgba(127,127,127,0.12));
+  border-right: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
 }
 .markdown table { border-collapse: collapse; margin: 0 0 10px; }
 .markdown th, .markdown td { border: 1px solid var(--border); padding: 4px 9px; }
