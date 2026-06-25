@@ -445,6 +445,54 @@ button { font-family: inherit; cursor: pointer; }
 .switch.on .switch-knob { transform: translateX(14px); }
 .settings-note { font-size: 11.5px; color: var(--muted); margin-top: 4px; }
 
+/* ---- refactor panel ---- */
+.refactor { max-width: 820px; margin: 0 auto; padding: 16px 18px 28px; }
+.refactor-head { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+.refactor-title {
+  display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13.5px;
+  color: var(--vscode-foreground);
+}
+.refactor-title svg { color: var(--accent); }
+.refactor-analyze { margin-left: auto; font-size: 12px; }
+.refactor-target {
+  font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px;
+  color: var(--muted); margin-bottom: 14px;
+}
+.refactor-status { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12.5px; padding: 10px 0; }
+.refactor-error {
+  color: var(--vscode-errorForeground, #f85149); font-size: 12.5px; padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, #f85149 40%, transparent); border-radius: 8px;
+  background: color-mix(in srgb, #f85149 8%, transparent);
+}
+.refactor-empty {
+  display: flex; align-items: center; gap: 8px; color: var(--muted);
+  font-size: 12.5px; padding: 16px 0;
+}
+.refactor-empty svg { color: var(--vscode-testing-iconPassed, #2ea043); }
+.refactor-cards { display: flex; flex-direction: column; gap: 10px; }
+.refactor-card {
+  display: flex; align-items: stretch; gap: 12px; padding: 12px 13px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
+}
+.refactor-card-body { flex: 1; min-width: 0; }
+.refactor-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.refactor-card-title { font-weight: 600; font-size: 13px; color: var(--vscode-foreground); }
+.impact {
+  font-size: 9.5px; text-transform: uppercase; letter-spacing: .04em;
+  padding: 1px 7px; border-radius: 999px; margin-left: auto;
+}
+.impact-high { color: var(--vscode-errorForeground, #f85149); background: color-mix(in srgb, #f85149 14%, transparent); }
+.impact-medium { color: var(--vscode-editorWarning-foreground, #d7a000); background: color-mix(in srgb, #d7a000 14%, transparent); }
+.impact-low { color: var(--vscode-testing-iconPassed, #2ea043); background: color-mix(in srgb, #2ea043 14%, transparent); }
+.refactor-card-rationale { font-size: 12px; color: var(--muted); line-height: 1.5; }
+.refactor-card-action { display: flex; align-items: center; flex: none; }
+.refactor-card-action button { font-size: 12px; white-space: nowrap; }
+.refactor-all {
+  margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border);
+  display: flex; justify-content: flex-end;
+}
+.refactor-all button { font-size: 12.5px; }
+
 /* ---- animations ---- */
 .spinner {
   display: inline-block; width: 12px; height: 12px; border-radius: 50%;

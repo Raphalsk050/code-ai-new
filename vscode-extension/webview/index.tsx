@@ -34,11 +34,11 @@ import {
   IconSend,
   IconSettings,
   IconStop,
-  IconWand,
 } from "./icons";
 import { ItemView, TypingIndicator } from "./messages";
 import { ModeSwitch } from "./mode-switch";
 import { applyEvent, initialState, isBusy, Item, ViewState } from "./reducer";
+import { INITIAL_REFACTOR, RefactorPanel, RefactorViewState } from "./refactor";
 import { SettingsScreen } from "./settings";
 import { STYLE } from "./styles";
 
@@ -79,6 +79,7 @@ function App(): JSX.Element {
   const [returnScreen, setReturnScreen] = React.useState<Screen>("home");
   const [activeId, setActiveId] = React.useState<string | null>(null);
   const [settings, setSettings] = React.useState<Settings | null>(null);
+  const [refactor, setRefactor] = React.useState<RefactorViewState>(INITIAL_REFACTOR);
 
   const [draft, setDraft] = React.useState("");
   const [editorContext, setEditorContext] = React.useState<EditorContext | null>(null);
@@ -106,6 +107,27 @@ function App(): JSX.Element {
         setSettings(data.settings);
       } else if (data?.type === "settingsUpdated") {
         setSettings(data.result.settings);
+      } else if (data?.type === "refactorStatus") {
+        if (data.status === "analyzing") setRefactor((r) => ({ ...r, status: "analyzing", error: undefined }));
+      } else if (data?.type === "refactorResult") {
+        setRefactor({
+          status: "ready",
+          improvements: data.improvements,
+          path: data.path,
+          language: data.language,
+          planning: {},
+          planned: {},
+        });
+      } else if (data?.type === "refactorError") {
+        setRefactor((r) => ({ ...r, status: "error", error: data.message }));
+      } else if (data?.type === "refactorPlanning") {
+        setRefactor((r) => ({ ...r, planning: { ...r.planning, [data.id]: true } }));
+      } else if (data?.type === "refactorPlanned") {
+        setRefactor((r) => ({
+          ...r,
+          planning: { ...r.planning, [data.id]: false },
+          planned: { ...r.planned, [data.id]: data.markdown },
+        }));
       }
     };
     window.addEventListener("message", onMessage);
@@ -274,6 +296,19 @@ function App(): JSX.Element {
     send({ type: "resolveApproval", call_id: callId, scope, reason });
   const setPermission = (m: PermissionMode) => send({ type: "setPermissionMode", mode: m });
 
+  // Apply a refactoring plan: hand the markdown to the agent as a normal turn,
+  // which then implements it through the usual edit/approval flow.
+  const applyRefactor = (markdown: string) => {
+    const target = refactor.path ? ` to \`${refactor.path}\`` : "";
+    updatePrefs({ mode: "agent" });
+    setScreen("chat");
+    send({
+      type: "submit",
+      text: `Apply the following refactoring plan${target}. Make the edits directly in the affected files.\n\n${markdown}`,
+      includeContext: false,
+    });
+  };
+
   // -- screens -------------------------------------------------------------
   if (screen === "settings") {
     return (
@@ -362,15 +397,12 @@ function App(): JSX.Element {
           resolveApproval={resolveApproval}
         />
       ) : mode === "refactor" ? (
-        <ModeHint
-          icon={<IconWand size={26} />}
-          title="Refactor mode"
-          lines={[
-            prefs.autoRunRefactor
-              ? "Select a snippet in the editor and Code-AI will suggest architectural improvements."
-              : "Select a snippet in the editor, then run the analysis to get architectural improvements.",
-            "Each suggestion can be planned into a detailed markdown and then applied.",
-          ]}
+        <RefactorPanel
+          state={refactor}
+          autoRun={prefs.autoRunRefactor}
+          onAnalyze={() => send({ type: "analyzeRefactor" })}
+          onPlan={(id, improvements) => send({ type: "planRefactor", id, improvements })}
+          onApply={applyRefactor}
         />
       ) : (
         <ModeHint
