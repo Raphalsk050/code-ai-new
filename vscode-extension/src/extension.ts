@@ -3,7 +3,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 
 import { BridgeClient } from "./bridge-client";
-import type { EditorContext, EventEnvelope, WebviewToHost } from "./protocol";
+import type { AppMode, EditorContext, EventEnvelope, WebviewToHost } from "./protocol";
 
 export function activate(context: vscode.ExtensionContext): void {
   const provider = new ChatViewProvider(context.extensionUri);
@@ -13,6 +13,11 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand("code-ai.open", () =>
       vscode.commands.executeCommand("code-ai.chat.focus")
+    ),
+    // Explain mode surfaces its analysis as a native hover over the selection.
+    vscode.languages.registerHoverProvider(
+      { scheme: "file" },
+      { provideHover: (doc, pos) => provider.provideExplainHover(doc, pos) }
     )
   );
 }
@@ -23,6 +28,64 @@ export function deactivate(): void {
 
 class ChatViewProvider implements vscode.WebviewViewProvider {
   constructor(private readonly extensionUri: vscode.Uri) {}
+
+  // Shared with the hover provider and selection handlers (one bridge per view).
+  private client?: BridgeClient;
+  private mode: AppMode = "agent";
+  private autoRunRefactor = false;
+  private explainTimer?: NodeJS.Timeout;
+  private explainSeq = 0;
+  private explain: { uri: string; range: vscode.Range; hover: vscode.MarkdownString } | null = null;
+
+  /** Hover provider entry point: only fires in explain mode over the analyzed range. */
+  provideExplainHover(doc: vscode.TextDocument, pos: vscode.Position): vscode.Hover | undefined {
+    const cached = this.explain;
+    if (this.mode !== "explain" || !cached) return undefined;
+    if (cached.uri !== doc.uri.toString() || !cached.range.contains(pos)) return undefined;
+    return new vscode.Hover(cached.hover, cached.range);
+  }
+
+  /** Debounced selection -> explainCode round-trip, then pop the hover. */
+  private scheduleExplain(editor: vscode.TextEditor): void {
+    if (this.explainTimer) clearTimeout(this.explainTimer);
+    const sel = editor.selection;
+    if (!sel || sel.isEmpty) {
+      this.explain = null;
+      return;
+    }
+    this.explainTimer = setTimeout(() => void this.runExplain(editor, sel), 450);
+  }
+
+  private async runExplain(editor: vscode.TextEditor, sel: vscode.Selection): Promise<void> {
+    const client = this.client;
+    if (!client || this.mode !== "explain") return;
+    const doc = editor.document;
+    const code = doc.getText(sel);
+    if (!code.trim()) return;
+
+    const seq = ++this.explainSeq;
+    const loading = new vscode.MarkdownString("$(loading~spin) Code-AI is analyzing the selection…");
+    loading.supportThemeIcons = true;
+    this.explain = { uri: doc.uri.toString(), range: new vscode.Range(sel.start, sel.end), hover: loading };
+    void vscode.commands.executeCommand("editor.action.showHover");
+
+    try {
+      const result = await client.request<{ markdown: string }>("explainCode", {
+        code,
+        path: vscode.workspace.asRelativePath(doc.uri, false),
+        language: doc.languageId,
+      });
+      if (seq !== this.explainSeq) return; // a newer selection superseded this one
+      const md = new vscode.MarkdownString(result.markdown || "_No explanation available._");
+      md.isTrusted = false;
+      md.supportThemeIcons = true;
+      this.explain = { uri: doc.uri.toString(), range: new vscode.Range(sel.start, sel.end), hover: md };
+      void vscode.commands.executeCommand("editor.action.showHover");
+    } catch (err) {
+      if (seq === this.explainSeq) this.explain = null;
+      console.error("[code-ai] explainCode failed", err);
+    }
+  }
 
   resolveWebviewView(view: vscode.WebviewView): void {
     view.webview.options = {
@@ -42,6 +105,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       vscode.window.showErrorMessage(`Code-AI: failed to spawn "${command}": ${String(err)}`);
       return;
     }
+    this.client = client;
 
     client.on("event", (event: EventEnvelope) => {
       void view.webview.postMessage({ type: "event", event });
@@ -58,13 +122,6 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     client.on("exit", (code: number | null) => {
       void view.webview.postMessage({ type: "event", event: syntheticError(`bridge exited (${code})`) });
     });
-
-    // Active operating mode, kept in sync from the webview's mode switch. Used
-    // by selection-driven behaviour (explain/refactor) wired in later stages.
-    let mode: import("./protocol").AppMode = "agent";
-    let autoRunRefactor = false;
-    void mode;
-    void autoRunRefactor;
 
     view.webview.onDidReceiveMessage((message: WebviewToHost) => {
       switch (message.type) {
@@ -108,10 +165,9 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           client.send("setPermissionMode", { mode: message.mode });
           break;
         case "setMode":
-          // Stored so selection-driven behaviour (explain/refactor) knows which
-          // mode is active; the actual handlers are wired in later stages.
-          mode = message.mode;
-          autoRunRefactor = message.autoRunRefactor;
+          this.mode = message.mode;
+          this.autoRunRefactor = message.autoRunRefactor;
+          if (this.mode !== "explain") this.explain = null;
           break;
       }
     });
@@ -123,7 +179,9 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     const editorSubs = [
       vscode.window.onDidChangeActiveTextEditor(pushContext),
       vscode.window.onDidChangeTextEditorSelection((e) => {
-        if (e.textEditor === vscode.window.activeTextEditor) pushContext();
+        if (e.textEditor !== vscode.window.activeTextEditor) return;
+        pushContext();
+        if (this.mode === "explain") this.scheduleExplain(e.textEditor);
       }),
       view.onDidChangeVisibility(() => {
         if (view.visible) pushContext();
@@ -133,6 +191,9 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 
     view.onDidDispose(() => {
       editorSubs.forEach((d) => d.dispose());
+      if (this.explainTimer) clearTimeout(this.explainTimer);
+      this.explain = null;
+      this.client = undefined;
       client.dispose();
     });
     view.webview.html = renderHtml(view.webview, this.extensionUri);
