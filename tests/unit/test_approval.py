@@ -94,10 +94,11 @@ def test_render_preview_uses_language_from_path() -> None:
     )
     assert ts.lexer.name == "TypeScript"
 
+    # A command renders as a terminal prompt (Text with a "$"), not as code.
     _, cmd = _render_preview(
         ApprovalRequest("c", "execute_command", {"command": "pip install rich"}, "s")
     )
-    assert cmd.code == "pip install rich"
+    assert cmd.plain == "$ pip install rich"
 
     _, args = _render_preview(ApprovalRequest("c", "other_tool", {"foo": 1}, "s"))
     assert args.lexer.name == "JSON"

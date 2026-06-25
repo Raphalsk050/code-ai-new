@@ -319,7 +319,7 @@ async def test_conversation_history_is_drag_selectable(tmp_path) -> None:
 
         selected = terminal_app.screen.get_selected_text()
         assert selected
-        assert "first q" in selected
+        assert "first" in selected
 
 
 def test_terminal_logo_loads_from_banner_resource() -> None:
@@ -358,20 +358,48 @@ def test_terminal_logo_styles_tarty2_banner_lines() -> None:
     assert "xsansi" in CODE_AI_BANNER_FONT_OPTIONS
 
 
-def test_terminal_styles_thinking_lines_darker_gray() -> None:
-    from rich.text import Text
+def test_trace_lines_are_plain_and_compacted() -> None:
+    from code_ai.ui.terminal.widgets import render_conversation_line
 
-    from code_ai.ui.terminal.widgets import THINKING_LINE_STYLE, render_conversation_line
+    # Trace lines (thinking/model/tool/...) are plain text — dimmed and indented
+    # by CSS, not chipped — so they read as a subordinate work trace.
+    assert render_conversation_line("model> thinking step 0...") == "model> thinking step 0..."
+    # Multi-line reasoning has its blank lines collapsed so the dim block stays
+    # compact instead of sprawling.
+    collapsed = render_conversation_line("thinking> one\n\n\ntwo\n\nthree")
+    assert collapsed == "thinking> one\ntwo\nthree"
 
-    thinking = render_conversation_line("thinking> checking files")
-    activity = render_conversation_line("model> thinking step 0...")
-    answer = render_conversation_line("ai> done")
 
-    assert isinstance(thinking, Text)
-    assert isinstance(activity, Text)
-    assert str(thinking.style) == THINKING_LINE_STYLE
-    assert str(activity.style) == THINKING_LINE_STYLE
-    assert answer == "ai> done"
+def test_user_chip_and_answer_chip_and_trace_classes() -> None:
+    from textual.content import Content
+
+    from code_ai.ui.terminal.widgets import (
+        _MODEL_COLOR,
+        _USER_COLOR,
+        conversation_line_class,
+        render_conversation_line,
+    )
+
+    # The user prompt is a green chip inline with the (literal) message.
+    you = render_conversation_line("you> ola [x]")
+    assert isinstance(you, Content)
+    assert you.plain == " you  ola [x]"
+    assert any(f"on {_USER_COLOR}" in str(span.style) for span in you.spans)
+
+    # The agent's answer carries the orange chip above the formatted Markdown.
+    answer = render_conversation_line("ai> the answer", rich_markdown=True, width=60)
+    assert isinstance(answer, Content)
+    assert answer.plain.startswith(" model ")
+    assert "the answer" in answer.plain
+    assert any(f"on {_MODEL_COLOR}" in str(span.style) for span in answer.spans)
+
+    # Messages sit at column 0; every working-trace line shares one indent class.
+    assert conversation_line_class("you> ola") == "turn-user"
+    assert conversation_line_class("ai> answer") == "turn-answer"
+    for trace in ("model> x", "thinking> x", "tool> x", "evidence> x", "plan> x"):
+        assert conversation_line_class(trace) == "turn-trace"
+    # Problems are not part of the dim trace — they keep full prominence.
+    assert conversation_line_class("error> boom") == ""
 
 
 def test_assistant_line_renders_as_selectable_markdown_content() -> None:

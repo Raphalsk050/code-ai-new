@@ -29,11 +29,13 @@ from code_ai.ui.terminal.widgets import (
     WORKING_SPINNERS,
     WORKING_STATES,
     SpinnerStyle,
+    conversation_line_class,
     load_code_ai_logo,
     normalize_banner_font,
     render_context_meter,
     render_conversation_line,
     render_plan,
+    thinking_body,
     resolve_spinner,
     spinner_color,
     working_label,
@@ -75,7 +77,16 @@ def create_terminal_app(application, *, config_path: Path | None = None):
     from textual.command import SimpleCommand
     from textual.containers import Container, Horizontal, Vertical, VerticalScroll
     from textual.message import Message
-    from textual.widgets import Button, Footer, Header, Select, Static, TextArea
+    from textual.widget import Widget
+    from textual.widgets import (
+        Button,
+        Collapsible,
+        Footer,
+        Header,
+        Select,
+        Static,
+        TextArea,
+    )
 
     from code_ai.ui.terminal.approval import TerminalApprovalGateway
 
@@ -424,7 +435,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self._sync_conversation()
             self._refresh_status()
 
-        def _commit_conversation_line(self, line: str) -> Static:
+        def _commit_conversation_line(self, line: str) -> Widget:
             """Build the selectable widget for one committed transcript line.
 
             Each line is its own Static (a content widget) so Textual's screen
@@ -435,12 +446,25 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             Assistant answers render as Markdown flattened to native Content (see
             ``markdown_to_content``), so they stay selectable; the layout width is
             taken from the live conversation pane so the Markdown wraps to fit.
+
+            The model's reasoning is folded into a collapsed ``Collapsible`` (like
+            the VS Code extension's hideable "Thinking" section) so it never
+            dominates the transcript, but stays one click away.
             """
+            reasoning = thinking_body(line)
+            if reasoning is not None:
+                return Collapsible(
+                    Static(reasoning, markup=False),
+                    title="thinking",
+                    collapsed=True,
+                    classes="thinking-block",
+                )
             return Static(
                 render_conversation_line(
                     line, rich_markdown=True, width=self._conversation_width()
                 ),
                 markup=False,
+                classes=conversation_line_class(line),
             )
 
         def _conversation_width(self) -> int | None:

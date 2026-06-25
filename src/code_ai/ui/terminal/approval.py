@@ -75,6 +75,22 @@ def _syntax(code: str, *, path: str = "", lexer: str | None = None) -> Syntax:
     )
 
 
+def _render_command(command: str) -> Text:
+    """Render a shell command as a terminal prompt, not as source code.
+
+    A command is a thing you *run*, not a file you write, so it gets a ``$``
+    prompt and a single solid color with no line numbers — visually distinct
+    from the line-numbered, multi-color syntax used for code previews.
+    """
+    text = Text(no_wrap=False)
+    for index, line in enumerate(command.split("\n")):
+        if index:
+            text.append("\n")
+        text.append("$ " if index == 0 else "  ", style=Style(color="#ff9f1c", bold=True))
+        text.append(line, style=Style(color="#7ee787"))
+    return text
+
+
 def _render_diff(old_text: str, new_text: str) -> Text:
     """Unified diff with Claude-Code-style red/green line backgrounds.
 
@@ -131,7 +147,7 @@ def _render_preview(request: ApprovalRequest) -> tuple[str, RenderableType]:
 
     if tool == "execute_command":
         command = _format_command(args)
-        return "Command", _syntax(command, lexer="console")
+        return "Command", _render_command(command)
 
     rendered = json.dumps(args, indent=2, default=str, ensure_ascii=False)
     return "Arguments", _syntax(rendered, lexer="json")
