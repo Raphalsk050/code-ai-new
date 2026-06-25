@@ -3,6 +3,7 @@
 // runs in a single bridge process, so this is a client-side transcript archive:
 // it lets the user browse and reopen past conversations, and start fresh ones.
 
+import type { AppMode } from "../src/protocol";
 import type { Item } from "./reducer";
 
 export interface Conversation {
@@ -12,12 +13,25 @@ export interface Conversation {
   items: Item[];
 }
 
+/** Extension-side preferences (not part of the backend config.json). */
+export interface ExtPrefs {
+  mode: AppMode;
+  autoRunRefactor: boolean;
+}
+
+export const DEFAULT_PREFS: ExtPrefs = { mode: "agent", autoRunRefactor: false };
+
 export interface PersistedState {
   conversations: Conversation[];
   activeId: string | null;
+  prefs: ExtPrefs;
 }
 
-export const EMPTY_PERSISTED: PersistedState = { conversations: [], activeId: null };
+export const EMPTY_PERSISTED: PersistedState = {
+  conversations: [],
+  activeId: null,
+  prefs: DEFAULT_PREFS,
+};
 
 let _seq = 0;
 export function newId(): string {
@@ -58,7 +72,7 @@ export function upsertActive(
   // Keep an empty active conversation out of the persisted list until it has
   // content, so the history doesn't fill up with blank threads.
   const conversations = items.length > 0 ? [record, ...rest] : existing ? rest : state.conversations;
-  return { conversations, activeId };
+  return { ...state, conversations, activeId };
 }
 
 export function removeConversation(state: PersistedState, id: string): PersistedState {
