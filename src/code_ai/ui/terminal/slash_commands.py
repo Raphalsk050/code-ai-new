@@ -42,7 +42,11 @@ SLASH_COMMANDS = [
         "Set the tool permission mode (persisted).",
         "/mode ",
     ),
-    SlashCommand("/deep-plan", "Show current bounded plan snapshot."),
+    SlashCommand(
+        "/deep-plan <objetivo>",
+        "Plan a task without changing anything (Cline-style plan mode).",
+        "/deep-plan ",
+    ),
     SlashCommand("/plan-status", "Show planner phase and current step."),
     SlashCommand("/replan", "Request a bounded replan on the next turn."),
     SlashCommand("/cancel", "Cancel the active turn."),
