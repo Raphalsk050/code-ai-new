@@ -1,6 +1,6 @@
 import * as React from "react";
 
-import { IconCI, IconHistory, IconPlus, IconTrash } from "./icons";
+import { IconCI, IconHistory, IconPlus, IconSettings, IconTrash } from "./icons";
 import { Conversation, relativeTime, sorted } from "./history";
 
 export function HomeScreen({
@@ -8,15 +8,22 @@ export function HomeScreen({
   onNew,
   onOpen,
   onDelete,
+  onSettings,
 }: {
   conversations: Conversation[];
   onNew: () => void;
   onOpen: (id: string) => void;
   onDelete: (id: string) => void;
+  onSettings: () => void;
 }): JSX.Element {
   const list = sorted(conversations);
   return (
     <div className="home">
+      <div className="home-topbar">
+        <button className="icon-btn" title="Settings" onClick={onSettings}>
+          <IconSettings size={16} />
+        </button>
+      </div>
       <div className="home-hero">
         <div className="spark">
           <IconCI size={30} />

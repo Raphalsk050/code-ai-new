@@ -2,11 +2,13 @@ import * as React from "react";
 import { createRoot } from "react-dom/client";
 
 import type {
+  AppMode,
   ApprovalScope,
   EditorContext,
   EventEnvelope,
   HostToWebview,
   PermissionMode,
+  Settings,
   WebviewToHost,
 } from "../src/protocol";
 import { ApprovalModal } from "./approval";
@@ -14,7 +16,9 @@ import { CommandMenu } from "./command-menu";
 import { exactCommand, matchCommands, SlashCommand } from "./commands";
 import { HomeScreen } from "./home";
 import {
+  DEFAULT_PREFS,
   EMPTY_PERSISTED,
+  ExtPrefs,
   newId,
   PersistedState,
   removeConversation,
@@ -22,15 +26,20 @@ import {
 } from "./history";
 import {
   IconBack,
+  IconBook,
   IconBroom,
   IconCI,
   IconFile,
   IconPlus,
   IconSend,
+  IconSettings,
   IconStop,
+  IconWand,
 } from "./icons";
 import { ItemView, TypingIndicator } from "./messages";
+import { ModeSwitch } from "./mode-switch";
 import { applyEvent, initialState, isBusy, Item, ViewState } from "./reducer";
+import { SettingsScreen } from "./settings";
 import { STYLE } from "./styles";
 
 declare function acquireVsCodeApi(): {
@@ -59,7 +68,7 @@ function clientEvent(event_type: string, payload: Record<string, any> = {}): Eve
   };
 }
 
-type Screen = "home" | "chat";
+type Screen = "home" | "chat" | "settings";
 
 function App(): JSX.Element {
   const [state, dispatch] = React.useReducer(reducer, initialState);
@@ -67,7 +76,9 @@ function App(): JSX.Element {
     () => vscode.getState() ?? EMPTY_PERSISTED
   );
   const [screen, setScreen] = React.useState<Screen>("home");
+  const [returnScreen, setReturnScreen] = React.useState<Screen>("home");
   const [activeId, setActiveId] = React.useState<string | null>(null);
+  const [settings, setSettings] = React.useState<Settings | null>(null);
 
   const [draft, setDraft] = React.useState("");
   const [editorContext, setEditorContext] = React.useState<EditorContext | null>(null);
@@ -79,6 +90,9 @@ function App(): JSX.Element {
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
   const pinnedRef = React.useRef(true);
 
+  const prefs: ExtPrefs = persisted.prefs ?? DEFAULT_PREFS;
+  const mode = prefs.mode;
+
   // -- host messages -------------------------------------------------------
   React.useEffect(() => {
     const onMessage = (e: MessageEvent<HostToWebview>) => {
@@ -87,24 +101,35 @@ function App(): JSX.Element {
         dispatch(data.event as EventEnvelope);
       } else if (data?.type === "editorContext") {
         setEditorContext(data.context);
-        setIncludeContext(true); // re-arm whenever the editor focus changes
+        setIncludeContext(true);
+      } else if (data?.type === "settings") {
+        setSettings(data.settings);
+      } else if (data?.type === "settingsUpdated") {
+        setSettings(data.result.settings);
       }
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
   }, []);
 
+  // Tell the host the active mode on first load so editor-driven behaviour
+  // (explain/refactor) knows what to do.
+  React.useEffect(() => {
+    send({ type: "setMode", mode: prefs.mode, autoRunRefactor: prefs.autoRunRefactor });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // -- persist the active transcript to local history ----------------------
   React.useEffect(() => {
-    if (screen !== "chat" || !activeId) return;
+    if (screen !== "chat" || mode !== "agent" || !activeId) return;
     setPersisted((prev) => {
       const next = upsertActive(prev, activeId, state.items);
       vscode.setState(next);
       return next;
     });
-  }, [state.items, screen, activeId]);
+  }, [state.items, screen, activeId, mode]);
 
-  // -- autoscroll ----------------------------------------------------------
+  // -- autoscroll / auto-grow ---------------------------------------------
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
@@ -114,8 +139,6 @@ function App(): JSX.Element {
     const el = scrollRef.current;
     if (el && pinnedRef.current) el.scrollTop = el.scrollHeight;
   });
-
-  // -- auto-grow composer --------------------------------------------------
   React.useEffect(() => {
     const ta = textareaRef.current;
     if (!ta) return;
@@ -131,17 +154,27 @@ function App(): JSX.Element {
   const menuOpen = commands.length > 0;
   React.useEffect(() => setCmdIndex(0), [draft]);
 
-  // -- conversation lifecycle ---------------------------------------------
+  // -- persisted state helpers --------------------------------------------
   const persistState = (next: PersistedState) => {
     vscode.setState(next);
     setPersisted(next);
   };
 
+  const updatePrefs = (patch: Partial<ExtPrefs>) => {
+    const nextPrefs = { ...prefs, ...patch };
+    persistState({ ...persisted, prefs: nextPrefs });
+    if (patch.mode !== undefined || patch.autoRunRefactor !== undefined) {
+      send({ type: "setMode", mode: nextPrefs.mode, autoRunRefactor: nextPrefs.autoRunRefactor });
+    }
+  };
+
+  // -- conversation lifecycle ---------------------------------------------
   const startNewConversation = () => {
     setActiveId(newId());
     dispatch(clientEvent("conversation.reset"));
     send({ type: "newConversation" });
     setDraft("");
+    updatePrefs({ mode: "agent" });
     setScreen("chat");
   };
 
@@ -149,18 +182,23 @@ function App(): JSX.Element {
     const convo = persisted.conversations.find((c) => c.id === id);
     setActiveId(id);
     dispatch(clientEvent("client.load", { items: (convo?.items ?? []) as Item[] }));
+    updatePrefs({ mode: "agent" });
     setScreen("chat");
   };
 
   const deleteConversation = (id: string) => {
-    const next = removeConversation(persisted, id);
-    persistState(next);
+    persistState(removeConversation(persisted, id));
     if (id === activeId) setActiveId(null);
   };
 
   const clearMessages = () => dispatch(clientEvent("conversation.reset"));
-
   const goHome = () => setScreen("home");
+
+  const openSettings = () => {
+    setReturnScreen(screen);
+    if (!settings) send({ type: "getSettings" });
+    setScreen("settings");
+  };
 
   // -- command + submit ----------------------------------------------------
   const runCommand = (cmd: SlashCommand) => {
@@ -234,7 +272,22 @@ function App(): JSX.Element {
 
   const resolveApproval = (callId: string, scope: ApprovalScope, reason?: string) =>
     send({ type: "resolveApproval", call_id: callId, scope, reason });
-  const setPermission = (mode: PermissionMode) => send({ type: "setPermissionMode", mode });
+  const setPermission = (m: PermissionMode) => send({ type: "setPermissionMode", mode: m });
+
+  // -- screens -------------------------------------------------------------
+  if (screen === "settings") {
+    return (
+      <div className="app">
+        <SettingsScreen
+          settings={settings}
+          prefs={prefs}
+          onBack={() => setScreen(returnScreen)}
+          onSave={(updates) => send({ type: "updateSettings", updates })}
+          onPrefsChange={updatePrefs}
+        />
+      </div>
+    );
+  }
 
   if (screen === "home") {
     return (
@@ -244,6 +297,7 @@ function App(): JSX.Element {
           onNew={startNewConversation}
           onOpen={openConversation}
           onDelete={deleteConversation}
+          onSettings={openSettings}
         />
       </div>
     );
@@ -268,24 +322,9 @@ function App(): JSX.Element {
         </div>
         <div className="meta">
           {state.contextTokens && <span className="pill">{state.contextTokens} tok</span>}
-          <label className="perm" title="Permission mode for running commands and editing files">
-            <span>perms</span>
-            <select
-              value={state.permissionMode}
-              onChange={(e) => setPermission(e.target.value as PermissionMode)}
-            >
-              <option value="ask">Ask every time</option>
-              <option value="auto">Auto (read-only safe)</option>
-              <option value="bypass">Bypass (allow all)</option>
-            </select>
-          </label>
           <div className="topbar-actions">
             {busy && (
-              <button
-                className="icon-btn danger"
-                title="Stop the agent"
-                onClick={() => send({ type: "cancel" })}
-              >
+              <button className="icon-btn danger" title="Stop the agent" onClick={() => send({ type: "cancel" })}>
                 <IconStop size={14} />
               </button>
             )}
@@ -295,10 +334,116 @@ function App(): JSX.Element {
             <button className="icon-btn" title="New conversation" onClick={startNewConversation}>
               <IconPlus size={16} />
             </button>
+            <button className="icon-btn" title="Settings" onClick={openSettings}>
+              <IconSettings size={16} />
+            </button>
           </div>
         </div>
       </div>
 
+      <div className="modebar">
+        <ModeSwitch mode={mode} onChange={(m) => updatePrefs({ mode: m })} />
+        <label className="perm" title="Permission mode for running commands and editing files">
+          <span>perms</span>
+          <select value={state.permissionMode} onChange={(e) => setPermission(e.target.value as PermissionMode)}>
+            <option value="ask">Ask</option>
+            <option value="auto">Auto</option>
+            <option value="bypass">Bypass</option>
+          </select>
+        </label>
+      </div>
+
+      {mode === "agent" ? (
+        <AgentBody
+          state={state}
+          scrollRef={scrollRef}
+          onScroll={onScroll}
+          showTyping={showTyping}
+          resolveApproval={resolveApproval}
+        />
+      ) : mode === "refactor" ? (
+        <ModeHint
+          icon={<IconWand size={26} />}
+          title="Refactor mode"
+          lines={[
+            prefs.autoRunRefactor
+              ? "Select a snippet in the editor and Code-AI will suggest architectural improvements."
+              : "Select a snippet in the editor, then run the analysis to get architectural improvements.",
+            "Each suggestion can be planned into a detailed markdown and then applied.",
+          ]}
+        />
+      ) : (
+        <ModeHint
+          icon={<IconBook size={26} />}
+          title="Explain mode"
+          lines={[
+            "Select code in the editor, then hover over it to see a detailed explanation.",
+            "The explanation appears inline, like a language-server hover.",
+          ]}
+        />
+      )}
+
+      {mode === "agent" && (
+        <div className="composer-wrap">
+          {ctxChip && (
+            <div className="ctx-chip" title="This is sent to the agent with your next message">
+              <IconFile size={13} />
+              <span className="ctx-label">{ctxLabel}</span>
+              <span className="ctx-kind">{editorContext?.selection ? "selection" : "open file"}</span>
+              <button className="ctx-remove" title="Don't include editor context" onClick={() => setIncludeContext(false)}>
+                ×
+              </button>
+            </div>
+          )}
+          <div className="composer-stack">
+            {menuOpen && (
+              <CommandMenu commands={commands} active={cmdIndex} onPick={runCommand} onHover={setCmdIndex} />
+            )}
+            <div className="composer">
+              <textarea
+                ref={textareaRef}
+                value={draft}
+                placeholder="Message Code-AI…  (type / for commands)"
+                rows={1}
+                onChange={(e) => {
+                  setDraft(e.target.value);
+                  setMenuDismissed(false);
+                }}
+                onKeyDown={onComposerKey}
+              />
+              {busy ? (
+                <button className="send-btn stop" title="Cancel" onClick={() => send({ type: "cancel" })}>
+                  <IconStop />
+                </button>
+              ) : (
+                <button className="send-btn" title="Send" disabled={!draft.trim()} onClick={submit}>
+                  <IconSend size={15} />
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="hint">Enter to send · Shift+Enter for newline · / for commands</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AgentBody({
+  state,
+  scrollRef,
+  onScroll,
+  showTyping,
+  resolveApproval,
+}: {
+  state: ViewState;
+  scrollRef: React.RefObject<HTMLDivElement>;
+  onScroll: () => void;
+  showTyping: boolean;
+  resolveApproval: (callId: string, scope: ApprovalScope, reason?: string) => void;
+}): JSX.Element {
+  return (
+    <>
       <div className="transcript" ref={scrollRef} onScroll={onScroll}>
         <div className="transcript-inner">
           {state.items.length === 0 && !state.pendingApproval ? (
@@ -315,59 +460,22 @@ function App(): JSX.Element {
           {showTyping && <TypingIndicator status={state.status} />}
         </div>
       </div>
+      {state.pendingApproval && <ApprovalModal approval={state.pendingApproval} onResolve={resolveApproval} />}
+    </>
+  );
+}
 
-      {state.pendingApproval && (
-        <ApprovalModal approval={state.pendingApproval} onResolve={resolveApproval} />
-      )}
-
-      <div className="composer-wrap">
-        {ctxChip && (
-          <div className="ctx-chip" title="This is sent to the agent with your next message">
-            <IconFile size={13} />
-            <span className="ctx-label">{ctxLabel}</span>
-            <span className="ctx-kind">{editorContext?.selection ? "selection" : "open file"}</span>
-            <button
-              className="ctx-remove"
-              title="Don't include editor context"
-              onClick={() => setIncludeContext(false)}
-            >
-              ×
-            </button>
+function ModeHint({ icon, title, lines }: { icon: JSX.Element; title: string; lines: string[] }): JSX.Element {
+  return (
+    <div className="transcript">
+      <div className="mode-hint">
+        <div className="spark">{icon}</div>
+        <h2>{title}</h2>
+        {lines.map((l, i) => (
+          <div key={i} className="mode-hint-line">
+            {l}
           </div>
-        )}
-        <div className="composer-stack">
-          {menuOpen && (
-            <CommandMenu
-              commands={commands}
-              active={cmdIndex}
-              onPick={runCommand}
-              onHover={setCmdIndex}
-            />
-          )}
-          <div className="composer">
-            <textarea
-              ref={textareaRef}
-              value={draft}
-              placeholder="Message Code-AI…  (type / for commands)"
-              rows={1}
-              onChange={(e) => {
-                setDraft(e.target.value);
-                setMenuDismissed(false);
-              }}
-              onKeyDown={onComposerKey}
-            />
-            {busy ? (
-              <button className="send-btn stop" title="Cancel" onClick={() => send({ type: "cancel" })}>
-                <IconStop />
-              </button>
-            ) : (
-              <button className="send-btn" title="Send" disabled={!draft.trim()} onClick={submit}>
-                <IconSend size={15} />
-              </button>
-            )}
-          </div>
-        </div>
-        <div className="hint">Enter to send · Shift+Enter for newline · / for commands</div>
+        ))}
       </div>
     </div>
   );
