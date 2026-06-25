@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any, TextIO
 
 from code_ai.app.service import CodeAIApplication
@@ -143,7 +144,32 @@ class BridgeServer:
         task = asyncio.create_task(self._app.submit_user_message(text, context=context))
         self._turn_tasks.add(task)
         task.add_done_callback(self._turn_tasks.discard)
+        # Heartbeat: a reasoning model can go silent for tens of seconds with no
+        # events, leaving the UI unable to tell "still working" from "died". A
+        # ticking heartbeat from this process is the liveness proof. It is tied to
+        # the turn's lifetime (cancelled the moment the turn ends) and kept out of
+        # _turn_tasks so it never blocks shutdown or the turn's own completion.
+        hb = asyncio.create_task(self._heartbeat(task))
+        task.add_done_callback(lambda _: hb.cancel())
         return {"status": "accepted"}
+
+    async def _heartbeat(self, turn_task: asyncio.Task[Any]) -> None:
+        start = time.monotonic()
+        bus = getattr(self._app, "event_bus", None)
+        if bus is None:
+            return
+        try:
+            while not turn_task.done() and not self._stop.is_set():
+                await asyncio.sleep(2.0)
+                if turn_task.done() or self._stop.is_set():
+                    break
+                await bus.emit(
+                    "turn.heartbeat",
+                    {"elapsed_s": round(time.monotonic() - start, 1)},
+                    source="bridge",
+                )
+        except asyncio.CancelledError:
+            pass
 
     async def _h_new_conversation(self, params: dict[str, Any]) -> dict[str, Any]:
         await self._app.reset_conversation()
