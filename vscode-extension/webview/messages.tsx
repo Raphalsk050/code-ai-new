@@ -114,7 +114,7 @@ function NoticeRow({ level, text }: { level: string; text: string }) {
   );
 }
 
-export function TypingIndicator({ status }: { status: string }) {
+export function TypingIndicator({ status, heartbeat }: { status: string; heartbeat?: number }) {
   return (
     <Row role="assistant" name="Code-AI" avatar={<IconCI size={15} />}>
       <div className="typing">
@@ -122,7 +122,15 @@ export function TypingIndicator({ status }: { status: string }) {
         <span />
         <span />
         <em>{status.toLowerCase().replace(/_/g, " ")}</em>
+        {heartbeat ? <em className="typing-clock">· {formatElapsed(heartbeat)}</em> : null}
       </div>
     </Row>
   );
+}
+
+/** Seconds -> "14s" or "1:23". */
+export function formatElapsed(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  if (s < 60) return `${s}s`;
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
