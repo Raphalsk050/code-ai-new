@@ -16,6 +16,7 @@ class ToolCapability(StrEnum):
     LOCAL_WRITE = "local_write"
     PROCESS = "process"
     INTERACTIVE_TERMINAL = "interactive_terminal"
+    COMPUTER_CONTROL = "computer_control"
     REVIEW = "review"
     WEB = "web"
     INTERACTION = "interaction"
@@ -32,6 +33,7 @@ class ToolContext:
     cancel_event: asyncio.Event | None = None
     review_service: Any = None
     terminal_manager: Any = None
+    desktop_controller: Any = None
     memory: Any = None
 
 

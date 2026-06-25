@@ -26,6 +26,20 @@ from code_ai.providers.base import ModelProvider
 from code_ai.providers.factory import create_provider
 from code_ai.providers.models import Message, ModelRequest
 from code_ai.tools.base import ToolContext
+from code_ai.tools.computer import (
+    ActivateApplicationTool,
+    ClickMouseTool,
+    DesktopController,
+    DragMouseTool,
+    ListApplicationsTool,
+    MoveMouseTool,
+    OpenApplicationTool,
+    PressKeysTool,
+    ScreenInfoTool,
+    ScreenshotTool,
+    ScrollMouseTool,
+    TypeTextTool,
+)
 from code_ai.tools.filesystem import EditCodeTool, ListFilesTool, ReadFileTool, WriteFileTool
 from code_ai.tools.git import GitReviewTool
 from code_ai.tools.interaction import AskUserTool
@@ -77,6 +91,17 @@ def build_tool_registry() -> ToolRegistry:
         InterruptTerminalTool(),
         TerminateTerminalTool(),
         ReadScreenTool(),
+        ScreenInfoTool(),
+        ScreenshotTool(),
+        MoveMouseTool(),
+        ClickMouseTool(),
+        DragMouseTool(),
+        ScrollMouseTool(),
+        TypeTextTool(),
+        PressKeysTool(),
+        OpenApplicationTool(),
+        ActivateApplicationTool(),
+        ListApplicationsTool(),
         SystemInformationTool(),
         WebSearchTool(),
         UseSkillTool(),
@@ -164,6 +189,7 @@ def build_application(
         model=config.model,
     )
     terminal_manager = PersistentTerminalManager()
+    desktop_controller = DesktopController()
     review_service = ReviewService(provider=provider, config=config, event_bus=event_bus)
     planner = PlannerService(
         config=config.planner,
@@ -179,6 +205,7 @@ def build_application(
             cancel_event=cancel_event,
             review_service=review_service,
             terminal_manager=terminal_manager,
+            desktop_controller=desktop_controller,
             memory=memory,
         )
 
