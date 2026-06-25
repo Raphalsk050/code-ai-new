@@ -12,6 +12,11 @@ import type {
   WebviewToHost,
 } from "./protocol";
 
+// AI calls (explain/refactor) go through the model, which the bridge bounds at
+// `budgets.model_timeout()` (180s by default). The client must wait at least
+// that long plus network/startup slack, so give these calls a generous ceiling.
+const AI_REQUEST_TIMEOUT_MS = 300_000;
+
 export function activate(context: vscode.ExtensionContext): void {
   const provider = new ChatViewProvider(context.extensionUri);
   context.subscriptions.push(
@@ -80,21 +85,27 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     this.explain = { uri: doc.uri.toString(), range: new vscode.Range(sel.start, sel.end), hover: loading };
     void vscode.commands.executeCommand("editor.action.showHover");
 
+    const range = new vscode.Range(sel.start, sel.end);
     try {
-      const result = await client.request<{ markdown: string }>("explainCode", {
-        code,
-        path: vscode.workspace.asRelativePath(doc.uri, false),
-        language: doc.languageId,
-      });
+      const result = await client.request<{ markdown: string }>(
+        "explainCode",
+        { code, path: vscode.workspace.asRelativePath(doc.uri, false), language: doc.languageId },
+        AI_REQUEST_TIMEOUT_MS
+      );
       if (seq !== this.explainSeq) return; // a newer selection superseded this one
       const md = new vscode.MarkdownString(result.markdown || "_No explanation available._");
       md.isTrusted = false;
       md.supportThemeIcons = true;
-      this.explain = { uri: doc.uri.toString(), range: new vscode.Range(sel.start, sel.end), hover: md };
+      this.explain = { uri: doc.uri.toString(), range, hover: md };
       void vscode.commands.executeCommand("editor.action.showHover");
     } catch (err) {
-      if (seq === this.explainSeq) this.explain = null;
       console.error("[code-ai] explainCode failed", err);
+      if (seq !== this.explainSeq) return;
+      // Surface the failure as a hover instead of silently showing nothing.
+      const md = new vscode.MarkdownString(`**Code-AI** could not explain this selection.\n\n${String(err)}`);
+      md.supportThemeIcons = true;
+      this.explain = { uri: doc.uri.toString(), range, hover: md };
+      void vscode.commands.executeCommand("editor.action.showHover");
     }
   }
 
@@ -127,7 +138,11 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     const seq = ++this.refactorSeq;
     this.webview?.postMessage({ type: "refactorStatus", status: "analyzing" });
     try {
-      const r = await client.request<{ improvements: RefactorImprovement[] }>("analyzeRefactor", target);
+      const r = await client.request<{ improvements: RefactorImprovement[] }>(
+        "analyzeRefactor",
+        target,
+        AI_REQUEST_TIMEOUT_MS
+      );
       if (seq !== this.refactorSeq) return;
       this.webview?.postMessage({
         type: "refactorResult",
@@ -152,7 +167,11 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     this.webview?.postMessage({ type: "refactorPlanning", id });
     try {
-      const r = await client.request<{ markdown: string }>("planRefactor", { ...target, improvements });
+      const r = await client.request<{ markdown: string }>(
+        "planRefactor",
+        { ...target, improvements },
+        AI_REQUEST_TIMEOUT_MS
+      );
       const markdown = r.markdown || "_The model returned an empty plan._";
       await openMarkdownPreview(target.path, markdown);
       this.webview?.postMessage({ type: "refactorPlanned", id, markdown });
