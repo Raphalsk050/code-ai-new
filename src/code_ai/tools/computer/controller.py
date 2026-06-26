@@ -6,7 +6,6 @@ import shutil
 import subprocess
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from code_ai.core.errors import ToolArgumentError
@@ -134,32 +133,6 @@ class DesktopController:
             for key in normalized:
                 backend.press(key)
 
-    # -- screen -----------------------------------------------------------
-
-    def screenshot(self, path: Path, region: tuple[int, int, int, int] | None) -> tuple[int, int]:
-        if _pyautogui is not None:
-            try:
-                image = _pyautogui.screenshot(region=region)
-                image.save(str(path))
-                return int(image.width), int(image.height)
-            except Exception:  # noqa: BLE001 - pyscreeze/Pillow gap: try the OS instead
-                pass
-        # Native macOS fallback keeps screenshots working without the backend
-        # (e.g. when Pillow has no wheel for the running Python version).
-        if platform.system() == "Darwin" and shutil.which("screencapture"):
-            argv = ["screencapture", "-x"]
-            if region is not None:
-                left, top, width, height = region
-                argv += ["-R", f"{left},{top},{width},{height}"]
-            argv.append(str(path))
-            result = subprocess.run(argv, capture_output=True, text=True)
-            if result.returncode != 0:
-                raise ToolArgumentError(
-                    f"screencapture failed: {result.stderr.strip() or 'unknown error'}"
-                )
-            return self._image_size(path)
-        raise ToolArgumentError(_INSTALL_HINT)
-
     # -- applications -----------------------------------------------------
 
     def open_application(self, name: str, *, background: bool) -> dict[str, Any]:
@@ -251,21 +224,7 @@ class DesktopController:
             raise ToolArgumentError(
                 f"Could not open {name!r}: {result.stderr.strip() or 'unknown error'}"
             )
-        # Give the launched app a beat to register so a follow-up screenshot or
-        # click lands on the new window rather than the previous foreground app.
+        # Give the launched app a beat to register so a follow-up click lands on
+        # the new window rather than the previous foreground app.
         time.sleep(0.2)
         return {"application": name, "status": "launched"}
-
-    @staticmethod
-    def _image_size(path: Path) -> tuple[int, int]:
-        # Read width/height straight from the PNG IHDR chunk so dimensions work
-        # on the native screencapture path without depending on Pillow.
-        try:
-            header = path.read_bytes()[:24]
-            if header[:8] == b"\x89PNG\r\n\x1a\n" and header[12:16] == b"IHDR":
-                width = int.from_bytes(header[16:20], "big")
-                height = int.from_bytes(header[20:24], "big")
-                return width, height
-        except Exception:  # noqa: BLE001 - size readback is best-effort
-            pass
-        return (0, 0)
