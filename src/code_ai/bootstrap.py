@@ -36,7 +36,6 @@ from code_ai.tools.computer import (
     OpenApplicationTool,
     PressKeysTool,
     ScreenInfoTool,
-    ScreenshotTool,
     ScrollMouseTool,
     TypeTextTool,
 )
@@ -92,7 +91,6 @@ def build_tool_registry() -> ToolRegistry:
         TerminateTerminalTool(),
         ReadScreenTool(),
         ScreenInfoTool(),
-        ScreenshotTool(),
         MoveMouseTool(),
         ClickMouseTool(),
         DragMouseTool(),

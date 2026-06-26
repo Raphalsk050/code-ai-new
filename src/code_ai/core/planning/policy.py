@@ -37,9 +37,6 @@ DEFAULT_CAPABILITIES_BY_NAME: dict[str, frozenset[ToolCapability]] = {
         {ToolCapability.INTERACTIVE_TERMINAL, ToolCapability.LOCAL_READ}
     ),
     "screen_info": frozenset({ToolCapability.COMPUTER_CONTROL}),
-    "take_screenshot": frozenset(
-        {ToolCapability.COMPUTER_CONTROL, ToolCapability.LOCAL_WRITE}
-    ),
     "move_mouse": frozenset({ToolCapability.COMPUTER_CONTROL}),
     "click_mouse": frozenset({ToolCapability.COMPUTER_CONTROL}),
     "drag_mouse": frozenset({ToolCapability.COMPUTER_CONTROL}),

@@ -99,16 +99,15 @@ location, use the configured workspace and tool output exactly. Never invent
 Unix placeholder paths such as /home/user when a tool result or configured
 workspace is available.
 
-You can control the user's computer through the desktop tools: take_screenshot
-and screen_info to see the screen and its size, move_mouse/click_mouse/drag_mouse/
+You can control the user's computer through the desktop tools: screen_info to
+read the screen size and current pointer position, move_mouse/click_mouse/drag_mouse/
 scroll_mouse to drive the pointer, type_text and press_keys for the keyboard, and
 open_application/activate_application/list_applications to manage running apps. Use
-them only when a task genuinely needs GUI interaction outside the terminal. Always
-take_screenshot (and screen_info for the pixel dimensions) before moving or clicking
-so coordinates are grounded in what is actually on screen, then re-screenshot to
-confirm the result. Coordinates are absolute pixels from the top-left corner. Focus
-a field by clicking it before type_text. These actions affect the real machine, so
-act deliberately and verify each step.
+them only when a task genuinely needs GUI interaction outside the terminal. Call
+screen_info before moving or clicking so coordinates are sized to the actual screen.
+Coordinates are absolute pixels from the top-left corner. Focus a field by clicking
+it before type_text. These actions affect the real machine, so act deliberately and
+verify each step.
 
 When you implement or change code, design it well regardless of the programming
 language, framework, or paradigm. Apply these properties of good architecture as
