@@ -529,6 +529,42 @@ async def test_multi_file_change_not_blocked_by_phase(tmp_path) -> None:
     assert "Created a.py and b.py." in result.text
 
 
+class AnswersInProseProvider(_BaseProvider):
+    """Always answers in prose, never emitting a structured tool call."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(
+                text="The adder function returns the sum of its two arguments.",
+                finish_reason=FinishReason.STOP,
+            ),
+        )
+
+
+async def test_misclassified_question_is_answered_not_forced_into_tools(tmp_path) -> None:
+    # "explain ... the adder function" trips the "add" mutation marker, so the task
+    # is misread as a workspace mutation and the phase escalates to EXECUTE after the
+    # auto-listing. The model only wants to answer in prose: it must be nudged toward
+    # tools at most once, then have *its* answer surfaced — not be spiralled into a
+    # system correction delivered to the user as the reply.
+    provider = AnswersInProseProvider()
+    app = build_application(config=_config(tmp_path), provider=provider)
+
+    await app.start()
+    result = await app.submit_user_message("explain what the adder function does")
+    await app.close()
+
+    assert result.error is None
+    assert result.text == "The adder function returns the sum of its two arguments."
+    # One nudge round, then the model's own answer is accepted (not an endless loop).
+    assert provider.calls == 2
+
+
 class ParallelReadsProvider(_BaseProvider):
     def __init__(self) -> None:
         self.calls = 0
