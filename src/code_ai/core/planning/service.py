@@ -266,6 +266,17 @@ class PlannerService:
         required_evidence = [
             item.value for item in current.required_evidence
         ] if current else []
+        # The model-authored plan is the source of truth for the step narrative the
+        # model sees: it should work its *own* checklist, not the generic internal
+        # skeleton. The skeleton's kind/required-evidence still tell the model what
+        # evidence the runtime expects, but the step title and progress track the
+        # model's plan whenever one has been submitted.
+        if self.agent_plan is not None and self.agent_plan.current_step is not None:
+            step_title = self.agent_plan.current_step.title
+            plan_progress = self.agent_plan.snapshot()["progress"]
+        else:
+            step_title = current.title if current else "none"
+            plan_progress = snapshot["progress"]
         if self.agent_plan is None:
             plan_lines = (
                 "Task checklist: not submitted yet.\n"
@@ -275,9 +286,11 @@ class PlannerService:
                 "this request.\n"
             )
         else:
+            agent_current = self.agent_plan.current_step
+            current_label = agent_current.title if agent_current else "done"
             plan_lines = (
                 f"Task checklist: {self.agent_plan.snapshot()['progress']} "
-                f"(current: {self.agent_plan.current_step.title if self.agent_plan.current_step else 'done'}).\n"
+                f"(current: {current_label}).\n"
                 "Call submit_plan again only if your approach genuinely changes.\n"
             )
         header = (
@@ -287,8 +300,8 @@ class PlannerService:
             f"Planner mode: {self.mode.value}\n"
             f"Semantic phase: {self.phase.value}\n"
             f"Plan revision: {self.plan.revision}\n"
-            f"Plan progress: {snapshot['progress']}\n"
-            f"Current step: {current.title if current else 'none'}\n"
+            f"Plan progress: {plan_progress}\n"
+            f"Current step: {step_title}\n"
             f"Current step kind: {current.kind.value if current else 'none'}\n"
             f"Required evidence: {required_evidence}\n"
             f"Changed paths: {self.ledger.current_changed_paths()}\n"
@@ -768,23 +781,23 @@ class PlannerService:
             missing.append("summary is required.")
         if self.plan.objective != self.profile.objective:
             missing.append("plan objective no longer matches the original objective.")
-        incomplete = [
-            step.title
-            for step in self.plan.steps
-            if step.kind != PlanStepKind.COMPLETE
-            and step.status
-            not in {PlanStepStatus.COMPLETED, PlanStepStatus.SKIPPED}
-        ]
-        if incomplete:
-            missing.append(f"required plan steps are incomplete: {incomplete}.")
-        if self.profile.requires_workspace_mutation:
-            if not self.ledger.has_success(EvidenceType.FILE_CREATED, EvidenceType.FILE_CHANGED):
-                missing.append("no successful file-change evidence exists.")
-            if (
-                self.config.require_verification_for_changes
-                and not self.ledger.latest_verification_passed
-            ):
-                missing.append("no current successful verification evidence exists.")
+        has_file_change = self.ledger.has_success(
+            EvidenceType.FILE_CREATED, EvidenceType.FILE_CHANGED
+        )
+        verified = (
+            not self.config.require_verification_for_changes
+            or self.ledger.latest_verification_passed
+        )
+        # A task the surface classifier labelled a mutation must show file-change
+        # evidence before completing. Independently, *any* task that actually
+        # changed files must be verified before completing — that catches mutations
+        # the keyword classifier missed (e.g. "faça um jogo de pong", read as
+        # conversation), so the gate keys off real evidence, not the label.
+        if self.profile.requires_workspace_mutation and not has_file_change:
+            missing.append("no successful file-change evidence exists.")
+        if has_file_change and not verified:
+            missing.append("no current successful verification evidence exists.")
+        if has_file_change or self.profile.requires_workspace_mutation:
             actual_paths = set(self.ledger.current_changed_paths())
             claimed_paths = set(claim.changed_paths)
             if claimed_paths and claimed_paths != actual_paths:
@@ -792,7 +805,45 @@ class PlannerService:
                     f"claimed changed paths {sorted(claimed_paths)} do not match "
                     f"recorded paths {sorted(actual_paths)}."
                 )
+        missing.extend(
+            self._incomplete_plan_steps(has_file_change=has_file_change, verified=verified)
+        )
         return missing
+
+    def _incomplete_plan_steps(self, *, has_file_change: bool, verified: bool) -> list[str]:
+        """Steps still owed before a clean completion.
+
+        Reconcile against the model's *own* checklist (``AgentPlan``) when it
+        submitted one, so completion judges what the model said it would do rather
+        than the generic internal skeleton. The model cursor advances
+        heuristically, so once a mutation's change is verified we trust the
+        evidence and stop blocking on a lagging cursor (fail-soft). With no
+        submitted plan we fall back to the deterministic skeleton.
+        """
+        if self.agent_plan is not None:
+            mutation_settled = bool(
+                self.profile
+                and self.profile.requires_workspace_mutation
+                and has_file_change
+                and verified
+            )
+            if mutation_settled:
+                return []
+            pending = [
+                step.title
+                for step in self.agent_plan.steps
+                if step.status == PlanStepStatus.PENDING
+            ]
+            return [f"declared plan steps not yet done: {pending}."] if pending else []
+        if not self.plan:
+            return []
+        incomplete = [
+            step.title
+            for step in self.plan.steps
+            if step.kind != PlanStepKind.COMPLETE
+            and step.status not in {PlanStepStatus.COMPLETED, PlanStepStatus.SKIPPED}
+        ]
+        return [f"required plan steps are incomplete: {incomplete}."] if incomplete else []
 
     def current_step_index_is_last(self) -> bool:
         return bool(self.plan and self.plan.current_step_index >= len(self.plan.steps) - 1)
