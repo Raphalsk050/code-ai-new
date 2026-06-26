@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import difflib
 import json
+import re
 
 from rich.console import RenderableType
 from rich.style import Style
@@ -30,6 +31,8 @@ _DIFF_LINE_STYLES = {
     "@": Style(color="#7aa2f7", bold=True),
 }
 _DIFF_CONTEXT_LINES = 3
+_HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+_GUTTER_STYLE = Style(color="#5c6773")
 
 
 def _format_command(arguments: dict[str, object]) -> str:
@@ -95,7 +98,9 @@ def _render_diff(old_text: str, new_text: str) -> Text:
     """Unified diff with Claude-Code-style red/green line backgrounds.
 
     ``old_text``/``new_text`` come straight from the edit_code call, so the
-    diff is available before the tool ever touches the filesystem.
+    diff is available before the tool ever touches the filesystem. Each line
+    is prefixed with an old/new line-number gutter so a reviewer can match
+    the diff back to the file without opening it separately.
     """
 
     diff_lines = list(
@@ -109,12 +114,34 @@ def _render_diff(old_text: str, new_text: str) -> Text:
     # Drop the "--- "/"+++ " file headers; the dialog already shows the path.
     diff_lines = [line for line in diff_lines if not line.startswith(("--- ", "+++ "))]
 
+    width = max(len(str(len(old_text.splitlines()))), len(str(len(new_text.splitlines()))), 1)
+    blank_gutter = " " * (2 * width + 1)
+    old_line = new_line = 0
+
     text = Text(no_wrap=True)
     for index, line in enumerate(diff_lines):
         if index:
             text.append("\n")
-        style = _DIFF_LINE_STYLES.get(line[:1], "#9fb3c8")
-        text.append(line, style=style)
+        marker = line[:1]
+        if marker == "@":
+            match = _HUNK_HEADER_RE.match(line)
+            if match:
+                old_line, new_line = int(match.group(1)), int(match.group(2))
+            text.append(blank_gutter + " ", style=_GUTTER_STYLE)
+            text.append(line, style=_DIFF_LINE_STYLES["@"])
+            continue
+        if marker == "-":
+            gutter = f"{old_line:>{width}} {'':>{width}}"
+            old_line += 1
+        elif marker == "+":
+            gutter = f"{'':>{width}} {new_line:>{width}}"
+            new_line += 1
+        else:
+            gutter = f"{old_line:>{width}} {new_line:>{width}}"
+            old_line += 1
+            new_line += 1
+        text.append(gutter + " ", style=_GUTTER_STYLE)
+        text.append(line, style=_DIFF_LINE_STYLES.get(marker, "#9fb3c8"))
     return text
 
 
