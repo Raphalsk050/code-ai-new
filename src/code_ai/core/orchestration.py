@@ -27,7 +27,7 @@ from code_ai.core.errors import (
     TransientProviderError,
 )
 from code_ai.core.memory import FailureMemoryStore, MemoryService
-from code_ai.core.planning import PlannerService, PlanningPhase
+from code_ai.core.planning import PlannerService
 from code_ai.core.planning.policy import PolicyDecision
 from code_ai.core.state import AgentState
 from code_ai.events.bus import AsyncEventBus
@@ -99,6 +99,7 @@ class _TurnState:
     stall_nudged: bool = False
     tool_format_retries: int = 0
     budget_overflow_retries: int = 0
+    no_tool_nudged: bool = False
     seen_call_fingerprints: set[str] = field(default_factory=set)
 
 
@@ -333,7 +334,15 @@ class AgentOrchestrator:
     async def _handle_no_tool_response(
         self, response: ModelResponse, state: _TurnState
     ) -> TurnResult | None:
-        if self._requires_tool_for_progress():
+        # Fail-open. The surface classifier may have mislabelled a question as a
+        # mutation (e.g. "explain the adder function" trips the "add" marker), so
+        # we nudge the model toward tools at most once. If it still answers in
+        # prose, we surface *its* answer rather than spiralling into repeated
+        # corrections and ultimately handing the user a system message instead of
+        # a reply. The only hard completion gate is the evidence-based
+        # complete_task check, not this path.
+        if self._requires_tool_for_progress() and not state.no_tool_nudged:
+            state.no_tool_nudged = True
             if response.text:
                 self.conversation.add_assistant(
                     bound_text(response.text, self.config.budgets.max_tool_output_chars), []
@@ -342,8 +351,6 @@ class AgentOrchestrator:
                 recommended_tool_names=self._recommended_tool_names()
             )
             self.conversation.add_user(correction)
-            if self.planner.phase == PlanningPhase.BLOCKED:
-                return await self._finish_turn(correction, response, state)
             await self.set_state(AgentState.CALLING_MODEL, phase="correcting_no_tool_response")
             return None
 
