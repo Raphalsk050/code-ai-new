@@ -279,6 +279,106 @@ async def test_completion_requires_file_change_and_verification_evidence() -> No
     assert any("file-change" in item for item in rejected.missing_requirements)
 
 
+async def test_completion_requires_verification_once_files_change_even_if_unclassified() -> None:
+    # "faça um jogo de pong" sits outside the mutation-marker set, so the surface
+    # classifier reads it as CONVERSATION (requires_workspace_mutation is False).
+    # But once the model actually writes a file, completion must still be backed by
+    # verification: the gate keys off real evidence, not the brittle label.
+    service = PlannerService(
+        config=PlannerConfig(double_check_completion=False),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    await service.begin_turn("faça um jogo de pong em python", provider_supports_tools=True)
+    assert service.profile.requires_workspace_mutation is False
+
+    await service.record_tool_result(
+        tool_call_id="w1",
+        tool_name="write_file",
+        payload={"path": "pong.py", "old_sha256": None, "new_sha256": "abc"},
+        success=True,
+    )
+    rejected = await service.evaluate_completion({"summary": "created pong"})
+
+    assert rejected.accepted is False
+    assert any("verification" in item for item in rejected.missing_requirements)
+
+
+async def test_task_context_shows_model_plan_step_as_current() -> None:
+    # Once the model authors a plan, the runtime context it sees must focus on the
+    # model's own step, not the generic internal skeleton title — so the model
+    # executes the plan it declared rather than a template.
+    service = PlannerService(
+        config=PlannerConfig(),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+    await service.submit_agent_plan(["Read config.py", "Write the module"])
+
+    block = service.task_context_block(recommended_tool_names={"read_file"})
+
+    assert "Current step: Read config.py" in block
+    # The generic skeleton step title no longer drives the narrative.
+    assert "Inspect the local workspace" not in block
+
+
+async def test_completion_reconciles_against_model_plan_not_skeleton() -> None:
+    # When the model submitted a plan, completion lists *its* untouched steps so it
+    # is guided back to its own checklist, instead of the generic skeleton wording.
+    service = PlannerService(
+        config=PlannerConfig(double_check_completion=False),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+    await service.submit_agent_plan(["Read example", "Write module", "Run tests"])
+
+    rejected = await service.evaluate_completion({"summary": "done"})
+
+    assert rejected.accepted is False
+    assert any("declared plan steps" in item for item in rejected.missing_requirements)
+    assert not any(
+        "required plan steps are incomplete" in item
+        for item in rejected.missing_requirements
+    )
+
+
+async def test_model_plan_does_not_block_completion_once_change_is_verified() -> None:
+    # The model's checklist cursor advances coarsely, so a longer plan can lag
+    # behind reality. Once the change is actually verified, completion must trust
+    # the evidence (fail-soft) rather than block on untouched checklist tail items.
+    service = PlannerService(
+        config=PlannerConfig(double_check_completion=False),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+    await service.submit_agent_plan(["a", "b", "c", "d", "e"])
+
+    await service.record_tool_result(
+        tool_call_id="w1",
+        tool_name="write_file",
+        payload={"path": "src/example.py", "old_sha256": None, "new_sha256": "h1"},
+        success=True,
+    )
+    await service.record_tool_result(
+        tool_call_id="v1",
+        tool_name="execute_command",
+        payload={"argv": ["true"], "exit_code": 0, "stdout": "", "stderr": ""},
+        success=True,
+    )
+
+    # The cursor lags (5 declared steps, far fewer evidence signals), but the
+    # change is verified, so completion is accepted instead of blocked.
+    assert any(
+        step.status.value == "PENDING" for step in service.agent_plan.steps
+    )
+    decision = await service.evaluate_completion({"summary": "created and verified"})
+
+    assert decision.accepted is True
+
+
 def _capture(bus: AsyncEventBus) -> list:
     events: list = []
     bus.subscribe(lambda event: events.append(event))
