@@ -43,6 +43,7 @@ from code_ai.tools.filesystem import EditCodeTool, ListFilesTool, ReadFileTool, 
 from code_ai.tools.git import GitReviewTool
 from code_ai.tools.interaction import AskUserTool
 from code_ai.tools.internal import (
+    CompletePlanStepTool,
     CompleteTaskTool,
     FinishDiscoveryTool,
     RequestExternalGapTool,
@@ -113,6 +114,7 @@ def build_tool_registry() -> ToolRegistry:
         AskUserTool(),
         RememberTool(),
         SubmitPlanTool(),
+        CompletePlanStepTool(),
         FinishDiscoveryTool(),
         RequestExternalGapTool(),
         CompleteTaskTool(),

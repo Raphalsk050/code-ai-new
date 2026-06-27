@@ -95,7 +95,15 @@ class PlannerService:
             source="core.planner",
         )
 
-    async def begin_turn(self, text: str, *, provider_supports_tools: bool) -> None:
+    async def begin_turn(
+        self, text: str, *, provider_supports_tools: bool, resume: bool = False
+    ) -> None:
+        # Resuming keeps the plan authored in the previous (plan-mode) turn alive
+        # so switching to act executes that checklist instead of reclassifying the
+        # continuation text and wiping the model-authored steps.
+        if resume and self.profile is not None:
+            await self._resume_turn()
+            return
         self.profile = TaskProfile.from_user_text(text)
         self.plan = ExecutionPlan.for_profile(
             self.profile, max_steps=self.config.max_plan_steps
@@ -127,6 +135,27 @@ class PlannerService:
         # never surfaced as a plan: the sidebar is reserved for the model-authored
         # steps submitted via submit_plan. Advance the internal cursor silently.
         await self._mark_current_step_started()
+
+    async def _resume_turn(self) -> None:
+        """Continue the current plan into an execution turn without rebuilding it.
+
+        Used when the user approves the plan and switches to act mode: the
+        profile, deterministic skeleton, model-authored checklist and evidence
+        ledger are all kept, so execution picks up where planning left off. Only
+        the per-turn bookkeeping resets, and the existing plan snapshot is
+        re-emitted so the task sidebar (collapsed when the plan-mode turn ended)
+        reappears with live progress.
+        """
+        self.no_progress_rounds = 0
+        self.double_check_pending = False
+        self.accepted_final_text = None
+        await self._emit_phase(PlanningPhase.EXECUTE)
+        if self.agent_plan and self.agent_plan.status == PlanStatus.ACTIVE:
+            await self.event_bus.emit(
+                "planning.step.started",
+                self.plan_snapshot(),
+                source="core.planner",
+            )
 
     def should_auto_list_workspace(self) -> bool:
         return bool(
@@ -187,6 +216,12 @@ class PlannerService:
         if tool_name == "submit_plan":
             await self.submit_agent_plan(payload.get("steps"))
             return []
+        if tool_name == "complete_plan_step":
+            # The model owns its checklist cursor: it advances only when the model
+            # declares a step finished, never by a heuristic that cannot know which
+            # of the model's free-form steps a given piece of evidence belongs to.
+            await self._advance_agent_plan()
+            return []
         before = self.progress_signature()
         step_id = self.current_step.step_id if self.current_step else None
         records = self.ledger.record_tool_result(
@@ -206,10 +241,12 @@ class PlannerService:
         await self._advance_after_evidence(records, tool_name=tool_name, payload=payload)
         # Only genuine forward motion clears the no-progress counter. Recording yet
         # another identical observation must not look like progress, or a tool-call
-        # loop would reset the guard forever.
+        # loop would reset the guard forever. The model-authored checklist is *not*
+        # advanced here: that cursor is driven solely by the model via
+        # complete_plan_step, so the sidebar reflects real progress instead of
+        # racing one step ahead per piece of evidence.
         if self.progress_signature() != before:
             self.no_progress_rounds = 0
-            await self._advance_agent_plan()
         return records
 
     async def record_policy_denial(
@@ -291,7 +328,10 @@ class PlannerService:
             plan_lines = (
                 f"Task checklist: {self.agent_plan.snapshot()['progress']} "
                 f"(current: {current_label}).\n"
-                "Call submit_plan again only if your approach genuinely changes.\n"
+                "This checklist position reflects only the steps you have reported "
+                "finishing. When you actually complete the current step, call "
+                "complete_plan_step so it advances to the next one. Call submit_plan "
+                "again only if your approach genuinely changes.\n"
             )
         header = (
             "Runtime task state. Treat this as authoritative host state, not a user request.\n"
@@ -419,7 +459,7 @@ class PlannerService:
                 checklist = (
                     "Double-check required before successful completion.",
                     "Reconcile every acceptance criterion with actual evidence.",
-                    "Confirm verification still applies to the current changed hashes.",
+                    "Confirm verification still reflects the current workspace state.",
                     "Call complete_task again after reconciling the evidence.",
                 )
                 await self.event_bus.emit(
@@ -533,11 +573,12 @@ class PlannerService:
         )
 
     async def _advance_agent_plan(self) -> None:
-        """Move the sidebar cursor one model-declared step forward on real progress.
+        """Move the sidebar cursor one step forward when the model reports a step done.
 
-        Each genuine forward signal (new evidence, a phase/step transition) walks
-        the model's checklist ahead by one. The last step stays running until
-        completion settles the whole plan, so the panel always shows a live step.
+        Driven solely by the model's complete_plan_step calls, so the checklist
+        tracks real declared progress rather than racing one step ahead per piece
+        of evidence. The last step stays running until completion settles the
+        whole plan, so the panel always shows a live step.
         """
         if not self.agent_plan or self.agent_plan.status != PlanStatus.ACTIVE:
             return
@@ -815,10 +856,11 @@ class PlannerService:
 
         Reconcile against the model's *own* checklist (``AgentPlan``) when it
         submitted one, so completion judges what the model said it would do rather
-        than the generic internal skeleton. The model cursor advances
-        heuristically, so once a mutation's change is verified we trust the
-        evidence and stop blocking on a lagging cursor (fail-soft). With no
-        submitted plan we fall back to the deterministic skeleton.
+        than the generic internal skeleton. The model drives its own cursor (via
+        complete_plan_step) and may forget to advance it, so once a mutation's
+        change is verified we trust the evidence and stop blocking on a lagging
+        cursor (fail-soft). With no submitted plan we fall back to the
+        deterministic skeleton.
         """
         if self.agent_plan is not None:
             mutation_settled = bool(

@@ -53,6 +53,7 @@ DEFAULT_CAPABILITIES_BY_NAME: dict[str, frozenset[ToolCapability]] = {
     "create_skill": frozenset({ToolCapability.LOCAL_WRITE}),
     "ask_user": frozenset({ToolCapability.INTERACTION}),
     "submit_plan": frozenset({ToolCapability.INTERNAL_TRANSITION}),
+    "complete_plan_step": frozenset({ToolCapability.INTERNAL_TRANSITION}),
     "finish_discovery": frozenset({ToolCapability.INTERNAL_TRANSITION}),
     "request_external_gap": frozenset({ToolCapability.INTERNAL_TRANSITION}),
     "complete_task": frozenset({ToolCapability.INTERNAL_COMPLETION}),

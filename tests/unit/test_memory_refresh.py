@@ -83,5 +83,5 @@ async def test_saved_memory_is_injected_on_refresh(tmp_path) -> None:
     orchestrator._refresh_system_prompt()
 
     system_prompt = orchestrator.conversation.messages[0].content
-    assert "What the user told you" in system_prompt
+    assert "How the user wants you to work" in system_prompt
     assert "Always run pytest -q." in system_prompt

@@ -58,7 +58,17 @@ class WorkspacePolicy:
         return normalized
 
     def relative_workdir(self, requested: str | Path | None) -> Path:
-        if requested in {None, "", "."}:
+        if requested is None:
+            return self.root
+        # Models routinely fill a nullable cwd with a stringified sentinel
+        # ("None"/"null") instead of omitting it; treat those as "use the root"
+        # rather than looking for a directory literally named that.
+        if isinstance(requested, str) and requested.strip().lower() in {
+            "",
+            ".",
+            "none",
+            "null",
+        }:
             return self.root
         path = self.resolve(requested, must_exist=True)
         if not path.is_dir():

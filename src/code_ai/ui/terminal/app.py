@@ -11,6 +11,7 @@ from rich.text import Text
 from code_ai.bootstrap import build_application
 from code_ai.config.loader import persist_config_updates
 from code_ai.providers.model_listing import list_available_models
+from code_ai.ui.terminal.clipboard import copy_to_system_clipboard
 from code_ai.ui.terminal.controller import TerminalController
 from code_ai.ui.terminal.slash_commands import (
     command_completion,
@@ -554,6 +555,9 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 return
             if text.strip() in {"/auto", "/plan", "/act"}:
                 mode = text.strip().lstrip("/")
+                if mode == "act":
+                    await self._start_act_mode()
+                    return
                 await self.controller.set_planner_mode(mode)
                 self._append_conversation_line(f"command> Planner mode set to {mode}")
                 return
@@ -589,6 +593,25 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 await self._dispatch_config(text.strip())
                 return
             asyncio.create_task(self.controller.submit(text))
+
+        async def _start_act_mode(self) -> None:
+            """Switch to act mode and, when a plan is ready, run it right away.
+
+            Plain ``/act`` used to only flip the mode, leaving the agent idle
+            until the user typed something. When a plan was authored in plan
+            mode, kick off the execution turn automatically: the approved
+            checklist runs and its sidebar (collapsed when the plan turn ended)
+            reappears with live progress. The turn is scheduled as a background
+            task so the prompt stays responsive, mirroring a normal submit.
+            """
+            if self.controller.has_active_plan():
+                self._append_conversation_line("command> Executando o plano aprovado…")
+                asyncio.create_task(self.controller.start_plan_execution())
+                return
+            await self.controller.set_planner_mode("act")
+            self._append_conversation_line(
+                "command> Modo act ativado. Descreva a tarefa para começar."
+            )
 
         async def _start_deep_plan(self, objective: str) -> None:
             """Switch to plan mode and, if an objective was given, plan it now.
@@ -945,7 +968,12 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                     selected = focused.selected_text
             if not selected:
                 return False
+            # Textual's copy_to_clipboard relies on the terminal honouring an
+            # OSC 52 escape sequence — macOS Terminal.app and several
+            # multiplexers ignore it. Shell out to the OS clipboard tool too
+            # so the copy actually lands, even when OSC 52 is a no-op.
             self.copy_to_clipboard(selected)
+            copy_to_system_clipboard(selected)
             self.screen.clear_selection()
             self.notify("Texto copiado para a área de transferência.", timeout=2)
             return True

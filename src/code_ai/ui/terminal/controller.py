@@ -34,6 +34,12 @@ class TerminalController:
     async def set_planner_mode(self, mode: str) -> None:
         await self.app.set_planner_mode(mode)
 
+    def has_active_plan(self) -> bool:
+        return self.app.has_active_plan()
+
+    async def start_plan_execution(self) -> bool:
+        return await self.app.start_plan_execution()
+
     async def set_permission_mode(self, mode: str) -> None:
         await self.app.set_permission_mode(mode)
 
