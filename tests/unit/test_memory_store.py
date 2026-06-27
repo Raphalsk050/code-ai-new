@@ -83,16 +83,44 @@ def test_service_rejects_unknown_kind(tmp_path) -> None:
         raise AssertionError("expected ValueError for unknown kind")
 
 
-def test_render_groups_by_scope(tmp_path) -> None:
+def test_render_groups_by_kind(tmp_path) -> None:
     service = _service(tmp_path)
+    service.add(kind="user", content="The user is named Rafael.")
     service.add(kind="feedback", content="Run pytest -q.")
     service.add(kind="project", content="Build with make release.")
 
     rendered = service.render_for_prompt()
-    assert "What the user told you" in rendered
+    assert "Who the user is" in rendered
+    assert "- The user is named Rafael." in rendered
+    assert "How the user wants you to work" in rendered
     assert "- Run pytest -q." in rendered
     assert "What you have learned about this project" in rendered
     assert "- Build with make release." in rendered
+
+
+def test_identity_is_not_crowded_out_by_feedback(tmp_path) -> None:
+    # Regression: a flood of more-recently-updated feedback memories must not
+    # push the user's identity out of the rendered prompt.
+    service = _service(tmp_path)
+    service.add(kind="user", content="The user is named Rafael.")
+    for i in range(40):
+        service.add(kind="feedback", content=f"Work directive {i}.")
+
+    rendered = service.render_for_prompt()
+    assert "Who the user is" in rendered
+    assert "Rafael" in rendered
+
+
+def test_render_limit_caps_feedback_but_never_identity(tmp_path) -> None:
+    service = _service(tmp_path)
+    service.add(kind="user", content="The user is named Rafael.")
+    for i in range(5):
+        service.add(kind="feedback", content=f"Work directive {i}.")
+
+    rendered = service.render_for_prompt(limit_per_kind=2)
+    # Identity is always rendered in full; feedback is capped at the limit.
+    assert "Rafael" in rendered
+    assert rendered.count("Work directive") == 2
 
 
 def test_render_empty_when_nothing_saved(tmp_path) -> None:

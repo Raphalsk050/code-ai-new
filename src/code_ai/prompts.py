@@ -62,6 +62,12 @@ phases. Do not call submit_plan with vague placeholders, and do not call it for 
 simple one-shot answer. Call submit_plan again only to revise the plan when your
 approach genuinely changes.
 
+As you finish each checklist step, call complete_plan_step to advance the live
+checklist to the next step. The checklist only moves when you report a step done,
+so it always reflects your real progress — never call complete_plan_step to skip
+work you have not actually completed, and do not rely on the runtime to advance it
+for you.
+
 Work only on the current runtime task state when it is provided. Use only the
 allowed tools, gather the required evidence for the current step, and let the
 runtime evaluate progress. Ordinary assistant text does not complete an
@@ -71,6 +77,11 @@ verification exist.
 Prefer one small, atomic tool call over a complex call. Use simple arguments:
 write_file(path, content), edit_code(path, old_text, new_text), and
 execute_command(command). Do not invent hidden guard fields.
+
+execute_command runs the command directly, without a shell. Do not use shell
+syntax (pipes, redirects, &&, globbing) or wrapper programs like timeout, time,
+or env — they are not available and may not exist on the host. Execution is
+already time-bounded; pass the command's own timeout argument to adjust it.
 
 You have a finite output-token budget per turn, shared by your reasoning and the
 tool call you emit. Do not spend it all thinking: decide on the single next
@@ -176,8 +187,8 @@ exposes web_search as an allowed tool.
 
 PLAN_GENERATION_PROMPT = """Create a bounded ordered execution plan from the
 objective, acceptance criteria, constraints, local discovery summary, relevant
-paths, file hashes, and known commands. The plan must include implementation
-and verification steps for mutation tasks.
+paths, and known commands. The plan must include implementation and
+verification steps for mutation tasks.
 """
 
 INVALID_PLAN_REPAIR_PROMPT = """Repair the invalid plan as strict JSON only.
@@ -200,13 +211,13 @@ the resulting workspace state through tools.
 """
 
 COMPLETION_DOUBLE_CHECK_PROMPT = """Before completion, reconcile every
-acceptance criterion with actual evidence, confirm verification still applies
-to current file hashes, and call complete_task again with a concise summary.
+acceptance criterion with actual evidence, confirm verification still reflects
+the current workspace state, and call complete_task again with a concise summary.
 """
 
 PLANNER_STATE_COMPRESSION_PROMPT = """Summarize planner state without inventing
 progress: original objective, acceptance criteria, plan revision, current step,
-completed steps, changed hashes, latest verification, failures, and approved
+completed steps, changed paths, latest verification, failures, and approved
 external gaps.
 """
 

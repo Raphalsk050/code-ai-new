@@ -339,6 +339,21 @@ class MemoryStore:
                 continue
 
 
+# Prompt section per memory kind, in render order. Identity comes first so
+# "who the user is" leads the Memory block instead of being buried under work
+# directives or project notes.
+_SECTION_TITLES: tuple[tuple[str, str], ...] = (
+    ("user", "Who the user is (persists across sessions):"),
+    ("feedback", "How the user wants you to work (persists across sessions):"),
+    ("project", "What you have learned about this project:"),
+    ("reference", "External references for this project:"),
+)
+
+# Kinds rendered in full regardless of any limit: identity is small and
+# critical, so it must never be dropped to save prompt space.
+_ALWAYS_FULL_KINDS = frozenset({"user"})
+
+
 class MemoryService:
     """Routes memories to the right scope and renders them for the prompt.
 
@@ -359,34 +374,38 @@ class MemoryService:
             raise ValueError(f"unknown memory kind: {kind!r}")
         return self._store_for(kind).add(kind=kind, content=content, source=source)
 
-    def render_for_prompt(self, *, limit_per_group: int = 10) -> str:
-        """Render stored memories grouped by scope, or ``""`` if none."""
+    def render_for_prompt(self, *, limit_per_kind: int | None = None) -> str:
+        """Render stored memories grouped by kind, most-recently-updated first.
+
+        Each kind gets its own section so identity ("who the user is") never
+        competes for prompt space with work directives or project notes — the
+        bug where a flood of more-recent ``feedback`` memories crowded the
+        user's name out of the prompt. By default nothing is truncated: the
+        per-store retention cap is the only bound, so any fact kept on disk
+        reliably reaches the model. ``limit_per_kind`` can cap non-identity
+        sections if the prompt ever needs trimming; identity kinds in
+        ``_ALWAYS_FULL_KINDS`` are always rendered in full.
+        """
 
         entries = [*self._global.all(), *self._project.all()]
         if not entries:
             return ""
         entries.sort(key=lambda e: e.updated, reverse=True)
 
-        user_lines = [
-            f"- {e.content.strip()}"
-            for e in entries
-            if e.kind in GLOBAL_KINDS and e.content.strip()
-        ][:limit_per_group]
-        project_lines = [
-            f"- {e.content.strip()}"
-            for e in entries
-            if e.kind in PROJECT_KINDS and e.content.strip()
-        ][:limit_per_group]
+        lines_by_kind: dict[str, list[str]] = {}
+        for entry in entries:
+            content = entry.content.strip()
+            if content:
+                lines_by_kind.setdefault(entry.kind, []).append(f"- {content}")
 
         sections: list[str] = []
-        if user_lines:
-            sections.append(
-                "What the user told you (persists across sessions):\n" + "\n".join(user_lines)
-            )
-        if project_lines:
-            sections.append(
-                "What you have learned about this project:\n" + "\n".join(project_lines)
-            )
+        for kind, title in _SECTION_TITLES:
+            lines = lines_by_kind.get(kind)
+            if not lines:
+                continue
+            if limit_per_kind is not None and kind not in _ALWAYS_FULL_KINDS:
+                lines = lines[:limit_per_kind]
+            sections.append(title + "\n" + "\n".join(lines))
         return "\n\n".join(sections)
 
 

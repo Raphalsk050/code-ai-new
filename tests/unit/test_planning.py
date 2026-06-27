@@ -429,7 +429,9 @@ async def test_submit_plan_reveals_model_authored_steps() -> None:
     assert snapshot["progress"] == "0/3"
 
 
-async def test_agent_plan_advances_on_real_progress() -> None:
+async def test_evidence_alone_does_not_advance_model_checklist() -> None:
+    # The model owns its checklist cursor: gathering evidence must not race the
+    # sidebar ahead, or the model would be told it is on a step it never reached.
     bus = AsyncEventBus(session_id="session")
     service = PlannerService(
         config=PlannerConfig(), event_bus=bus, session_id="session"
@@ -445,8 +447,53 @@ async def test_agent_plan_advances_on_real_progress() -> None:
     )
 
     snapshot = service.plan_snapshot()
+    assert snapshot["completed_steps"] == []
+    assert snapshot["current_step"] == "Inspect files"
+
+
+async def test_complete_plan_step_advances_model_checklist() -> None:
+    bus = AsyncEventBus(session_id="session")
+    service = PlannerService(
+        config=PlannerConfig(), event_bus=bus, session_id="session"
+    )
+    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+    await service.submit_agent_plan(["Inspect files", "Write the module", "Verify"])
+
+    await service.record_tool_result(
+        tool_call_id="step_1",
+        tool_name="complete_plan_step",
+        payload={"completed_step": "Inspect files"},
+        success=True,
+    )
+
+    snapshot = service.plan_snapshot()
     assert snapshot["completed_steps"] == ["Inspect files"]
     assert snapshot["current_step"] == "Write the module"
+
+
+async def test_resume_keeps_plan_and_re_emits_active_sidebar() -> None:
+    bus = AsyncEventBus(session_id="session")
+    service = PlannerService(
+        config=PlannerConfig(mode="plan"), event_bus=bus, session_id="session"
+    )
+    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+    await service.submit_agent_plan(["Inspect files", "Write the module", "Verify"])
+
+    events = _capture(bus)
+    # The plan→act handoff: a resume must not rebuild the plan from the
+    # continuation text, and it must re-surface the existing ACTIVE checklist so
+    # the collapsed sidebar reappears.
+    await service.begin_turn(
+        "Plano aprovado. Execute agora.", provider_supports_tools=True, resume=True
+    )
+
+    snapshot = service.plan_snapshot()
+    assert snapshot["status"] == "ACTIVE"
+    assert snapshot["current_step"] == "Inspect files"
+    assert snapshot["remaining_steps"] == ["Inspect files", "Write the module", "Verify"]
+    started = [e for e in events if e.event_type == "planning.step.started"]
+    assert started, "resume should re-emit a step-started snapshot to show the sidebar"
+    assert started[-1].payload["status"] == "ACTIVE"
 
 
 async def test_resubmitting_plan_emits_revised() -> None:
