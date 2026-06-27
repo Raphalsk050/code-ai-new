@@ -39,7 +39,7 @@ async def test_workspace_rejects_symlink_escape(tmp_path) -> None:
         context.workspace.resolve("link.txt", must_exist=True)
 
 
-async def test_write_read_and_edit_code_are_hash_guarded(tmp_path) -> None:
+async def test_write_read_and_edit_code_use_minimal_schema(tmp_path) -> None:
     context = make_context(tmp_path)
     write = WriteFileTool()
     read = ReadFileTool()
@@ -48,19 +48,16 @@ async def test_write_read_and_edit_code_are_hash_guarded(tmp_path) -> None:
     assert set(write.input_schema["properties"]) == {"path", "content", "reason"}
     # strict-mode requires every declared property (even nullable ones) in "required".
     assert set(write.input_schema["required"]) == {"path", "content", "reason"}
+    # No hash/occurrence guards exposed: strict mode would force the model to
+    # emit them every call, and a stale value aborts otherwise-valid edits.
     assert set(edit.input_schema["properties"]) == {
         "path",
         "old_text",
         "new_text",
-        "expected_occurrences",
-        "expected_sha256",
         "reason",
     }
-    # strict-mode: optionals stay declared but nullable; required stays minimal.
-    assert edit.input_schema["properties"]["expected_occurrences"]["type"] == [
-        "integer",
-        "null",
-    ]
+    assert "expected_sha256" not in edit.input_schema["properties"]
+    assert "expected_occurrences" not in edit.input_schema["properties"]
     assert "edits" not in edit.input_schema["properties"]
 
     written = await write.execute(
@@ -76,7 +73,6 @@ async def test_write_read_and_edit_code_are_hash_guarded(tmp_path) -> None:
     edited = await edit.execute(
         {
             "path": "src/app.py",
-            "expected_sha256": readback["sha256"],
             "old_text": "old",
             "new_text": "new",
         },

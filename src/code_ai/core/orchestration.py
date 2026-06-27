@@ -210,6 +210,7 @@ class AgentOrchestrator:
         *,
         cancel_event: asyncio.Event | None = None,
         context: str = "",
+        resume_plan: bool = False,
     ) -> TurnResult:
         # Pull in any lessons/memories learned since this session's system prompt
         # was built, so the model benefits from them on this turn.
@@ -229,7 +230,7 @@ class AgentOrchestrator:
             deadline=time.monotonic() + self.config.budgets.turn_timeout(),
         )
         try:
-            early = await self._begin_planner(text, state)
+            early = await self._begin_planner(text, state, resume=resume_plan)
             if early is not None:
                 return early
             state.progress_signature = self._progress_signature()
@@ -252,11 +253,15 @@ class AgentOrchestrator:
             await self.set_state(AgentState.FAILED, phase="failed")
             raise
 
-    async def _begin_planner(self, text: str, state: _TurnState) -> TurnResult | None:
+    async def _begin_planner(
+        self, text: str, state: _TurnState, *, resume: bool = False
+    ) -> TurnResult | None:
         if not (self.planner and self.planner.enabled):
             return None
         await self.planner.begin_turn(
-            text, provider_supports_tools=self.provider.capabilities.tool_calling
+            text,
+            provider_supports_tools=self.provider.capabilities.tool_calling,
+            resume=resume,
         )
         if self.planner.should_auto_list_workspace() and self.tool_registry.has("list_files"):
             state.tool_calls_executed += 1

@@ -16,6 +16,16 @@ from code_ai.events.models import EventEnvelope
 from code_ai.providers.base import ModelProvider
 from code_ai.tools.terminal.manager import PersistentTerminalManager
 
+# Continuation submitted when the user approves a plan and switches to act mode.
+# It is added to the conversation (and echoed in the transcript) so the model
+# starts executing the already-authored checklist instead of waiting for the
+# user to type something.
+_EXECUTE_PLAN_INSTRUCTION = (
+    "Plano aprovado. Execute agora o plano aprovado, passo a passo, usando as "
+    "ferramentas para fazer as mudanças. Não replaneje a menos que a abordagem "
+    "realmente precise mudar."
+)
+
 
 class CodeAIApplication:
     """Public facade for CLI, TUI, and embedding clients."""
@@ -54,13 +64,18 @@ class CodeAIApplication:
         )
         await self.event_bus.emit("session.ready", {}, source="app")
 
-    async def submit_user_message(self, text: str, *, context: str = "") -> TurnResult:
+    async def submit_user_message(
+        self, text: str, *, context: str = "", resume_plan: bool = False
+    ) -> TurnResult:
         if self._current_task and not self._current_task.done():
             raise RuntimeError("A turn is already running.")
         self._current_cancel = asyncio.Event()
         self._current_task = asyncio.create_task(
             self.orchestrator.run_turn(
-                text, cancel_event=self._current_cancel, context=context
+                text,
+                cancel_event=self._current_cancel,
+                context=context,
+                resume_plan=resume_plan,
             )
         )
         try:
@@ -323,8 +338,23 @@ class CodeAIApplication:
             "settings": self.get_settings(),
         }
 
-    async def approve_or_start_plan_execution(self) -> None:
+    def has_active_plan(self) -> bool:
+        """True when the model authored a plan that is ready to execute."""
+        planner = self.orchestrator.planner
+        return bool(planner and planner.enabled and planner.agent_plan)
+
+    async def start_plan_execution(self) -> bool:
+        """Switch to act mode and immediately execute the approved plan.
+
+        Returns True when an execution turn was started. When no plan has been
+        authored yet there is nothing to run, so it only arms act mode and
+        returns False, letting the caller fall back to plain mode switching.
+        """
         await self.set_planner_mode(PlannerMode.ACT)
+        if not self.has_active_plan():
+            return False
+        await self.submit_user_message(_EXECUTE_PLAN_INSTRUCTION, resume_plan=True)
+        return True
 
     async def request_replan(self, reason: str | None = None) -> str:
         if not self.orchestrator.planner:

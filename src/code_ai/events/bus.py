@@ -86,9 +86,17 @@ class AsyncEventBus:
                 failures.append(type(exc).__name__)
 
         if failures and envelope.event_type != "warning":
+            detail = ", ".join(sorted(set(failures)))
             warning = self._make_envelope(
                 event_type="warning",
-                payload={"message": "Event subscriber failed.", "failures": failures},
+                payload={
+                    "message": (
+                        f"Event subscriber failed while handling "
+                        f"{envelope.event_type} ({detail})."
+                    ),
+                    "failures": failures,
+                    "event_type": envelope.event_type,
+                },
                 source="events",
                 event_version=1,
             )
