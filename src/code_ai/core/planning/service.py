@@ -487,9 +487,26 @@ class PlannerService:
         transition, a step completion, or new knowledge/state in the evidence
         ledger — and stays constant when the model merely repeats observations.
         The orchestrator compares it across model steps to detect stalled loops.
+
+        The model-authored checklist (``agent_plan``) is part of this token: when
+        the model advances its own cursor via ``complete_plan_step`` that is real
+        forward progress the user can see in the sidebar, so it must not be
+        misread as a stall just because the internal skeleton stayed put.
         """
+        agent_cursor: tuple[object, ...] = ()
+        if self.agent_plan:
+            agent_completed = sum(
+                1
+                for step in self.agent_plan.steps
+                if step.status == PlanStepStatus.COMPLETED
+            )
+            agent_cursor = (
+                self.agent_plan.status.value,
+                self.agent_plan.current_index,
+                agent_completed,
+            )
         if not self.plan:
-            return (self.phase.value, self.ledger.progress_fingerprint())
+            return (self.phase.value, agent_cursor, self.ledger.progress_fingerprint())
         completed = sum(
             1 for step in self.plan.steps if step.status == PlanStepStatus.COMPLETED
         )
@@ -499,6 +516,7 @@ class PlannerService:
             self.plan.current_step_index,
             self.current_step.status.value if self.current_step else "",
             completed,
+            agent_cursor,
             self.ledger.progress_fingerprint(),
         )
 
