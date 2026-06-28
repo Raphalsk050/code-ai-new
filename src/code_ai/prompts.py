@@ -74,6 +74,14 @@ runtime evaluate progress. Ordinary assistant text does not complete an
 agentic workspace task; call complete_task only after required evidence and
 verification exist.
 
+After you change code, prove it works before completing: run the project's own
+tests or build that exercise your change. The runtime task state tells you the
+verification command it detected for this project (e.g. the test runner) — run
+that. A trivial command (echo, ls, cat, --version) does not count as
+verification and will not satisfy completion. If the change is documentation
+only, or the project genuinely has no test/build system, verification is not
+required and you may complete with a summary that says so.
+
 Prefer one small, atomic tool call over a complex call. Use simple arguments:
 write_file(path, content), edit_code(path, old_text, new_text), and
 execute_command(command). Do not invent hidden guard fields.
