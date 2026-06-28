@@ -35,8 +35,10 @@ def test_execute_command_schema_exposes_simple_command_string() -> None:
     assert schema["properties"]["cwd"]["type"] == ["string", "null"]
     assert schema["properties"]["timeout"]["type"] == ["number", "null"]
     assert "argv" not in schema["properties"]
-    assert "env" not in schema["properties"]
     assert "shell" not in schema["properties"]
+    # env is exposed so the model can set variables without a shell prefix.
+    assert schema["properties"]["env"]["type"] == ["object", "null"]
+    assert schema["properties"]["env"]["additionalProperties"] == {"type": "string"}
 
 
 async def test_execute_command_separates_stdout_stderr(tmp_path) -> None:
@@ -84,6 +86,50 @@ async def test_execute_command_keeps_legacy_argv_execution(tmp_path) -> None:
 
     assert result["exit_code"] == 0
     assert result["stdout"].strip() == str(tmp_path)
+
+
+async def test_execute_command_sets_environment_variables(tmp_path) -> None:
+    # The regression that stranded the agent: it needed an env var to run/test a
+    # project but execute_command runs without a shell. The env argument provides
+    # it directly instead of a (failing) VAR=value prefix.
+    context = make_context(tmp_path)
+    tool = ExecuteCommandTool()
+    script = "import os; print(os.environ.get('USE_FAKE_LLM', 'unset'))"
+
+    result = await tool.execute(
+        {
+            "command": f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}",
+            "env": {"USE_FAKE_LLM": "true"},
+        },
+        context,
+    )
+
+    assert result["exit_code"] == 0
+    assert result["stdout"].strip() == "true"
+
+
+async def test_execute_command_coerces_scalar_env_values(tmp_path) -> None:
+    context = make_context(tmp_path)
+    tool = ExecuteCommandTool()
+    script = "import os; print(os.environ['PORT'], os.environ['DEBUG'])"
+
+    result = await tool.execute(
+        {
+            "command": f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}",
+            "env": {"PORT": 8080, "DEBUG": True},
+        },
+        context,
+    )
+
+    assert result["stdout"].strip() == "8080 true"
+
+
+async def test_execute_command_rejects_malformed_env(tmp_path) -> None:
+    context = make_context(tmp_path)
+    tool = ExecuteCommandTool()
+
+    with pytest.raises(ToolArgumentError, match="env"):
+        await tool.execute({"command": "pwd", "env": ["USE_FAKE_LLM=true"]}, context)
 
 
 async def test_execute_command_rejects_empty_command(tmp_path) -> None:
