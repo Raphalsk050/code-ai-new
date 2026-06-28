@@ -89,10 +89,23 @@ async def test_complete_task_defaults_to_success_with_summary_only(tmp_path) -> 
     context = make_context(tmp_path)
     tool = CompleteTaskTool()
 
-    # strict-mode: both properties are required; the optional outcome is nullable.
-    assert set(tool.input_schema["required"]) == {"summary", "outcome"}
-    assert set(tool.input_schema["properties"]) == {"summary", "outcome"}
+    # strict-mode: every property is listed in required; only summary is a genuine
+    # input, so outcome and the blocked/failed detail fields are nullable.
+    assert set(tool.input_schema["required"]) == {
+        "summary",
+        "outcome",
+        "remaining_issues",
+        "limitations",
+    }
+    assert set(tool.input_schema["properties"]) == {
+        "summary",
+        "outcome",
+        "remaining_issues",
+        "limitations",
+    }
     assert tool.input_schema["properties"]["outcome"]["type"] == ["string", "null"]
+    assert tool.input_schema["properties"]["remaining_issues"]["type"] == ["array", "null"]
+    assert tool.input_schema["properties"]["limitations"]["type"] == ["array", "null"]
 
     result = await tool.execute({"summary": "Done."}, context)
 
