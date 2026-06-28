@@ -635,6 +635,7 @@ class PlannerService:
             if self.phase in {PlanningPhase.EXECUTE, PlanningPhase.REPAIR}:
                 await self._complete_step_if_kind(PlanStepKind.IMPLEMENT)
                 await self._move_to_step_kind(PlanStepKind.VERIFY, PlanningPhase.VERIFY)
+            await self._settle_misclassified_research_step()
         if EvidenceType.VERIFICATION_FAILED in evidence_types:
             await self._mark_current_step_failed("Verification failed.")
             await self._move_to_step_kind(PlanStepKind.IMPLEMENT, PlanningPhase.REPAIR)
@@ -712,6 +713,36 @@ class PlannerService:
             await self._emit_phase(PlanningPhase.VERIFY)
         elif next_kind == PlanStepKind.COMPLETE:
             await self._emit_phase(PlanningPhase.COMPLETE)
+
+    async def _settle_misclassified_research_step(self) -> None:
+        """Stop demanding web evidence when the task is actually a local edit.
+
+        Graceful degradation for a misclassified profile: if the model performs a
+        real workspace mutation while the skeleton still sits on a RESEARCH_WEB
+        step, the local action is stronger evidence of intent than the upfront
+        guess. Skip the unsatisfied research step and move to completion so a
+        wrong classification can never trap the agent in a web_search loop. A
+        genuine research task is preserved — once any web evidence or an approved
+        external gap exists, this no-ops.
+        """
+        if not self.plan:
+            return
+        if self.approved_external_gaps or self.ledger.has_success(EvidenceType.WEB_RESULT):
+            return
+        research = next(
+            (
+                step
+                for step in self.plan.steps
+                if step.kind == PlanStepKind.RESEARCH_WEB
+                and step.status != PlanStepStatus.COMPLETED
+            ),
+            None,
+        )
+        if research is None:
+            return
+        research.status = PlanStepStatus.SKIPPED
+        self.plan.updated_at = utc_now_iso()
+        await self._move_to_step_kind(PlanStepKind.COMPLETE, PlanningPhase.COMPLETE)
 
     async def _complete_step_by_kind(self, kind: PlanStepKind) -> None:
         """Mark the first not-yet-completed step of ``kind`` as completed in place,

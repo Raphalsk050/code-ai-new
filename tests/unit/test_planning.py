@@ -132,6 +132,76 @@ def test_time_marker_still_matches_as_a_whole_word() -> None:
     assert profile.requires_external_information is True
 
 
+async def test_local_edit_settles_misclassified_research_plan() -> None:
+    # Graceful degradation: even if a task is misclassified as external research,
+    # a real local file mutation must settle the plan toward completion instead of
+    # trapping the agent in a web_search loop demanding evidence it will never get.
+    service = PlannerService(
+        config=PlannerConfig(double_check_completion=False),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    await service.begin_turn("pesquise a versao atual do pytest", provider_supports_tools=True)
+    assert service.profile.requires_external_information is True
+    assert any(step.kind.value == "RESEARCH_WEB" for step in service.plan.steps)
+
+    await service.record_tool_result(
+        tool_call_id="w1",
+        tool_name="write_file",
+        payload={"path": "NOTES.md", "old_sha256": None, "new_sha256": "abc"},
+        success=True,
+    )
+
+    # The unsatisfied research step is skipped and the plan moves to completion,
+    # so the runtime stops demanding web_search.
+    assert service.phase == PlanningPhase.COMPLETE
+    assert all(
+        step.status.value != "IN_PROGRESS"
+        for step in service.plan.steps
+        if step.kind.value == "RESEARCH_WEB"
+    )
+    decision = await service.evaluate_completion({"summary": "updated notes"})
+    assert decision.accepted is True
+
+
+async def test_genuine_research_is_not_skipped_when_web_evidence_exists() -> None:
+    # The degradation must not fire for a real research task: once web evidence is
+    # recorded, a later local note-taking edit keeps the research step satisfied
+    # rather than skipping it.
+    service = PlannerService(
+        config=PlannerConfig(double_check_completion=False),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    await service.begin_turn("pesquise a versao atual do pytest", provider_supports_tools=True)
+
+    await service.record_tool_result(
+        tool_call_id="s1",
+        tool_name="web_search",
+        payload={"query": "pytest latest version", "results": [{"title": "t", "url": "u"}]},
+        success=True,
+    )
+    research_before = [
+        step.status.value
+        for step in service.plan.steps
+        if step.kind.value == "RESEARCH_WEB"
+    ]
+    await service.record_tool_result(
+        tool_call_id="w1",
+        tool_name="write_file",
+        payload={"path": "NOTES.md", "old_sha256": None, "new_sha256": "abc"},
+        success=True,
+    )
+    research_after = [
+        step.status.value
+        for step in service.plan.steps
+        if step.kind.value == "RESEARCH_WEB"
+    ]
+
+    assert "SKIPPED" not in research_after
+    assert research_before  # sanity: the plan had a research step
+
+
 async def test_plan_mode_denies_mutating_and_process_tools() -> None:
     service = PlannerService(
         config=PlannerConfig(mode="plan"),
