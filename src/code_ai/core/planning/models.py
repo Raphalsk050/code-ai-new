@@ -502,12 +502,14 @@ def _is_mutation_request(text: str) -> bool:
         "add",
         "adicionar",
         "apply",
+        "atualiz",  # PT "atualizar/atualize/atualiza/atualizando" (update)
         "change",
         "conserte",
         "corrija",
         "create",
         "crie",
         "edit",
+        "escreva",  # PT "write"
         "fix",
         "implemente",
         "implement",
