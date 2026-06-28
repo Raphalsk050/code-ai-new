@@ -58,7 +58,14 @@ class TerminalViewModel:
         elif event.event_type == "planning.evidence.recorded":
             summary = str(event.payload.get("summary") or "")
             evidence_type = str(event.payload.get("type") or "evidence")
-            self.conversation.append(f"evidence> {evidence_type}: {summary[:180]}")
+            # COMPLETION_REQUESTED carries the full final report, which already
+            # renders in full via assistant.final. Echoing a hard 180-char slice
+            # of it here only dangles a half-word ("- Sw...") as the last line, so
+            # record it without the redundant (and mangled) summary.
+            if evidence_type == "COMPLETION_REQUESTED":
+                self.conversation.append(f"evidence> {evidence_type} recorded")
+            else:
+                self.conversation.append(f"evidence> {evidence_type}: {summary[:180]}")
         elif event.event_type == "permission.mode.changed":
             self.permission_mode = str(event.payload.get("mode", self.permission_mode))
             self.conversation.append(f"permission> mode set to {self.permission_mode}")
@@ -101,10 +108,26 @@ class TerminalViewModel:
                 self.conversation[-1] += text
             else:
                 self.conversation.append("thinking> " + text)
+        elif event.event_type == "tool.calls.recovered":
+            # A weak model printed its tool call as text, which already streamed
+            # into the chat as the last ai>/working> line. Replace that raw line
+            # with the cleaned prose (or drop it entirely) so the chat shows the
+            # recovered tool running, not the raw call markup.
+            cleaned = str(event.payload.get("text") or "").strip()
+            if self.conversation and self.conversation[-1].startswith(("ai> ", "working> ")):
+                if cleaned:
+                    self.conversation[-1] = f"ai> {cleaned}"
+                else:
+                    self.conversation.pop()
         elif event.event_type == "model.response.completed":
             tool_calls = event.payload.get("tool_calls")
             if tool_calls:
-                self.conversation.append("model> requested tool calls")
+                # Name each requested tool explicitly so the transcript shows
+                # *which* tool the model invoked, not just that it invoked one.
+                # The name is rendered as a chip downstream (see widgets.py).
+                for call in tool_calls:
+                    name = call.get("name") if isinstance(call, dict) else None
+                    self.conversation.append(f"model> requested {name or 'tool'} tool")
         elif event.event_type == "tool.call.started":
             self.conversation.append(f"tool> {event.payload.get('name')} started")
         elif event.event_type == "tool.call.completed":

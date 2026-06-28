@@ -30,6 +30,11 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser = subparsers.add_parser("run", help="Run one headless task.")
     run_parser.add_argument("task", nargs="*", help="Task text. Reads stdin when omitted.")
 
+    subparsers.add_parser(
+        "bridge",
+        help="Serve the agent over stdio JSON-RPC for an embedding client (e.g. the VSCode ext).",
+    )
+
     config_parser = subparsers.add_parser("config", help="Manage configuration.")
     config_sub = config_parser.add_subparsers(dest="config_command", required=True)
     init_parser = config_sub.add_parser("init", help="Create a safe example configuration.")
@@ -100,6 +105,14 @@ def main(argv: list[str] | None = None) -> int:
                 config_path=args.config, cli_overrides=_overrides(args) | {"show_ui": False}
             )
             return asyncio.run(run_headless(app, task, events_jsonl=args.events_jsonl))
+
+        if args.command == "bridge":
+            from code_ai.bridge import run_bridge
+
+            app = build_application(
+                config_path=args.config, cli_overrides=_overrides(args) | {"show_ui": False}
+            )
+            return asyncio.run(run_bridge(app, stdin=sys.stdin, stdout=sys.stdout))
 
         config = load_config(explicit_path=args.config, cli_overrides=_overrides(args))
         if args.headless or not config.show_ui:

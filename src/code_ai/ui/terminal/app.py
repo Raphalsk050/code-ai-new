@@ -10,10 +10,14 @@ from rich.text import Text
 
 from code_ai.bootstrap import build_application
 from code_ai.config.loader import persist_config_updates
+from code_ai.providers.model_listing import list_available_models
+from code_ai.ui.terminal.clipboard import copy_to_system_clipboard
 from code_ai.ui.terminal.controller import TerminalController
 from code_ai.ui.terminal.slash_commands import (
     command_completion,
+    config_commands,
     handle_config_command,
+    handle_debug_command,
     render_suggestions,
 )
 from code_ai.ui.terminal.view_models import TerminalViewModel
@@ -26,11 +30,13 @@ from code_ai.ui.terminal.widgets import (
     WORKING_SPINNERS,
     WORKING_STATES,
     SpinnerStyle,
+    conversation_line_class,
     load_code_ai_logo,
     normalize_banner_font,
     render_context_meter,
     render_conversation_line,
     render_plan,
+    thinking_body,
     resolve_spinner,
     spinner_color,
     working_label,
@@ -44,28 +50,156 @@ _PERMISSION_MODE_OPTIONS = [
     ("perm: ignorar", "bypass"),
 ]
 
+# How many rows of the live streaming line the (non-scrolling) tail strip shows.
+_STREAM_TAIL_MAX_ROWS = 14
+
+# Cap on how many committed lines are kept mounted in the scrollback. Each line
+# is a selectable widget, so this bounds widget count the way RichLog.max_lines
+# used to bound its strips; the oldest lines scroll off once the cap is hit.
+_MAX_CONVERSATION_LINES = 2000
+
+
+def render_stream_tail(line: str):
+    """Render the live streaming line, keeping its newest rows visible.
+
+    The tail Static cannot scroll, so a streaming answer taller than the strip
+    would otherwise clip its newest (bottom) text off-screen and look frozen.
+    Show only the final rows while it streams; the complete text lands in the
+    scrollable log once the turn finishes.
+    """
+    rows = line.split("\n")
+    if len(rows) > _STREAM_TAIL_MAX_ROWS:
+        line = "\n".join(rows[-_STREAM_TAIL_MAX_ROWS:])
+    return render_conversation_line(line)
+
 
 def create_terminal_app(application, *, config_path: Path | None = None):
     from textual.app import App, ComposeResult, SystemCommand
     from textual.command import SimpleCommand
-    from textual.containers import Container, Horizontal, Vertical
-    from textual.suggester import Suggester
-    from textual.widgets import Footer, Header, Input, RichLog, Select, Static
+    from textual.containers import Container, Horizontal, Vertical, VerticalScroll
+    from textual.message import Message
+    from textual.widget import Widget
+    from textual.widgets import (
+        Button,
+        Collapsible,
+        Footer,
+        Header,
+        Select,
+        Static,
+        TextArea,
+    )
 
     from code_ai.ui.terminal.approval import TerminalApprovalGateway
 
-    class SlashCommandSuggester(Suggester):
-        async def get_suggestion(self, value: str) -> str | None:
-            return command_completion(value)
+    class MultilineInput(TextArea):
+        """Multi-line prompt with shell-style history recall.
 
-    class CommandInput(Input):
-        def action_cursor_left(self, select: bool = False) -> None:
-            completion = command_completion(self.value)
-            if not select and self.cursor_at_end and completion:
-                self.value = completion
-                self.cursor_position = len(completion)
+        Enter submits the prompt; Shift+Enter / Ctrl+J / Alt+Enter insert a
+        newline so a single prompt can span several lines. Submitted prompts
+        are pushed onto a history stack walked with Up/Down — but only when the
+        cursor sits on the first/last line, so navigating a multi-line draft
+        still moves between its lines like any editor.
+        """
+
+        class Submitted(Message):
+            """Posted when the user presses Enter to send the prompt."""
+
+            def __init__(self, input: MultilineInput, value: str) -> None:
+                super().__init__()
+                self.input = input
+                self.value = value
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            self._history: list[str] = []
+            # None means "not browsing"; the live draft is whatever is typed.
+            self._history_index: int | None = None
+            self._draft = ""
+
+        @property
+        def value(self) -> str:
+            """Alias for ``text`` so callers can treat it like the old Input."""
+            return self.text
+
+        @value.setter
+        def value(self, new: str) -> None:
+            self.text = new
+            self.move_cursor(self.document.end)
+
+        def clear_value(self) -> None:
+            self.text = ""
+
+        def remember(self, text: str) -> None:
+            """Record a submitted entry and reset the browse cursor."""
+            entry = text.rstrip("\n")
+            # Skip blanks and consecutive duplicates, like a shell history.
+            if entry.strip() and (not self._history or self._history[-1] != entry):
+                self._history.append(entry)
+            self._history_index = None
+            self._draft = ""
+
+        def _recall(self, value: str) -> None:
+            self.text = value
+            self.move_cursor(self.document.end)
+
+        def _history_prev(self) -> bool:
+            """Step to the previous (older) entry; True if anything happened."""
+            if not self._history:
+                return False
+            if self._history_index is None:
+                # Entering history: stash the unsent draft to restore later.
+                self._draft = self.value
+                self._history_index = len(self._history) - 1
+            elif self._history_index > 0:
+                self._history_index -= 1
+            # else: already at the oldest entry — hold position.
+            self._recall(self._history[self._history_index])
+            return True
+
+        def _history_next(self) -> bool:
+            """Step to the next (newer) entry; True if anything happened."""
+            if self._history_index is None:
+                return False
+            if self._history_index < len(self._history) - 1:
+                self._history_index += 1
+                self._recall(self._history[self._history_index])
+            else:
+                # Past the newest entry: drop back to the saved draft.
+                self._history_index = None
+                self._recall(self._draft)
+            return True
+
+        async def _on_key(self, event) -> None:
+            key = event.key
+            if key == "enter":
+                # Enter sends the prompt; a newline needs an explicit modifier.
+                event.stop()
+                event.prevent_default()
+                self.post_message(self.Submitted(self, self.text))
                 return
-            super().action_cursor_left(select)
+            if key in ("shift+enter", "ctrl+j", "alt+enter"):
+                event.stop()
+                event.prevent_default()
+                self.insert("\n")
+                return
+            if key == "tab" and "\n" not in self.text:
+                # Accept a slash-command completion in-place, like the old
+                # single-line prompt did on cursor movement.
+                completion = command_completion(self.text)
+                if completion:
+                    event.stop()
+                    event.prevent_default()
+                    self._recall(completion)
+                    return
+            if key == "up" and self.cursor_at_first_line and self._history_prev():
+                event.stop()
+                event.prevent_default()
+                return
+            if key == "down" and self.cursor_at_last_line and self._history_next():
+                event.stop()
+                event.prevent_default()
+                return
+            await super()._on_key(event)
 
     class WorkingIndicator(Static):
         """Animated "the agent is busy" indicator shown below the conversation.
@@ -211,6 +345,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             ("ctrl+c", "cancel_or_quit", "Cancel/Quit"),
             ("ctrl+q", "quit", "Quit"),
             ("ctrl+l", "clear", "Clear"),
+            ("ctrl+b", "toggle_session", "Session panel"),
         ]
 
         def __init__(self) -> None:
@@ -219,6 +354,14 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self.vm.permission_mode = application.session.config.permission_mode
             self.controller = TerminalController(application, self.vm)
             self.follow_output = True
+            # Number of conversation lines already flushed to the append-only log.
+            # Streaming only mutates the last line, so we keep the tail in a
+            # separate Static and never re-render the whole transcript per event.
+            self._committed = 0
+            # Armed by a first Ctrl+Q that could not shut down cleanly (e.g. the
+            # model is hung mid-request); a second Ctrl+Q while armed force-quits.
+            self._force_quit_armed = False
+            self._close_task: asyncio.Task[None] | None = None
 
         def compose(self) -> ComposeResult:
             yield Header(show_clock=True)
@@ -233,9 +376,19 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                     yield Static("", id="context-meter")
                 with Horizontal(id="main"):
                     with Vertical(id="session"):
-                        yield Static("SESSION", classes="panel-title")
+                        with Horizontal(id="session-header"):
+                            yield Static("SESSION", classes="panel-title", id="session-title")
+                            yield Button("‹", id="toggle-session", classes="collapse-btn")
                         yield Static("", id="session-info")
-                    yield RichLog(id="conversation", wrap=True, highlight=False, markup=False)
+                    with Vertical(id="conversation-pane"):
+                        # One selectable Static per committed line (inside a
+                        # scroller) instead of a RichLog: RichLog renders to
+                        # Strips that carry no offset metadata, so Textual's
+                        # screen text-selection can never highlight or copy from
+                        # it. Content widgets do, so the transcript is now
+                        # drag-selectable like a terminal scrollback.
+                        yield VerticalScroll(id="conversation")
+                        yield Static("", id="stream-tail")
                     with Vertical(id="plan"):
                         yield Static("PLAN", classes="panel-title")
                         yield PlanPanel(
@@ -256,64 +409,140 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                         allow_blank=False,
                         id="mode-select",
                     )
-                    yield CommandInput(
-                        placeholder="you>",
+                    yield MultilineInput(
                         id="input",
-                        suggester=SlashCommandSuggester(case_sensitive=True),
+                        soft_wrap=True,
+                        tab_behavior="focus",
+                        show_line_numbers=False,
                     )
             yield Footer()
 
         async def on_mount(self) -> None:
             application.subscribe(self._on_event)
             # Route gated tool calls through an interactive approve/deny modal.
-            application.orchestrator.approval_gateway = TerminalApprovalGateway(self)
+            application.orchestrator.approval_gateway = TerminalApprovalGateway(
+                self, application.session.config
+            )
             self._apply_configured_terminal_theme()
+            self._apply_session_collapsed(
+                application.session.config.terminal_session_collapsed
+            )
             self.theme_changed_signal.subscribe(self, self._persist_terminal_theme)
             await application.start()
             self._refresh_status()
-            self.query_one("#input", Input).focus()
+            self.query_one("#input", MultilineInput).focus()
 
         async def _on_event(self, event) -> None:
             await self.controller.handle_event(event)
             self._render_event(event)
 
         def _render_event(self, event) -> None:
-            conversation = self.query_one("#conversation", RichLog)
-            if event.event_type in {
-                "user.message",
-                "model.request.started",
-                "model.thinking.delta",
-                "model.stream.delta",
-                "model.response.completed",
-                "tool.call.started",
-                "tool.call.completed",
-                "tool.call.failed",
-                "tool.approval.requested",
-                "tool.approval.resolved",
-                "permission.mode.changed",
-                "planning.plan.created",
-                "planning.plan.revised",
-                "planning.step.started",
-                "planning.step.completed",
-                "planning.step.failed",
-                "planning.evidence.recorded",
-                "planning.policy.denied",
-                "planning.completion.rejected",
-                "assistant.final",
-                "warning",
-                "error",
-            }:
-                conversation.clear()
-                for line in self.vm.conversation[-300:]:
-                    conversation.write(render_conversation_line(line))
+            self._sync_conversation()
             self._refresh_status()
 
-        async def on_input_changed(self, event: Input.Changed) -> None:
-            self._set_command_suggestions(event.value)
+        def _commit_conversation_line(self, line: str) -> Widget:
+            """Build the selectable widget for one committed transcript line.
 
-        async def on_input_submitted(self, event: Input.Submitted) -> None:
+            Each line is its own Static (a content widget) so Textual's screen
+            text-selection can highlight and copy across the scrollback —
+            something RichLog's Strips never supported. ``markup=False`` keeps
+            literal text like ``tool> [..]`` from being parsed as console markup.
+
+            Assistant answers render as Markdown flattened to native Content (see
+            ``markdown_to_content``), so they stay selectable; the layout width is
+            taken from the live conversation pane so the Markdown wraps to fit.
+
+            The model's reasoning is folded into a collapsed ``Collapsible`` (like
+            the VS Code extension's hideable "Thinking" section) so it never
+            dominates the transcript, but stays one click away.
+            """
+            reasoning = thinking_body(line)
+            if reasoning is not None:
+                return Collapsible(
+                    Static(reasoning, markup=False),
+                    title="thinking",
+                    collapsed=True,
+                    classes="thinking-block",
+                )
+            return Static(
+                render_conversation_line(
+                    line, rich_markdown=True, width=self._conversation_width()
+                ),
+                markup=False,
+                classes=conversation_line_class(line),
+            )
+
+        def _conversation_width(self) -> int | None:
+            """Content width of the conversation pane, if it is laid out yet."""
+            try:
+                width = self.query_one("#conversation", VerticalScroll).content_size.width
+            except Exception:
+                return None
+            return width or None
+
+        def _sync_conversation(self) -> None:
+            """Incrementally reflect the conversation buffer into the UI.
+
+            The scrollback is append-only: each line is mounted exactly once as
+            its own selectable Static, so the cost per event is proportional to
+            the number of *new* lines, not the whole transcript.
+
+            While the agent is working the last line may still be growing from
+            streaming deltas, so it is held live in the ``#stream-tail`` Static
+            and kept out of the scrollback (re-rendering a growing line every
+            delta is what used to freeze the terminal). As soon as the agent
+            goes idle that line is final: it is committed to the scrollback and
+            the tail cleared, so a finished answer lands in the conversation
+            instead of being stranded in the strip below it.
+            """
+            convo = self.vm.conversation
+            log = self.query_one("#conversation", VerticalScroll)
+            tail = self.query_one("#stream-tail", Static)
+
+            if self._committed > len(convo):
+                # The buffer shrank (only happens on clear, which also resets the
+                # counter): rebuild defensively so the log never shows dead lines.
+                log.remove_children()
+                self._committed = 0
+
+            # Hold the last line back in the live tail only while the agent is
+            # working AND that line is still uncommitted (freshly streaming).
+            # Lines already in the scrollback are never pulled back, so a new
+            # turn starting (status flips to working before its first line
+            # arrives) cannot trigger a flicker or a full re-render.
+            working = self.vm.status in WORKING_STATES
+            held_back = working and self._committed < len(convo)
+            commit_upto = len(convo) - 1 if held_back else len(convo)
+
+            mounted = False
+            while self._committed < commit_upto:
+                log.mount(self._commit_conversation_line(convo[self._committed]))
+                self._committed += 1
+                mounted = True
+
+            if mounted:
+                # Trim oldest lines past the cap and keep the newest in view,
+                # both deferred until the freshly mounted widgets are laid out.
+                self.call_after_refresh(self._trim_and_follow_conversation, log)
+
+            tail.update(render_stream_tail(convo[-1]) if held_back else "")
+
+        def _trim_and_follow_conversation(self, log: VerticalScroll) -> None:
+            excess = len(log.children) - _MAX_CONVERSATION_LINES
+            for child in list(log.children)[:excess]:
+                child.remove()
+            if self.follow_output:
+                log.scroll_end(animate=False)
+
+        async def on_text_area_changed(self, event: TextArea.Changed) -> None:
+            self._set_command_suggestions(event.text_area.text)
+
+        async def on_multiline_input_submitted(
+            self, event: MultilineInput.Submitted
+        ) -> None:
             text = event.value
-            event.input.value = ""
+            event.input.remember(text)
+            event.input.clear_value()
             self._set_command_suggestions("")
             if text.strip() == "/quit":
                 await self.action_quit()
@@ -322,18 +551,22 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 await self.action_clear()
                 return
             if text.strip() == "/compact":
-                await self.controller.compact()
+                self._append_conversation_line(await self.controller.compact())
                 return
             if text.strip() in {"/auto", "/plan", "/act"}:
                 mode = text.strip().lstrip("/")
+                if mode == "act":
+                    await self._start_act_mode()
+                    return
                 await self.controller.set_planner_mode(mode)
                 self._append_conversation_line(f"command> Planner mode set to {mode}")
                 return
             if text.strip() == "/mode" or text.strip().startswith("/mode "):
                 await self._handle_mode_command(text.strip())
                 return
-            if text.strip() == "/deep-plan":
-                self._append_conversation_line(await self.controller.deep_plan())
+            if text.strip() == "/deep-plan" or text.strip().startswith("/deep-plan "):
+                objective = text.strip()[len("/deep-plan") :].strip()
+                await self._start_deep_plan(objective)
                 return
             if text.strip() == "/plan-status":
                 self._append_conversation_line(self.controller.plan_status())
@@ -345,25 +578,108 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             if text.strip() == "/cancel":
                 await self.controller.cancel()
                 return
+            if text.strip() == "/debug" or text.strip().startswith("/debug "):
+                self._append_conversation_line(
+                    handle_debug_command(application, text.strip(), config_path=config_path)
+                )
+                return
             if text.strip() == "/status":
-                self.query_one("#conversation", RichLog).write(self._session_text())
+                self._append_conversation_line(self._session_text())
                 return
             if text.strip() == "/help":
                 self._append_conversation_line(render_suggestions("/"))
                 return
             if text.strip().startswith("/config"):
-                stripped = text.strip()
-                self._append_conversation_line(
-                    handle_config_command(application, stripped, config_path=config_path)
-                )
-                if stripped.startswith("/config theme "):
-                    self._apply_configured_terminal_theme()
-                if stripped.startswith("/config banner-font "):
-                    self._refresh_logo()
-                if stripped.startswith("/config spinner "):
-                    self._refresh_spinner()
+                await self._dispatch_config(text.strip())
                 return
             asyncio.create_task(self.controller.submit(text))
+
+        async def _start_act_mode(self) -> None:
+            """Switch to act mode and, when a plan is ready, run it right away.
+
+            Plain ``/act`` used to only flip the mode, leaving the agent idle
+            until the user typed something. When a plan was authored in plan
+            mode, kick off the execution turn automatically: the approved
+            checklist runs and its sidebar (collapsed when the plan turn ended)
+            reappears with live progress. The turn is scheduled as a background
+            task so the prompt stays responsive, mirroring a normal submit.
+            """
+            if self.controller.has_active_plan():
+                self._append_conversation_line("command> Executando o plano aprovado…")
+                asyncio.create_task(self.controller.start_plan_execution())
+                return
+            await self.controller.set_planner_mode("act")
+            self._append_conversation_line(
+                "command> Modo act ativado. Descreva a tarefa para começar."
+            )
+
+        async def _start_deep_plan(self, objective: str) -> None:
+            """Switch to plan mode and, if an objective was given, plan it now.
+
+            Mirrors Cline's Plan mode: ``/deep-plan <objective>`` flips the planner
+            into plan mode and submits the objective in one go, so the model
+            investigates and authors a thorough plan without touching the
+            workspace. Bare ``/deep-plan`` just arms plan mode for the next message.
+            """
+            await self.controller.set_planner_mode("plan")
+            if not objective:
+                self._append_conversation_line(
+                    "command> Plan mode on. Type /deep-plan <objetivo> (ou só "
+                    "descreva o que quer planejar) e eu monto o plano sem alterar "
+                    "nada. Depois use /act para executar."
+                )
+                return
+            asyncio.create_task(self.controller.submit(objective))
+
+        async def _dispatch_config(self, stripped: str) -> None:
+            """Run a ``/config ...`` line, including its UI side effects.
+
+            Shared by the typed prompt and the ``/config help`` picker so both
+            paths behave identically (open sub-pickers, repaint the logo, etc.).
+            """
+            if stripped == "/config help":
+                self.action_config_help()
+                return
+            if stripped == "/config models":
+                await self._select_model_interactive()
+                return
+            self._append_conversation_line(
+                handle_config_command(application, stripped, config_path=config_path)
+            )
+            if stripped.startswith("/config theme "):
+                self._apply_configured_terminal_theme()
+            if stripped.startswith("/config banner-font "):
+                self._refresh_logo()
+            if stripped.startswith("/config spinner "):
+                self._refresh_spinner()
+
+        def action_config_help(self) -> None:
+            """Open a searchable palette of /config commands to pick from."""
+            self.search_commands(
+                [
+                    SimpleCommand(
+                        item.command,
+                        partial(self._use_config_command, item),
+                        item.description,
+                    )
+                    for item in config_commands()
+                ],
+                placeholder="Search config commands...",
+            )
+
+        def _use_config_command(self, item) -> None:
+            input_widget = self.query_one("#input", MultilineInput)
+            if "<" in item.command:
+                # Needs a value: drop the command stem into the prompt (cursor at
+                # the end) so the user types the argument and presses Enter.
+                input_widget.text = item.completion_text
+                input_widget.move_cursor(input_widget.document.end)
+                input_widget.focus()
+                self._set_command_suggestions(input_widget.text)
+                return
+            # No argument to fill — run it right away.
+            self._set_command_suggestions("")
+            asyncio.create_task(self._dispatch_config(item.completion_text.strip()))
 
         def get_system_commands(self, screen) -> Any:
             yield from super().get_system_commands(screen)
@@ -377,6 +693,40 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 "Change the working-indicator animation",
                 self.action_change_spinner,
             )
+
+        async def on_button_pressed(self, event: Button.Pressed) -> None:
+            if event.button.id == "toggle-session":
+                self.action_toggle_session()
+
+        def action_toggle_session(self) -> None:
+            """Collapse the left SESSION panel to a thin strip, or restore it.
+
+            Only the panel's title and details hide; the toggle button stays
+            visible (its arrow flips) so the panel can always be reopened. The
+            conversation pane is ``width: 1fr`` and reclaims the freed space.
+            The choice is persisted so it survives a restart.
+            """
+            collapsed = not self.query_one("#session").has_class("collapsed")
+            self._apply_session_collapsed(collapsed)
+            config = application.session.config
+            if config.terminal_session_collapsed == collapsed:
+                return
+            try:
+                validated = persist_config_updates(
+                    config,
+                    {"terminal_session_collapsed": collapsed},
+                    explicit_path=config_path,
+                )
+            except Exception as exc:
+                self._append_conversation_line(
+                    f"warning> Could not persist session panel state: {exc}"
+                )
+                return
+            config.terminal_session_collapsed = validated.terminal_session_collapsed
+
+        def _apply_session_collapsed(self, collapsed: bool) -> None:
+            self.query_one("#session").set_class(collapsed, "collapsed")
+            self.query_one("#toggle-session", Button).label = "›" if collapsed else "‹"
 
         async def on_select_changed(self, event: Select.Changed) -> None:
             if event.select.id != "mode-select":
@@ -448,10 +798,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             if not text:
                 return
             self.vm.conversation.extend(text.splitlines())
-            conversation = self.query_one("#conversation", RichLog)
-            conversation.clear()
-            for line in self.vm.conversation[-300:]:
-                conversation.write(render_conversation_line(line))
+            self._sync_conversation()
             self._refresh_status()
 
         def _apply_configured_terminal_theme(self) -> None:
@@ -542,6 +889,47 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 placeholder="Search for working spinners...",
             )
 
+        async def _select_model_interactive(self) -> None:
+            config = application.session.config
+            self._append_conversation_line(
+                f"command> Fetching models from {config.base_url} ..."
+            )
+            try:
+                models = await list_available_models(config)
+            except Exception as exc:
+                self._append_conversation_line(f"warning> Could not list models: {exc}")
+                return
+            current = config.model
+            self.search_commands(
+                [
+                    SimpleCommand(
+                        f"{model} (current)" if model == current else model,
+                        partial(self._persist_model, model),
+                        f"Switch the active model to {model}.",
+                    )
+                    for model in models
+                ],
+                placeholder="Search for a model...",
+            )
+
+        def _persist_model(self, model: str) -> None:
+            config = application.session.config
+            if config.model == model:
+                self._append_conversation_line(f"command> Model already set to {model}.")
+                return
+            try:
+                validated = persist_config_updates(
+                    config,
+                    {"model": model},
+                    explicit_path=config_path,
+                )
+            except Exception as exc:
+                self._append_conversation_line(f"warning> Could not switch model: {exc}")
+                return
+            config.model = validated.model
+            self._append_conversation_line(f"command> Updated model={config.model}. Applied now.")
+            self._refresh_status()
+
         def _persist_terminal_theme(self, theme) -> None:
             theme_name = getattr(theme, "name", self.theme)
             config = application.session.config
@@ -560,7 +948,47 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 return
             config.terminal_theme = validated.terminal_theme
 
+        def _copy_selection(self) -> bool:
+            """Copy any active drag-selection to the clipboard.
+
+            Returns True when something was copied so callers can treat the
+            keystroke as "copy" instead of its usual action.
+            """
+            try:
+                selected = self.screen.get_selected_text()
+            except Exception:
+                selected = None
+            # The prompt is a TextArea, which keeps its own mouse/keyboard
+            # selection internally and never feeds the screen-level selection
+            # that get_selected_text() reads. So a drag inside the input comes
+            # back empty here — fall back to the focused input's own selection.
+            if not selected:
+                focused = self.focused
+                if isinstance(focused, MultilineInput):
+                    selected = focused.selected_text
+            if not selected:
+                return False
+            # Textual's copy_to_clipboard relies on the terminal honouring an
+            # OSC 52 escape sequence — macOS Terminal.app and several
+            # multiplexers ignore it. Shell out to the OS clipboard tool too
+            # so the copy actually lands, even when OSC 52 is a no-op.
+            self.copy_to_clipboard(selected)
+            copy_to_system_clipboard(selected)
+            self.screen.clear_selection()
+            self.notify("Texto copiado para a área de transferência.", timeout=2)
+            return True
+
+        def on_mouse_down(self, event) -> None:
+            # Right-click copies the current selection, like a terminal's
+            # context action. Left/middle clicks fall through untouched.
+            if getattr(event, "button", 0) == 3 and self._copy_selection():
+                event.stop()
+
         async def action_cancel_or_quit(self) -> None:
+            # A drag-selection takes priority: Ctrl+C copies it (like a
+            # terminal) and only cancels/quits when nothing is selected.
+            if self._copy_selection():
+                return
             if self.vm.status not in {"READY", "STARTING"}:
                 await self.controller.cancel()
             else:
@@ -570,12 +998,51 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self.vm.conversation.clear()
             self.vm.plan_visible = False
             self.vm.plan_steps = []
-            self.query_one("#conversation", RichLog).clear()
+            await self.query_one("#conversation", VerticalScroll).remove_children()
+            self.query_one("#stream-tail", Static).update("")
+            self._committed = 0
             self._refresh_status()
 
         async def action_quit(self) -> None:
-            await application.close()
+            # A second Ctrl+Q while armed bails out immediately, no matter what the
+            # backend is doing — the graceful close keeps running in the background.
+            if self._force_quit_armed:
+                self.exit()
+                return
+            # First press: attempt a graceful shutdown, but never let it freeze the
+            # terminal. If close() does not finish promptly (the usual cause is the
+            # model hanging mid-request, which the cancel signal can't interrupt
+            # until the HTTP call returns), arm force-quit and tell the user to
+            # press again — mirroring how Claude Code handles a stuck exit.
+            # Shield so a timeout leaves the close running in the background
+            # instead of cancelling it half-way (which could leave the HTTP client
+            # half-closed); keep a reference so the task isn't GC'd while pending.
+            self._close_task = asyncio.ensure_future(application.close())
+            try:
+                await asyncio.wait_for(asyncio.shield(self._close_task), timeout=2.0)
+            except asyncio.TimeoutError:
+                self._arm_force_quit()
+                return
+            except Exception:
+                # A failed close still shouldn't trap the user in the terminal.
+                self.exit()
+                return
             self.exit()
+
+        def _arm_force_quit(self) -> None:
+            self._force_quit_armed = True
+            self.notify(
+                "Saída travada — o modelo não respondeu. "
+                "Pressione Ctrl+Q novamente para forçar a saída.",
+                severity="warning",
+                timeout=5.0,
+            )
+            # Disarm after a short window so a much later Ctrl+Q starts over with a
+            # fresh graceful-close attempt instead of force-quitting unexpectedly.
+            self.set_timer(5.0, self._disarm_force_quit)
+
+        def _disarm_force_quit(self) -> None:
+            self._force_quit_armed = False
 
         def _refresh_status(self) -> None:
             self.query_one("#statusline", Static).update(
@@ -618,7 +1085,9 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 f"usage: {self.vm.cumulative_usage}\n"
                 f"state: {application.orchestrator.state.value}\n"
                 f"tools: {tools}\n\n"
-                "keys: Ctrl+C cancel/quit | Ctrl+L clear"
+                "keys: Ctrl+C copiar seleção / cancelar | Ctrl+L limpar\n"
+                "input: Enter envia · Shift+Enter/Ctrl+J nova linha\n"
+                "copiar: selecione com o mouse, botão direito ou Ctrl+C"
             )
 
     return CodeAITerminalApp()

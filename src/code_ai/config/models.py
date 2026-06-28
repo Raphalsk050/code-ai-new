@@ -325,6 +325,7 @@ class AppConfig:
     sampling: SamplingConfig = field(default_factory=SamplingConfig)
     language: str = "en"
     model: str = "gemma4:31b-cloud"
+    debug: bool = False
     show_ui: bool = True
     ssl_verification: bool = False
     use_remote_conversation_state: bool = True
@@ -332,11 +333,16 @@ class AppConfig:
     workspace: Path = field(default_factory=Path.cwd)
     context_compression_threshold: float = 0.82
     context_compression_target: float = 0.55
-    output_token_reserve: int = 4096
+    output_token_reserve: int = 32768
     headless_event_format: str = "text"
     terminal_theme: str = "textual-dark"
     terminal_banner_font: str = "tarty2"
     terminal_spinner: str = "ascii"
+    terminal_session_collapsed: bool = False
+    learn: bool = True
+    # Directory for persistent cross-session failure memories. ``None`` resolves
+    # to ``<config dir>/memories`` at startup; tests point it at a temp dir.
+    memories_dir: str | None = None
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> AppConfig:
@@ -360,6 +366,7 @@ class AppConfig:
             sampling=sampling,
             language=str(data.get("language", "en")),
             model=str(data.get("model", "gemma4:31b-cloud")),
+            debug=bool(data.get("debug", False)),
             show_ui=bool(data.get("show_ui", True)),
             ssl_verification=bool(data.get("ssl_verification", False)),
             use_remote_conversation_state=bool(data.get("use_remote_conversation_state", True)),
@@ -367,11 +374,16 @@ class AppConfig:
             workspace=workspace,
             context_compression_threshold=float(data.get("context_compression_threshold", 0.82)),
             context_compression_target=float(data.get("context_compression_target", 0.55)),
-            output_token_reserve=int(data.get("output_token_reserve", 4096)),
+            output_token_reserve=int(data.get("output_token_reserve", 32768)),
             headless_event_format=str(data.get("headless_event_format", "text")),
             terminal_theme=str(data.get("terminal_theme", "textual-dark")),
             terminal_banner_font=str(data.get("terminal_banner_font", "tarty2")),
             terminal_spinner=str(data.get("terminal_spinner", "ascii")),
+            terminal_session_collapsed=bool(data.get("terminal_session_collapsed", False)),
+            learn=bool(data.get("learn", True)),
+            memories_dir=(
+                str(data["memories_dir"]) if data.get("memories_dir") is not None else None
+            ),
         )
         config.validate()
         return config

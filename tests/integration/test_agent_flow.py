@@ -578,7 +578,11 @@ class FakeDirectGreetingProvider:
 
     async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
         self.requests.append(request)
-        assert request.tools == []
+        # Fail-open: tools stay exposed even for a turn classified as chat, so a
+        # misclassified implementation request is never handed a tool-less prompt
+        # (which is what makes weak models print the call as text). The greeting
+        # is still not pushed into the agentic task framing.
+        assert request.tools, "tools should stay exposed (fail-open)"
         assert not any(
             "Runtime task state" in message.content for message in request.messages
         )
@@ -601,7 +605,7 @@ class FakeDirectGreetingProvider:
         return None
 
 
-async def test_direct_greeting_does_not_expose_tools_or_require_complete_task(tmp_path) -> None:
+async def test_direct_greeting_answers_directly_without_forcing_agentic_flow(tmp_path) -> None:
     config = AppConfig.from_mapping(
         {"api_mode": "ollama", "workspace": str(tmp_path), "model": "fake"}
     )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from code_ai.config.models import AppConfig
 from code_ai.providers.models import Message, ModelRequest, ProviderCapabilities, ToolCall
 from code_ai.providers.ollama import (
     _ollama_reasoning_delta,
@@ -38,6 +39,7 @@ class _FakeOpenAIClient:
 def _responses_provider(events: list[dict[str, object]]) -> OpenAIResponsesProvider:
     provider = object.__new__(OpenAIResponsesProvider)
     provider._client = _FakeOpenAIClient(events)
+    provider._config = AppConfig()
     provider._remote_state_supported = False
     provider._sampling_supported = False
     provider._capabilities = ProviderCapabilities(remote_conversation_state=False)
@@ -261,3 +263,56 @@ async def test_responses_function_call_argument_delta_is_not_visible_text() -> N
     assert events[-1].response.tool_calls == [
         ToolCall(id="call_1", name="execute_command", arguments={"command": "pwd"})
     ]
+
+
+def _config(**overrides):
+    from code_ai.config.models import AppConfig
+
+    config = object.__new__(AppConfig)
+    config.api_mode = overrides.get("api_mode", "completions")
+    config.base_url = overrides.get("base_url", "https://api.example.com/v1")
+    return config
+
+
+def test_models_endpoint_openai_compatible():
+    from code_ai.providers.model_listing import models_endpoint
+
+    assert (
+        models_endpoint(_config(base_url="https://api.example.com/v1"))
+        == "https://api.example.com/v1/models"
+    )
+    # A missing trailing slash must still land on /v1/models, not clobber /v1.
+    assert (
+        models_endpoint(_config(base_url="https://api.example.com/v1/"))
+        == "https://api.example.com/v1/models"
+    )
+
+
+def test_models_endpoint_native_ollama():
+    from code_ai.providers.model_listing import models_endpoint
+
+    assert (
+        models_endpoint(_config(api_mode="ollama", base_url="http://localhost:11434/v1"))
+        == "http://localhost:11434/api/tags"
+    )
+
+
+def test_extract_model_ids_openai_shape():
+    from code_ai.providers.model_listing import extract_model_ids
+
+    payload = {"object": "list", "data": [{"id": "gpt-x"}, {"id": "Alpha"}, {"id": "gpt-x"}]}
+    assert extract_model_ids(payload) == ["Alpha", "gpt-x"]
+
+
+def test_extract_model_ids_ollama_shape():
+    from code_ai.providers.model_listing import extract_model_ids
+
+    payload = {"models": [{"name": "llama3:latest"}, {"name": "qwen:7b"}]}
+    assert extract_model_ids(payload) == ["llama3:latest", "qwen:7b"]
+
+
+def test_extract_model_ids_handles_empty_and_bare_strings():
+    from code_ai.providers.model_listing import extract_model_ids
+
+    assert extract_model_ids({}) == []
+    assert extract_model_ids(["b", "a", "a"]) == ["a", "b"]

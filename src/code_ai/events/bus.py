@@ -38,16 +38,23 @@ class AsyncEventBus:
         source: str = "core",
         event_version: int = 1,
     ) -> EventEnvelope:
-        envelope = await self._next_envelope(
-            event_type=event_type,
-            payload=payload,
-            source=source,
-            event_version=event_version,
-        )
-        await self._publish(envelope)
-        return envelope
+        # Sequence assignment and delivery happen under one lock so subscribers
+        # always observe events in emission order. Without this, concurrent
+        # emitters (e.g. tools running in a parallel batch) could be delivered
+        # out of order, scrambling the conversation transcript. Subscribers must
+        # therefore not emit back onto this bus while handling an event, or they
+        # would deadlock; today none do.
+        async with self._lock:
+            envelope = self._make_envelope(
+                event_type=event_type,
+                payload=payload,
+                source=source,
+                event_version=event_version,
+            )
+            await self._deliver(envelope)
+            return envelope
 
-    async def _next_envelope(
+    def _make_envelope(
         self,
         *,
         event_type: str,
@@ -55,19 +62,19 @@ class AsyncEventBus:
         source: str,
         event_version: int,
     ) -> EventEnvelope:
-        async with self._lock:
-            self._sequence += 1
-            sequence = self._sequence
+        # Caller must hold ``self._lock``.
+        self._sequence += 1
         return EventEnvelope.create(
             event_type=event_type,
             session_id=self.session_id,
-            sequence=sequence,
+            sequence=self._sequence,
             payload=payload,
             source=source,
             event_version=event_version,
         )
 
-    async def _publish(self, envelope: EventEnvelope) -> None:
+    async def _deliver(self, envelope: EventEnvelope) -> None:
+        # Caller must hold ``self._lock``.
         failures: list[str] = []
         for subscriber in list(self._subscribers):
             try:
@@ -79,9 +86,17 @@ class AsyncEventBus:
                 failures.append(type(exc).__name__)
 
         if failures and envelope.event_type != "warning":
-            warning = await self._next_envelope(
+            detail = ", ".join(sorted(set(failures)))
+            warning = self._make_envelope(
                 event_type="warning",
-                payload={"message": "Event subscriber failed.", "failures": failures},
+                payload={
+                    "message": (
+                        f"Event subscriber failed while handling "
+                        f"{envelope.event_type} ({detail})."
+                    ),
+                    "failures": failures,
+                    "event_type": envelope.event_type,
+                },
                 source="events",
                 event_version=1,
             )

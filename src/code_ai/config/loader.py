@@ -38,8 +38,8 @@ def load_config(
     file_data = _read_config_file(path.expanduser())
     data.update(file_data)
 
-    if "API_KEY" in os.environ:
-        data["api_key"] = os.environ["API_KEY"]
+    if "OPENAI_API_KEY" in os.environ:
+        data["api_key"] = os.environ["OPENAI_API_KEY"]
     if "BASE_URL" in os.environ:
         data["base_url"] = os.environ["BASE_URL"]
 

@@ -8,6 +8,8 @@ from typing import Any
 
 from code_ai.config.models import AppConfig
 from code_ai.core.errors import ProviderError, TransientProviderError
+from code_ai.providers.base import build_openai_http_client
+from code_ai.providers.debug import ModelDebugLogger
 from code_ai.providers.models import (
     FinishReason,
     ModelRequest,
@@ -132,6 +134,7 @@ class OpenAIResponsesProvider:
             base_url=config.base_url,
             timeout=config.budgets.model_timeout(),
             max_retries=0,
+            http_client=build_openai_http_client(config),
         )
         self._remote_state_supported = config.use_remote_conversation_state
         self._sampling_supported = True
@@ -216,6 +219,10 @@ class OpenAIResponsesProvider:
         if self._sampling_supported:
             kwargs.update(self._config.sampling.responses_kwargs())
 
+        debug = ModelDebugLogger.for_request(self._config, provider="openai_responses")
+        if debug:
+            debug.log_request(kwargs)
+
         try:
             stream = await self._client.responses.create(**kwargs)
         except Exception as exc:
@@ -239,6 +246,8 @@ class OpenAIResponsesProvider:
         usage: TokenUsage | None = None
 
         async for event in stream:
+            if debug:
+                debug.log_raw_chunk(event)
             event_type = str(object_get(event, "type", ""))
             is_completion_event = event_type in {"response.completed", "response.done"}
             delta = _text_delta_from_event(event_type, event)
@@ -269,17 +278,20 @@ class OpenAIResponsesProvider:
                         text_parts.append(normalized)
 
         finish = FinishReason.TOOL_CALLS if tool_calls else FinishReason.STOP
+        response = ModelResponse(
+            text="".join(text_parts),
+            reasoning="".join(reasoning_parts),
+            tool_calls=tool_calls,
+            usage=usage,
+            finish_reason=finish,
+            response_id=response_id,
+            raw_provider_name="openai_responses",
+        )
+        if debug:
+            debug.log_response(response)
         yield ProviderEvent(
             kind="completed",
-            response=ModelResponse(
-                text="".join(text_parts),
-                reasoning="".join(reasoning_parts),
-                tool_calls=tool_calls,
-                usage=usage,
-                finish_reason=finish,
-                response_id=response_id,
-                raw_provider_name="openai_responses",
-            ),
+            response=response,
             usage=usage,
         )
 

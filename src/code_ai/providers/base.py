@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from code_ai.providers.models import (
     ModelRequest,
@@ -9,6 +9,28 @@ from code_ai.providers.models import (
     ProviderCapabilities,
     ProviderEvent,
 )
+
+if TYPE_CHECKING:
+    from code_ai.config.models import AppConfig
+
+
+def build_openai_http_client(config: AppConfig) -> Any | None:
+    """Build the httpx client the OpenAI SDK should use, honoring ssl_verification.
+
+    SSL verification defaults to disabled (``ssl_verification=False``) so that
+    self-signed or intercepting proxies in front of OpenAI-compatible endpoints
+    work out of the box, mirroring the native Ollama provider. Returns ``None``
+    when httpx is unavailable so the SDK falls back to its own default client.
+    """
+
+    try:
+        import httpx
+    except Exception:  # pragma: no cover - httpx ships with the openai package
+        return None
+    return httpx.AsyncClient(
+        verify=config.ssl_verification,
+        timeout=config.budgets.model_timeout(),
+    )
 
 
 class ModelProvider(Protocol):

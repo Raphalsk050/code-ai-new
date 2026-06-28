@@ -42,6 +42,7 @@ class CompressionResult:
     compressed: bool
     active_tokens: int
     estimated: bool
+    previous_tokens: int = 0
 
 
 class ContextCompressor:
@@ -85,13 +86,26 @@ class ContextCompressor:
         self,
         conversation: ConversationState,
         tools: list[ToolDefinition],
+        *,
+        force: bool = False,
     ) -> CompressionResult:
+        """Summarize older context if needed (or always, when ``force=True``).
+
+        ``force`` powers the manual ``/compact`` command: it skips the
+        threshold check so the user's request always runs immediately, but
+        still no-ops when there is no summarizable history (just the recent
+        turns we never touch) so it never fabricates a pointless summary.
+        """
         counted = self.counter.count_request(conversation.messages, tools)
         budget = self.budget
         if budget <= 0:
             raise ContextCapacityError("output_token_reserve leaves no input context capacity.")
-        if counted.tokens <= int(budget * self.threshold):
-            return CompressionResult(False, counted.tokens, counted.estimated)
+        has_summarizable_history = len(conversation.messages) > _RECENT_TURNS_KEPT
+        below_threshold = counted.tokens <= int(budget * self.threshold)
+        if not force and below_threshold:
+            return CompressionResult(False, counted.tokens, counted.estimated, counted.tokens)
+        if force and not has_summarizable_history:
+            return CompressionResult(False, counted.tokens, counted.estimated, counted.tokens)
 
         await self.event_bus.emit(
             "context.compression.started",
@@ -115,7 +129,7 @@ class ContextCompressor:
             {"active_tokens": recounted.tokens, "estimated": recounted.estimated},
             source="context",
         )
-        return CompressionResult(True, recounted.tokens, recounted.estimated)
+        return CompressionResult(True, recounted.tokens, recounted.estimated, counted.tokens)
 
     async def _compress_in_place(self, conversation: ConversationState) -> None:
         messages = conversation.messages

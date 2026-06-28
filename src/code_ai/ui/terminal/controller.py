@@ -19,8 +19,14 @@ class TerminalController:
         if text.strip():
             await self.app.submit_user_message(text.strip())
 
-    async def compact(self) -> None:
-        await self.app.request_context_compression()
+    async def compact(self) -> str:
+        result = await self.app.request_context_compression()
+        if not result.compressed:
+            return "command> Nothing to compact — conversation is already short."
+        return (
+            "command> Compacted conversation context: "
+            f"{result.previous_tokens} → {result.active_tokens} tokens."
+        )
 
     async def cancel(self) -> None:
         await self.app.cancel_current_turn()
@@ -28,11 +34,14 @@ class TerminalController:
     async def set_planner_mode(self, mode: str) -> None:
         await self.app.set_planner_mode(mode)
 
+    def has_active_plan(self) -> bool:
+        return self.app.has_active_plan()
+
+    async def start_plan_execution(self) -> bool:
+        return await self.app.start_plan_execution()
+
     async def set_permission_mode(self, mode: str) -> None:
         await self.app.set_permission_mode(mode)
-
-    async def deep_plan(self) -> str:
-        return await self.app.request_deep_plan(write_to_workspace=False)
 
     async def replan(self, reason: str | None = None) -> str:
         return await self.app.request_replan(reason=reason)

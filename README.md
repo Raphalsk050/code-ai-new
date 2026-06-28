@@ -59,7 +59,7 @@ Safe example:
 }
 ```
 
-`API_KEY` and `BASE_URL` override file values. API keys are redacted in config output, logs, events, tests, and UI-facing payloads.
+`OPENAI_API_KEY` and `BASE_URL` override file values. API keys are redacted in config output, logs, events, tests, and UI-facing payloads.
 
 ## API Modes
 

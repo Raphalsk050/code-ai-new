@@ -11,6 +11,7 @@ from code_ai.core.errors import ToolArgumentError, ToolExecutionError
 from code_ai.events.bus import AsyncEventBus
 from code_ai.tools.base import ToolContext
 from code_ai.tools.process import ExecuteCommandTool
+from code_ai.tools.process.execute_command import _strip_timeout_wrapper
 from code_ai.util.paths import WorkspacePolicy
 
 
@@ -59,6 +60,22 @@ async def test_execute_command_defaults_to_workspace(tmp_path) -> None:
     assert result["stdout"].strip() == str(tmp_path)
 
 
+@pytest.mark.parametrize("cwd_value", [None, "", ".", "None", "null", "  none  "])
+async def test_execute_command_tolerates_sentinel_cwd(tmp_path, cwd_value) -> None:
+    # Models often fill the nullable cwd with a stringified sentinel; it must map
+    # to the workspace root instead of failing with "Path does not exist: None".
+    context = make_context(tmp_path)
+    tool = ExecuteCommandTool()
+    result = await tool.execute({"command": "pwd", "cwd": cwd_value}, context)
+    assert result["cwd"] == str(tmp_path)
+
+
+def test_relative_workdir_maps_sentinels_to_root(tmp_path) -> None:
+    policy = WorkspacePolicy.from_path(tmp_path)
+    for sentinel in (None, "", ".", "None", "NULL", " none "):
+        assert policy.relative_workdir(sentinel) == tmp_path
+
+
 async def test_execute_command_keeps_legacy_argv_execution(tmp_path) -> None:
     context = make_context(tmp_path)
     tool = ExecuteCommandTool()
@@ -86,10 +103,10 @@ async def test_execute_command_rejects_shell_mode(tmp_path) -> None:
 
 
 async def test_execute_command_does_not_inherit_api_key(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("API_KEY", "secret-value")
+    monkeypatch.setenv("OPENAI_API_KEY", "secret-value")
     context = make_context(tmp_path)
     tool = ExecuteCommandTool()
-    script = "import os; print(os.environ.get('API_KEY', 'missing'))"
+    script = "import os; print(os.environ.get('OPENAI_API_KEY', 'missing'))"
     result = await tool.execute(
         {"command": f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"},
         context,
@@ -119,3 +136,48 @@ async def test_execute_command_missing_binary_is_tool_error(tmp_path) -> None:
     tool = ExecuteCommandTool()
     with pytest.raises(ToolExecutionError, match="failed to start"):
         await tool.execute({"command": "definitely-missing-code-ai-binary"}, context)
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected_inner", "expected_seconds"),
+    [
+        (["timeout", "30", "pytest"], ["pytest"], 30.0),
+        (["gtimeout", "1.5m", "pytest", "-v"], ["pytest", "-v"], 90.0),
+        (["timeout", "-k", "5", "-s", "KILL", "10", "ls"], ["ls"], 10.0),
+        (["timeout", "--kill-after=5s", "--", "ls", "-l"], ["ls", "-l"], None),
+        (["timeout", "ls"], ["ls"], None),  # token "ls" is not a duration
+        (["pytest", "-v"], ["pytest", "-v"], None),  # not a wrapper, untouched
+        (["timeout"], ["timeout"], None),  # bare wrapper, nothing to run
+    ],
+)
+def test_strip_timeout_wrapper(argv, expected_inner, expected_seconds) -> None:
+    inner, seconds = _strip_timeout_wrapper(argv)
+    assert inner == expected_inner
+    assert seconds == expected_seconds
+
+
+async def test_execute_command_unwraps_timeout_prefix(tmp_path) -> None:
+    context = make_context(tmp_path)
+    tool = ExecuteCommandTool()
+    # `timeout` may not exist on the host (e.g. macOS); the tool must run the
+    # inner command anyway instead of failing to start the wrapper binary.
+    result = await tool.execute(
+        {"command": f"timeout 30 {shlex.quote(sys.executable)} -c {shlex.quote('print(1)')}"},
+        context,
+    )
+    assert result["exit_code"] == 0
+    assert result["stdout"].strip() == "1"
+    assert result["argv"][0] != "timeout"
+
+
+async def test_execute_command_wrapper_duration_bounds_execution(tmp_path) -> None:
+    context = make_context(tmp_path)
+    tool = ExecuteCommandTool()
+    # The wrapper's duration is honored as the effective timeout when the caller
+    # passes no explicit one, so a too-long inner command still times out.
+    sleep = "import time; time.sleep(2)"
+    with pytest.raises(ToolExecutionError, match="timed out"):
+        await tool.execute(
+            {"command": f"timeout 0.1 {shlex.quote(sys.executable)} -c {shlex.quote(sleep)}"},
+            context,
+        )

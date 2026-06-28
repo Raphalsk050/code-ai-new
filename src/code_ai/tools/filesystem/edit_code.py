@@ -23,7 +23,8 @@ class _Replacement:
 class EditCodeTool:
     name = "edit_code"
     description = (
-        "Apply all-or-nothing literal text replacements with SHA-256 guard and unified diff."
+        "Apply an all-or-nothing literal text replacement and return a unified diff. "
+        "old_text must match the file verbatim; the edit aborts if it is not found."
     )
     capabilities = frozenset({ToolCapability.LOCAL_WRITE})
     input_schema = tool_schema(
@@ -40,13 +41,13 @@ class EditCodeTool:
                 "type": "string",
                 "description": "Replacement text inserted in place of old_text.",
             },
-            "expected_occurrences": {
-                "type": "integer",
-                "description": "Required match count for old_text; fails on mismatch. Default 1.",
-            },
-            "expected_sha256": {
+            "reason": {
                 "type": "string",
-                "description": "Optional current-file SHA-256; edit aborts on mismatch.",
+                "description": (
+                    "One or two plain-language sentences explaining why this edit is needed and "
+                    "what it accomplishes. Shown to the user in the approval prompt before they "
+                    "decide whether to allow it."
+                ),
             },
         },
         required=("path", "old_text", "new_text"),
@@ -60,10 +61,6 @@ class EditCodeTool:
 
         path = context.workspace.resolve(path_value, must_exist=True)
         original, old_hash = read_text_file(path)
-        expected_hash = arguments.get("expected_sha256")
-        if expected_hash and expected_hash != old_hash:
-            raise ToolExecutionError("expected_sha256 does not match existing file.")
-
         replacements = self._build_replacements(original, edits)
         edited = self._apply(original, replacements)
         diff = "".join(
@@ -162,7 +159,4 @@ def _coerce_edits(arguments: dict[str, Any]) -> list[Any]:
         raise ToolArgumentError("old_text is required.")
     if not isinstance(new_text, str):
         raise ToolArgumentError("new_text is required.")
-    edit: dict[str, Any] = {"old": old_text, "new": new_text}
-    if arguments.get("expected_occurrences") is not None:
-        edit["expected_occurrences"] = arguments.get("expected_occurrences")
-    return [edit]
+    return [{"old": old_text, "new": new_text}]

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from importlib import resources
 
+from rich.console import Console, RenderableType
+from rich.markdown import Markdown
 from rich.text import Text
+
+from textual.content import Content
 
 try:
     from art import text2art
@@ -55,7 +60,6 @@ CODE_AI_LOGO_STYLES = (
     "bold rgb(255,80,100)",
     "bold rgb(255,230,90)",
 )
-THINKING_LINE_STYLE = "#6b7280"
 
 # --- Working indicator ("the agent is busy" animation) ----------------------
 # AgentState values that mean the agent is actively doing something; the
@@ -392,9 +396,158 @@ def render_context_meter(
     return text
 
 
-def render_conversation_line(line: str) -> str | Text:
-    if line.startswith("thinking> ") or line.startswith("model> thinking"):
-        return Text(line, style=THINKING_LINE_STYLE)
+# Prefix the orchestrator uses for the assistant's prose answer. Streaming
+# deltas concatenate onto a single ``ai> `` buffer entry, so a finished answer is
+# one transcript line whose body (after the prefix) is the full Markdown source.
+ASSISTANT_LINE_PREFIX = "ai> "
+# Fallback render width when the conversation pane size is not known yet.
+_DEFAULT_MARKDOWN_WIDTH = 80
+
+
+def markdown_to_content(body: str, width: int) -> Content:
+    """Render Markdown to a Textual-native :class:`Content`.
+
+    The terminal chat mounts every transcript line as a selectable ``Static``,
+    which only works because plain lines become native ``Content`` visuals —
+    Textual's mouse machinery (hover, scroll, drag-to-select, copy) operates on
+    ``Content``/``Text`` visuals, not on wrapped Rich renderables (a
+    ``RichVisual`` returns ``None`` from ``get_selection`` and cannot be copied).
+
+    So instead of handing Textual a Rich ``Markdown`` object directly, render it
+    to styled segments here and rebuild them as a ``Content``: the answer still
+    shows headings, lists and highlighted code, but it stays selectable and
+    copyable like the rest of the conversation.
+    """
+    width = max(20, width)
+    console = Console(width=width)
+    segments = console.render(Markdown(body), console.options.update_width(width))
+    text = Text()
+    for segment in segments:
+        if segment.control:
+            continue
+        text.append(segment.text, segment.style)
+    text.rstrip()
+    return Content.from_rich_text(text)
+
+
+# Speaker chips: a colored "tag" (dark bold text on a colored background) marking
+# the only two things that are real *messages* — the user's prompt and the
+# agent's answer. Green is the statusline color, orange the permission button's
+# border, so the chat reads as part of the same palette. Everything else (the
+# model's thinking, tool calls, plans, evidence) is the agent's *work trace*:
+# subordinate, so it is dimmed and indented via "turn-trace" rather than chipped.
+_CHIP_TEXT_COLOR = "#071018"  # the screen background, for contrast on a bright chip
+_USER_COLOR = "#48d17a"  # statusline green
+_MODEL_COLOR = "#ff9f1c"  # permission-button / logo orange
+# Tool calls are actions, not messages: a cool cyan chip carries the tool name so
+# the eye can pick out *which* tool ran, distinct from the green/orange speakers.
+_TOOL_COLOR = "#4fc3dc"
+# Surrounding (non-chip) words on a tool line stay in the dim trace gray so the
+# chip is the only thing that pops, matching the .turn-trace CSS color.
+_TRACE_TEXT_STYLE = "#6b7280"
+
+# Line prefixes that make up the agent's working trace. warning>/error> are left
+# out on purpose so problems keep full prominence instead of fading into it.
+_TRACE_PREFIXES = (
+    "model>",
+    "thinking>",
+    "working>",
+    "tool>",
+    "evidence>",
+    "plan>",
+    "approval>",
+    "policy>",
+    "completion>",
+    "permission>",
+)
+# Multi-line trace text (the model's reasoning) carries its own blank lines; they
+# are collapsed so the dim trace stays compact instead of sprawling.
+_BLANK_RUN = re.compile(r"\n[ \t]*\n+")
+
+# "model> requested <name> tool" — the name is chipped as the tool that ran.
+_TOOL_REQUEST = re.compile(r"^model> requested (?P<name>\S+) tool$")
+_TOOL_LINE_PREFIX = "tool> "
+
+
+def _chip(label: str, color: str) -> Content:
+    """A colored speaker chip (dark bold text on a colored background)."""
+    return Content.styled(f" {label} ", f"bold {_CHIP_TEXT_COLOR} on {color}")
+
+
+def thinking_body(line: str) -> str | None:
+    """Reasoning text for a ``thinking>`` line (blank lines collapsed), else None.
+
+    Used to fold the model's reasoning into a collapsible block at commit time,
+    mirroring the VS Code extension's hideable "Thinking" section. The live
+    streaming tail still shows it inline via :func:`render_conversation_line`.
+    """
+    prefix = "thinking> "
+    if not line.startswith(prefix):
+        return None
+    return _BLANK_RUN.sub("\n", line[len(prefix) :])
+
+
+def conversation_line_class(line: str) -> str:
+    """CSS class for a committed transcript line, driving the spacing hierarchy.
+
+    Only two things are real messages — the user prompt and the agent's answer —
+    and they get the biggest spacing. Everything else is the agent's work trace
+    ("turn-trace"): dimmed, indented and packed tight so it reads as subordinate.
+    """
+    if line.startswith("you> "):
+        return "turn-user"
+    if line.startswith(ASSISTANT_LINE_PREFIX):
+        return "turn-answer"
+    if line.startswith(_TRACE_PREFIXES):
+        return "turn-trace"
+    return ""
+
+
+def render_conversation_line(
+    line: str, *, rich_markdown: bool = False, width: int | None = None
+) -> RenderableType:
+    """Render one committed transcript line.
+
+    The user prompt and the agent's answer read as chipped messages: a green
+    ``you`` chip inline, an orange ``model`` chip above the formatted answer.
+    With ``rich_markdown`` the answer renders as Markdown (headings, lists,
+    fenced code) to match the VS Code extension; the formatting is left off while
+    the line is still streaming, since partial Markdown renders badly.
+
+    Every other line — the model's thinking, tool calls, plans — is returned as
+    plain text and dimmed/indented by its ``turn-trace`` CSS class.
+    """
+    if rich_markdown and line.startswith(ASSISTANT_LINE_PREFIX):
+        body = line[len(ASSISTANT_LINE_PREFIX) :]
+        if body.strip():
+            answer = markdown_to_content(body, width or _DEFAULT_MARKDOWN_WIDTH)
+            return _chip("model", _MODEL_COLOR).append("\n").append(answer)
+    if line.startswith("you> "):
+        rest = line[len("you> ") :]
+        chip = _chip("you", _USER_COLOR)
+        return chip.append(Content.styled(f" {rest}", _USER_COLOR)) if rest else chip
+    request = _TOOL_REQUEST.match(line)
+    if request:
+        # The model asked to run a tool: keep the dim "model> requested … tool"
+        # framing, only the tool name is tinted so the eye lands on which tool.
+        return (
+            Content.styled("model> requested ", _TRACE_TEXT_STYLE)
+            .append(Content.styled(request["name"], f"bold {_TOOL_COLOR}"))
+            .append(Content.styled(" tool", _TRACE_TEXT_STYLE))
+        )
+    if line.startswith(_TOOL_LINE_PREFIX):
+        # A tool's lifecycle ("tool> <name> started/completed …"): tint only the
+        # tool name, status stays in the dim trace gray.
+        rest = line[len(_TOOL_LINE_PREFIX) :]
+        name, sep, status = rest.partition(" ")
+        result = Content.styled(_TOOL_LINE_PREFIX, _TRACE_TEXT_STYLE).append(
+            Content.styled(name, f"bold {_TOOL_COLOR}")
+        )
+        if sep:
+            result = result.append(Content.styled(f" {status}", _TRACE_TEXT_STYLE))
+        return result
+    if line.startswith(("thinking> ", "working> ")):
+        return _BLANK_RUN.sub("\n", line)
     return line
 
 
