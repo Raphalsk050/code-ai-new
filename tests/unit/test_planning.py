@@ -495,6 +495,31 @@ async def test_complete_plan_step_advances_model_checklist() -> None:
     assert snapshot["current_step"] == "Write the module"
 
 
+async def test_advancing_model_checklist_counts_as_progress() -> None:
+    # Regression: the model advancing its own checklist via complete_plan_step is
+    # real forward progress the user sees in the sidebar. progress_signature must
+    # change, otherwise the orchestrator's stall detector kills the turn mid-plan
+    # and the user never gets a final answer.
+    service = PlannerService(
+        config=PlannerConfig(),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    await service.begin_turn("Create PROGRESSO.md", provider_supports_tools=True)
+    await service.submit_agent_plan(["Write file", "Add roadmap", "Add notes space"])
+
+    before = service.progress_signature()
+    await service.record_tool_result(
+        tool_call_id="step_1",
+        tool_name="complete_plan_step",
+        payload={"completed_step": "Write file"},
+        success=True,
+    )
+    after = service.progress_signature()
+
+    assert after != before
+
+
 async def test_resume_keeps_plan_and_re_emits_active_sidebar() -> None:
     bus = AsyncEventBus(session_id="session")
     service = PlannerService(
