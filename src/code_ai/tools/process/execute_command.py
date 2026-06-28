@@ -20,8 +20,10 @@ class ExecuteCommandTool:
     description = (
         "Run a bounded non-interactive command inside the workspace. The command runs "
         "directly without a shell, so shell features and wrappers are unavailable: do not "
-        "prefix the command with 'timeout', 'time', 'env', or similar. Execution is already "
-        "time-bounded; pass the 'timeout' argument to control the limit."
+        "use pipes, redirects, '&&', globbing, or wrapper programs like 'timeout'/'time'. "
+        "To set environment variables, use the 'env' argument (a name->value map) instead "
+        "of a shell-style VAR=value prefix, which fails because there is no shell. "
+        "Execution is already time-bounded; pass the 'timeout' argument to control the limit."
     )
     capabilities = frozenset({ToolCapability.PROCESS})
     input_schema = tool_schema(
@@ -33,6 +35,15 @@ class ExecuteCommandTool:
             "cwd": {
                 "type": "string",
                 "description": "Workspace-relative working directory. Defaults to the root.",
+            },
+            "env": {
+                "type": "object",
+                "description": (
+                    "Environment variables to set for this command, as a name->value map "
+                    '(e.g. {"USE_FAKE_LLM": "true"}). Use this instead of a shell-style '
+                    "VAR=value prefix, which fails because the command runs without a shell."
+                ),
+                "additionalProperties": {"type": "string"},
             },
             "timeout": {
                 "type": "number",
@@ -80,7 +91,7 @@ class ExecuteCommandTool:
                 timeout=timeout,
                 event_bus=context.event_bus,
                 cancel_event=context.cancel_event,
-                extra_env=arguments.get("env") if isinstance(arguments.get("env"), dict) else None,
+                extra_env=_coerce_env(arguments.get("env")),
                 max_output_chars=context.config.budgets.max_tool_output_chars,
             )
         except CommandTimeoutError as exc:
@@ -147,6 +158,30 @@ def _strip_timeout_wrapper(argv: list[str]) -> tuple[list[str], float | None]:
     if not inner:
         return argv, None
     return inner, duration
+
+
+def _coerce_env(value: object) -> dict[str, str] | None:
+    """Validate the optional ``env`` map into ``{str: str}``.
+
+    Scalar values (numbers, booleans) are coerced to strings so a model that
+    passes ``{"PORT": 8080}`` is not punished with a hard failure; structured
+    values and non-string keys are rejected with a clear message.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ToolArgumentError("env must be a map of environment variable names to values.")
+    env: dict[str, str] = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not key:
+            raise ToolArgumentError("env names must be non-empty strings.")
+        if isinstance(item, bool):
+            env[key] = "true" if item else "false"
+        elif isinstance(item, (str, int, float)):
+            env[key] = str(item)
+        else:
+            raise ToolArgumentError(f"env value for {key!r} must be a string.")
+    return env or None
 
 
 def _coerce_argv(arguments: dict[str, Any]) -> list[str]:
