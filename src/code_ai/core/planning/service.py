@@ -786,14 +786,13 @@ class PlannerService:
     async def _accept_non_success_completion(
         self, claim: CompletionClaim
     ) -> CompletionDecision:
+        # A genuine "blocked"/"failed" outcome must never trap the agent: the model
+        # has decided it cannot proceed, so we always accept it and surface its
+        # summary. Prefer the structured remaining_issues/limitations when supplied;
+        # otherwise fall back to the summary so the user still sees a final message
+        # instead of the turn spinning to a budget/stall wind-down that discards it.
         if claim.outcome == "blocked" and not (claim.remaining_issues or claim.limitations):
-            return CompletionDecision(
-                accepted=False,
-                outcome=claim.outcome,
-                missing_requirements=(
-                    "Blocked completion requires remaining issues or limitations.",
-                ),
-            )
+            claim = claim.model_copy(update={"remaining_issues": [claim.summary]})
         if self.plan:
             self.plan.status = (
                 PlanStatus.BLOCKED if claim.outcome == "blocked" else PlanStatus.FAILED

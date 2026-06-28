@@ -379,6 +379,30 @@ async def test_model_plan_does_not_block_completion_once_change_is_verified() ->
     assert decision.accepted is True
 
 
+async def test_blocked_completion_is_accepted_without_structured_issues() -> None:
+    # A genuine "blocked" outcome must never trap the agent: even when the model
+    # only supplies a summary (no remaining_issues/limitations), completion is
+    # accepted and the summary surfaces, instead of the turn spinning to a
+    # budget/stall wind-down that discards the model's real explanation.
+    service = PlannerService(
+        config=PlannerConfig(double_check_completion=False),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    await service.begin_turn("Fix the insecure zsh directories", provider_supports_tools=True)
+
+    decision = await service.evaluate_completion(
+        {
+            "summary": "Needs sudo password; ~/.zshrc is outside the workspace.",
+            "outcome": "blocked",
+        }
+    )
+
+    assert decision.accepted is True
+    assert decision.outcome == "blocked"
+    assert decision.final_text == "Needs sudo password; ~/.zshrc is outside the workspace."
+
+
 def _capture(bus: AsyncEventBus) -> list:
     events: list = []
     bus.subscribe(lambda event: events.append(event))
