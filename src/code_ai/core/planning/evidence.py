@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
@@ -66,6 +67,7 @@ class EvidenceLedger:
         self._listed_keys: set[str] = set()
         self._search_keys: set[str] = set()
         self._web_keys: set[str] = set()
+        self._command_keys: set[str] = set()
 
     def record_tool_result(
         self,
@@ -76,6 +78,7 @@ class EvidenceLedger:
         tool_name: str,
         payload: dict[str, Any],
         success: bool,
+        is_verification_command: Callable[[list[str]], bool] | None = None,
     ) -> list[EvidenceRecord]:
         records = _records_from_payload(
             session_id=self.session_id,
@@ -86,6 +89,7 @@ class EvidenceLedger:
             payload=payload,
             success=success,
             max_summary_chars=self.max_summary_chars,
+            is_verification_command=is_verification_command,
         )
         for record in records:
             self._append(record)
@@ -145,6 +149,7 @@ class EvidenceLedger:
             len(self._listed_keys),
             len(self._search_keys),
             len(self._web_keys),
+            len(self._command_keys),
             tuple(sorted(self.changed_hashes.items())),
             self.latest_verification_passed,
             tuple(sorted(self.verification_hashes.items())),
@@ -182,6 +187,14 @@ class EvidenceLedger:
             self._search_keys.add(record.summary)
         elif record.evidence_type == EvidenceType.WEB_RESULT:
             self._web_keys.add(record.summary)
+        elif record.evidence_type in {
+            EvidenceType.COMMAND_SUCCEEDED,
+            EvidenceType.COMMAND_FAILED,
+        }:
+            # A non-verification command still moves the task forward when it is a
+            # new observation, so distinct runs count as progress while a repeated
+            # identical command does not.
+            self._command_keys.add(record.summary)
 
 
 def _records_from_payload(
@@ -194,6 +207,7 @@ def _records_from_payload(
     payload: dict[str, Any],
     success: bool,
     max_summary_chars: int,
+    is_verification_command: Callable[[list[str]], bool] | None = None,
 ) -> list[EvidenceRecord]:
     common = {
         "session_id": session_id,
@@ -293,12 +307,28 @@ def _records_from_payload(
     if tool_name == "execute_command":
         exit_code = payload.get("exit_code")
         command_success = success and exit_code == 0
+        # A command only counts as verification when it actually exercises the
+        # code (a test/build/typecheck/lint runner). A trivial exit-0 command
+        # (echo, ls, cat ...) is recorded as a neutral command run, so it can
+        # never satisfy the completion gate's verification requirement.
+        argv = payload.get("argv") or []
+        is_verification = is_verification_command(argv) if is_verification_command else True
+        if is_verification:
+            evidence_type = (
+                EvidenceType.VERIFICATION_PASSED
+                if command_success
+                else EvidenceType.VERIFICATION_FAILED
+            )
+        else:
+            evidence_type = (
+                EvidenceType.COMMAND_SUCCEEDED
+                if command_success
+                else EvidenceType.COMMAND_FAILED
+            )
         return [
             EvidenceRecord(
                 **common,
-                evidence_type=EvidenceType.VERIFICATION_PASSED
-                if command_success
-                else EvidenceType.VERIFICATION_FAILED,
+                evidence_type=evidence_type,
                 summary=_command_summary(payload, max_summary_chars),
                 command_argv=payload.get("argv"),
                 command_exit_code=exit_code if isinstance(exit_code, int) else None,

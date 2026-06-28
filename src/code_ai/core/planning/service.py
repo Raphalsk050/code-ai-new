@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from code_ai.config.models import PlannerConfig
@@ -21,6 +23,11 @@ from code_ai.core.planning.models import (
     TaskProfile,
 )
 from code_ai.core.planning.policy import PlannerToolPolicy, PolicyDecision
+from code_ai.core.verification import (
+    ProjectVerification,
+    detect_project_verification,
+    is_genuine_verification,
+)
 from code_ai.events.bus import AsyncEventBus
 from code_ai.events.models import utc_now_iso
 from code_ai.tools.output import bound_text
@@ -58,10 +65,15 @@ class PlannerService:
         config: PlannerConfig,
         event_bus: AsyncEventBus,
         session_id: str,
+        workspace: Path | None = None,
+        verification_detector: Callable[[Path], ProjectVerification] = detect_project_verification,
     ) -> None:
         self.config = config
         self.event_bus = event_bus
         self.session_id = session_id
+        self._workspace = workspace
+        self._verification_detector = verification_detector
+        self._project_verification: ProjectVerification | None = None
         self.policy = PlannerToolPolicy()
         self.advisory = config.advisory_tool_policy
         self.mode = PlannerMode(config.mode)
@@ -82,6 +94,45 @@ class PlannerService:
     @property
     def enabled(self) -> bool:
         return self.config.enabled
+
+    def project_verification(self) -> ProjectVerification:
+        """The detected verification capabilities of the workspace, cached.
+
+        Detection is lazy and best-effort: with no workspace, or none detected,
+        this returns an empty ``ProjectVerification`` and the completion gate
+        degrades gracefully instead of trapping the agent.
+        """
+        if self._project_verification is None:
+            if self._workspace is None:
+                self._project_verification = ProjectVerification()
+            else:
+                try:
+                    self._project_verification = self._verification_detector(self._workspace)
+                except Exception:
+                    self._project_verification = ProjectVerification()
+        return self._project_verification
+
+    def _is_verification_command(self, argv: list[str]) -> bool:
+        return is_genuine_verification(argv, self.project_verification())
+
+    def _verification_context_line(self) -> str:
+        """Tell the model the project's real verification command, when relevant.
+
+        Surfaced once a mutation task is implementing/verifying so the model runs
+        the project's own tests/build (not a trivial command) to prove the change
+        works. Stays silent for non-mutation/research tasks.
+        """
+        if not (self.profile and self.profile.requires_workspace_mutation):
+            return ""
+        if self.phase not in {
+            PlanningPhase.EXECUTE,
+            PlanningPhase.VERIFY,
+            PlanningPhase.REPAIR,
+        }:
+            return ""
+        if not _changes_require_verification(self.ledger.current_changed_paths()):
+            return ""
+        return f"Verification: {self.project_verification().prompt_hint()}\n"
 
     @property
     def current_step(self) -> PlanStep | None:
@@ -231,6 +282,7 @@ class PlannerService:
             tool_name=tool_name,
             payload=payload,
             success=success,
+            is_verification_command=self._is_verification_command,
         )
         for record in records:
             await self.event_bus.emit(
@@ -349,6 +401,7 @@ class PlannerService:
             f"Approved external gaps: {[gap.to_dict() for gap in self.approved_external_gaps]}\n"
             f"Recent evidence: {self.ledger.compact_recent(limit=8)}\n"
             f"Recommended tools now: {sorted(recommended_tool_names)}\n"
+            + self._verification_context_line()
             + plan_lines
         )
         if self.mode == PlannerMode.PLAN:
@@ -792,6 +845,17 @@ class PlannerService:
             source="core.planner",
         )
 
+    def _completion_verification_note(self, changed_paths: list[str]) -> str:
+        if self.ledger.latest_verification_evidence_id:
+            return f"Verified by evidence {self.ledger.latest_verification_evidence_id}."
+        code_changed = _changes_require_verification(changed_paths)
+        if code_changed and not self.project_verification().has_any:
+            return (
+                "Warning: no automated test/build system was detected in this "
+                "project, so the change was not automatically verified."
+            )
+        return "No verification evidence was required."
+
     async def _accept_success_completion(self, claim: CompletionClaim) -> None:
         if self.plan and self.current_step and self.current_step.kind == PlanStepKind.COMPLETE:
             self.current_step.status = PlanStepStatus.COMPLETED
@@ -800,11 +864,7 @@ class PlannerService:
         if self.agent_plan:
             self.agent_plan.complete_all()
         changed_paths = self.ledger.current_changed_paths()
-        verification = (
-            f"Verified by evidence {self.ledger.latest_verification_evidence_id}."
-            if self.ledger.latest_verification_evidence_id
-            else "No verification evidence was required."
-        )
+        verification = self._completion_verification_note(changed_paths)
         self.accepted_final_text = bound_text(
             "\n".join(
                 item
@@ -873,11 +933,13 @@ class PlannerService:
         has_file_change = self.ledger.has_success(
             EvidenceType.FILE_CREATED, EvidenceType.FILE_CHANGED
         )
-        # Documentation-only changes have nothing executable to verify, so the
-        # verification requirement does not apply to them — otherwise a task like
-        # writing a Markdown tracker could never complete cleanly.
-        verification_applies = _changes_require_verification(
-            self.ledger.current_changed_paths()
+        # Verification only applies when (a) the change is not documentation-only
+        # and (b) the project actually exposes a way to verify it. With no
+        # detectable test/build system we degrade gracefully and complete with a
+        # warning rather than trapping the agent demanding evidence it cannot get.
+        verification_applies = (
+            _changes_require_verification(self.ledger.current_changed_paths())
+            and self.project_verification().has_any
         )
         verified = (
             not self.config.require_verification_for_changes
