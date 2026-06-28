@@ -23,6 +23,23 @@ class CompleteTaskTool:
                 "type": "string",
                 "description": "One of 'success', 'blocked', or 'failed'. Defaults to 'success'.",
             },
+            "remaining_issues": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "When the outcome is 'blocked' or 'failed': the concrete obstacles "
+                    "that stopped completion (e.g. a command needs sudo, a path is "
+                    "outside the workspace)."
+                ),
+            },
+            "limitations": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "When the outcome is 'blocked' or 'failed': caveats or parts of the "
+                    "task left undone that the user should know about."
+                ),
+            },
         },
         required=("summary",),
     )
