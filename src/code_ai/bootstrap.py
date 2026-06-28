@@ -195,6 +195,7 @@ def build_application(
         config=config.planner,
         event_bus=event_bus,
         session_id=event_bus.session_id,
+        workspace=config.workspace,
     )
 
     def tool_context(cancel_event: asyncio.Event | None) -> ToolContext:

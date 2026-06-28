@@ -368,15 +368,20 @@ async def test_completion_requires_file_change_and_verification_evidence() -> No
     assert any("file-change" in item for item in rejected.missing_requirements)
 
 
-async def test_completion_requires_verification_once_files_change_even_if_unclassified() -> None:
+async def test_completion_requires_verification_once_files_change_even_if_unclassified(
+    tmp_path,
+) -> None:
     # "faça um jogo de pong" sits outside the mutation-marker set, so the surface
     # classifier reads it as CONVERSATION (requires_workspace_mutation is False).
     # But once the model actually writes a file, completion must still be backed by
-    # verification: the gate keys off real evidence, not the brittle label.
+    # verification: the gate keys off real evidence, not the brittle label. The
+    # project exposes a test runner, so verification genuinely applies.
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
     service = PlannerService(
         config=PlannerConfig(double_check_completion=False),
         event_bus=AsyncEventBus(session_id="session"),
         session_id="session",
+        workspace=tmp_path,
     )
     await service.begin_turn("faça um jogo de pong em python", provider_supports_tools=True)
     assert service.profile.requires_workspace_mutation is False
@@ -414,13 +419,15 @@ async def test_documentation_only_change_completes_without_verification() -> Non
     assert decision.accepted is True
 
 
-async def test_mixed_change_with_code_still_requires_verification() -> None:
+async def test_mixed_change_with_code_still_requires_verification(tmp_path) -> None:
     # If any non-documentation file changes, the verification gate stays strict
-    # even when a doc file changed alongside it.
+    # even when a doc file changed alongside it (project exposes a test runner).
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
     service = PlannerService(
         config=PlannerConfig(double_check_completion=False),
         event_bus=AsyncEventBus(session_id="session"),
         session_id="session",
+        workspace=tmp_path,
     )
     await service.begin_turn("Create src/example.py", provider_supports_tools=True)
 
