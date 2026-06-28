@@ -304,6 +304,55 @@ async def test_completion_requires_verification_once_files_change_even_if_unclas
     assert any("verification" in item for item in rejected.missing_requirements)
 
 
+async def test_documentation_only_change_completes_without_verification() -> None:
+    # A pure documentation change (a Markdown tracker) has nothing executable to
+    # verify, so completion must not be blocked on verification evidence.
+    service = PlannerService(
+        config=PlannerConfig(double_check_completion=False),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    await service.begin_turn("Create PROGRESSO.md", provider_supports_tools=True)
+
+    await service.record_tool_result(
+        tool_call_id="w1",
+        tool_name="write_file",
+        payload={"path": "PROGRESSO.md", "old_sha256": None, "new_sha256": "abc"},
+        success=True,
+    )
+    decision = await service.evaluate_completion({"summary": "created tracker"})
+
+    assert decision.accepted is True
+
+
+async def test_mixed_change_with_code_still_requires_verification() -> None:
+    # If any non-documentation file changes, the verification gate stays strict
+    # even when a doc file changed alongside it.
+    service = PlannerService(
+        config=PlannerConfig(double_check_completion=False),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+
+    await service.record_tool_result(
+        tool_call_id="w1",
+        tool_name="write_file",
+        payload={"path": "README.md", "old_sha256": None, "new_sha256": "abc"},
+        success=True,
+    )
+    await service.record_tool_result(
+        tool_call_id="w2",
+        tool_name="write_file",
+        payload={"path": "src/example.py", "old_sha256": None, "new_sha256": "def"},
+        success=True,
+    )
+    rejected = await service.evaluate_completion({"summary": "done"})
+
+    assert rejected.accepted is False
+    assert any("verification" in item for item in rejected.missing_requirements)
+
+
 async def test_task_context_shows_model_plan_step_as_current() -> None:
     # Once the model authors a plan, the runtime context it sees must focus on the
     # model's own step, not the generic internal skeleton title — so the model
