@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 
 # Generic, locale-neutral signals that a question may depend on current or
@@ -28,11 +29,20 @@ def current_local_date() -> str:
 
 
 def looks_time_sensitive(text: str) -> bool:
-    """Heuristic hint that a request may need current external information."""
+    """Heuristic hint that a request may need current external information.
+
+    Single-word markers match on whole words only, so a marker like ``"atual"``
+    does not fire inside an unrelated word such as ``"atualize"`` (update).
+    Multi-word markers (e.g. ``"tempo real"``) still match as a phrase.
+    """
     value = _normalize(text)
     if not value:
         return False
-    return any(marker in value for marker in CURRENT_MARKERS)
+    tokens = set(re.findall(r"\w+", value, flags=re.UNICODE))
+    return any(
+        (marker in value) if " " in marker else (marker in tokens)
+        for marker in CURRENT_MARKERS
+    )
 
 
 # Backwards-compatible alias kept for the web_search relevance boost and task

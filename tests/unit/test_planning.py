@@ -113,6 +113,25 @@ def test_task_profile_keeps_external_current_questions_on_web() -> None:
     assert package.allows_web_first is True
 
 
+def test_update_document_is_a_local_mutation_not_web_research() -> None:
+    # Regression: "atualize" (PT update) was not a mutation marker, and "atual"
+    # substring-matched inside it as a time-sensitive marker, so a local file edit
+    # was misclassified as external research and the agent looped on web_search.
+    profile = TaskProfile.from_user_text("ok, consegui, atualize o progresso no documento")
+
+    assert profile.requires_workspace_mutation is True
+    assert profile.requires_external_information is False
+    assert profile.intent == "implementation"
+
+
+def test_time_marker_still_matches_as_a_whole_word() -> None:
+    # The substring fix must not lose real signals: "atual" as its own word still
+    # flags a question as time-sensitive/external.
+    profile = TaskProfile.from_user_text("qual a versao atual do pytest?")
+
+    assert profile.requires_external_information is True
+
+
 async def test_plan_mode_denies_mutating_and_process_tools() -> None:
     service = PlannerService(
         config=PlannerConfig(mode="plan"),
