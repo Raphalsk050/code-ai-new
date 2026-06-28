@@ -71,6 +71,71 @@ async def test_compression_preserves_recent_request_and_resets_remote_state() ->
     assert any("Compressed context summary" in message.content for message in conversation.messages)
 
 
+async def test_ensure_capacity_skips_below_threshold_without_force() -> None:
+    bus = AsyncEventBus(session_id="session")
+    conversation = ConversationState()
+    for index in range(20):
+        conversation.messages.append(Message(role="user", content=f"old message {index}"))
+    conversation.messages.append(Message(role="user", content="current request"))
+
+    compressor = ContextCompressor(
+        counter=TokenCounter(model="unknown-local-model"),
+        max_context_tokens=4096,
+        threshold=0.9,
+        target=0.8,
+        output_reserve=512,
+        event_bus=bus,
+    )
+    result = await compressor.ensure_capacity(conversation, [])
+
+    assert not result.compressed
+    assert result.previous_tokens == result.active_tokens
+
+
+async def test_ensure_capacity_force_compresses_even_below_threshold() -> None:
+    bus = AsyncEventBus(session_id="session")
+    conversation = ConversationState()
+    for index in range(20):
+        conversation.messages.append(
+            Message(role="user", content=f"old message {index} " + ("x" * 200))
+        )
+    conversation.messages.append(Message(role="user", content="current request"))
+
+    compressor = ContextCompressor(
+        counter=TokenCounter(model="unknown-local-model"),
+        max_context_tokens=4096,
+        threshold=0.9,
+        target=0.8,
+        output_reserve=512,
+        event_bus=bus,
+    )
+    result = await compressor.ensure_capacity(conversation, [], force=True)
+
+    assert result.compressed
+    assert result.previous_tokens > result.active_tokens
+    assert any("Compressed context summary" in message.content for message in conversation.messages)
+
+
+async def test_ensure_capacity_force_is_noop_when_nothing_to_summarize() -> None:
+    bus = AsyncEventBus(session_id="session")
+    conversation = ConversationState()
+    conversation.messages.append(Message(role="user", content="hello"))
+
+    compressor = ContextCompressor(
+        counter=TokenCounter(model="unknown-local-model"),
+        max_context_tokens=4096,
+        threshold=0.1,
+        target=0.8,
+        output_reserve=512,
+        event_bus=bus,
+    )
+    result = await compressor.ensure_capacity(conversation, [], force=True)
+
+    assert not result.compressed
+    assert result.previous_tokens == result.active_tokens
+    assert len(conversation.messages) == 1
+
+
 async def test_compression_uses_model_summary_when_provider_available() -> None:
     bus = AsyncEventBus(session_id="session")
     conversation = ConversationState()

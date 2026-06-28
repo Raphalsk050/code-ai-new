@@ -6,6 +6,7 @@ from code_ai.bootstrap import build_application
 from code_ai.config.models import AppConfig
 from code_ai.core.approval import (
     ApprovalDecision,
+    ApprovalRequest,
     ApprovalScope,
     DenyAllGateway,
     _StaticGateway,
@@ -72,6 +73,156 @@ def test_call_signature_keys_execute_command_on_program() -> None:
         == "execute_command:mkdir"
     )
     assert call_signature("write_file", {"path": "a.py"}) == "write_file"
+
+
+def test_render_preview_highlights_by_language() -> None:
+    from code_ai.ui.terminal.approval import _render_preview
+
+    meta, body = _render_preview(
+        ApprovalRequest("c", "write_file", {"path": "demo.py", "content": "def x():\n    return 1\n"}, "s")
+    )
+    assert "demo.py" in meta
+    assert body.lexer.name == "Python"
+    assert "return 1" in body.code
+
+
+def test_render_preview_uses_language_from_path() -> None:
+    from code_ai.ui.terminal.approval import _render_preview
+
+    _, ts = _render_preview(
+        ApprovalRequest("c", "edit_code", {"path": "app.ts", "new_text": "const x = 1"}, "s")
+    )
+    assert ts.lexer.name == "TypeScript"
+
+    # A command renders as a terminal prompt (Text with a "$"), not as code.
+    _, cmd = _render_preview(
+        ApprovalRequest("c", "execute_command", {"command": "pip install rich"}, "s")
+    )
+    assert cmd.plain == "$ pip install rich"
+
+    _, args = _render_preview(ApprovalRequest("c", "other_tool", {"foo": 1}, "s"))
+    assert args.lexer.name == "JSON"
+    assert '"foo"' in args.code
+
+
+def test_render_preview_shows_diff_for_edit_code_with_old_text() -> None:
+    from rich.text import Text
+
+    from code_ai.ui.terminal.approval import _render_preview
+
+    meta, body = _render_preview(
+        ApprovalRequest(
+            "c",
+            "edit_code",
+            {
+                "path": "app.py",
+                "old_text": "def x():\n    return 1\n",
+                "new_text": "def x():\n    return 2\n",
+            },
+            "s",
+        )
+    )
+    assert "app.py" in meta
+    assert isinstance(body, Text)
+    rendered = body.plain
+    assert "-    return 1" in rendered
+    assert "+    return 2" in rendered
+
+
+def test_render_preview_falls_back_to_syntax_without_old_text() -> None:
+    from code_ai.ui.terminal.approval import _render_preview
+
+    _, body = _render_preview(
+        ApprovalRequest("c", "edit_code", {"path": "app.py", "new_text": "x = 1"}, "s")
+    )
+    assert body.code == "x = 1"
+
+
+def test_render_preview_falls_back_to_syntax_when_edit_is_a_noop() -> None:
+    from code_ai.ui.terminal.approval import _render_preview
+
+    _, body = _render_preview(
+        ApprovalRequest(
+            "c",
+            "edit_code",
+            {"path": "app.py", "old_text": "x = 1", "new_text": "x = 1"},
+            "s",
+        )
+    )
+    assert body.code == "x = 1"
+
+
+def test_render_justification_reads_reason_argument() -> None:
+    from code_ai.ui.terminal.approval import _render_justification
+
+    request = ApprovalRequest(
+        "c", "write_file", {"path": "a.py", "content": "x", "reason": "  Add the helper.  "}, "s"
+    )
+    assert _render_justification(request) == "Add the helper."
+
+
+def test_render_justification_is_empty_when_reason_missing() -> None:
+    from code_ai.ui.terminal.approval import _render_justification
+
+    request = ApprovalRequest("c", "write_file", {"path": "a.py", "content": "x"}, "s")
+    assert _render_justification(request) == ""
+
+
+async def test_approval_modal_shows_justification_when_learn_enabled() -> None:
+    from textual.app import App
+    from textual.widgets import Static
+
+    from code_ai.ui.terminal.approval import ApprovalModal
+
+    request = ApprovalRequest(
+        "c",
+        "write_file",
+        {"path": "a.py", "content": "x", "reason": "Add the helper."},
+        "s",
+    )
+
+    class _HostApp(App):
+        async def on_mount(self) -> None:
+            await self.push_screen(ApprovalModal(request, learn_enabled=True))
+
+    app = _HostApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        justification = app.screen.query_one("#approval-justification", Static)
+        assert "Add the helper." in str(justification.render())
+
+
+async def test_approval_modal_hides_justification_when_learn_disabled() -> None:
+    from textual.app import App
+    from textual.widgets import Static
+
+    from code_ai.ui.terminal.approval import ApprovalModal
+
+    request = ApprovalRequest(
+        "c",
+        "write_file",
+        {"path": "a.py", "content": "x", "reason": "Add the helper."},
+        "s",
+    )
+
+    class _HostApp(App):
+        async def on_mount(self) -> None:
+            await self.push_screen(ApprovalModal(request, learn_enabled=False))
+
+    app = _HostApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert len(app.screen.query("#approval-justification")) == 0
+
+
+def test_render_preview_survives_unknown_language() -> None:
+    from code_ai.ui.terminal.approval import _render_preview
+
+    # An extension Pygments has no lexer for must not raise.
+    meta, body = _render_preview(
+        ApprovalRequest("c", "write_file", {"path": "data.zzz", "content": "anything"}, "s")
+    )
+    assert body.code == "anything"
 
 
 def test_approval_decision_flags() -> None:

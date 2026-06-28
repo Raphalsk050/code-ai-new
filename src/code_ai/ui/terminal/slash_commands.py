@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import shlex
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 from code_ai.config.loader import persist_config_updates, redacted_config_json
 from code_ai.config.models import (
     SUPPORTED_API_MODES,
+    SUPPORTED_REASONING_EFFORTS,
     normalize_api_mode,
 )
 from code_ai.ui.terminal.widgets import (
@@ -41,13 +42,27 @@ SLASH_COMMANDS = [
         "Set the tool permission mode (persisted).",
         "/mode ",
     ),
-    SlashCommand("/deep-plan", "Show current bounded plan snapshot."),
+    SlashCommand(
+        "/deep-plan <objetivo>",
+        "Plan a task without changing anything (Cline-style plan mode).",
+        "/deep-plan ",
+    ),
     SlashCommand("/plan-status", "Show planner phase and current step."),
     SlashCommand("/replan", "Request a bounded replan on the next turn."),
     SlashCommand("/cancel", "Cancel the active turn."),
+    SlashCommand(
+        "/debug <on|off|status>",
+        "Log raw model requests/responses for parser debugging.",
+        "/debug ",
+    ),
     SlashCommand("/clear", "Clear the conversation view."),
     SlashCommand("/quit", "Close Code-AI."),
+    SlashCommand("/config help", "Browse and pick a /config command to run."),
     SlashCommand("/config show", "Show redacted active config."),
+    SlashCommand(
+        "/config models",
+        "List models offered by your provider and pick one.",
+    ),
     SlashCommand(
         "/config model <name>",
         "Persist and switch the model for future calls.",
@@ -79,6 +94,11 @@ SLASH_COMMANDS = [
         "/config language ",
     ),
     SlashCommand(
+        "/config effort <none|minimal|low|medium|high|xhigh>",
+        "Persist and switch reasoning_effort (OpenAI Responses API).",
+        "/config effort ",
+    ),
+    SlashCommand(
         "/config theme <name>",
         "Persist and switch the terminal theme.",
         "/config theme ",
@@ -93,10 +113,27 @@ SLASH_COMMANDS = [
         "Persist and switch the working-indicator animation.",
         "/config spinner ",
     ),
+    SlashCommand(
+        "/config max-context-window <tokens>",
+        "Persist the max context window size in tokens. Restart required.",
+        "/config max-context-window ",
+    ),
+    SlashCommand(
+        "/config learn <on|off>",
+        "Show/hide the model's explanation of why it's making each change.",
+        "/config learn ",
+    ),
 ]
 
 API_MODE_SUGGESTIONS = ("responses", "completions", "ollama")
 LANGUAGE_SUGGESTIONS = ("en", "pt", "pt-BR")
+# Ordered low-to-high so the picker reads like a dial; gated to the values the
+# SamplingConfig validator accepts.
+REASONING_EFFORT_SUGGESTIONS = tuple(
+    effort
+    for effort in ("none", "minimal", "low", "medium", "high", "xhigh")
+    if effort in SUPPORTED_REASONING_EFFORTS
+)
 TERMINAL_THEME_SUGGESTIONS = (
     "textual-dark",
     "textual-light",
@@ -110,6 +147,21 @@ TERMINAL_THEME_SUGGESTIONS = (
     "solarized-dark",
     "solarized-light",
 )
+
+
+def config_commands(*, include_help: bool = False) -> list[SlashCommand]:
+    """The ``/config`` subcommands, in declaration order.
+
+    Powers both the interactive ``/config help`` picker and its headless text
+    fallback. ``/config help`` itself is omitted by default so the picker does
+    not list a way back into itself.
+    """
+    return [
+        item
+        for item in SLASH_COMMANDS
+        if item.command.startswith("/config")
+        and (include_help or item.command != "/config help")
+    ]
 
 
 def command_suggestions(prefix: str, *, limit: int = 8) -> list[SlashCommand]:
@@ -150,8 +202,24 @@ def handle_config_command(application: Any, command_text: str, *, config_path: P
 
     action = parts[1]
     config = application.session.config
+    if action == "help":
+        lines = "\n".join(
+            f"{item.command:<48} {item.description}" for item in config_commands()
+        )
+        return (
+            "command> Config commands (run /config help in the terminal UI to "
+            "pick one interactively):\n" + lines
+        )
     if action == "show":
         return redacted_config_json(config)
+    if action == "models":
+        # The interactive picker lives in the terminal UI (it fetches the catalog
+        # and opens a searchable list). Reaching here means there is no UI to host
+        # the picker, so point the user at the direct form instead.
+        return (
+            "command> Run /config models inside the terminal UI to pick from your "
+            "provider's models, or use /config model <name> to set one directly."
+        )
     if action == "model":
         if len(parts) < 3:
             return "command> Usage: /config model <name>"
@@ -172,6 +240,31 @@ def handle_config_command(application: Any, command_text: str, *, config_path: P
             live_fields={"language"},
             restart_required=False,
         )
+    if action == "effort":
+        if len(parts) != 3:
+            return (
+                "command> Usage: /config effort "
+                "<none|minimal|low|medium|high|xhigh>"
+            )
+        effort = parts[2].strip().lower()
+        if effort not in SUPPORTED_REASONING_EFFORTS:
+            return (
+                f"command> Unsupported reasoning effort: {parts[2]}. "
+                f"Choose one of {list(REASONING_EFFORT_SUGGESTIONS)}."
+            )
+        # reasoning_effort lives under the nested ``sampling`` block, so persist
+        # the whole block with the new value and apply it on the live config the
+        # providers already hold (they read sampling fresh on every call).
+        sampling = asdict(config.sampling)
+        sampling["reasoning_effort"] = effort
+        try:
+            validated = persist_config_updates(
+                config, {"sampling": sampling}, explicit_path=config_path
+            )
+        except Exception as exc:
+            return f"command> Config not changed: {exc}"
+        config.sampling = validated.sampling
+        return f"command> Updated reasoning_effort={effort}. Applied now."
     if action == "theme":
         if len(parts) != 3:
             return "command> Usage: /config theme <name>"
@@ -255,7 +348,89 @@ def handle_config_command(application: Any, command_text: str, *, config_path: P
             live_fields=set(),
             restart_required=True,
         )
+    if action == "max-context-window":
+        if len(parts) != 3:
+            return "command> Usage: /config max-context-window <tokens>"
+        try:
+            tokens = int(parts[2])
+        except ValueError:
+            return f"command> Invalid token count: {parts[2]}"
+        # max_context_tokens lives under the nested ``budgets`` block. The
+        # ContextCompressor reads it once at bootstrap, so this always
+        # requires a restart to take effect (unlike model/language/effort).
+        budgets = asdict(config.budgets)
+        budgets["max_context_tokens"] = tokens
+        try:
+            validated = persist_config_updates(
+                config, {"budgets": budgets}, explicit_path=config_path
+            )
+        except Exception as exc:
+            return f"command> Config not changed: {exc}"
+        config.budgets = validated.budgets
+        return (
+            f"command> Updated max_context_tokens={tokens}. "
+            "Restart Code-AI to apply this setting."
+        )
+    if action == "learn":
+        if len(parts) != 3 or parts[2].strip().lower() not in {"on", "off"}:
+            return "command> Usage: /config learn <on|off>"
+        enabled = parts[2].strip().lower() == "on"
+        result = _apply_config_change(
+            application,
+            config_path=config_path,
+            changes={"learn": enabled},
+            live_fields={"learn"},
+            restart_required=False,
+        )
+        if result.startswith("command> Config not changed"):
+            return result
+        if enabled:
+            return (
+                "command> Learn mode on. Approval prompts will show the model's "
+                "explanation of why each change is needed."
+            )
+        return "command> Learn mode off. Approval prompts will no longer show explanations."
     return f"command> Unknown config action: {action}"
+
+
+def handle_debug_command(
+    application: Any, command_text: str, *, config_path: Path | None
+) -> str:
+    """Toggle raw model request/response logging for parser debugging.
+
+    The flag lives on the active config object the providers already hold, so
+    turning it on/off takes effect on the very next model call without a restart.
+    It is also persisted so a debugging session survives a restart.
+    """
+    from code_ai.providers.debug import session_log_dir
+
+    parts = command_text.split()
+    action = parts[1].strip().lower() if len(parts) > 1 else "status"
+    config = application.session.config
+
+    if action == "status":
+        state = "on" if config.debug else "off"
+        return f"command> Debug logging is {state}. Session logs: {session_log_dir()}"
+
+    if action in {"on", "off"}:
+        enabled = action == "on"
+        result = _apply_config_change(
+            application,
+            config_path=config_path,
+            changes={"debug": enabled},
+            live_fields={"debug"},
+            restart_required=False,
+        )
+        if result.startswith("command> Config not changed"):
+            return result
+        if enabled:
+            return (
+                "command> Debug logging on. Raw model requests/responses will be "
+                f"written to {session_log_dir()} (one numbered file per call)."
+            )
+        return "command> Debug logging off."
+
+    return "command> Usage: /debug <on|off|status>"
 
 
 def _apply_config_change(
@@ -305,6 +480,18 @@ def _value_suggestions(prefix: str) -> list[SlashCommand]:
             if language.lower().startswith(value_prefix.lower())
         ]
 
+    effort_prefix = "/config effort "
+    if prefix.startswith(effort_prefix):
+        value_prefix = prefix[len(effort_prefix) :].strip().lower()
+        return [
+            SlashCommand(
+                f"/config effort {effort}",
+                "Persist and switch reasoning_effort (OpenAI Responses API).",
+            )
+            for effort in REASONING_EFFORT_SUGGESTIONS
+            if effort.startswith(value_prefix)
+        ]
+
     theme_prefix = "/config theme "
     if prefix.startswith(theme_prefix):
         value_prefix = prefix[len(theme_prefix) :].strip()
@@ -339,5 +526,17 @@ def _value_suggestions(prefix: str) -> list[SlashCommand]:
             )
             for spinner in CODE_AI_SPINNER_OPTIONS
             if spinner.startswith(value_prefix)
+        ]
+
+    learn_prefix = "/config learn "
+    if prefix.startswith(learn_prefix):
+        value_prefix = prefix[len(learn_prefix) :].strip().lower()
+        return [
+            SlashCommand(
+                f"/config learn {value}",
+                "Show/hide the model's explanation of why it's making each change.",
+            )
+            for value in ("on", "off")
+            if value.startswith(value_prefix)
         ]
     return []

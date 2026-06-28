@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 from code_ai.bootstrap import build_application
 from code_ai.config.models import AppConfig
 from code_ai.core.errors import CancellationError, ProviderError, TransientProviderError
+from code_ai.core.memory import FailureMemoryStore
 from code_ai.providers.models import (
     FinishReason,
     ModelRequest,
@@ -28,6 +29,8 @@ def _config(tmp_path, **overrides) -> AppConfig:
         "workspace": str(tmp_path),
         "model": "fake",
         "permission_mode": "bypass",
+        # Keep learned failure memories out of the user's real config dir.
+        "memories_dir": str(tmp_path / "memories"),
     }
     data.update(overrides)
     return AppConfig.from_mapping(data)
@@ -157,6 +160,315 @@ async def test_model_step_budget_winds_down_gracefully(tmp_path) -> None:
     assert "turn.budget_exhausted" in events
 
 
+class TextToolCallThenAnswerProvider(_BaseProvider):
+    """First reply prints the tool call as text (no structured tool_calls)."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        if self.calls == 1:
+            blob = '<tool_call>{"name": "read_file", "arguments": {"path": "note.txt"}}</tool_call>'
+            yield ProviderEvent(kind="text_delta", text_delta=blob)
+            yield ProviderEvent(
+                kind="completed",
+                response=ModelResponse(text=blob, finish_reason=FinishReason.STOP),
+            )
+            return
+        self.tool_feedback = "".join(
+            m.content for m in request.messages if m.role == "tool"
+        )
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text="here is the note", finish_reason=FinishReason.STOP),
+        )
+
+
+async def test_text_emitted_tool_call_is_recovered_and_executed(tmp_path) -> None:
+    (tmp_path / "note.txt").write_text("secret note\n", encoding="utf-8")
+    provider = TextToolCallThenAnswerProvider()
+    app = build_application(config=_config(tmp_path, planner={"enabled": False}), provider=provider)
+    events: list[str] = []
+    app.subscribe(lambda event: events.append(event.event_type))
+
+    await app.start()
+    result = await app.submit_user_message("read note.txt")
+    await app.close()
+
+    # The call printed as text was promoted to a real tool call and executed,
+    # rather than being shown to the user as the final answer.
+    assert "tool.calls.recovered" in events
+    assert "secret note" in provider.tool_feedback
+    assert result.text == "here is the note"
+
+
+async def test_recovery_falls_back_to_registry_when_no_tools_offered(tmp_path) -> None:
+    # A turn misclassified as chat can reach the model with an empty tool list.
+    # If the model still prints a call as text, recovery must fall back to the
+    # full registry so the markup is stripped instead of leaking into the chat.
+    app = build_application(config=_config(tmp_path), provider=_BaseProvider())
+    orchestrator = app.orchestrator
+    await app.start()
+    recovered_events: list[dict] = []
+    app.subscribe(
+        lambda event: recovered_events.append(event.payload)
+        if event.event_type == "tool.calls.recovered"
+        else None
+    )
+
+    leaked = (
+        "Sure, I'll handle it.\n<tool_call>\n<function=read_file>\n"
+        "<parameter=path>note.txt</parameter>\n</function>\n</tool_call>"
+    )
+    response = ModelResponse(text=leaked, finish_reason=FinishReason.STOP)
+
+    # An empty tool_definitions is exactly the misclassified-turn case.
+    await orchestrator._recover_text_tool_calls(response, tool_definitions=[])
+    await app.close()
+
+    assert [call.name for call in response.tool_calls] == ["read_file"]
+    assert "<tool_call>" not in response.text
+    assert "<function=" not in response.text
+    assert response.text.strip() == "Sure, I'll handle it."
+    assert recovered_events and recovered_events[0]["names"] == ["read_file"]
+
+
+class StreamedXmlToolCallProvider(_BaseProvider):
+    """Streams a Qwen-style XML tool call as text deltas, then a clean answer."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.tool_feedback = ""
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        if self.calls == 1:
+            blob = (
+                "Let me read it.\n<tool_call>\n<function=read_file>\n"
+                "<parameter=path>note.txt</parameter>\n</function>\n</tool_call>"
+            )
+            # Stream it in fragments so markers straddle delta boundaries.
+            for piece in (blob[i : i + 7] for i in range(0, len(blob), 7)):
+                yield ProviderEvent(kind="text_delta", text_delta=piece)
+            yield ProviderEvent(
+                kind="completed",
+                response=ModelResponse(text=blob, finish_reason=FinishReason.STOP),
+            )
+            return
+        self.tool_feedback = "".join(m.content for m in request.messages if m.role == "tool")
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text="here is the note", finish_reason=FinishReason.STOP),
+        )
+
+
+async def test_streamed_xml_tool_call_never_leaks_into_chat(tmp_path) -> None:
+    (tmp_path / "note.txt").write_text("secret note\n", encoding="utf-8")
+    provider = StreamedXmlToolCallProvider()
+    app = build_application(config=_config(tmp_path, planner={"enabled": False}), provider=provider)
+    deltas: list[str] = []
+
+    def _capture(event) -> None:
+        if event.event_type == "model.stream.delta":
+            deltas.append(str(event.payload.get("text", "")))
+
+    app.subscribe(_capture)
+
+    await app.start()
+    result = await app.submit_user_message("read note.txt")
+    await app.close()
+
+    streamed = "".join(deltas)
+    # The visible stream must carry the prose but none of the call markup.
+    assert "Let me read it." in streamed
+    assert "<tool_call>" not in streamed
+    assert "<function=" not in streamed
+    assert "<parameter=" not in streamed
+    # The call still executed and the turn finished with the real answer.
+    assert "secret note" in provider.tool_feedback
+    assert result.text == "here is the note"
+
+
+class InlineThinkProvider(_BaseProvider):
+    """Streams <think> reasoning inline in the content, like a local Qwen."""
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        blob = "<think>\nThe user said hi, I should greet back.\n</think>\nHello there!"
+        for piece in (blob[i : i + 5] for i in range(0, len(blob), 5)):
+            yield ProviderEvent(kind="text_delta", text_delta=piece)
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text=blob, finish_reason=FinishReason.STOP),
+        )
+
+
+async def test_inline_think_block_never_leaks_into_chat(tmp_path) -> None:
+    provider = InlineThinkProvider()
+    app = build_application(config=_config(tmp_path, planner={"enabled": False}), provider=provider)
+    answer_deltas: list[str] = []
+    thinking_deltas: list[str] = []
+
+    def _capture(event) -> None:
+        if event.event_type == "model.stream.delta":
+            answer_deltas.append(str(event.payload.get("text", "")))
+        elif event.event_type == "model.thinking.delta":
+            thinking_deltas.append(str(event.payload.get("text", "")))
+
+    app.subscribe(_capture)
+
+    await app.start()
+    result = await app.submit_user_message("hi")
+    await app.close()
+
+    answer_stream = "".join(answer_deltas)
+    # The reasoning and its tags stay out of the visible answer channel.
+    assert "<think>" not in answer_stream
+    assert "</think>" not in answer_stream
+    assert "I should greet back" not in answer_stream
+    # Reasoning was routed to the thinking channel instead.
+    assert "I should greet back" in "".join(thinking_deltas)
+    # The final answer is clean prose, no tags.
+    assert result.text.strip() == "Hello there!"
+    assert "<think>" not in result.text
+
+
+class ThinkWrappedToolCallProvider(_BaseProvider):
+    """Emits a tool call inside an unterminated <think> block, then answers."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.tool_feedback = ""
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        if self.calls == 1:
+            # No closing </think>, so the call markup lands in the reasoning.
+            blob = (
+                "<think>\nI'll read it.\n<tool_call>\n<function=read_file>\n"
+                "<parameter=path>note.txt</parameter>\n</function>\n</tool_call>"
+            )
+            yield ProviderEvent(kind="text_delta", text_delta=blob)
+            yield ProviderEvent(
+                kind="completed",
+                response=ModelResponse(text=blob, finish_reason=FinishReason.STOP),
+            )
+            return
+        self.tool_feedback = "".join(m.content for m in request.messages if m.role == "tool")
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text="here is the note", finish_reason=FinishReason.STOP),
+        )
+
+
+async def test_tool_call_inside_think_block_is_recovered_and_executed(tmp_path) -> None:
+    (tmp_path / "note.txt").write_text("secret note\n", encoding="utf-8")
+    provider = ThinkWrappedToolCallProvider()
+    app = build_application(config=_config(tmp_path, planner={"enabled": False}), provider=provider)
+    events: list[str] = []
+    app.subscribe(lambda event: events.append(event.event_type))
+
+    await app.start()
+    result = await app.submit_user_message("read note.txt")
+    await app.close()
+
+    # The call hidden in the reasoning channel must still run, not stall the turn.
+    assert "tool.calls.recovered" in events
+    assert "secret note" in provider.tool_feedback
+    assert result.text == "here is the note"
+
+
+class ReasoningMentionsToolProvider(_BaseProvider):
+    """A real model: structured channel unused, reasoning is natural language.
+
+    Its reasoning quotes a JSON blob that names a tool but it is NOT calling
+    anything — it answers directly. This must not be misread as a tool call.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        reasoning = (
+            'I considered {"name": "read_file", "arguments": {"path": "a.py"}} '
+            "but the user only wants an explanation, so I will answer directly."
+        )
+        yield ProviderEvent(kind="reasoning_delta", reasoning_delta=reasoning)
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(
+                text="read_file opens a file and returns its contents.",
+                reasoning=reasoning,
+                finish_reason=FinishReason.STOP,
+            ),
+        )
+
+
+async def test_natural_language_reasoning_is_not_misread_as_tool_call(tmp_path) -> None:
+    provider = ReasoningMentionsToolProvider()
+    app = build_application(config=_config(tmp_path, planner={"enabled": False}), provider=provider)
+    events: list[str] = []
+    app.subscribe(lambda event: events.append(event.event_type))
+
+    await app.start()
+    result = await app.submit_user_message("what does read_file do?")
+    await app.close()
+
+    # No explicit tool-call markup in the reasoning, so nothing is recovered and
+    # the model only ran once: its direct answer is surfaced as-is.
+    assert "tool.calls.recovered" not in events
+    assert provider.calls == 1
+    assert result.text == "read_file opens a file and returns its contents."
+
+
+class MalformedThenCleanProvider(_BaseProvider):
+    """First reply is an unparseable tool call; the retry produces a real answer."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        if self.calls == 1:
+            # Names a tool that does not exist, so recovery cannot promote it.
+            blob = "<tool_call>\n<function=frobnicate>\n<parameter=x>1</parameter>\n</function>"
+            yield ProviderEvent(kind="text_delta", text_delta=blob)
+            yield ProviderEvent(
+                kind="completed",
+                response=ModelResponse(text=blob, finish_reason=FinishReason.STOP),
+            )
+            return
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text="done now", finish_reason=FinishReason.STOP),
+        )
+
+
+async def test_malformed_tool_call_is_retried_not_surfaced(tmp_path) -> None:
+    provider = MalformedThenCleanProvider()
+    # Generator-less memory store: recording the malformed-call lesson must not
+    # fire a model meta-call through the scripted provider and skew the count.
+    app = build_application(
+        config=_config(tmp_path, planner={"enabled": False}),
+        provider=provider,
+        failure_memory=FailureMemoryStore(tmp_path / "mem"),
+    )
+    events: list[str] = []
+    app.subscribe(lambda event: events.append(event.event_type))
+
+    await app.start()
+    result = await app.submit_user_message("do the thing")
+    await app.close()
+
+    # The unparseable call triggered a re-prompt rather than leaking as the
+    # answer, and the second attempt's clean reply is what the user receives.
+    assert "tool.call.malformed" in events
+    assert provider.calls == 2
+    assert result.text == "done now"
+    assert "frobnicate" not in result.text
+
+
 class TwoFileMutationProvider(_BaseProvider):
     def __init__(self) -> None:
         self.calls = 0
@@ -215,6 +527,42 @@ async def test_multi_file_change_not_blocked_by_phase(tmp_path) -> None:
     assert (tmp_path / "b.py").read_text(encoding="utf-8") == "B = 2\n"
     assert "planning.policy.denied" not in events
     assert "Created a.py and b.py." in result.text
+
+
+class AnswersInProseProvider(_BaseProvider):
+    """Always answers in prose, never emitting a structured tool call."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(
+                text="The adder function returns the sum of its two arguments.",
+                finish_reason=FinishReason.STOP,
+            ),
+        )
+
+
+async def test_misclassified_question_is_answered_not_forced_into_tools(tmp_path) -> None:
+    # "explain ... the adder function" trips the "add" mutation marker, so the task
+    # is misread as a workspace mutation and the phase escalates to EXECUTE after the
+    # auto-listing. The model only wants to answer in prose: it must be nudged toward
+    # tools at most once, then have *its* answer surfaced — not be spiralled into a
+    # system correction delivered to the user as the reply.
+    provider = AnswersInProseProvider()
+    app = build_application(config=_config(tmp_path), provider=provider)
+
+    await app.start()
+    result = await app.submit_user_message("explain what the adder function does")
+    await app.close()
+
+    assert result.error is None
+    assert result.text == "The adder function returns the sum of its two arguments."
+    # One nudge round, then the model's own answer is accepted (not an endless loop).
+    assert provider.calls == 2
 
 
 class ParallelReadsProvider(_BaseProvider):

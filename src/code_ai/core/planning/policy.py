@@ -36,9 +36,24 @@ DEFAULT_CAPABILITIES_BY_NAME: dict[str, frozenset[ToolCapability]] = {
     "read_screen": frozenset(
         {ToolCapability.INTERACTIVE_TERMINAL, ToolCapability.LOCAL_READ}
     ),
+    "screen_info": frozenset({ToolCapability.COMPUTER_CONTROL}),
+    "move_mouse": frozenset({ToolCapability.COMPUTER_CONTROL}),
+    "click_mouse": frozenset({ToolCapability.COMPUTER_CONTROL}),
+    "drag_mouse": frozenset({ToolCapability.COMPUTER_CONTROL}),
+    "scroll_mouse": frozenset({ToolCapability.COMPUTER_CONTROL}),
+    "type_text": frozenset({ToolCapability.COMPUTER_CONTROL}),
+    "press_keys": frozenset({ToolCapability.COMPUTER_CONTROL}),
+    "open_application": frozenset({ToolCapability.COMPUTER_CONTROL}),
+    "activate_application": frozenset({ToolCapability.COMPUTER_CONTROL}),
+    "list_applications": frozenset(
+        {ToolCapability.COMPUTER_CONTROL, ToolCapability.LOCAL_READ}
+    ),
     "web_search": frozenset({ToolCapability.WEB}),
+    "use_skill": frozenset({ToolCapability.LOCAL_READ}),
+    "create_skill": frozenset({ToolCapability.LOCAL_WRITE}),
     "ask_user": frozenset({ToolCapability.INTERACTION}),
     "submit_plan": frozenset({ToolCapability.INTERNAL_TRANSITION}),
+    "complete_plan_step": frozenset({ToolCapability.INTERNAL_TRANSITION}),
     "finish_discovery": frozenset({ToolCapability.INTERNAL_TRANSITION}),
     "request_external_gap": frozenset({ToolCapability.INTERNAL_TRANSITION}),
     "complete_task": frozenset({ToolCapability.INTERNAL_COMPLETION}),
@@ -92,9 +107,15 @@ class PlannerToolPolicy:
 
         The planner still *recommends* a focused set via the task context block;
         it no longer hides tools and risks blocking a misclassified task.
+
+        A CONVERSATION intent is deliberately *not* a hard gate here. The intent
+        is inferred from brittle surface keywords, so an implementation request
+        phrased outside the marker set (e.g. "faça um jogo pong", "make a game")
+        is misread as chat. Hiding every tool then forces a tool-less request:
+        the model, still told to call ``write_file``/``edit_code``, prints the
+        call as text and it leaks into the chat. Staying fail-open keeps the
+        tools available so the model uses the structured channel instead.
         """
-        if profile.intent == TaskIntent.CONVERSATION:
-            return set()
         if mode == PlannerMode.PLAN:
             return self._by_capabilities(
                 names,
@@ -163,6 +184,7 @@ class PlannerToolPolicy:
                 {
                     ToolCapability.LOCAL_READ,
                     ToolCapability.LOCAL_WRITE,
+                    ToolCapability.COMPUTER_CONTROL,
                     ToolCapability.INTERACTION,
                     ToolCapability.INTERNAL_TRANSITION,
                     ToolCapability.INTERNAL_COMPLETION,
@@ -184,6 +206,7 @@ class PlannerToolPolicy:
                     ToolCapability.PROCESS,
                     ToolCapability.REVIEW,
                     ToolCapability.INTERACTIVE_TERMINAL,
+                    ToolCapability.COMPUTER_CONTROL,
                     ToolCapability.INTERNAL_TRANSITION,
                     ToolCapability.INTERNAL_COMPLETION,
                 },
@@ -199,6 +222,7 @@ class PlannerToolPolicy:
                     ToolCapability.LOCAL_READ,
                     ToolCapability.LOCAL_WRITE,
                     ToolCapability.PROCESS,
+                    ToolCapability.COMPUTER_CONTROL,
                     ToolCapability.INTERACTION,
                     ToolCapability.INTERNAL_TRANSITION,
                     ToolCapability.INTERNAL_COMPLETION,

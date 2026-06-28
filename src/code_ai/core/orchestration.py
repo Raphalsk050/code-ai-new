@@ -26,10 +26,12 @@ from code_ai.core.errors import (
     ProviderError,
     TransientProviderError,
 )
-from code_ai.core.planning import PlannerMode, PlannerService, PlanningPhase
+from code_ai.core.memory import FailureMemoryStore, MemoryService
+from code_ai.core.planning import PlannerService
 from code_ai.core.planning.policy import PolicyDecision
 from code_ai.core.state import AgentState
 from code_ai.events.bus import AsyncEventBus
+from code_ai.prompts import build_system_prompt
 from code_ai.providers.base import ModelProvider
 from code_ai.providers.models import (
     FinishReason,
@@ -40,6 +42,12 @@ from code_ai.providers.models import (
     ToolCall,
     ToolResult,
 )
+from code_ai.providers.reasoning import ReasoningTagFilter, split_reasoning_tags
+from code_ai.providers.tool_recovery import (
+    ToolCallStreamFilter,
+    looks_like_attempted_tool_call,
+    recover_tool_calls_from_text,
+)
 from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.output import bound_text
 from code_ai.tools.registry import ToolRegistry
@@ -47,6 +55,14 @@ from code_ai.tools.registry import ToolRegistry
 ToolContextFactory = Callable[[asyncio.Event | None], ToolContext]
 
 _MODEL_STEP_MAX_RETRIES = 200
+# How many times to re-prompt a model that printed a tool call as text but in a
+# shape we could not parse, before giving up and surfacing its best-effort text.
+_MAX_TOOL_FORMAT_RETRIES = 2
+# How many times to re-prompt a model that burned its entire output budget
+# (typically inside the reasoning channel) without emitting a tool call, before
+# giving up. Each retry hands back its own truncated thinking plus a nudge to
+# commit to one concrete action.
+_MAX_BUDGET_RETRIES = 2
 _TOOL_GUARD_POLL_SECONDS = 2.0
 _TOOL_GUARD_GRACE_SECONDS = 10.0
 _ALLOWED_POLICY = PolicyDecision(True, "allowed", set())
@@ -59,6 +75,7 @@ _APPROVAL_SENSITIVE_CAPABILITIES = frozenset(
         ToolCapability.LOCAL_WRITE,
         ToolCapability.PROCESS,
         ToolCapability.INTERACTIVE_TERMINAL,
+        ToolCapability.COMPUTER_CONTROL,
     }
 )
 
@@ -80,6 +97,9 @@ class _TurnState:
     progress_signature: tuple[object, ...] = ()
     stall_rounds: int = 0
     stall_nudged: bool = False
+    tool_format_retries: int = 0
+    budget_overflow_retries: int = 0
+    no_tool_nudged: bool = False
     seen_call_fingerprints: set[str] = field(default_factory=set)
 
 
@@ -118,6 +138,8 @@ class AgentOrchestrator:
         tool_context_factory: ToolContextFactory,
         planner: PlannerService | None = None,
         approval_gateway: ApprovalGateway | None = None,
+        failure_memory: FailureMemoryStore | None = None,
+        memory: MemoryService | None = None,
     ) -> None:
         self.config = config
         self.provider = provider
@@ -128,6 +150,12 @@ class AgentOrchestrator:
         self.compressor = compressor
         self.tool_context_factory = tool_context_factory
         self.planner = planner
+        # Persistent cross-session memory of recurring failures; ``None`` keeps
+        # the loop fully functional, just without learning.
+        self.failure_memory = failure_memory
+        # Durable memory of user-stated and proactively-saved facts; ``None``
+        # simply means nothing is injected.
+        self.memory = memory
         # Interactive approver. Defaults to deny-all so non-interactive runs keep
         # the prior behaviour; the terminal UI swaps in a modal-backed gateway.
         self.approval_gateway: ApprovalGateway = approval_gateway or DenyAllGateway()
@@ -147,12 +175,54 @@ class AgentOrchestrator:
         if phase:
             await self.event_bus.emit("phase.changed", {"phase": phase}, source="core.orchestrator")
 
+    def _refresh_system_prompt(self) -> None:
+        """Rebuild the system message so freshly-learned lessons and memories are
+        actually seen by the model.
+
+        The system prompt is otherwise built once at startup and frozen for the
+        session, which means a lesson recorded mid-session (or a fact just saved
+        via ``remember``) would never reach the model until a restart — the
+        original cause of the agent repeating known mistakes. We rebuild in place
+        at well-defined points (turn start, after recording a failure, after a
+        ``remember`` call) rather than every step, to keep disk reads bounded.
+        """
+
+        if not self.conversation.messages:
+            return
+        lessons = self.failure_memory.render_for_prompt() if self.failure_memory else ""
+        memories = self.memory.render_for_prompt() if self.memory else ""
+        self.conversation.messages[0] = Message(
+            role="system",
+            content=build_system_prompt(
+                workspace=self.config.workspace,
+                language=self.config.language,
+                lessons=lessons,
+                memories=memories,
+            ),
+        )
+
     # ------------------------------------------------------------------ #
     # Turn entry point
     # ------------------------------------------------------------------ #
-    async def run_turn(self, text: str, *, cancel_event: asyncio.Event | None = None) -> TurnResult:
+    async def run_turn(
+        self,
+        text: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        context: str = "",
+        resume_plan: bool = False,
+    ) -> TurnResult:
+        # Pull in any lessons/memories learned since this session's system prompt
+        # was built, so the model benefits from them on this turn.
+        self._refresh_system_prompt()
         await self.set_state(AgentState.CALLING_MODEL, phase="accepted_user_message")
         await self.event_bus.emit("user.message", {"text": text}, source="core.orchestrator")
+        # Editor context (open file / selection forwarded by an embedding client)
+        # is added to the conversation so the model sees it, but it is *not*
+        # echoed as a `user.message` event — the transcript stays clean and only
+        # shows what the user actually typed.
+        if context:
+            self.conversation.add_user(context)
         self.conversation.add_user(text)
 
         state = _TurnState(
@@ -160,7 +230,7 @@ class AgentOrchestrator:
             deadline=time.monotonic() + self.config.budgets.turn_timeout(),
         )
         try:
-            early = await self._begin_planner(text, state)
+            early = await self._begin_planner(text, state, resume=resume_plan)
             if early is not None:
                 return early
             state.progress_signature = self._progress_signature()
@@ -183,11 +253,15 @@ class AgentOrchestrator:
             await self.set_state(AgentState.FAILED, phase="failed")
             raise
 
-    async def _begin_planner(self, text: str, state: _TurnState) -> TurnResult | None:
+    async def _begin_planner(
+        self, text: str, state: _TurnState, *, resume: bool = False
+    ) -> TurnResult | None:
         if not (self.planner and self.planner.enabled):
             return None
         await self.planner.begin_turn(
-            text, provider_supports_tools=self.provider.capabilities.tool_calling
+            text,
+            provider_supports_tools=self.provider.capabilities.tool_calling,
+            resume=resume,
         )
         if self.planner.should_auto_list_workspace() and self.tool_registry.has("list_files"):
             state.tool_calls_executed += 1
@@ -197,8 +271,11 @@ class AgentOrchestrator:
                 {"path": ".", "max_depth": 2, "max_entries": 250},
                 state,
             )
-        if self.planner.mode == PlannerMode.PLAN:
-            return await self._finish_turn(self._planner_summary_text(), None, state)
+        # PLAN mode used to short-circuit here, returning a canned summary of the
+        # internal skeleton without ever calling the model — so the user's actual
+        # request was never read and the turn looked frozen. Instead, fall through
+        # to the model loop: the model investigates and authors a real plan, while
+        # the tool policy keeps write/process tools denied so nothing is mutated.
         return None
 
     # ------------------------------------------------------------------ #
@@ -213,7 +290,7 @@ class AgentOrchestrator:
             allowed = self._allowed_tool_names()
             tool_definitions = self.tool_registry.definitions(allowed)
             compression = await self.compressor.ensure_capacity(self.conversation, tool_definitions)
-            await self._emit_pre_request_usage(compression)
+            await self.emit_context_usage(compression)
 
             request = self._build_request(step, tool_definitions)
             await self.event_bus.emit(
@@ -232,9 +309,14 @@ class AgentOrchestrator:
             self.usage.add(response.usage)
             if response.response_id:
                 self.conversation.previous_response_id = response.response_id
+            await self._recover_text_tool_calls(response, tool_definitions)
             await self._emit_response_completed(response)
 
             if not response.tool_calls:
+                if await self._retry_malformed_tool_call(response, state):
+                    continue
+                if await self._retry_budget_overflow(response, request, state):
+                    continue
                 outcome = await self._handle_no_tool_response(response, state)
                 if outcome is not None:
                     return outcome
@@ -244,6 +326,9 @@ class AgentOrchestrator:
             outcome = await self._execute_tool_batch(response, state)
             if outcome is not None:
                 return outcome
+            # A fact just saved via ``remember`` should inform the very next step.
+            if any(call.name == "remember" for call in response.tool_calls):
+                self._refresh_system_prompt()
             outcome = await self._note_tool_round(response, state)
             if outcome is not None:
                 return outcome
@@ -254,7 +339,15 @@ class AgentOrchestrator:
     async def _handle_no_tool_response(
         self, response: ModelResponse, state: _TurnState
     ) -> TurnResult | None:
-        if self._requires_tool_for_progress():
+        # Fail-open. The surface classifier may have mislabelled a question as a
+        # mutation (e.g. "explain the adder function" trips the "add" marker), so
+        # we nudge the model toward tools at most once. If it still answers in
+        # prose, we surface *its* answer rather than spiralling into repeated
+        # corrections and ultimately handing the user a system message instead of
+        # a reply. The only hard completion gate is the evidence-based
+        # complete_task check, not this path.
+        if self._requires_tool_for_progress() and not state.no_tool_nudged:
+            state.no_tool_nudged = True
             if response.text:
                 self.conversation.add_assistant(
                     bound_text(response.text, self.config.budgets.max_tool_output_chars), []
@@ -263,14 +356,248 @@ class AgentOrchestrator:
                 recommended_tool_names=self._recommended_tool_names()
             )
             self.conversation.add_user(correction)
-            if self.planner.phase == PlanningPhase.BLOCKED:
-                return await self._finish_turn(correction, response, state)
             await self.set_state(AgentState.CALLING_MODEL, phase="correcting_no_tool_response")
             return None
 
         if response.text:
             self.conversation.add_assistant(response.text, response.tool_calls)
         return await self._finish_turn(response.text, response, state)
+
+    async def _recover_text_tool_calls(
+        self, response: ModelResponse, tool_definitions: list
+    ) -> None:
+        """Promote tool calls that a weak model printed as text into real calls.
+
+        When the model returns no structured tool calls but did offer text that
+        encodes a call to a tool we actually exposed this step, rewrite the
+        response so the runtime executes it instead of surfacing the raw markup
+        as the final chat answer.
+
+        Weak local models also mash the channels together: a call can land inside
+        (or right after an unterminated) ``<think>`` block, so the markup ends up
+        in the reasoning rather than the answer. We fall back to the reasoning
+        channel only when the answer yielded nothing *and* the reasoning carries
+        explicit ``<tool_call>``/``<function=`` markup. That keeps a real model's
+        natural-language reasoning summary — which may merely mention a tool or
+        quote a JSON blob — from being misread as an actual call.
+        """
+        if response.tool_calls:
+            return
+        known_names = {definition.name for definition in tool_definitions}
+        if not known_names:
+            # The step offered no tools (e.g. a turn misclassified as chat).
+            # Fall back to the full registry so leaked call markup is still
+            # recovered instead of surfacing raw in the chat. Recovery only
+            # accepts markup naming a real tool, so prose stays untouched.
+            known_names = set(self.tool_registry.names())
+        if not known_names:
+            return
+        recovered, cleaned_text = recover_tool_calls_from_text(
+            response.text, known_names
+        )
+        cleaned_reasoning = response.reasoning
+        if not recovered and looks_like_attempted_tool_call(response.reasoning):
+            recovered, cleaned_reasoning = recover_tool_calls_from_text(
+                response.reasoning, known_names
+            )
+        if not recovered:
+            return
+        response.tool_calls = recovered
+        response.text = cleaned_text
+        response.reasoning = cleaned_reasoning
+        response.finish_reason = FinishReason.TOOL_CALLS
+        await self.event_bus.emit(
+            "tool.calls.recovered",
+            {
+                "count": len(recovered),
+                "names": [call.name for call in recovered],
+                # The cleaned prose so the UI can replace the raw call text it
+                # already streamed into the chat.
+                "text": cleaned_text,
+            },
+            source="core.orchestrator",
+        )
+
+    async def _retry_malformed_tool_call(
+        self, response: ModelResponse, state: _TurnState
+    ) -> bool:
+        """Re-prompt a model that emitted an unparseable tool call as text.
+
+        Recovery already ran: if structured calls exist, or the text holds no
+        tool-call markup, there is nothing to retry. Otherwise the model tried to
+        call a tool but botched the format (wrong tool name, broken JSON, a
+        truncated block). Rather than surface that markup as the final answer we
+        drop it, nudge the model toward the proper format, and let the loop run
+        another step. Bounded by ``_MAX_TOOL_FORMAT_RETRIES`` so a model that
+        cannot comply still terminates with a best-effort reply.
+        """
+        if response.tool_calls:
+            return False
+        if not looks_like_attempted_tool_call(
+            response.text
+        ) and not looks_like_attempted_tool_call(response.reasoning):
+            return False
+        if state.tool_format_retries >= _MAX_TOOL_FORMAT_RETRIES:
+            return False
+        if state.tool_format_retries == 0:
+            # Learn from the first botched format this turn, not every retry.
+            await self._record_failure(
+                trigger="malformed_tool_call",
+                context=(
+                    "The model tried to call a tool but emitted unparseable markup "
+                    "as text instead of a structured function call. Offending "
+                    f"output:\n{bound_text(response.text or response.reasoning, 600)}"
+                ),
+                fallback_lesson=(
+                    "Invoke tools through the function-calling interface with valid "
+                    "JSON arguments; never print the tool call as text or prose."
+                ),
+            )
+        state.tool_format_retries += 1
+        # Do not persist the malformed markup as the assistant turn; only keep
+        # the correction so the next attempt is not anchored to broken output.
+        self.conversation.add_user(self._tool_format_correction_text())
+        await self.event_bus.emit(
+            "tool.call.malformed",
+            {
+                "attempt": state.tool_format_retries,
+                "max_attempts": _MAX_TOOL_FORMAT_RETRIES,
+            },
+            source="core.orchestrator",
+        )
+        await self.set_state(
+            AgentState.CALLING_MODEL, phase="retrying_malformed_tool_call"
+        )
+        return True
+
+    @staticmethod
+    def _tool_format_correction_text() -> str:
+        return (
+            "Your previous message tried to call a tool but the call could not be "
+            "parsed. Do not print the call as text. Invoke the tool through the "
+            "function-calling interface, using the exact tool name and valid JSON "
+            "arguments. If no tool is needed, answer the user directly instead."
+        )
+
+    # ------------------------------------------------------------------ #
+    # Budget overflow: model burned its whole output budget without acting
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _is_truncated(response: ModelResponse, request: ModelRequest) -> bool:
+        """True when the model hit the output-token ceiling mid-generation.
+
+        ``finish_reason`` alone is unreliable: ollama/qwen report ``"stop"`` even
+        when truncated by length, so we also treat "used the entire output
+        budget" (provider-reported ``output_tokens`` reaching the requested cap)
+        as truncation.
+        """
+        if response.finish_reason == FinishReason.LENGTH:
+            return True
+        cap = request.max_output_tokens
+        usage = response.usage
+        if cap and usage and usage.output_tokens >= cap:
+            return True
+        return False
+
+    async def _retry_budget_overflow(
+        self, response: ModelResponse, request: ModelRequest, state: _TurnState
+    ) -> bool:
+        """Recover a turn where the model spent its whole budget without acting.
+
+        The classic failure: a thinking model pours the entire output budget into
+        the reasoning channel, emits no tool call and no answer, and the stream
+        ends — leaving the loop nothing to do, so the turn dies silently. Here we
+        detect the truncation, record the lesson, and hand the model back its own
+        truncated thinking plus a nudge to commit to one concrete action (and to
+        slice large file writes). Bounded by ``_MAX_BUDGET_RETRIES``.
+        """
+        if response.text:
+            # It produced a real answer; truncated or not, there is something to
+            # surface — let the normal no-tool path handle it.
+            return False
+        if not self._is_truncated(response, request):
+            return False
+
+        await self._record_failure(
+            trigger="token_budget_exceeded",
+            context=(
+                "The model used its entire output-token budget of "
+                f"{request.max_output_tokens} tokens producing reasoning without "
+                "emitting a tool call or a final answer. Truncated reasoning:\n"
+                f"{(response.reasoning or '').strip()[:600]}"
+            ),
+            fallback_lesson=(
+                "Do not spend the whole output budget thinking. Commit to one "
+                "concrete tool call early, and write large files incrementally "
+                "(create, then extend with edit_code) instead of emitting a huge "
+                "file in a single call."
+            ),
+        )
+
+        if state.budget_overflow_retries >= _MAX_BUDGET_RETRIES:
+            return False
+        state.budget_overflow_retries += 1
+        self.conversation.add_user(
+            self._budget_overflow_text(response.reasoning, request.max_output_tokens)
+        )
+        await self.event_bus.emit(
+            "model.budget_overflow",
+            {
+                "attempt": state.budget_overflow_retries,
+                "max_attempts": _MAX_BUDGET_RETRIES,
+                "output_token_cap": request.max_output_tokens,
+                "output_tokens": response.usage.output_tokens if response.usage else None,
+            },
+            source="core.orchestrator",
+        )
+        await self.set_state(AgentState.CALLING_MODEL, phase="retrying_budget_overflow")
+        return True
+
+    @staticmethod
+    def _budget_overflow_text(reasoning: str, cap: int | None) -> str:
+        limit = f"{cap} tokens" if cap else "the output-token limit"
+        recap = (reasoning or "").strip()
+        if recap:
+            recap = bound_text(recap, 1500)
+            thought = f"\n\nThis is what you were thinking when you ran out:\n{recap}"
+        else:
+            thought = ""
+        return (
+            f"You thought too much and ran out of output budget ({limit}) before "
+            "doing anything — no tool call and no answer reached me, so nothing "
+            "happened." + thought + "\n\nDo not re-think the whole problem. Pick the "
+            "single next concrete action and take it now as one tool call. If it is "
+            "a large file, do not emit it all at once: create or edit it in smaller "
+            "chunks (e.g. write a skeleton, then extend it with edit_code) so each "
+            "step fits the budget."
+        )
+
+    async def _record_failure(
+        self, *, trigger: str, context: str, fallback_lesson: str, signature: str | None = None
+    ) -> None:
+        """Persist a lesson for a recurring failure, if memory is enabled.
+
+        Never lets the learning path break the turn that triggered it: the store
+        already swallows generator errors, and we guard the call itself too.
+        """
+        if self.failure_memory is None:
+            return
+        try:
+            await self.failure_memory.record(
+                trigger=trigger,
+                context=context,
+                fallback_lesson=fallback_lesson,
+                signature=signature,
+            )
+            # Surface the just-learned lesson immediately so a failure that
+            # recurs later in this same turn no longer slips past the model.
+            self._refresh_system_prompt()
+        except Exception as exc:  # pragma: no cover - defensive
+            await self.event_bus.emit(
+                "memory.record.failed",
+                {"error": str(exc)},
+                source="core.orchestrator",
+            )
 
     # ------------------------------------------------------------------ #
     # Convergence guard: stop tool-call loops that make no real progress
@@ -310,6 +637,19 @@ class AgentOrchestrator:
                     "tool_calls_executed": state.tool_calls_executed,
                 },
                 source="core.orchestrator",
+            )
+            await self._record_failure(
+                trigger="stall",
+                context=(
+                    "The model stalled: it kept producing the same non-progressing "
+                    f"output for {state.stall_rounds} rounds without advancing the "
+                    "task toward completion."
+                ),
+                fallback_lesson=(
+                    "When repeating yourself without progress, change approach: "
+                    "re-read the relevant files or break the task into a smaller, "
+                    "concrete next step instead of restating the plan."
+                ),
             )
             return await self._wind_down(state, reason="model_stalled")
         if state.stall_rounds >= limit // 2 and not state.stall_nudged:
@@ -392,15 +732,41 @@ class AgentOrchestrator:
     ) -> ModelResponse:
         reasoning_parts: list[str] = []
         completed: ModelResponse | None = None
+        # Two streaming guards on the visible text: peel inline <think> reasoning
+        # off into the thinking channel, then hold any embedded tool-call markup
+        # back from the chat. Both keep the full text flowing for recovery.
+        reasoning_filter = ReasoningTagFilter()
+        text_filter = ToolCallStreamFilter()
+
+        async def _emit_visible_answer(answer: str) -> None:
+            streamed_sink.append(answer)
+            visible = text_filter.feed(answer)
+            if visible:
+                await self._emit_text_delta(visible)
+
         async for event in self.provider.stream(request):
             self._raise_if_cancelled(cancel_event)
-            await self._emit_provider_event(event)
             if event.kind == "text_delta":
-                streamed_sink.append(event.text_delta)
-            elif event.kind == "reasoning_delta":
+                answer, thought = reasoning_filter.feed(event.text_delta)
+                if thought:
+                    reasoning_parts.append(thought)
+                    await self._emit_reasoning_delta(thought)
+                if answer:
+                    await _emit_visible_answer(answer)
+                continue
+            await self._emit_provider_event(event)
+            if event.kind == "reasoning_delta":
                 reasoning_parts.append(event.reasoning_delta)
             elif event.kind == "completed" and event.response:
                 completed = event.response
+
+        _, reasoning_tail = reasoning_filter.flush()
+        if reasoning_tail:
+            reasoning_parts.append(reasoning_tail)
+            await self._emit_reasoning_delta(reasoning_tail)
+        tail = text_filter.flush()
+        if tail:
+            await self._emit_text_delta(tail)
 
         if completed is None:
             return ModelResponse(
@@ -408,6 +774,12 @@ class AgentOrchestrator:
                 reasoning="".join(reasoning_parts),
                 finish_reason=FinishReason.UNKNOWN,
             )
+        # Strip any <think> block the provider left inline so reasoning never
+        # pollutes the answer, conversation history, or tool-call recovery.
+        answer, inline_reasoning = split_reasoning_tags(completed.text)
+        completed.text = answer
+        if inline_reasoning and not completed.reasoning:
+            completed.reasoning = inline_reasoning
         if not completed.text and streamed_sink:
             completed.text = "".join(streamed_sink)
         if not completed.reasoning and reasoning_parts:
@@ -582,6 +954,19 @@ class AgentOrchestrator:
                 },
                 source="core.orchestrator",
             )
+            await self._record_failure(
+                trigger="tool_error",
+                signature=f"tool_error:{call.name}",
+                context=(
+                    f"The tool '{call.name}' failed with: {bound_text(str(exc), 400)}. "
+                    f"Arguments: {bound_text(json.dumps(call.arguments, default=str), 400)}"
+                ),
+                fallback_lesson=(
+                    f"Before calling '{call.name}', validate its arguments against "
+                    "the workspace state (paths exist, JSON is well-formed) to avoid "
+                    "the error seen previously."
+                ),
+            )
             return _ToolOutcome(
                 result=ToolResult(
                     tool_call_id=call.id, name=call.name, content=str(exc), is_error=True
@@ -719,7 +1104,13 @@ class AgentOrchestrator:
     # ------------------------------------------------------------------ #
     # Event helpers
     # ------------------------------------------------------------------ #
-    async def _emit_pre_request_usage(self, compression: CompressionResult) -> None:
+    async def emit_context_usage(self, compression: CompressionResult) -> None:
+        """Publish the context-meter payload after a compression pass.
+
+        Called both before every model request and after a manual /compact, so
+        the UI's context bar reflects the post-compaction token count right
+        away instead of waiting for the next turn.
+        """
         await self.event_bus.emit(
             "usage.updated",
             {
@@ -748,20 +1139,26 @@ class AgentOrchestrator:
             source="context",
         )
 
+    async def _emit_text_delta(self, text: str) -> None:
+        channel = "working" if self._requires_tool_for_progress() else "answer"
+        await self.event_bus.emit(
+            "model.stream.delta",
+            {"text": text, "channel": channel},
+            source="provider",
+        )
+
+    async def _emit_reasoning_delta(self, text: str) -> None:
+        await self.event_bus.emit(
+            "model.thinking.delta",
+            {"text": text},
+            source="provider",
+        )
+
     async def _emit_provider_event(self, event: ProviderEvent) -> None:
         if event.kind == "text_delta":
-            channel = "working" if self._requires_tool_for_progress() else "answer"
-            await self.event_bus.emit(
-                "model.stream.delta",
-                {"text": event.text_delta, "channel": channel},
-                source="provider",
-            )
+            await self._emit_text_delta(event.text_delta)
         elif event.kind == "reasoning_delta":
-            await self.event_bus.emit(
-                "model.thinking.delta",
-                {"text": event.reasoning_delta},
-                source="provider",
-            )
+            await self._emit_reasoning_delta(event.reasoning_delta)
         elif event.kind == "warning" and event.warning:
             await self.event_bus.emit("warning", {"message": event.warning}, source="provider")
         elif event.kind == "usage" and event.usage:
@@ -914,22 +1311,6 @@ class AgentOrchestrator:
 
     def _requires_tool_for_progress(self) -> bool:
         return bool(self.planner and self.planner.requires_tool_for_progress())
-
-    def _planner_summary_text(self) -> str:
-        if not (self.planner and self.planner.plan):
-            return "Plan mode is active, but no plan is available."
-        snapshot = self.planner.plan_snapshot()
-        steps = [
-            f"{index + 1}. {step.title} [{step.kind.value}]"
-            for index, step in enumerate(self.planner.plan.steps)
-        ]
-        return (
-            "Plan mode is active. No workspace mutations were performed.\n"
-            f"Objective: {self.planner.plan.objective}\n"
-            f"Phase: {snapshot.get('phase')}\n"
-            "Steps:\n"
-            + "\n".join(steps)
-        )
 
     @staticmethod
     def _raise_if_cancelled(cancel_event: asyncio.Event | None) -> None:

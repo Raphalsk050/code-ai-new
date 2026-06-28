@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 DEFAULT_CONFIG_DIRNAME = ".code-ai"
@@ -13,6 +14,41 @@ PLACEHOLDER_API_KEY = "REPLACE-WITH-YOUR-API-KEY"
 
 def default_config_path() -> Path:
     return Path.home() / DEFAULT_CONFIG_DIRNAME / DEFAULT_CONFIG_FILENAME
+
+
+def default_memories_dir() -> Path:
+    """Directory holding the agent's persistent failure memories.
+
+    Lives beside ``config.json`` in the config dir so lessons learned survive
+    across sessions and travel with the install, not the workspace.
+    """
+
+    return Path.home() / DEFAULT_CONFIG_DIRNAME / "memories"
+
+
+def global_knowledge_dir() -> Path:
+    """Directory holding durable, cross-project memories about the user.
+
+    Lives under the config dir so ``user``/``feedback`` facts the agent learns
+    apply in every workspace, the same way :func:`default_memories_dir` keeps
+    failure lessons install-wide.
+    """
+
+    return Path.home() / DEFAULT_CONFIG_DIRNAME / "memories" / "knowledge"
+
+
+def project_memories_dir(workspace: Path | str) -> Path:
+    """Directory holding memories scoped to a single workspace.
+
+    Keyed by a hash of the absolute workspace path and kept under the config dir
+    (not inside the repo) so project facts never pollute the user's tree and
+    never leak across unrelated projects.
+    """
+
+    resolved = Path(workspace).expanduser().resolve()
+    digest = hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()[:12]
+    slug = f"{resolved.name or 'root'}-{digest}"
+    return Path.home() / DEFAULT_CONFIG_DIRNAME / "projects" / slug / "memories"
 
 
 DEFAULT_BUDGETS: dict[str, int] = {
@@ -88,9 +124,10 @@ DEFAULT_CONFIG: dict[str, object] = {
     "workspace": str(Path.cwd()),
     "context_compression_threshold": 0.82,
     "context_compression_target": 0.55,
-    "output_token_reserve": 4096,
+    "output_token_reserve": 32768,
     "headless_event_format": "text",
     "terminal_theme": "textual-dark",
     "terminal_banner_font": "tarty2",
     "terminal_spinner": "ascii",
+    "terminal_session_collapsed": False,
 }

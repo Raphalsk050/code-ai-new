@@ -58,6 +58,31 @@ def test_task_profile_keeps_greeting_as_toolless_conversation() -> None:
     ) == set()
 
 
+def test_advisory_keeps_tools_for_misclassified_implementation_request() -> None:
+    # "faça um jogo pong" sits outside the mutation-marker set, so the surface
+    # classifier mislabels it CONVERSATION. Advisory mode must still expose the
+    # tools; otherwise the model is handed a tool-less request, prints the
+    # edit_code/write_file call as text, and it leaks into the chat.
+    profile = TaskProfile.from_user_text("faça um jogo pong em python")
+    service = PlannerService(
+        config=PlannerConfig(),  # advisory is the default
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    service.profile = profile
+
+    assert profile.intent == "conversation"
+    allowed = service.policy.allowed_tool_names(
+        registry=make_registry(),
+        profile=profile,
+        mode=service.mode,
+        phase=service.phase,
+        current_step=None,
+        advisory=True,
+    )
+    assert {"write_file", "edit_code"} <= allowed
+
+
 def test_task_profile_treats_read_request_as_local_inspection() -> None:
     profile = TaskProfile.from_user_text("read the note")
 
@@ -254,6 +279,106 @@ async def test_completion_requires_file_change_and_verification_evidence() -> No
     assert any("file-change" in item for item in rejected.missing_requirements)
 
 
+async def test_completion_requires_verification_once_files_change_even_if_unclassified() -> None:
+    # "faça um jogo de pong" sits outside the mutation-marker set, so the surface
+    # classifier reads it as CONVERSATION (requires_workspace_mutation is False).
+    # But once the model actually writes a file, completion must still be backed by
+    # verification: the gate keys off real evidence, not the brittle label.
+    service = PlannerService(
+        config=PlannerConfig(double_check_completion=False),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    await service.begin_turn("faça um jogo de pong em python", provider_supports_tools=True)
+    assert service.profile.requires_workspace_mutation is False
+
+    await service.record_tool_result(
+        tool_call_id="w1",
+        tool_name="write_file",
+        payload={"path": "pong.py", "old_sha256": None, "new_sha256": "abc"},
+        success=True,
+    )
+    rejected = await service.evaluate_completion({"summary": "created pong"})
+
+    assert rejected.accepted is False
+    assert any("verification" in item for item in rejected.missing_requirements)
+
+
+async def test_task_context_shows_model_plan_step_as_current() -> None:
+    # Once the model authors a plan, the runtime context it sees must focus on the
+    # model's own step, not the generic internal skeleton title — so the model
+    # executes the plan it declared rather than a template.
+    service = PlannerService(
+        config=PlannerConfig(),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+    await service.submit_agent_plan(["Read config.py", "Write the module"])
+
+    block = service.task_context_block(recommended_tool_names={"read_file"})
+
+    assert "Current step: Read config.py" in block
+    # The generic skeleton step title no longer drives the narrative.
+    assert "Inspect the local workspace" not in block
+
+
+async def test_completion_reconciles_against_model_plan_not_skeleton() -> None:
+    # When the model submitted a plan, completion lists *its* untouched steps so it
+    # is guided back to its own checklist, instead of the generic skeleton wording.
+    service = PlannerService(
+        config=PlannerConfig(double_check_completion=False),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+    await service.submit_agent_plan(["Read example", "Write module", "Run tests"])
+
+    rejected = await service.evaluate_completion({"summary": "done"})
+
+    assert rejected.accepted is False
+    assert any("declared plan steps" in item for item in rejected.missing_requirements)
+    assert not any(
+        "required plan steps are incomplete" in item
+        for item in rejected.missing_requirements
+    )
+
+
+async def test_model_plan_does_not_block_completion_once_change_is_verified() -> None:
+    # The model's checklist cursor advances coarsely, so a longer plan can lag
+    # behind reality. Once the change is actually verified, completion must trust
+    # the evidence (fail-soft) rather than block on untouched checklist tail items.
+    service = PlannerService(
+        config=PlannerConfig(double_check_completion=False),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+    await service.submit_agent_plan(["a", "b", "c", "d", "e"])
+
+    await service.record_tool_result(
+        tool_call_id="w1",
+        tool_name="write_file",
+        payload={"path": "src/example.py", "old_sha256": None, "new_sha256": "h1"},
+        success=True,
+    )
+    await service.record_tool_result(
+        tool_call_id="v1",
+        tool_name="execute_command",
+        payload={"argv": ["true"], "exit_code": 0, "stdout": "", "stderr": ""},
+        success=True,
+    )
+
+    # The cursor lags (5 declared steps, far fewer evidence signals), but the
+    # change is verified, so completion is accepted instead of blocked.
+    assert any(
+        step.status.value == "PENDING" for step in service.agent_plan.steps
+    )
+    decision = await service.evaluate_completion({"summary": "created and verified"})
+
+    assert decision.accepted is True
+
+
 def _capture(bus: AsyncEventBus) -> list:
     events: list = []
     bus.subscribe(lambda event: events.append(event))
@@ -304,7 +429,9 @@ async def test_submit_plan_reveals_model_authored_steps() -> None:
     assert snapshot["progress"] == "0/3"
 
 
-async def test_agent_plan_advances_on_real_progress() -> None:
+async def test_evidence_alone_does_not_advance_model_checklist() -> None:
+    # The model owns its checklist cursor: gathering evidence must not race the
+    # sidebar ahead, or the model would be told it is on a step it never reached.
     bus = AsyncEventBus(session_id="session")
     service = PlannerService(
         config=PlannerConfig(), event_bus=bus, session_id="session"
@@ -320,8 +447,53 @@ async def test_agent_plan_advances_on_real_progress() -> None:
     )
 
     snapshot = service.plan_snapshot()
+    assert snapshot["completed_steps"] == []
+    assert snapshot["current_step"] == "Inspect files"
+
+
+async def test_complete_plan_step_advances_model_checklist() -> None:
+    bus = AsyncEventBus(session_id="session")
+    service = PlannerService(
+        config=PlannerConfig(), event_bus=bus, session_id="session"
+    )
+    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+    await service.submit_agent_plan(["Inspect files", "Write the module", "Verify"])
+
+    await service.record_tool_result(
+        tool_call_id="step_1",
+        tool_name="complete_plan_step",
+        payload={"completed_step": "Inspect files"},
+        success=True,
+    )
+
+    snapshot = service.plan_snapshot()
     assert snapshot["completed_steps"] == ["Inspect files"]
     assert snapshot["current_step"] == "Write the module"
+
+
+async def test_resume_keeps_plan_and_re_emits_active_sidebar() -> None:
+    bus = AsyncEventBus(session_id="session")
+    service = PlannerService(
+        config=PlannerConfig(mode="plan"), event_bus=bus, session_id="session"
+    )
+    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+    await service.submit_agent_plan(["Inspect files", "Write the module", "Verify"])
+
+    events = _capture(bus)
+    # The plan→act handoff: a resume must not rebuild the plan from the
+    # continuation text, and it must re-surface the existing ACTIVE checklist so
+    # the collapsed sidebar reappears.
+    await service.begin_turn(
+        "Plano aprovado. Execute agora.", provider_supports_tools=True, resume=True
+    )
+
+    snapshot = service.plan_snapshot()
+    assert snapshot["status"] == "ACTIVE"
+    assert snapshot["current_step"] == "Inspect files"
+    assert snapshot["remaining_steps"] == ["Inspect files", "Write the module", "Verify"]
+    started = [e for e in events if e.event_type == "planning.step.started"]
+    assert started, "resume should re-emit a step-started snapshot to show the sidebar"
+    assert started[-1].payload["status"] == "ACTIVE"
 
 
 async def test_resubmitting_plan_emits_revised() -> None:

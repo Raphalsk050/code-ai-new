@@ -1,0 +1,99 @@
+name: Build standalone binaries
+
+# Produces single-file, self-contained executables for Linux and Windows.
+# End users run them without installing Python or any dependency.
+#
+# Both jobs run on the closed self-hosted Linux runner (label `code-linux`).
+# There is no Windows runner, so the Windows .exe is cross-built on Linux by
+# running PyInstaller inside a Wine container (tobix/pywine). The only thing
+# the runner must provide is Docker.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feature/chat-improvement]
+    tags: ["v*"]
+
+concurrency:
+  group: build-binaries-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux x86_64
+    runs-on: [self-hosted, code-linux]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Built inside a Debian Bullseye image (glibc 2.31) so the resulting
+      # binary runs on a wide range of older Linux distributions too.
+      - name: Build Linux binary
+        run: |
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -v "$PWD":/work -w /work \
+            python:3.12-bullseye \
+            bash -euxc '
+              python -m venv /tmp/venv
+              . /tmp/venv/bin/activate
+              pip install --upgrade pip
+              pip install .
+              pip install "pyinstaller>=6,<7"
+              pyinstaller --clean --noconfirm packaging/code-ai.spec
+              ./dist/code-ai --help
+            '
+
+      - name: Stage artifact
+        run: |
+          mkdir -p out
+          cp dist/code-ai out/code-ai-linux-x86_64
+          chmod +x out/code-ai-linux-x86_64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: code-ai-linux-x86_64
+          path: out/code-ai-linux-x86_64
+          if-no-files-found: error
+
+  windows:
+    name: Windows x86_64 (cross-built on Linux via Wine)
+    runs-on: [self-hosted, code-linux]
+    steps:
+      - uses: actions/checkout@v4
+
+      # PyInstaller has no cross-compiler: to emit a Windows .exe we run it
+      # against a real Windows Python interpreter under Wine. pip pulls the
+      # Windows wheels of every dependency because the interpreter reports
+      # itself as win32.
+      - name: Build Windows binary inside Wine
+        run: |
+          docker run --rm \
+            -v "$PWD":/work -w /work \
+            tobix/pywine:3.12 \
+            bash -euxc '
+              wine python -m pip install --upgrade pip
+              wine python -m pip install .
+              wine python -m pip install "pyinstaller>=6,<7"
+              wine python -m PyInstaller --clean --noconfirm packaging/code-ai.spec
+              wine dist/code-ai.exe --help || echo "wine smoke test non-fatal"
+            '
+
+      # The Wine container builds as root; hand the output back to the runner
+      # user so later steps and cleanup can touch it.
+      - name: Fix output ownership
+        if: always()
+        run: |
+          docker run --rm -v "$PWD":/work alpine \
+            sh -c 'chown -R '"$(id -u):$(id -g)"' /work/dist /work/build 2>/dev/null || true'
+
+      - name: Stage artifact
+        run: |
+          mkdir -p out
+          cp dist/code-ai.exe out/code-ai-windows-x86_64.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: code-ai-windows-x86_64
+          path: out/code-ai-windows-x86_64.exe
+          if-no-files-found: error

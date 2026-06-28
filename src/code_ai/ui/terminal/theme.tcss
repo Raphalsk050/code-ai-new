@@ -43,10 +43,102 @@ Screen {
   padding: 1;
 }
 
-#conversation {
+#session-header {
+  height: 1;
+  width: 1fr;
+}
+
+#session-title {
+  width: 1fr;
+}
+
+.collapse-btn {
+  width: 3;
+  min-width: 3;
+  height: 1;
+  border: none;
+  padding: 0;
+  color: #ff9f1c;
+  background: transparent;
+}
+
+.collapse-btn:hover {
+  background: #1b2530;
+}
+
+/* Collapsed: shrink to a thin strip showing only the expand button. */
+#session.collapsed {
+  width: 5;
+  min-width: 5;
+  max-width: 5;
+  padding: 1 0;
+}
+
+#session.collapsed #session-title {
+  display: none;
+}
+
+#session.collapsed #session-info {
+  display: none;
+}
+
+#conversation-pane {
   width: 1fr;
   border: solid #8892a0;
   padding: 1;
+}
+
+#conversation {
+  width: 1fr;
+  height: 1fr;
+  padding: 0;
+}
+
+/* Conversation layout — no visible dividers, only whitespace, indent and color.
+   Two things are real messages and sit at column 0 with the biggest spacing:
+     - .turn-user   (you>): green chip, 2 blank lines above — a new exchange
+     - .turn-answer (ai>):  orange chip + answer, 1 blank line above
+   Everything else is the agent's work trace: dimmed and indented into a quiet
+   side channel, packed tight (no per-line margin) so it never competes with the
+   messages around it. */
+#conversation .turn-user {
+  margin: 2 0 1 0;
+}
+#conversation .turn-answer {
+  margin-top: 1;
+}
+#conversation .turn-trace {
+  margin-left: 3;
+  color: #6b7280;
+}
+
+/* The model's reasoning, folded into a hideable "thinking" block — stripped of
+   the default Collapsible chrome so it sits quietly in the dim trace channel. */
+#conversation .thinking-block {
+  margin-left: 3;
+  width: 1fr;
+  height: auto;
+  background: transparent;
+  border-top: none;
+  padding: 0;
+}
+#conversation .thinking-block > CollapsibleTitle {
+  padding: 0;
+  color: #6b7280;
+}
+#conversation .thinking-block > CollapsibleTitle:hover {
+  color: #9aa4b2;
+  background: transparent;
+}
+#conversation .thinking-block Contents {
+  padding: 0 0 0 2;
+  color: #6b7280;
+}
+
+#stream-tail {
+  height: auto;
+  max-height: 16;
+  color: #d7dee8;
 }
 
 #plan {
@@ -75,7 +167,8 @@ Screen {
 }
 
 #input-row {
-  height: 3;
+  height: auto;
+  min-height: 3;
 }
 
 #mode-select {
@@ -87,10 +180,15 @@ Screen {
   border: solid #ff9f1c;
 }
 
+/* Multi-line prompt: starts at one row and grows with the text up to a cap,
+   then scrolls internally so a long draft never pushes the layout around. */
 #input {
   width: 1fr;
-  height: 3;
+  height: auto;
+  min-height: 3;
+  max-height: 12;
   border: solid #8892a0;
+  background: #0b141d;
 }
 
 .panel-title {
@@ -103,10 +201,9 @@ ApprovalModal {
 }
 
 #approval-dialog {
-  width: 80%;
-  max-width: 100;
-  height: auto;
-  max-height: 80%;
+  width: 85%;
+  max-width: 110;
+  height: 90%;
   border: thick #ff9f1c;
   background: #111820;
   padding: 1 2;
@@ -118,10 +215,48 @@ ApprovalModal {
   padding-bottom: 1;
 }
 
-#approval-body {
-  height: auto;
-  color: #d7dee8;
+#approval-meta {
+  color: #9fb3c8;
   padding-bottom: 1;
+}
+
+/* The model's own "why" explanation (/config learn). A distinct amber tone sets
+   it apart from file metadata or code; kept upright (not italic) and bold so the
+   reason — the most important line for the decision — reads clearly. */
+#approval-justification {
+  color: #f5c84c;
+  text-style: bold;
+  padding-bottom: 1;
+}
+
+/* Code preview: grows with the content but caps out and scrolls (both axes)
+   when the file is taller/wider than the available room. */
+#approval-body {
+  height: 1fr;
+  overflow: auto auto;
+  scrollbar-size: 1 1;
+  background: #111820;
+}
+
+#approval-code {
+  width: auto;
+  height: auto;
+}
+
+#approval-info {
+  color: #9fb3c8;
+  padding-top: 1;
+}
+
+#approval-keys {
+  color: #d7dee8;
+  padding-top: 1;
+  padding-bottom: 1;
+}
+
+/* A clear gap between the deny-feedback input and the action buttons. */
+#approval-feedback {
+  margin-bottom: 1;
 }
 
 #approval-actions {
@@ -129,6 +264,8 @@ ApprovalModal {
   align-horizontal: center;
 }
 
+/* Fixed equal width so the three buttons match regardless of label length. */
 #approval-actions Button {
   margin: 0 1;
+  width: 24;
 }

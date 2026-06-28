@@ -95,7 +95,15 @@ class PlannerService:
             source="core.planner",
         )
 
-    async def begin_turn(self, text: str, *, provider_supports_tools: bool) -> None:
+    async def begin_turn(
+        self, text: str, *, provider_supports_tools: bool, resume: bool = False
+    ) -> None:
+        # Resuming keeps the plan authored in the previous (plan-mode) turn alive
+        # so switching to act executes that checklist instead of reclassifying the
+        # continuation text and wiping the model-authored steps.
+        if resume and self.profile is not None:
+            await self._resume_turn()
+            return
         self.profile = TaskProfile.from_user_text(text)
         self.plan = ExecutionPlan.for_profile(
             self.profile, max_steps=self.config.max_plan_steps
@@ -127,6 +135,27 @@ class PlannerService:
         # never surfaced as a plan: the sidebar is reserved for the model-authored
         # steps submitted via submit_plan. Advance the internal cursor silently.
         await self._mark_current_step_started()
+
+    async def _resume_turn(self) -> None:
+        """Continue the current plan into an execution turn without rebuilding it.
+
+        Used when the user approves the plan and switches to act mode: the
+        profile, deterministic skeleton, model-authored checklist and evidence
+        ledger are all kept, so execution picks up where planning left off. Only
+        the per-turn bookkeeping resets, and the existing plan snapshot is
+        re-emitted so the task sidebar (collapsed when the plan-mode turn ended)
+        reappears with live progress.
+        """
+        self.no_progress_rounds = 0
+        self.double_check_pending = False
+        self.accepted_final_text = None
+        await self._emit_phase(PlanningPhase.EXECUTE)
+        if self.agent_plan and self.agent_plan.status == PlanStatus.ACTIVE:
+            await self.event_bus.emit(
+                "planning.step.started",
+                self.plan_snapshot(),
+                source="core.planner",
+            )
 
     def should_auto_list_workspace(self) -> bool:
         return bool(
@@ -187,6 +216,12 @@ class PlannerService:
         if tool_name == "submit_plan":
             await self.submit_agent_plan(payload.get("steps"))
             return []
+        if tool_name == "complete_plan_step":
+            # The model owns its checklist cursor: it advances only when the model
+            # declares a step finished, never by a heuristic that cannot know which
+            # of the model's free-form steps a given piece of evidence belongs to.
+            await self._advance_agent_plan()
+            return []
         before = self.progress_signature()
         step_id = self.current_step.step_id if self.current_step else None
         records = self.ledger.record_tool_result(
@@ -206,10 +241,12 @@ class PlannerService:
         await self._advance_after_evidence(records, tool_name=tool_name, payload=payload)
         # Only genuine forward motion clears the no-progress counter. Recording yet
         # another identical observation must not look like progress, or a tool-call
-        # loop would reset the guard forever.
+        # loop would reset the guard forever. The model-authored checklist is *not*
+        # advanced here: that cursor is driven solely by the model via
+        # complete_plan_step, so the sidebar reflects real progress instead of
+        # racing one step ahead per piece of evidence.
         if self.progress_signature() != before:
             self.no_progress_rounds = 0
-            await self._advance_agent_plan()
         return records
 
     async def record_policy_denial(
@@ -266,6 +303,17 @@ class PlannerService:
         required_evidence = [
             item.value for item in current.required_evidence
         ] if current else []
+        # The model-authored plan is the source of truth for the step narrative the
+        # model sees: it should work its *own* checklist, not the generic internal
+        # skeleton. The skeleton's kind/required-evidence still tell the model what
+        # evidence the runtime expects, but the step title and progress track the
+        # model's plan whenever one has been submitted.
+        if self.agent_plan is not None and self.agent_plan.current_step is not None:
+            step_title = self.agent_plan.current_step.title
+            plan_progress = self.agent_plan.snapshot()["progress"]
+        else:
+            step_title = current.title if current else "none"
+            plan_progress = snapshot["progress"]
         if self.agent_plan is None:
             plan_lines = (
                 "Task checklist: not submitted yet.\n"
@@ -275,20 +323,25 @@ class PlannerService:
                 "this request.\n"
             )
         else:
+            agent_current = self.agent_plan.current_step
+            current_label = agent_current.title if agent_current else "done"
             plan_lines = (
                 f"Task checklist: {self.agent_plan.snapshot()['progress']} "
-                f"(current: {self.agent_plan.current_step.title if self.agent_plan.current_step else 'done'}).\n"
-                "Call submit_plan again only if your approach genuinely changes.\n"
+                f"(current: {current_label}).\n"
+                "This checklist position reflects only the steps you have reported "
+                "finishing. When you actually complete the current step, call "
+                "complete_plan_step so it advances to the next one. Call submit_plan "
+                "again only if your approach genuinely changes.\n"
             )
-        return (
+        header = (
             "Runtime task state. Treat this as authoritative host state, not a user request.\n"
             f"Original objective: {self.profile.objective}\n"
             f"Acceptance criteria: {self.profile.acceptance_criteria}\n"
             f"Planner mode: {self.mode.value}\n"
             f"Semantic phase: {self.phase.value}\n"
             f"Plan revision: {self.plan.revision}\n"
-            f"Plan progress: {snapshot['progress']}\n"
-            f"Current step: {current.title if current else 'none'}\n"
+            f"Plan progress: {plan_progress}\n"
+            f"Current step: {step_title}\n"
             f"Current step kind: {current.kind.value if current else 'none'}\n"
             f"Required evidence: {required_evidence}\n"
             f"Changed paths: {self.ledger.current_changed_paths()}\n"
@@ -297,7 +350,29 @@ class PlannerService:
             f"Recent evidence: {self.ledger.compact_recent(limit=8)}\n"
             f"Recommended tools now: {sorted(recommended_tool_names)}\n"
             + plan_lines
-            + "Rules: prefer the recommended tools, work on the current step, and do not "
+        )
+        if self.mode == PlannerMode.PLAN:
+            # Plan mode = think, don't touch. The model investigates with read-only
+            # tools and delivers a thorough plan as its answer; write/process tools
+            # are denied by policy, so it must not attempt them or claim completion.
+            return header + (
+                "PLAN MODE — produce a plan, do not change anything.\n"
+                "Rules:\n"
+                "- Investigate first with read-only tools (read_file, search_code, "
+                "list_files) until you genuinely understand the task and the code it "
+                "touches. Do not guess.\n"
+                "- Do NOT call write_file, edit_code, execute_command, or "
+                "complete_task — they are disabled in plan mode and will be rejected.\n"
+                "- Deliver a deep, concrete plan as your final answer: the approach "
+                "and trade-offs, the exact files/functions to change with what each "
+                "change does, edge cases and risks, and how the result will be "
+                "verified. Number the steps so they can be executed in order.\n"
+                "- Use ask_user only if a genuine ambiguity blocks planning.\n"
+                "- End by telling the user to switch to act mode (/act) to execute "
+                "the plan."
+            )
+        return header + (
+            "Rules: prefer the recommended tools, work on the current step, and do not "
             "claim completion from prose. For workspace changes, call write_file or "
             "edit_code; for completion, call complete_task after verification evidence exists."
         )
@@ -384,7 +459,7 @@ class PlannerService:
                 checklist = (
                     "Double-check required before successful completion.",
                     "Reconcile every acceptance criterion with actual evidence.",
-                    "Confirm verification still applies to the current changed hashes.",
+                    "Confirm verification still reflects the current workspace state.",
                     "Call complete_task again after reconciling the evidence.",
                 )
                 await self.event_bus.emit(
@@ -498,11 +573,12 @@ class PlannerService:
         )
 
     async def _advance_agent_plan(self) -> None:
-        """Move the sidebar cursor one model-declared step forward on real progress.
+        """Move the sidebar cursor one step forward when the model reports a step done.
 
-        Each genuine forward signal (new evidence, a phase/step transition) walks
-        the model's checklist ahead by one. The last step stays running until
-        completion settles the whole plan, so the panel always shows a live step.
+        Driven solely by the model's complete_plan_step calls, so the checklist
+        tracks real declared progress rather than racing one step ahead per piece
+        of evidence. The last step stays running until completion settles the
+        whole plan, so the panel always shows a live step.
         """
         if not self.agent_plan or self.agent_plan.status != PlanStatus.ACTIVE:
             return
@@ -746,23 +822,23 @@ class PlannerService:
             missing.append("summary is required.")
         if self.plan.objective != self.profile.objective:
             missing.append("plan objective no longer matches the original objective.")
-        incomplete = [
-            step.title
-            for step in self.plan.steps
-            if step.kind != PlanStepKind.COMPLETE
-            and step.status
-            not in {PlanStepStatus.COMPLETED, PlanStepStatus.SKIPPED}
-        ]
-        if incomplete:
-            missing.append(f"required plan steps are incomplete: {incomplete}.")
-        if self.profile.requires_workspace_mutation:
-            if not self.ledger.has_success(EvidenceType.FILE_CREATED, EvidenceType.FILE_CHANGED):
-                missing.append("no successful file-change evidence exists.")
-            if (
-                self.config.require_verification_for_changes
-                and not self.ledger.latest_verification_passed
-            ):
-                missing.append("no current successful verification evidence exists.")
+        has_file_change = self.ledger.has_success(
+            EvidenceType.FILE_CREATED, EvidenceType.FILE_CHANGED
+        )
+        verified = (
+            not self.config.require_verification_for_changes
+            or self.ledger.latest_verification_passed
+        )
+        # A task the surface classifier labelled a mutation must show file-change
+        # evidence before completing. Independently, *any* task that actually
+        # changed files must be verified before completing — that catches mutations
+        # the keyword classifier missed (e.g. "faça um jogo de pong", read as
+        # conversation), so the gate keys off real evidence, not the label.
+        if self.profile.requires_workspace_mutation and not has_file_change:
+            missing.append("no successful file-change evidence exists.")
+        if has_file_change and not verified:
+            missing.append("no current successful verification evidence exists.")
+        if has_file_change or self.profile.requires_workspace_mutation:
             actual_paths = set(self.ledger.current_changed_paths())
             claimed_paths = set(claim.changed_paths)
             if claimed_paths and claimed_paths != actual_paths:
@@ -770,7 +846,46 @@ class PlannerService:
                     f"claimed changed paths {sorted(claimed_paths)} do not match "
                     f"recorded paths {sorted(actual_paths)}."
                 )
+        missing.extend(
+            self._incomplete_plan_steps(has_file_change=has_file_change, verified=verified)
+        )
         return missing
+
+    def _incomplete_plan_steps(self, *, has_file_change: bool, verified: bool) -> list[str]:
+        """Steps still owed before a clean completion.
+
+        Reconcile against the model's *own* checklist (``AgentPlan``) when it
+        submitted one, so completion judges what the model said it would do rather
+        than the generic internal skeleton. The model drives its own cursor (via
+        complete_plan_step) and may forget to advance it, so once a mutation's
+        change is verified we trust the evidence and stop blocking on a lagging
+        cursor (fail-soft). With no submitted plan we fall back to the
+        deterministic skeleton.
+        """
+        if self.agent_plan is not None:
+            mutation_settled = bool(
+                self.profile
+                and self.profile.requires_workspace_mutation
+                and has_file_change
+                and verified
+            )
+            if mutation_settled:
+                return []
+            pending = [
+                step.title
+                for step in self.agent_plan.steps
+                if step.status == PlanStepStatus.PENDING
+            ]
+            return [f"declared plan steps not yet done: {pending}."] if pending else []
+        if not self.plan:
+            return []
+        incomplete = [
+            step.title
+            for step in self.plan.steps
+            if step.kind != PlanStepKind.COMPLETE
+            and step.status not in {PlanStepStatus.COMPLETED, PlanStepStatus.SKIPPED}
+        ]
+        return [f"required plan steps are incomplete: {incomplete}."] if incomplete else []
 
     def current_step_index_is_last(self) -> bool:
         return bool(self.plan and self.plan.current_step_index >= len(self.plan.steps) - 1)
