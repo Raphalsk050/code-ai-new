@@ -9,7 +9,9 @@ from code_ai.app.session import ApplicationSession
 from code_ai.config.defaults import (
     default_memories_dir,
     global_knowledge_dir,
+    global_rules_dir,
     project_memories_dir,
+    project_rules_dir,
 )
 from code_ai.config.loader import load_config
 from code_ai.config.models import AppConfig
@@ -20,6 +22,7 @@ from code_ai.context.usage import UsageLedger
 from code_ai.core.memory import FailureMemoryStore, MemoryService, MemoryStore
 from code_ai.core.orchestration import AgentOrchestrator
 from code_ai.core.planning import PlannerService
+from code_ai.core.rules import RulesService
 from code_ai.events.bus import AsyncEventBus
 from code_ai.prompts import build_failure_lesson_prompt, build_system_prompt
 from code_ai.providers.base import ModelProvider
@@ -60,8 +63,10 @@ from code_ai.tools.review import (
     ReviewService,
     TestReviewTool,
 )
+from code_ai.tools.rules import CreateRuleTool
 from code_ai.tools.search import SearchCodeTool
 from code_ai.tools.skills import CreateSkillTool, UseSkillTool
+from code_ai.tools.skills.seed import seed_default_skills
 from code_ai.tools.system import SystemInformationTool
 from code_ai.tools.terminal import (
     InterruptTerminalTool,
@@ -105,6 +110,7 @@ def build_tool_registry() -> ToolRegistry:
         WebSearchTool(),
         UseSkillTool(),
         CreateSkillTool(),
+        CreateRuleTool(),
         ArchitectureReviewTool(),
         CodeReviewTool(),
         BuildReviewTool(),
@@ -132,6 +138,9 @@ def build_application(
     failure_memory: FailureMemoryStore | None = None,
 ) -> CodeAIApplication:
     config = config or load_config(explicit_path=config_path, cli_overrides=cli_overrides)
+    # First-run seeding of the bundled default skills (architecture guides,
+    # create-rules). Idempotent and best-effort, so it never blocks startup.
+    seed_default_skills()
     event_bus = AsyncEventBus()
     provider = provider or create_provider(config)
     workspace = WorkspacePolicy.from_path(config.workspace)
@@ -163,6 +172,13 @@ def build_application(
         project_store=MemoryStore(project_memories_dir(config.workspace)),
     )
 
+    # Mandatory rules, always injected: global (install-wide) + project (committed
+    # with the workspace). See code_ai.core.rules.
+    rules = RulesService(
+        global_dir=global_rules_dir(),
+        project_dir=project_rules_dir(config.workspace),
+    )
+
     conversation = ConversationState(
         messages=[
             Message(
@@ -172,6 +188,7 @@ def build_application(
                     language=config.language,
                     lessons=failure_memory.render_for_prompt(),
                     memories=memory.render_for_prompt(),
+                    rules=rules.render_for_prompt(),
                 ),
             )
         ]
@@ -222,6 +239,7 @@ def build_application(
         planner=planner,
         failure_memory=failure_memory,
         memory=memory,
+        rules=rules,
     )
     session = ApplicationSession(session_id=event_bus.session_id, config=config)
     return CodeAIApplication(

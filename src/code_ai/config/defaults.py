@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 
 DEFAULT_CONFIG_DIRNAME = ".code-ai"
 DEFAULT_CONFIG_FILENAME = "config.json"
+
+# Rules - mandatory instructions always injected into the system prompt. Global
+# rules live install-wide; project rules live inside the workspace so they can be
+# committed and shared with a team. The global dir is overridable via an env var
+# so tests never touch the real home directory (mirrors CODE_AI_SKILLS_DIR).
+RULES_DIRNAME = "rules"
+RULES_DIR_ENV = "CODE_AI_RULES_DIR"
 
 # Written into a saved config.json when no real api_key is set, so the field is
 # never left blank. Treated as "unset" at runtime (see config.models), so it
@@ -35,6 +43,32 @@ def global_knowledge_dir() -> Path:
     """
 
     return Path.home() / DEFAULT_CONFIG_DIRNAME / "memories" / "knowledge"
+
+
+def global_rules_dir() -> Path:
+    """Directory holding install-wide mandatory rules.
+
+    Lives under the config dir so personal rules apply in every workspace, the
+    same way :func:`global_knowledge_dir` keeps cross-project facts. Overridable
+    via ``CODE_AI_RULES_DIR`` for tests and alternate setups.
+    """
+
+    override = os.environ.get(RULES_DIR_ENV)
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / DEFAULT_CONFIG_DIRNAME / RULES_DIRNAME
+
+
+def project_rules_dir(workspace: Path | str) -> Path:
+    """Directory holding mandatory rules scoped to a single workspace.
+
+    Lives inside the workspace (``<workspace>/.code-ai/rules``), unlike memories,
+    so project rules can be committed to the repository and shared with the team,
+    the way Cline's ``.clinerules`` travel with the project.
+    """
+
+    resolved = Path(workspace).expanduser().resolve()
+    return resolved / DEFAULT_CONFIG_DIRNAME / RULES_DIRNAME
 
 
 def project_memories_dir(workspace: Path | str) -> Path:
