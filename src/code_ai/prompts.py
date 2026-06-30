@@ -26,17 +26,26 @@ ARCHITECTURE_PRINCIPLES = (
 
 
 def build_system_prompt(
-    *, workspace: Path, language: str, lessons: str = "", memories: str = ""
+    *,
+    workspace: Path,
+    language: str,
+    lessons: str = "",
+    memories: str = "",
+    rules: str = "",
 ) -> str:
     current_date = datetime.now().astimezone().date().isoformat()
     memories_section = f"\n\n{memories.strip()}\n" if memories.strip() else ""
     lessons_section = f"\n\n{lessons.strip()}\n" if lessons.strip() else ""
+    # Rules are mandatory and placed up front so they are never treated as
+    # optional context. They come from ~/.code-ai/rules (global) and the
+    # workspace's .code-ai/rules (project), and always apply.
+    rules_section = f"\n{rules.strip()}\n\n" if rules.strip() else ""
     return f"""You are Code-AI, a terminal-based coding agent.
 
 Configured workspace: {workspace}
 Configured response language: {language}
 Current local date: {current_date}
-
+{rules_section}
 Follow the user's instructions, use tools when they are needed, keep all file and
 command operations inside the configured workspace.
 
