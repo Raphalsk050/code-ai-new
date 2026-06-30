@@ -38,6 +38,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "code_ai.ui.terminal" = ["theme.tcss", "banner.txt"]
+"code_ai.assets" = ["default_skills/**/*.md"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
