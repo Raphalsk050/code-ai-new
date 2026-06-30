@@ -49,11 +49,28 @@ def parse_arguments(arguments: Any) -> dict[str, Any]:
     if arguments in {None, ""}:
         return {}
     if isinstance(arguments, str):
-        parsed = json.loads(arguments)
-        if not isinstance(parsed, dict):
-            raise ValueError("Tool arguments must decode to an object.")
-        return parsed
+        return _decode_arguments_object(arguments)
     raise ValueError("Tool arguments must be a JSON object or string.")
+
+
+def _decode_arguments_object(raw: str) -> dict[str, Any]:
+    """Decode a single JSON object from ``raw``, tolerating trailing extra data.
+
+    Weak local models (e.g. qwen via ollama) sometimes emit a valid arguments
+    object followed by duplicated or stray tokens, especially when the arguments
+    are large. A bare ``json.loads`` then fails with ``Extra data: ...`` and,
+    left unrecovered, takes down the whole session. ``raw_decode`` consumes only
+    the first JSON value and ignores whatever trails it, so a recoverable call is
+    not lost to a few stray characters. Genuinely broken input (e.g. a truncated
+    object) still raises, and is handled as a degraded tool call by the provider.
+    """
+    text = raw.strip()
+    if not text:
+        return {}
+    parsed, _end = json.JSONDecoder().raw_decode(text)
+    if not isinstance(parsed, dict):
+        raise ValueError("Tool arguments must decode to an object.")
+    return parsed
 
 
 def object_get(value: Any, key: str, default: Any = None) -> Any:

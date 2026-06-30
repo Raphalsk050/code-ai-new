@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from code_ai.config.models import AppConfig
 from code_ai.providers.models import Message, ModelRequest, ProviderCapabilities, ToolCall
 from code_ai.providers.ollama import (
@@ -8,13 +10,16 @@ from code_ai.providers.ollama import (
     messages_to_ollama,
     normalize_native_ollama_base_url,
 )
-from code_ai.providers.openai_completions import assemble_streamed_tool_call_fragments
+from code_ai.providers.openai_completions import (
+    OpenAIChatCompletionsProvider,
+    assemble_streamed_tool_call_fragments,
+)
 from code_ai.providers.openai_responses import (
     OpenAIResponsesProvider,
     _responses_input,
     normalize_responses_output_item,
 )
-from code_ai.providers.translation import tools_to_chat, tools_to_responses
+from code_ai.providers.translation import parse_arguments, tools_to_chat, tools_to_responses
 from code_ai.tools.process import ExecuteCommandTool
 from code_ai.tools.registry import ToolRegistry
 
@@ -54,6 +59,113 @@ def test_chat_completions_streamed_tool_argument_assembly() -> None:
         ]
     )
     assert calls == [ToolCall(id="call_1", name="read_file", arguments={"path": "a.txt"})]
+
+
+class _FakeChatCompletionsResource:
+    def __init__(self, chunks: list[dict[str, object]]) -> None:
+        self._chunks = chunks
+
+    async def create(self, **kwargs: object):
+        async def stream():
+            for chunk in self._chunks:
+                yield chunk
+
+        return stream()
+
+
+class _FakeChatResource:
+    def __init__(self, chunks: list[dict[str, object]]) -> None:
+        self.completions = _FakeChatCompletionsResource(chunks)
+
+
+class _FakeChatClient:
+    def __init__(self, chunks: list[dict[str, object]]) -> None:
+        self.chat = _FakeChatResource(chunks)
+
+
+def _chat_provider(chunks: list[dict[str, object]]) -> OpenAIChatCompletionsProvider:
+    provider = object.__new__(OpenAIChatCompletionsProvider)
+    provider._client = _FakeChatClient(chunks)
+    provider._config = AppConfig()
+    provider._stream_options_supported = False
+    provider._sampling_supported = False
+    provider._capabilities = ProviderCapabilities()
+    return provider
+
+
+def _tool_call_chunk(arguments: str) -> dict[str, object]:
+    return {
+        "usage": None,
+        "choices": [
+            {
+                "finish_reason": "tool_calls",
+                "delta": {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call_1",
+                            "function": {"name": "create_skill", "arguments": arguments},
+                        }
+                    ],
+                },
+            }
+        ],
+    }
+
+
+def _chat_request() -> ModelRequest:
+    return ModelRequest(model="test-model", messages=[Message(role="user", content="hi")])
+
+
+async def test_chat_completions_recovers_tool_call_with_trailing_extra_data() -> None:
+    # qwen via ollama emitted a valid arguments object followed by stray tokens.
+    # A bare json.loads raised "Extra data: ..." and took the whole session down.
+    arguments = '{"name": "appropriate-abstraction", "overwrite": true}{"name"'
+    provider = _chat_provider([_tool_call_chunk(arguments)])
+
+    events = [event async for event in provider.stream(_chat_request())]
+
+    assert all(event.kind != "warning" for event in events)
+    completed = events[-1]
+    assert completed.kind == "completed"
+    assert completed.response is not None
+    assert completed.response.tool_calls == [
+        ToolCall(
+            id="call_1",
+            name="create_skill",
+            arguments={"name": "appropriate-abstraction", "overwrite": True},
+        )
+    ]
+
+
+async def test_chat_completions_drops_unparseable_tool_call_without_failing() -> None:
+    # Truncated arguments are unrecoverable; the call is dropped with a warning
+    # rather than crashing the session with a fatal "request failed".
+    arguments = '{"name": "x", "instructions": "# big'
+    provider = _chat_provider([_tool_call_chunk(arguments)])
+
+    events = [event async for event in provider.stream(_chat_request())]
+
+    warnings = [event for event in events if event.kind == "warning"]
+    assert warnings and "create_skill" in str(warnings[0].warning)
+    completed = events[-1]
+    assert completed.kind == "completed"
+    assert completed.response is not None
+    assert completed.response.tool_calls == []
+
+
+def test_parse_arguments_tolerates_trailing_extra_data() -> None:
+    assert parse_arguments('{"a": 1}{"b": 2}') == {"a": 1}
+
+
+def test_parse_arguments_blank_string_is_empty_object() -> None:
+    assert parse_arguments("   ") == {}
+
+
+def test_parse_arguments_truncated_object_raises() -> None:
+    with pytest.raises(ValueError):
+        parse_arguments('{"a": 1')
 
 
 def test_responses_output_item_tool_call_normalization() -> None:
