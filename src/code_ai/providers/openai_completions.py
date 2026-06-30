@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import random
 from collections.abc import AsyncIterator
 from typing import Any
@@ -238,11 +237,22 @@ class OpenAIChatCompletionsProvider:
             name = fragment["name"]
             if not name:
                 continue
+            try:
+                arguments = parse_arguments(fragment["arguments"] or "{}")
+            except (ValueError, TypeError) as exc:
+                # A single malformed tool call must not abort the whole session.
+                # Drop it with a warning so the agent can retry instead of the
+                # JSONDecodeError surfacing as a fatal "request failed".
+                yield ProviderEvent(
+                    kind="warning",
+                    warning=f"Discarded tool call {name!r} with unparseable arguments: {exc}",
+                )
+                continue
             tool_calls.append(
                 ToolCall(
                     id=fragment["id"] or f"tool_call_{index}",
                     name=name,
-                    arguments=parse_arguments(fragment["arguments"] or "{}"),
+                    arguments=arguments,
                 )
             )
         response = ModelResponse(
@@ -282,7 +292,7 @@ def assemble_streamed_tool_call_fragments(fragments: list[dict[str, Any]]) -> li
             ToolCall(
                 id=item["id"] or f"tool_call_{index}",
                 name=item["name"],
-                arguments=json.loads(item["arguments"] or "{}"),
+                arguments=parse_arguments(item["arguments"] or "{}"),
             )
         )
     return calls
