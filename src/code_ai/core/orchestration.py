@@ -29,6 +29,7 @@ from code_ai.core.errors import (
 from code_ai.core.memory import FailureMemoryStore, MemoryService
 from code_ai.core.planning import PlannerService
 from code_ai.core.planning.policy import PolicyDecision
+from code_ai.core.rules import RulesService
 from code_ai.core.state import AgentState
 from code_ai.events.bus import AsyncEventBus
 from code_ai.prompts import build_system_prompt
@@ -140,6 +141,7 @@ class AgentOrchestrator:
         approval_gateway: ApprovalGateway | None = None,
         failure_memory: FailureMemoryStore | None = None,
         memory: MemoryService | None = None,
+        rules: RulesService | None = None,
     ) -> None:
         self.config = config
         self.provider = provider
@@ -156,6 +158,9 @@ class AgentOrchestrator:
         # Durable memory of user-stated and proactively-saved facts; ``None``
         # simply means nothing is injected.
         self.memory = memory
+        # Mandatory rules re-read on each prompt rebuild so a rule created
+        # mid-session takes effect without a restart; ``None`` injects nothing.
+        self.rules = rules
         # Interactive approver. Defaults to deny-all so non-interactive runs keep
         # the prior behaviour; the terminal UI swaps in a modal-backed gateway.
         self.approval_gateway: ApprovalGateway = approval_gateway or DenyAllGateway()
@@ -191,6 +196,7 @@ class AgentOrchestrator:
             return
         lessons = self.failure_memory.render_for_prompt() if self.failure_memory else ""
         memories = self.memory.render_for_prompt() if self.memory else ""
+        rules = self.rules.render_for_prompt() if self.rules else ""
         self.conversation.messages[0] = Message(
             role="system",
             content=build_system_prompt(
@@ -198,6 +204,7 @@ class AgentOrchestrator:
                 language=self.config.language,
                 lessons=lessons,
                 memories=memories,
+                rules=rules,
             ),
         )
 
