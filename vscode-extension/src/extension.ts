@@ -27,6 +27,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("code-ai.open", () =>
       vscode.commands.executeCommand("code-ai.chat.focus")
     ),
+    // Respawn the bridge so edited settings/config take effect without having to
+    // reload the whole extension host.
+    vscode.commands.registerCommand("code-ai.restart", () => provider.restartBridge()),
     // Explain mode surfaces its analysis as a native hover over the selection.
     vscode.languages.registerHoverProvider(
       { scheme: "file" },
@@ -44,6 +47,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 
   // Shared with the hover provider and selection handlers (one bridge per view).
   private client?: BridgeClient;
+  private view?: vscode.WebviewView;
   private webview?: vscode.Webview;
   private mode: AppMode = "agent";
   private autoRunRefactor = false;
@@ -219,83 +223,51 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     // Render the UI first and unconditionally: the webview must never be blank,
     // even if the bridge fails to spawn. Bridge errors are surfaced as events
     // inside the already-rendered UI instead of leaving an empty panel.
+    this.view = view;
     this.webview = view.webview;
     view.webview.html = renderHtml(view.webview, this.extensionUri);
 
-    const config = vscode.workspace.getConfiguration("code-ai");
-    const extraArgs = config.get<string[]>("args", []);
-    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    const command = resolveCommand(config.get<string>("command", "code-ai"), this.extensionUri);
-
-    let client: BridgeClient;
-    try {
-      client = new BridgeClient(command, [...extraArgs, "bridge"], cwd);
-    } catch (err) {
-      const detail = `failed to spawn "${command}": ${String(err)}`;
-      vscode.window.showErrorMessage(`Code-AI: ${detail}`);
-      void view.webview.postMessage({ type: "event", event: syntheticError(detail) });
-      return;
-    }
-    this.client = client;
-
-    client.on("event", (event: EventEnvelope) => {
-      void view.webview.postMessage({ type: "event", event });
-    });
-    client.on("stderr", (chunk: string) => console.error("[code-ai bridge]", chunk));
-    client.on("error", (err: Error) => {
-      const hint =
-        (err as NodeJS.ErrnoException).code === "ENOENT"
-          ? ` — "${command}" was not found. Set "code-ai.command" to the absolute path of the binary` +
-            ` (e.g. <project>/.venv/bin/code-ai).`
-          : "";
-      vscode.window.showErrorMessage(`Code-AI bridge error: ${err.message}${hint}`);
-    });
-    client.on("exit", (code: number | null) => {
-      // Leave the busy state so the "working" heartbeat stops, then show why.
-      void view.webview.postMessage({ type: "event", event: syntheticStatus("DISCONNECTED") });
-      void view.webview.postMessage({ type: "event", event: syntheticError(`bridge exited (${code})`) });
-    });
-
     view.webview.onDidReceiveMessage((message: WebviewToHost) => {
+      const client = this.client;
       switch (message.type) {
         case "submit": {
           const context =
             message.includeContext === false ? "" : formatEditorContext(currentEditorContext());
-          client.send("submitUserMessage", { text: message.text, context });
+          client?.send("submitUserMessage", { text: message.text, context });
           break;
         }
         case "newConversation":
-          client.send("newConversation");
+          client?.send("newConversation");
           break;
         case "getSettings":
           client
-            .request("getSettings")
-            .then((settings) => view.webview.postMessage({ type: "settings", settings }))
+            ?.request("getSettings")
+            .then((settings) => this.webview?.postMessage({ type: "settings", settings }))
             .catch((err) => console.error("[code-ai] getSettings failed", err));
           break;
         case "updateSettings":
           client
-            .request("updateSettings", { updates: message.updates })
-            .then((result) => view.webview.postMessage({ type: "settingsUpdated", result }))
+            ?.request("updateSettings", { updates: message.updates })
+            .then((result) => this.webview?.postMessage({ type: "settingsUpdated", result }))
             .catch((err) =>
               vscode.window.showErrorMessage(`Code-AI: failed to save settings: ${String(err)}`)
             );
           break;
         case "cancel":
-          client.send("cancel");
+          client?.send("cancel");
           break;
         case "compact":
-          client.send("compact");
+          client?.send("compact");
           break;
         case "resolveApproval":
-          client.send("resolveApproval", {
+          client?.send("resolveApproval", {
             call_id: message.call_id,
             scope: message.scope,
             reason: message.reason ?? "",
           });
           break;
         case "setPermissionMode":
-          client.send("setPermissionMode", { mode: message.mode });
+          client?.send("setPermissionMode", { mode: message.mode });
           break;
         case "setMode":
           this.mode = message.mode;
@@ -308,13 +280,16 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         case "planRefactor":
           void this.runPlanRefactor(message.id, message.improvements);
           break;
+        case "restartBridge":
+          this.restartBridge();
+          break;
       }
     });
 
     // Keep the webview in sync with what the user is looking at, so it can show
     // a context chip and let the user opt out before sending.
     const pushContext = () =>
-      void view.webview.postMessage({ type: "editorContext", context: currentEditorContext() });
+      void this.webview?.postMessage({ type: "editorContext", context: currentEditorContext() });
     const editorSubs = [
       vscode.window.onDidChangeActiveTextEditor(pushContext),
       vscode.window.onDidChangeTextEditorSelection((e) => {
@@ -335,10 +310,75 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       if (this.refactorTimer) clearTimeout(this.refactorTimer);
       this.explainJob = null;
       this.refactorTarget = null;
+      this.client?.dispose();
       this.client = undefined;
+      this.view = undefined;
       this.webview = undefined;
-      client.dispose();
     });
+
+    this.spawnBridge();
+  }
+
+  /**
+   * Spawn the bridge child process and wire its lifecycle to the webview. Reads
+   * the configuration fresh on every call, so a {@link restartBridge} picks up
+   * edited `code-ai.*` settings. Failures are surfaced inside the already-
+   * rendered UI rather than left as a blank panel.
+   */
+  private spawnBridge(): void {
+    const config = vscode.workspace.getConfiguration("code-ai");
+    const extraArgs = config.get<string[]>("args", []);
+    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const command = resolveCommand(config.get<string>("command", "code-ai"), this.extensionUri);
+
+    let client: BridgeClient;
+    try {
+      client = new BridgeClient(command, [...extraArgs, "bridge"], cwd);
+    } catch (err) {
+      const detail = `failed to spawn "${command}": ${String(err)}`;
+      vscode.window.showErrorMessage(`Code-AI: ${detail}`);
+      void this.webview?.postMessage({ type: "event", event: syntheticError(detail) });
+      return;
+    }
+    this.client = client;
+
+    client.on("event", (event: EventEnvelope) => {
+      void this.webview?.postMessage({ type: "event", event });
+    });
+    client.on("stderr", (chunk: string) => console.error("[code-ai bridge]", chunk));
+    client.on("error", (err: Error) => {
+      const hint =
+        (err as NodeJS.ErrnoException).code === "ENOENT"
+          ? ` — "${command}" was not found. Set "code-ai.command" to the absolute path of the binary` +
+            ` (e.g. <project>/.venv/bin/code-ai).`
+          : "";
+      vscode.window.showErrorMessage(`Code-AI bridge error: ${err.message}${hint}`);
+    });
+    client.on("exit", (code: number | null) => {
+      if (this.client !== client) return; // a restart already replaced this bridge
+      // Leave the busy state so the "working" heartbeat stops, then show why.
+      void this.webview?.postMessage({ type: "event", event: syntheticStatus("DISCONNECTED") });
+      void this.webview?.postMessage({ type: "event", event: syntheticError(`bridge exited (${code})`) });
+    });
+  }
+
+  /**
+   * Tear down the running bridge and spawn a fresh one. This re-reads the
+   * on-disk config and `code-ai.*` settings, so edits take effect without
+   * reloading the whole extension host.
+   */
+  restartBridge(): void {
+    if (!this.webview) return;
+    const previous = this.client;
+    this.client = undefined;
+    this.explainJob = null;
+    previous?.dispose();
+    void this.webview.postMessage({ type: "event", event: syntheticStatus("RECONNECTING") });
+    void this.webview.postMessage({
+      type: "event",
+      event: syntheticNotice("Restarting Code-AI to apply your settings…"),
+    });
+    this.spawnBridge();
   }
 }
 
@@ -407,6 +447,10 @@ function resolveCommand(configured: string, extensionUri: vscode.Uri): string {
 
 function syntheticStatus(state: string): EventEnvelope {
   return { ...syntheticError(""), event_type: "status.changed", payload: { state } };
+}
+
+function syntheticNotice(message: string): EventEnvelope {
+  return { ...syntheticError(message), event_type: "warning" };
 }
 
 function syntheticError(message: string): EventEnvelope {

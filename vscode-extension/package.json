@@ -38,8 +38,22 @@
       {
         "command": "code-ai.open",
         "title": "Code-AI: Focus Chat"
+      },
+      {
+        "command": "code-ai.restart",
+        "title": "Code-AI: Restart (reload settings)",
+        "icon": "$(refresh)"
       }
     ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "code-ai.restart",
+          "when": "view == code-ai.chat",
+          "group": "navigation"
+        }
+      ]
+    },
     "configuration": {
       "title": "Code-AI",
       "properties": {
