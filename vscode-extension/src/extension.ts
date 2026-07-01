@@ -32,6 +32,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("code-ai.restart", () => provider.restartBridge()),
     vscode.commands.registerCommand("code-ai.toggleInlineHints", () => provider.toggleInlineHints()),
     vscode.commands.registerCommand("code-ai.inlineHintInfo", () => provider.showInlineHintInfo()),
+    vscode.commands.registerCommand("code-ai.testInlineHint", () => provider.testInlineHint()),
     // Explain mode surfaces its analysis as a native hover over the selection.
     vscode.languages.registerHoverProvider(
       { scheme: "file" },
@@ -209,7 +210,16 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     _context: vscode.InlineCompletionContext,
     token: vscode.CancellationToken
   ): Promise<vscode.InlineCompletionItem[] | undefined> {
-    if (!this.inlineEnabled || !this.client || document.uri.scheme !== "file") return undefined;
+    const where = `${vscode.workspace.asRelativePath(document.uri, false)}:${position.line + 1}`;
+    if (!this.inlineEnabled) {
+      this.logInline(`skip ${where}: inline hints disabled (enable from the status bar)`);
+      return undefined;
+    }
+    if (!this.client) {
+      this.logInline(`skip ${where}: bridge not running`);
+      return undefined;
+    }
+    if (document.uri.scheme !== "file") return undefined;
     const prefix = document.getText(new vscode.Range(new vscode.Position(0, 0), position));
     if (!prefix.trim()) return undefined;
     const lastLine = document.lineAt(document.lineCount - 1).range.end;
@@ -220,6 +230,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     if (token.isCancellationRequested) return undefined;
 
     this.renderInlineStatusBar(true);
+    const started = Date.now();
     try {
       const result = await this.client.request<{ completion: string }>(
         "inlineComplete",
@@ -231,23 +242,70 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         },
         AI_REQUEST_TIMEOUT_MS
       );
-      if (token.isCancellationRequested) return undefined;
+      const ms = Date.now() - started;
+      if (token.isCancellationRequested) {
+        this.logInline(`cancelled ${where} after ${ms}ms (you kept typing)`);
+        return undefined;
+      }
       const text = result.completion ?? "";
-      if (!text.trim()) return undefined;
+      if (!text.trim()) {
+        this.logInline(`empty ${where} after ${ms}ms — model returned no completion`);
+        return undefined;
+      }
       const item = new vscode.InlineCompletionItem(text, new vscode.Range(position, position));
       // Surfaces a "Code-AI" button in the inline-suggestion toolbar, so the
       // user can tell this ghost text apart from other providers'.
       item.command = { command: "code-ai.inlineHintInfo", title: this.inlineLabel() };
-      this.logInline(
-        `${document.languageId} @ ${vscode.workspace.asRelativePath(document.uri, false)}:` +
-          `${position.line + 1} → ${JSON.stringify(text.slice(0, 80))}`
-      );
+      this.logInline(`served ${where} in ${ms}ms → ${JSON.stringify(text.slice(0, 80))}`);
       return [item];
     } catch (err) {
-      console.error("[code-ai] inlineComplete failed", err);
+      this.logInline(`error ${where} after ${Date.now() - started}ms: ${String(err)}`);
       return undefined;
     } finally {
       if (!token.isCancellationRequested) this.renderInlineStatusBar(false);
+    }
+  }
+
+  /**
+   * Diagnostic: force one inline completion at the cursor and report the raw
+   * result in a message + the log. Isolates the model/bridge path from VSCode's
+   * ghost-text rendering, so we can tell whether nothing shows because the model
+   * returned nothing or because the suggestion is being suppressed.
+   */
+  async testInlineHint(): Promise<void> {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      vscode.window.showWarningMessage("Code-AI: open a file and place the cursor first.");
+      return;
+    }
+    if (!this.client) {
+      vscode.window.showWarningMessage("Code-AI: the bridge is not running yet.");
+      return;
+    }
+    const doc = editor.document;
+    const position = editor.selection.active;
+    const prefix = doc.getText(new vscode.Range(new vscode.Position(0, 0), position));
+    const suffix = doc.getText(new vscode.Range(position, doc.lineAt(doc.lineCount - 1).range.end));
+    this.inlineLog?.show(true);
+    this.logInline(`TEST request at ${doc.languageId}:${position.line + 1} (model: ${this.inlineModel || "main"})`);
+    const started = Date.now();
+    try {
+      const result = await this.client.request<{ completion: string }>(
+        "inlineComplete",
+        { prefix, suffix, path: vscode.workspace.asRelativePath(doc.uri, false), language: doc.languageId },
+        AI_REQUEST_TIMEOUT_MS
+      );
+      const ms = Date.now() - started;
+      const text = result.completion ?? "";
+      this.logInline(`TEST result in ${ms}ms: ${JSON.stringify(text)}`);
+      vscode.window.showInformationMessage(
+        text.trim()
+          ? `Code-AI inline (${ms}ms): ${JSON.stringify(text.slice(0, 120))}`
+          : `Code-AI inline (${ms}ms): the model returned an empty completion. Try a faster/available inline model.`
+      );
+    } catch (err) {
+      this.logInline(`TEST error after ${Date.now() - started}ms: ${String(err)}`);
+      vscode.window.showErrorMessage(`Code-AI inline test failed: ${String(err)}`);
     }
   }
 
