@@ -37,7 +37,12 @@ body {
 .statusbar .brand .heartbeat {
   margin-left: 8px; font-weight: 400; font-size: 11px; color: var(--accent);
   font-variant-numeric: tabular-nums;
+  display: inline-flex; align-items: center; gap: 6px;
 }
+.heartbeat .heartbeat-spin {
+  width: 9px; height: 9px; border-width: 1.5px;
+}
+.heartbeat .heartbeat-clock { opacity: .8; }
 .typing-clock { color: var(--accent); font-variant-numeric: tabular-nums; }
 .statusbar .meta { margin-left: auto; display: flex; align-items: center; gap: 10px; color: var(--muted); }
 .statusbar .meta .pill {

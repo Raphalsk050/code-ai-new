@@ -38,7 +38,7 @@ import {
 } from "./icons";
 import { formatElapsed, ItemView, TypingIndicator } from "./messages";
 import { ModeSwitch } from "./mode-switch";
-import { applyEvent, initialState, isBusy, Item, ViewState } from "./reducer";
+import { applyEvent, initialState, isBusy, Item, ViewState, workingLabel } from "./reducer";
 import { INITIAL_REFACTOR, RefactorPanel, RefactorViewState } from "./refactor";
 import { ModelsState, SettingsScreen } from "./settings";
 import { STYLE } from "./styles";
@@ -377,7 +377,9 @@ function App(): JSX.Element {
           Code-AI
           {busy && (
             <span className="heartbeat" title="The agent is working — this ticks while the process is alive">
-              working {formatElapsed(state.heartbeat)}
+              <span className="spinner heartbeat-spin" />
+              {workingLabel(state.status)}
+              <span className="heartbeat-clock">{formatElapsed(state.heartbeat)}</span>
             </span>
           )}
         </div>
