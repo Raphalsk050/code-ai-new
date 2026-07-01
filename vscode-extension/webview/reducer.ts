@@ -3,7 +3,7 @@
 // but it produces rich, typed items (not flat strings) so the UI can render a
 // Claude/Codex/Cline-style transcript. Event names are the versioned contract.
 
-import type { EventEnvelope } from "../src/protocol";
+import type { EventEnvelope, StoredMessage } from "../src/protocol";
 
 export type ToolStatus = "running" | "done" | "failed";
 export type NoticeLevel = "info" | "warning" | "error" | "plan" | "permission";
@@ -127,6 +127,47 @@ function webSearchDetail(result: any): string {
     .filter(Boolean)
     .map((t: string) => t.slice(0, 80));
   return titles.length ? `${list.length} result(s): ${titles.join(" · ")}` : `${list.length} result(s)`;
+}
+
+/**
+ * Rebuild transcript items from a saved conversation's raw provider messages.
+ * Used when reopening a conversation whose rich client-side transcript is no
+ * longer cached (e.g. after clearing webview state or on another machine), so
+ * history stays viewable straight from the bridge. Best-effort: tool result
+ * bodies were never stored verbatim in the UI, so cards show a short summary.
+ */
+export function messagesToItems(messages: StoredMessage[]): Item[] {
+  const items: Item[] = [];
+  const toolIndexById = new Map<string, number>();
+  let seq = 0;
+  const nid = () => `load-${seq++}`;
+  for (const m of messages) {
+    if (m.role === "user") {
+      const text = m.content ?? "";
+      // Skip the injected "[Editor context]" preamble messages — they are plumbing,
+      // not something the user typed.
+      if (!text.trim() || text.startsWith("[Editor context]")) continue;
+      items.push({ kind: "user", id: nid(), text });
+    } else if (m.role === "assistant") {
+      if (m.content && m.content.trim()) {
+        items.push({ kind: "assistant", id: nid(), text: m.content, streaming: false });
+      }
+      for (const call of m.tool_calls ?? []) {
+        items.push({ kind: "tool", id: nid(), toolId: call.id, name: call.name, status: "done", detail: "" });
+        toolIndexById.set(call.id, items.length - 1);
+      }
+    } else if (m.role === "tool") {
+      const content = m.content ?? "";
+      const isError = content.startsWith("ERROR: ");
+      const detail = (isError ? content.slice(7) : content).slice(0, 240);
+      const idx = m.tool_call_id != null ? toolIndexById.get(m.tool_call_id) : undefined;
+      if (idx != null) {
+        const it = items[idx];
+        if (it.kind === "tool") items[idx] = { ...it, status: isError ? "failed" : "done", detail };
+      }
+    }
+  }
+  return items;
 }
 
 // -- reducer ---------------------------------------------------------------

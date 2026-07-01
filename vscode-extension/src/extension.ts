@@ -237,7 +237,30 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         }
         case "newConversation":
-          client?.send("newConversation");
+          client?.send("newConversation", { conversation_id: message.id });
+          break;
+        case "listConversations":
+          client
+            ?.request<{ conversations: any[] }>("listConversations")
+            .then((r) =>
+              this.webview?.postMessage({ type: "conversationsList", conversations: r.conversations ?? [] })
+            )
+            .catch((err) => console.error("[code-ai] listConversations failed", err));
+          break;
+        case "loadConversation":
+          client
+            ?.request<{ id: string; messages: any[] }>("loadConversation", { conversation_id: message.id })
+            .then((r) =>
+              this.webview?.postMessage({
+                type: "conversationLoaded",
+                id: r.id ?? message.id,
+                messages: r.messages ?? [],
+              })
+            )
+            .catch((err) => vscode.window.showErrorMessage(`Code-AI: could not open conversation: ${String(err)}`));
+          break;
+        case "deleteConversation":
+          client?.send("deleteConversation", { conversation_id: message.id });
           break;
         case "getSettings":
           client
