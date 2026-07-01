@@ -2,7 +2,7 @@ import * as React from "react";
 
 import type { AppMode, Settings } from "../src/protocol";
 import { ExtPrefs } from "./history";
-import { IconBack } from "./icons";
+import { IconBack, IconRefresh } from "./icons";
 
 // Local, editable mirror of the backend settings. `null` until the bridge
 // answers `getSettings`; the panel shows a loading state meanwhile.
@@ -16,12 +16,14 @@ export function SettingsScreen({
   onBack,
   onSave,
   onPrefsChange,
+  onRestart,
 }: {
   settings: Settings | null;
   prefs: ExtPrefs;
   onBack: () => void;
   onSave: (updates: Record<string, unknown>) => void;
   onPrefsChange: (next: Partial<ExtPrefs>) => void;
+  onRestart: () => void;
 }): JSX.Element {
   const [draft, setDraft] = React.useState<Draft>({});
   const [apiKey, setApiKey] = React.useState("");
@@ -159,9 +161,14 @@ export function SettingsScreen({
             </Field>
           </Section>
 
-          <div className="settings-note">
-            Fields marked <span className="restart-tag">restart</span> are saved now but take effect
-            after restarting Code-AI.
+          <div className="settings-restart">
+            <div className="settings-note">
+              Fields marked <span className="restart-tag">restart</span> are saved now but take effect
+              after restarting Code-AI. This reloads the config without reloading the window.
+            </div>
+            <button className="btn-ghost settings-restart-btn" onClick={onRestart}>
+              <IconRefresh size={13} /> Restart Code-AI
+            </button>
           </div>
         </div>
       )}

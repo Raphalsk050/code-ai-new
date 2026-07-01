@@ -460,6 +460,12 @@ button { font-family: inherit; cursor: pointer; }
 }
 .switch.on .switch-knob { transform: translateX(14px); }
 .settings-note { font-size: 11.5px; color: var(--muted); margin-top: 4px; }
+.settings-restart {
+  display: flex; align-items: center; gap: 14px; margin-top: 8px;
+  padding-top: 14px; border-top: 1px solid var(--border);
+}
+.settings-restart .settings-note { margin-top: 0; flex: 1; }
+.settings-restart-btn { flex: none; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }
 
 /* ---- refactor panel ---- */
 .refactor { max-width: 820px; margin: 0 auto; padding: 16px 18px 28px; }
