@@ -204,6 +204,10 @@ class BridgeServer:
     async def _h_get_settings(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._app.get_settings()
 
+    async def _h_list_models(self, params: dict[str, Any]) -> dict[str, Any]:
+        models = await self._app.list_models()
+        return {"models": models}
+
     async def _h_update_settings(self, params: dict[str, Any]) -> dict[str, Any]:
         updates = params.get("updates")
         if not isinstance(updates, dict):
@@ -249,6 +253,7 @@ class BridgeServer:
         "submitUserMessage": _h_submit,
         "newConversation": _h_new_conversation,
         "getSettings": _h_get_settings,
+        "listModels": _h_list_models,
         "updateSettings": _h_update_settings,
         "explainCode": _h_explain_code,
         "analyzeRefactor": _h_analyze_refactor,
@@ -263,7 +268,7 @@ class BridgeServer:
     }
 
     # Methods whose model call may run long; dispatched off the read loop.
-    _CONCURRENT_METHODS = frozenset({"explainCode", "analyzeRefactor", "planRefactor"})
+    _CONCURRENT_METHODS = frozenset({"explainCode", "analyzeRefactor", "planRefactor", "listModels"})
 
 
 async def run_bridge(app: CodeAIApplication, *, stdin: TextIO, stdout: TextIO) -> int:

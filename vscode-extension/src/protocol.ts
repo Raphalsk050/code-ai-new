@@ -23,6 +23,7 @@ export type BridgeMethod =
   | "newConversation"
   | "getSettings"
   | "updateSettings"
+  | "listModels"
   | "explainCode"
   | "analyzeRefactor"
   | "planRefactor"
@@ -99,6 +100,8 @@ export type HostToWebview =
   | { type: "editorContext"; context: EditorContext | null }
   | { type: "settings"; settings: Settings }
   | { type: "settingsUpdated"; result: UpdateSettingsResult }
+  | { type: "modelsListed"; models: string[] }
+  | { type: "modelsError"; message: string }
   | { type: "refactorStatus"; status: "analyzing" | "idle" }
   | { type: "refactorResult"; improvements: RefactorImprovement[]; path: string; language: string }
   | { type: "refactorError"; message: string }
@@ -115,6 +118,7 @@ export type WebviewToHost =
   | { type: "newConversation" }
   | { type: "getSettings" }
   | { type: "updateSettings"; updates: Record<string, unknown> }
+  | { type: "listModels" }
   | { type: "setMode"; mode: AppMode; autoRunRefactor: boolean }
   | { type: "analyzeRefactor" }
   | { type: "planRefactor"; id: string; improvements: RefactorImprovement[] }

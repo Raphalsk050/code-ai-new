@@ -466,6 +466,12 @@ button { font-family: inherit; cursor: pointer; }
 }
 .settings-restart .settings-note { margin-top: 0; flex: 1; }
 .settings-restart-btn { flex: none; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }
+.model-row { display: flex; align-items: stretch; gap: 8px; }
+.model-input { flex: 1; min-width: 0; }
+.model-list-btn { flex: none; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }
+.model-picker { margin-top: 8px; width: 100%; }
+.model-note { font-size: 11.5px; color: var(--muted); margin-top: 6px; }
+.model-error { font-size: 11.5px; color: var(--vscode-errorForeground, #f85149); margin-top: 6px; }
 
 /* ---- refactor panel ---- */
 .refactor { max-width: 820px; margin: 0 auto; padding: 16px 18px 28px; }

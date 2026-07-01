@@ -40,7 +40,7 @@ import { formatElapsed, ItemView, TypingIndicator } from "./messages";
 import { ModeSwitch } from "./mode-switch";
 import { applyEvent, initialState, isBusy, Item, ViewState } from "./reducer";
 import { INITIAL_REFACTOR, RefactorPanel, RefactorViewState } from "./refactor";
-import { SettingsScreen } from "./settings";
+import { ModelsState, SettingsScreen } from "./settings";
 import { STYLE } from "./styles";
 
 declare function acquireVsCodeApi(): {
@@ -80,6 +80,7 @@ function App(): JSX.Element {
   const [returnScreen, setReturnScreen] = React.useState<Screen>("home");
   const [activeId, setActiveId] = React.useState<string | null>(null);
   const [settings, setSettings] = React.useState<Settings | null>(null);
+  const [models, setModels] = React.useState<ModelsState>({ status: "idle", list: [] });
   const [refactor, setRefactor] = React.useState<RefactorViewState>(INITIAL_REFACTOR);
   const [explain, setExplain] = React.useState<ExplainViewState>(INITIAL_EXPLAIN);
 
@@ -109,6 +110,10 @@ function App(): JSX.Element {
         setSettings(data.settings);
       } else if (data?.type === "settingsUpdated") {
         setSettings(data.result.settings);
+      } else if (data?.type === "modelsListed") {
+        setModels({ status: "ready", list: data.models });
+      } else if (data?.type === "modelsError") {
+        setModels((m) => ({ ...m, status: "error", error: data.message }));
       } else if (data?.type === "refactorStatus") {
         if (data.status === "analyzing") setRefactor((r) => ({ ...r, status: "analyzing", error: undefined }));
       } else if (data?.type === "refactorResult") {
@@ -326,10 +331,15 @@ function App(): JSX.Element {
         <SettingsScreen
           settings={settings}
           prefs={prefs}
+          models={models}
           onBack={() => setScreen(returnScreen)}
           onSave={(updates) => send({ type: "updateSettings", updates })}
           onPrefsChange={updatePrefs}
           onRestart={() => send({ type: "restartBridge" })}
+          onListModels={() => {
+            setModels((m) => ({ ...m, status: "loading", error: undefined }));
+            send({ type: "listModels" });
+          }}
         />
       </div>
     );
