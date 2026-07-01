@@ -4,12 +4,14 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+from code_ai.app.conversation_store import ConversationStore
 from code_ai.app.service import CodeAIApplication
 from code_ai.app.session import ApplicationSession
 from code_ai.config.defaults import (
     default_memories_dir,
     global_knowledge_dir,
     global_rules_dir,
+    project_conversations_dir,
     project_memories_dir,
     project_rules_dir,
 )
@@ -242,6 +244,7 @@ def build_application(
         rules=rules,
     )
     session = ApplicationSession(session_id=event_bus.session_id, config=config)
+    conversation_store = ConversationStore(project_conversations_dir(config.workspace))
     return CodeAIApplication(
         session=session,
         event_bus=event_bus,
@@ -249,4 +252,5 @@ def build_application(
         provider=provider,
         compressor=compressor,
         terminal_manager=terminal_manager,
+        conversation_store=conversation_store,
     )
