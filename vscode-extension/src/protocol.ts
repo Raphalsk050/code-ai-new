@@ -28,6 +28,7 @@ export type BridgeMethod =
   | "loadConversation"
   | "deleteConversation"
   | "explainCode"
+  | "inlineComplete"
   | "analyzeRefactor"
   | "planRefactor"
   | "cancel"
@@ -51,6 +52,8 @@ export interface Settings {
   permission_mode: string;
   reasoning_effort: string;
   learn: boolean;
+  inline_hints_enabled: boolean;
+  inline_model: string;
   max_context_tokens: number;
   workspace: string;
   supported: {

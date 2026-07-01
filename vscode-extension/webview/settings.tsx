@@ -51,6 +51,8 @@ export function SettingsScreen({
       permission_mode: settings.permission_mode,
       reasoning_effort: settings.reasoning_effort,
       learn: settings.learn,
+      inline_hints_enabled: settings.inline_hints_enabled,
+      inline_model: settings.inline_model,
       max_context_tokens: settings.max_context_tokens,
       workspace: settings.workspace,
     });
@@ -163,6 +165,25 @@ export function SettingsScreen({
                   setApiKey(e.target.value);
                   setSaved(false);
                 }}
+              />
+            </Field>
+          </Section>
+
+          <Section
+            title="Inline hints"
+            hint="Editor ghost-text completions driven by the same provider."
+          >
+            <Toggle
+              label="Enable inline code hints"
+              hint="Suggest completions as you type. Toggle quickly from the status bar too."
+              checked={Boolean(draft.inline_hints_enabled)}
+              onChange={(v) => set("inline_hints_enabled", v)}
+            />
+            <Field label="Inline hints model">
+              <input
+                placeholder="Leave blank to use the main model"
+                value={String(draft.inline_model ?? "")}
+                onChange={(e) => set("inline_model", e.target.value)}
               />
             </Field>
           </Section>
