@@ -24,6 +24,9 @@ export type BridgeMethod =
   | "getSettings"
   | "updateSettings"
   | "listModels"
+  | "listConversations"
+  | "loadConversation"
+  | "deleteConversation"
   | "explainCode"
   | "analyzeRefactor"
   | "planRefactor"
@@ -72,6 +75,31 @@ export interface UpdateSettingsResult {
   settings: Settings;
 }
 
+/** A tool call as persisted in a saved conversation (round-trip shape). */
+export interface StoredToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, any>;
+}
+
+/** One message as persisted in a saved conversation. */
+export interface StoredMessage {
+  role: string;
+  content: string;
+  tool_call_id?: string;
+  name?: string;
+  tool_calls?: StoredToolCall[];
+}
+
+/** Metadata for a saved conversation, as listed by the bridge. */
+export interface ServerConversation {
+  id: string;
+  title: string;
+  created_at: number;
+  updated_at: number;
+  message_count: number;
+}
+
 /** A snapshot of what the user is looking at in the editor, attached to a turn. */
 export interface EditorContext {
   /** Workspace-relative path of the active file, e.g. `src/app.ts`. */
@@ -102,6 +130,8 @@ export type HostToWebview =
   | { type: "settingsUpdated"; result: UpdateSettingsResult }
   | { type: "modelsListed"; models: string[] }
   | { type: "modelsError"; message: string }
+  | { type: "conversationsList"; conversations: ServerConversation[] }
+  | { type: "conversationLoaded"; id: string; messages: StoredMessage[] }
   | { type: "refactorStatus"; status: "analyzing" | "idle" }
   | { type: "refactorResult"; improvements: RefactorImprovement[]; path: string; language: string }
   | { type: "refactorError"; message: string }
@@ -115,7 +145,10 @@ export type PermissionMode = "ask" | "auto" | "bypass";
 
 export type WebviewToHost =
   | { type: "submit"; text: string; includeContext?: boolean }
-  | { type: "newConversation" }
+  | { type: "newConversation"; id: string }
+  | { type: "listConversations" }
+  | { type: "loadConversation"; id: string }
+  | { type: "deleteConversation"; id: string }
   | { type: "getSettings" }
   | { type: "updateSettings"; updates: Record<string, unknown> }
   | { type: "listModels" }

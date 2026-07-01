@@ -8,6 +8,7 @@ import type {
   EventEnvelope,
   HostToWebview,
   PermissionMode,
+  ServerConversation,
   Settings,
   WebviewToHost,
 } from "../src/protocol";
@@ -20,6 +21,7 @@ import {
   DEFAULT_PREFS,
   EMPTY_PERSISTED,
   ExtPrefs,
+  mergeHistory,
   newId,
   PersistedState,
   removeConversation,
@@ -38,7 +40,7 @@ import {
 } from "./icons";
 import { formatElapsed, ItemView, TypingIndicator } from "./messages";
 import { ModeSwitch } from "./mode-switch";
-import { applyEvent, initialState, isBusy, Item, ViewState, workingLabel } from "./reducer";
+import { applyEvent, initialState, isBusy, Item, messagesToItems, ViewState, workingLabel } from "./reducer";
 import { INITIAL_REFACTOR, RefactorPanel, RefactorViewState } from "./refactor";
 import { ModelsState, SettingsScreen } from "./settings";
 import { STYLE } from "./styles";
@@ -81,6 +83,7 @@ function App(): JSX.Element {
   const [activeId, setActiveId] = React.useState<string | null>(null);
   const [settings, setSettings] = React.useState<Settings | null>(null);
   const [models, setModels] = React.useState<ModelsState>({ status: "idle", list: [] });
+  const [serverConvos, setServerConvos] = React.useState<ServerConversation[]>([]);
   const [refactor, setRefactor] = React.useState<RefactorViewState>(INITIAL_REFACTOR);
   const [explain, setExplain] = React.useState<ExplainViewState>(INITIAL_EXPLAIN);
 
@@ -93,6 +96,9 @@ function App(): JSX.Element {
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
   const pinnedRef = React.useRef(true);
+  // Id of a conversation opened without a local transcript cache: when the
+  // bridge answers with its stored messages we rebuild the transcript from them.
+  const pendingReconstructRef = React.useRef<string | null>(null);
 
   const prefs: ExtPrefs = persisted.prefs ?? DEFAULT_PREFS;
   const mode = prefs.mode;
@@ -114,6 +120,15 @@ function App(): JSX.Element {
         setModels({ status: "ready", list: data.models });
       } else if (data?.type === "modelsError") {
         setModels((m) => ({ ...m, status: "error", error: data.message }));
+      } else if (data?.type === "conversationsList") {
+        setServerConvos(data.conversations);
+      } else if (data?.type === "conversationLoaded") {
+        // Only rebuild the transcript when we opened a conversation that had no
+        // local cache; otherwise keep the richer client-side items.
+        if (pendingReconstructRef.current === data.id) {
+          pendingReconstructRef.current = null;
+          dispatch(clientEvent("client.load", { items: messagesToItems(data.messages) }));
+        }
       } else if (data?.type === "refactorStatus") {
         if (data.status === "analyzing") setRefactor((r) => ({ ...r, status: "analyzing", error: undefined }));
       } else if (data?.type === "refactorResult") {
@@ -155,6 +170,14 @@ function App(): JSX.Element {
     send({ type: "setMode", mode: prefs.mode, autoRunRefactor: prefs.autoRunRefactor });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Refresh the durable conversation list from the bridge whenever we land on
+  // the home screen. Re-runs when the session first reaches READY so the list
+  // populates even though the bridge is still spawning on initial mount.
+  React.useEffect(() => {
+    if (screen === "home") send({ type: "listConversations" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen, state.status]);
 
   // -- persist the active transcript to local history ----------------------
   React.useEffect(() => {
@@ -207,9 +230,12 @@ function App(): JSX.Element {
 
   // -- conversation lifecycle ---------------------------------------------
   const startNewConversation = () => {
-    setActiveId(newId());
+    const id = newId();
+    setActiveId(id);
     dispatch(clientEvent("conversation.reset"));
-    send({ type: "newConversation" });
+    // Tag the bridge's fresh thread with this id so the turns it accrues are
+    // saved under it and can be resumed later.
+    send({ type: "newConversation", id });
     setDraft("");
     updatePrefs({ mode: "agent" });
     setScreen("chat");
@@ -217,14 +243,22 @@ function App(): JSX.Element {
 
   const openConversation = (id: string) => {
     const convo = persisted.conversations.find((c) => c.id === id);
+    const cached = (convo?.items ?? []) as Item[];
     setActiveId(id);
-    dispatch(clientEvent("client.load", { items: (convo?.items ?? []) as Item[] }));
+    dispatch(clientEvent("client.load", { items: cached }));
+    // Restore the model's context on the bridge so the thread can be continued.
+    // If we have no local transcript, ask the bridge to send its stored messages
+    // back so we can rebuild the view.
+    pendingReconstructRef.current = cached.length === 0 ? id : null;
+    send({ type: "loadConversation", id });
     updatePrefs({ mode: "agent" });
     setScreen("chat");
   };
 
   const deleteConversation = (id: string) => {
     persistState(removeConversation(persisted, id));
+    setServerConvos((list) => list.filter((c) => c.id !== id));
+    send({ type: "deleteConversation", id });
     if (id === activeId) setActiveId(null);
   };
 
@@ -349,7 +383,7 @@ function App(): JSX.Element {
     return (
       <div className="app">
         <HomeScreen
-          conversations={persisted.conversations}
+          entries={mergeHistory(persisted.conversations, serverConvos)}
           onNew={startNewConversation}
           onOpen={openConversation}
           onDelete={deleteConversation}
