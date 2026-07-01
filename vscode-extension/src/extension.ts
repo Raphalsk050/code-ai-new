@@ -253,6 +253,12 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
               vscode.window.showErrorMessage(`Code-AI: failed to save settings: ${String(err)}`)
             );
           break;
+        case "listModels":
+          client
+            ?.request<{ models: string[] }>("listModels", {}, AI_REQUEST_TIMEOUT_MS)
+            .then((r) => this.webview?.postMessage({ type: "modelsListed", models: r.models ?? [] }))
+            .catch((err) => this.webview?.postMessage({ type: "modelsError", message: String(err) }));
+          break;
         case "cancel":
           client?.send("cancel");
           break;
