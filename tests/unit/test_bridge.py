@@ -109,6 +109,12 @@ class _StubApp:
         self.explained = {"code": code, "path": path, "language": language}
         return f"explained:{code}"
 
+    async def inline_complete(
+        self, *, prefix: str, suffix: str = "", path: str = "", language: str = ""
+    ) -> str:
+        self.inline = {"prefix": prefix, "suffix": suffix, "path": path, "language": language}
+        return f"done:{prefix}"
+
     async def analyze_refactor(self, *, code: str, path: str = "", language: str = "") -> list:
         self.analyzed = {"code": code, "path": path, "language": language}
         return [{"id": "x", "title": "T", "rationale": "R", "impact": "high"}]
@@ -277,6 +283,21 @@ async def test_explain_code_returns_markdown() -> None:
     (response,) = _messages(out)
     assert response["id"] == 13
     assert response["result"] == {"markdown": "explained:x = 1"}
+
+
+async def test_inline_complete_returns_completion() -> None:
+    app = _StubApp()
+    server, out = _server(app)
+    await server._handle_line(
+        json.dumps({"jsonrpc": "2.0", "id": 30, "method": "inlineComplete",
+                    "params": {"prefix": "def add(a, b):\n    return ", "suffix": "\n",
+                               "path": "m.py", "language": "python"}})
+    )
+    await asyncio.gather(*server._turn_tasks)  # AI handlers reply off the read loop
+    assert app.inline["prefix"] == "def add(a, b):\n    return "
+    (response,) = _messages(out)
+    assert response["id"] == 30
+    assert response["result"] == {"completion": "done:def add(a, b):\n    return "}
 
 
 async def test_analyze_refactor_returns_improvements() -> None:

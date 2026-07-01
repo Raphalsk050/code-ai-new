@@ -138,6 +138,41 @@ class CodeAIApplication:
         response = await self.provider.complete(request)
         return response.text or ""
 
+    async def inline_complete(
+        self, *, prefix: str, suffix: str = "", path: str = "", language: str = ""
+    ) -> str:
+        """Return a short code completion to insert at the cursor (ghost text).
+
+        Backs the extension's inline-hints provider. A one-off model call outside
+        the conversation, using ``inline_model`` when set (so a small/fast model
+        can drive hints) and falling back to the main ``model`` otherwise.
+        """
+        from code_ai.providers.models import Message, ModelRequest
+
+        if not prefix.strip():
+            return ""
+        # Only send a window around the cursor to keep latency low.
+        prefix = prefix[-_INLINE_PREFIX_CHARS:]
+        suffix = suffix[:_INLINE_SUFFIX_CHARS]
+        config = self.session.config
+        location = f" (file: {path})" if path else ""
+        system = Message(role="system", content=_INLINE_SYSTEM)
+        user = Message(
+            role="user",
+            content=(
+                f"Language: {language or 'plain text'}{location}\n"
+                "Complete the code at <CURSOR>. Return only the insertion.\n\n"
+                f"{prefix}<CURSOR>{suffix}"
+            ),
+        )
+        request = ModelRequest(
+            model=config.inline_model.strip() or config.model,
+            messages=[system, user],
+            max_output_tokens=256,  # hints are short; keep them snappy
+        )
+        response = await self.provider.complete(request)
+        return _strip_code_fence(response.text or "")
+
     async def analyze_refactor(
         self, *, code: str, path: str = "", language: str = ""
     ) -> list[dict[str, Any]]:
@@ -341,7 +376,15 @@ class CodeAIApplication:
     # -- settings (for the VSCode settings panel) --------------------------
 
     # Top-level config fields that take effect on the next call once written.
-    _LIVE_SETTINGS = {"model", "language", "learn", "permission_mode", "terminal_theme"}
+    _LIVE_SETTINGS = {
+        "model",
+        "language",
+        "learn",
+        "permission_mode",
+        "terminal_theme",
+        "inline_hints_enabled",
+        "inline_model",
+    }
     # Top-level fields the providers read once at bootstrap; need a restart.
     _RESTART_SETTINGS = {"api_mode", "base_url", "api_key", "workspace"}
 
@@ -365,6 +408,8 @@ class CodeAIApplication:
             "permission_mode": config.permission_mode,
             "reasoning_effort": config.sampling.reasoning_effort or "none",
             "learn": config.learn,
+            "inline_hints_enabled": config.inline_hints_enabled,
+            "inline_model": config.inline_model,
             "max_context_tokens": config.budgets.max_context_tokens,
             "workspace": str(config.workspace),
             "supported": {
@@ -536,6 +581,31 @@ _EXPLAIN_SYSTEM = (
     "performance (omit it if there is nothing useful to add). Keep it compact — "
     "no preamble, no repetition of the code, no headings beyond the bold labels."
 )
+
+
+_INLINE_SYSTEM = (
+    "You are a code autocompletion engine embedded in an editor. Continue the code "
+    "at the <CURSOR> marker. Output ONLY the raw text to insert at the cursor: no "
+    "explanations, no markdown fences, and never repeat code that already appears "
+    "before or after the cursor. Match the surrounding style and indentation. "
+    "Prefer completing the current line or a small, coherent block; stop at a "
+    "natural boundary. If no useful completion is possible, output nothing."
+)
+
+# Keep prompts small so hints stay fast: only send a window around the cursor.
+_INLINE_PREFIX_CHARS = 2000
+_INLINE_SUFFIX_CHARS = 1000
+
+
+def _strip_code_fence(text: str) -> str:
+    """Drop a leading/trailing markdown code fence if the model added one."""
+    import re
+
+    stripped = text.strip("\n")
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```[a-zA-Z0-9_+-]*\n?", "", stripped)
+        stripped = re.sub(r"\n?```\s*$", "", stripped)
+    return stripped
 
 
 def _parse_improvements(text: str) -> list[dict[str, Any]]:

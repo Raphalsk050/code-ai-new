@@ -199,6 +199,15 @@ class BridgeServer:
         )
         return {"markdown": markdown}
 
+    async def _h_inline_complete(self, params: dict[str, Any]) -> dict[str, Any]:
+        completion = await self._app.inline_complete(
+            prefix=str(params.get("prefix") or ""),
+            suffix=str(params.get("suffix") or ""),
+            path=str(params.get("path") or ""),
+            language=str(params.get("language") or ""),
+        )
+        return {"completion": completion}
+
     async def _h_analyze_refactor(self, params: dict[str, Any]) -> dict[str, Any]:
         improvements = await self._app.analyze_refactor(
             code=str(params.get("code") or ""),
@@ -275,6 +284,7 @@ class BridgeServer:
         "listModels": _h_list_models,
         "updateSettings": _h_update_settings,
         "explainCode": _h_explain_code,
+        "inlineComplete": _h_inline_complete,
         "analyzeRefactor": _h_analyze_refactor,
         "planRefactor": _h_plan_refactor,
         "cancel": _h_cancel,
@@ -288,7 +298,7 @@ class BridgeServer:
 
     # Methods whose model call may run long; dispatched off the read loop.
     _CONCURRENT_METHODS = frozenset(
-        {"explainCode", "analyzeRefactor", "planRefactor", "listModels"}
+        {"explainCode", "inlineComplete", "analyzeRefactor", "planRefactor", "listModels"}
     )
 
 

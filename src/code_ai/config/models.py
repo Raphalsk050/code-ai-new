@@ -325,6 +325,12 @@ class AppConfig:
     sampling: SamplingConfig = field(default_factory=SamplingConfig)
     language: str = "en"
     model: str = "gemma4:31b-cloud"
+    # Inline code hints (editor ghost text) in the VSCode extension. Off by
+    # default; ``inline_model`` overrides the model used for these completions
+    # (empty falls back to ``model``) so a small/fast model can drive hints while
+    # the agent uses a stronger one.
+    inline_hints_enabled: bool = False
+    inline_model: str = ""
     debug: bool = False
     show_ui: bool = True
     ssl_verification: bool = False
@@ -366,6 +372,8 @@ class AppConfig:
             sampling=sampling,
             language=str(data.get("language", "en")),
             model=str(data.get("model", "gemma4:31b-cloud")),
+            inline_hints_enabled=bool(data.get("inline_hints_enabled", False)),
+            inline_model=str(data.get("inline_model", "")),
             debug=bool(data.get("debug", False)),
             show_ui=bool(data.get("show_ui", True)),
             ssl_verification=bool(data.get("ssl_verification", False)),
