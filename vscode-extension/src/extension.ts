@@ -31,6 +31,7 @@ export function activate(context: vscode.ExtensionContext): void {
     // reload the whole extension host.
     vscode.commands.registerCommand("code-ai.restart", () => provider.restartBridge()),
     vscode.commands.registerCommand("code-ai.toggleInlineHints", () => provider.toggleInlineHints()),
+    vscode.commands.registerCommand("code-ai.inlineHintInfo", () => provider.showInlineHintInfo()),
     // Explain mode surfaces its analysis as a native hover over the selection.
     vscode.languages.registerHoverProvider(
       { scheme: "file" },
@@ -64,7 +65,10 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   // Inline code hints (editor ghost text). Enabled state + model are mirrored
   // from the backend settings; the provider no-ops while disabled.
   private inlineEnabled = false;
+  private inlineModel = "";
   private inlineStatusBar?: vscode.StatusBarItem;
+  // Diagnostics channel so the user can confirm a suggestion came from Code-AI.
+  private inlineLog?: vscode.OutputChannel;
   private explainTimer?: NodeJS.Timeout;
   // The current explain "job": a pre-warmed promise keyed by the exact selection
   // range. The hover provider returns this promise so VSCode shows a loading
@@ -103,23 +107,55 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     this.renderInlineStatusBar();
   }
 
-  private renderInlineStatusBar(): void {
+  private renderInlineStatusBar(busy = false): void {
     const item = this.inlineStatusBar;
     if (!item) return;
-    item.text = this.inlineEnabled ? "$(sparkle) Hints" : "$(circle-slash) Hints";
-    item.tooltip = `Code-AI inline hints are ${this.inlineEnabled ? "on" : "off"} — click to toggle`;
+    if (!this.inlineEnabled) {
+      item.text = "$(circle-slash) Code-AI Hints";
+      item.tooltip = "Code-AI inline hints are off — click to enable";
+    } else if (busy) {
+      item.text = "$(sync~spin) Code-AI Hints";
+      item.tooltip = `Code-AI is generating a hint${this.inlineModel ? ` (${this.inlineModel})` : ""}…`;
+    } else {
+      item.text = "$(sparkle) Code-AI Hints";
+      item.tooltip =
+        `Code-AI inline hints are on${this.inlineModel ? ` (model: ${this.inlineModel})` : ""}` +
+        " — click to disable. Ghost text with this label in its toolbar is from Code-AI.";
+    }
     item.show();
   }
 
-  /** Pull the inline-hints enabled state from the backend settings snapshot. */
+  /** The label shown in the inline-suggestion toolbar, so the source is clear. */
+  private inlineLabel(): string {
+    return this.inlineModel ? `Code-AI · ${this.inlineModel}` : "Code-AI";
+  }
+
+  private logInline(message: string): void {
+    if (!this.inlineLog) this.inlineLog = vscode.window.createOutputChannel("Code-AI Inline Hints");
+    this.inlineLog.appendLine(`[${new Date().toLocaleTimeString()}] ${message}`);
+  }
+
+  /** Pull the inline-hints enabled state + model from the backend snapshot. */
   private refreshInlineSettings(): void {
     this.client
-      ?.request<{ inline_hints_enabled?: boolean }>("getSettings")
+      ?.request<{ inline_hints_enabled?: boolean; inline_model?: string; model?: string }>("getSettings")
       .then((settings) => {
         this.inlineEnabled = !!settings.inline_hints_enabled;
+        this.inlineModel = (settings.inline_model || settings.model || "").trim();
         this.renderInlineStatusBar();
       })
       .catch((err) => console.error("[code-ai] refreshInlineSettings failed", err));
+  }
+
+  private applyInlineSettings(settings?: {
+    inline_hints_enabled?: boolean;
+    inline_model?: string;
+    model?: string;
+  }): void {
+    if (!settings) return;
+    this.inlineEnabled = !!settings.inline_hints_enabled;
+    this.inlineModel = (settings.inline_model || settings.model || "").trim();
+    this.renderInlineStatusBar();
   }
 
   /** Flip inline hints on/off, persisting through the backend settings. */
@@ -135,8 +171,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         "updateSettings",
         { updates: { inline_hints_enabled: next } }
       );
-      this.inlineEnabled = !!result.settings?.inline_hints_enabled;
-      this.renderInlineStatusBar();
+      this.applyInlineSettings(result.settings);
       // Keep an open settings panel in sync.
       this.webview?.postMessage({ type: "settingsUpdated", result });
       vscode.window.setStatusBarMessage(
@@ -148,11 +183,25 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  /** Invoked from the inline-suggestion toolbar button, confirming the source. */
+  showInlineHintInfo(): void {
+    const model = this.inlineModel || "the main model";
+    vscode.window
+      .showInformationMessage(
+        `This inline suggestion is from Code-AI (model: ${model}).`,
+        "Show log"
+      )
+      .then((choice) => {
+        if (choice === "Show log") this.inlineLog?.show();
+      });
+  }
+
   /**
    * Inline-completion entry point. While enabled, sends the code around the
    * cursor to the bridge and returns the model's completion as ghost text. The
    * cancellation token doubles as a debounce: a keystroke cancels the in-flight
-   * request before it reaches the model.
+   * request before it reaches the model. Each item carries a "Code-AI" toolbar
+   * label so its source is unambiguous even next to other providers.
    */
   async provideInlineCompletionItems(
     document: vscode.TextDocument,
@@ -170,6 +219,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     await new Promise((r) => setTimeout(r, 250));
     if (token.isCancellationRequested) return undefined;
 
+    this.renderInlineStatusBar(true);
     try {
       const result = await this.client.request<{ completion: string }>(
         "inlineComplete",
@@ -184,10 +234,20 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       if (token.isCancellationRequested) return undefined;
       const text = result.completion ?? "";
       if (!text.trim()) return undefined;
-      return [new vscode.InlineCompletionItem(text, new vscode.Range(position, position))];
+      const item = new vscode.InlineCompletionItem(text, new vscode.Range(position, position));
+      // Surfaces a "Code-AI" button in the inline-suggestion toolbar, so the
+      // user can tell this ghost text apart from other providers'.
+      item.command = { command: "code-ai.inlineHintInfo", title: this.inlineLabel() };
+      this.logInline(
+        `${document.languageId} @ ${vscode.workspace.asRelativePath(document.uri, false)}:` +
+          `${position.line + 1} → ${JSON.stringify(text.slice(0, 80))}`
+      );
+      return [item];
     } catch (err) {
       console.error("[code-ai] inlineComplete failed", err);
       return undefined;
+    } finally {
+      if (!token.isCancellationRequested) this.renderInlineStatusBar(false);
     }
   }
 
@@ -379,16 +439,14 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         case "updateSettings":
           client
-            ?.request<{ settings?: { inline_hints_enabled?: boolean } }>("updateSettings", {
-              updates: message.updates,
-            })
+            ?.request<{ settings?: { inline_hints_enabled?: boolean; inline_model?: string; model?: string } }>(
+              "updateSettings",
+              { updates: message.updates }
+            )
             .then((result) => {
               // Keep the inline-hints toggle/status bar in sync with edits made
               // from the settings panel.
-              if (result.settings) {
-                this.inlineEnabled = !!result.settings.inline_hints_enabled;
-                this.renderInlineStatusBar();
-              }
+              this.applyInlineSettings(result.settings);
               this.webview?.postMessage({ type: "settingsUpdated", result });
             })
             .catch((err) =>

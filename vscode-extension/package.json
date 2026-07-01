@@ -47,6 +47,10 @@
       {
         "command": "code-ai.toggleInlineHints",
         "title": "Code-AI: Toggle Inline Hints"
+      },
+      {
+        "command": "code-ai.inlineHintInfo",
+        "title": "Code-AI: Inline Hint Source"
       }
     ],
     "menus": {
