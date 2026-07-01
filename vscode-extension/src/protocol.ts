@@ -84,6 +84,15 @@ export interface EditorContext {
   endLine?: number;
 }
 
+/** Where in the editor an explanation applies, mirrored into the side panel. */
+export interface ExplainTarget {
+  path: string;
+  language: string;
+  /** 1-based inclusive line range of the explained selection. */
+  startLine?: number;
+  endLine?: number;
+}
+
 // Messages exchanged between the extension host and the webview.
 export type HostToWebview =
   | { type: "event"; event: EventEnvelope }
@@ -94,7 +103,10 @@ export type HostToWebview =
   | { type: "refactorResult"; improvements: RefactorImprovement[]; path: string; language: string }
   | { type: "refactorError"; message: string }
   | { type: "refactorPlanning"; id: string }
-  | { type: "refactorPlanned"; id: string; markdown: string };
+  | { type: "refactorPlanned"; id: string; markdown: string }
+  | { type: "explainStatus"; status: "analyzing"; target: ExplainTarget }
+  | { type: "explainResult"; markdown: string; target: ExplainTarget }
+  | { type: "explainError"; message: string };
 
 export type PermissionMode = "ask" | "auto" | "bypass";
 
