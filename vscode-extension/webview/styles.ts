@@ -509,6 +509,34 @@ button { font-family: inherit; cursor: pointer; }
 }
 .refactor-all button { font-size: 12.5px; }
 
+/* ---- explain panel ---- */
+.explain { max-width: 820px; margin: 0 auto; padding: 16px 18px 28px; }
+.explain-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.explain-head > svg { color: var(--accent); }
+.explain-title { font-weight: 600; font-size: 13.5px; color: var(--vscode-foreground); }
+.explain-toggle {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; padding: 0; border: none; border-radius: 6px;
+  background: none; color: var(--muted); cursor: pointer;
+}
+.explain-toggle:hover:not(:disabled) { background: var(--surface); color: var(--vscode-foreground); }
+.explain-toggle:disabled { opacity: .4; cursor: default; }
+.explain-chevron { transform: rotate(0deg); transition: transform .15s ease; }
+.explain-chevron.open { transform: rotate(90deg); }
+.explain-spin { margin-left: auto; }
+.explain-target {
+  font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px;
+  color: var(--muted); margin: 0 0 12px 30px;
+}
+.explain-body { font-size: 12.5px; line-height: 1.5; }
+.explain-empty { color: var(--muted); font-size: 12.5px; padding: 6px 0; line-height: 1.6; }
+.explain-status { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12.5px; padding: 10px 0; }
+.explain-error {
+  color: var(--vscode-errorForeground, #f85149); font-size: 12.5px; padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, #f85149 40%, transparent); border-radius: 8px;
+  background: color-mix(in srgb, #f85149 8%, transparent);
+}
+
 /* ---- animations ---- */
 .spinner {
   display: inline-block; width: 12px; height: 12px; border-radius: 50%;

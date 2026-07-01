@@ -8,6 +8,7 @@ import type {
   AppMode,
   EditorContext,
   EventEnvelope,
+  ExplainTarget,
   RefactorImprovement,
   WebviewToHost,
 } from "./protocol";
@@ -95,7 +96,16 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     const range = new vscode.Range(sel.start, sel.end);
     const rangeKey = `${doc.uri.toString()}:${range.start.line}:${range.start.character}:${range.end.line}:${range.end.character}`;
     if (this.explainJob?.rangeKey === rangeKey) return; // already computing/cached
-    const promise = this.computeExplain(code, doc);
+    const target: ExplainTarget = {
+      path: vscode.workspace.asRelativePath(doc.uri, false),
+      language: doc.languageId,
+      startLine: range.start.line + 1,
+      endLine: range.end.line + 1,
+    };
+    // Mirror the analysis into the side panel immediately, so the user gets a
+    // reliable, always-visible result even when the native hover is finicky.
+    this.webview?.postMessage({ type: "explainStatus", status: "analyzing", target });
+    const promise = this.computeExplain(code, doc, target);
     this.explainJob = { uri: doc.uri.toString(), rangeKey, range, promise };
     // Best-effort: pop the hover once ready, if the user is still on the editor.
     void promise.then(() => {
@@ -105,18 +115,25 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  private async computeExplain(code: string, doc: vscode.TextDocument): Promise<vscode.MarkdownString> {
+  private async computeExplain(
+    code: string,
+    doc: vscode.TextDocument,
+    target: ExplainTarget
+  ): Promise<vscode.MarkdownString> {
     try {
       const result = await this.client!.request<{ markdown: string }>(
         "explainCode",
-        { code, path: vscode.workspace.asRelativePath(doc.uri, false), language: doc.languageId },
+        { code, path: target.path, language: target.language },
         AI_REQUEST_TIMEOUT_MS
       );
-      const md = new vscode.MarkdownString(result.markdown || "_No explanation available._");
+      const markdown = result.markdown || "_No explanation available._";
+      this.webview?.postMessage({ type: "explainResult", markdown, target });
+      const md = new vscode.MarkdownString(markdown);
       md.supportThemeIcons = true;
       return md;
     } catch (err) {
       console.error("[code-ai] explainCode failed", err);
+      this.webview?.postMessage({ type: "explainError", message: String(err) });
       const md = new vscode.MarkdownString(`**Code-AI** could not explain this selection.\n\n${String(err)}`);
       md.supportThemeIcons = true;
       return md;

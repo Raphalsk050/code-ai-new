@@ -14,6 +14,7 @@ import type {
 import { ApprovalModal } from "./approval";
 import { CommandMenu } from "./command-menu";
 import { exactCommand, matchCommands, SlashCommand } from "./commands";
+import { ExplainPanel, ExplainViewState, INITIAL_EXPLAIN } from "./explain";
 import { HomeScreen } from "./home";
 import {
   DEFAULT_PREFS,
@@ -26,7 +27,6 @@ import {
 } from "./history";
 import {
   IconBack,
-  IconBook,
   IconBroom,
   IconCI,
   IconFile,
@@ -80,6 +80,7 @@ function App(): JSX.Element {
   const [activeId, setActiveId] = React.useState<string | null>(null);
   const [settings, setSettings] = React.useState<Settings | null>(null);
   const [refactor, setRefactor] = React.useState<RefactorViewState>(INITIAL_REFACTOR);
+  const [explain, setExplain] = React.useState<ExplainViewState>(INITIAL_EXPLAIN);
 
   const [draft, setDraft] = React.useState("");
   const [editorContext, setEditorContext] = React.useState<EditorContext | null>(null);
@@ -128,6 +129,14 @@ function App(): JSX.Element {
           planning: { ...r.planning, [data.id]: false },
           planned: { ...r.planned, [data.id]: data.markdown },
         }));
+      } else if (data?.type === "explainStatus") {
+        // A new selection is being analyzed: drop the previous explanation so
+        // the panel never shows a stale result for a different range.
+        setExplain({ status: "analyzing", target: data.target });
+      } else if (data?.type === "explainResult") {
+        setExplain({ status: "ready", markdown: data.markdown, target: data.target });
+      } else if (data?.type === "explainError") {
+        setExplain((e) => ({ ...e, status: "error", error: data.message }));
       }
     };
     window.addEventListener("message", onMessage);
@@ -410,14 +419,7 @@ function App(): JSX.Element {
           onApply={applyRefactor}
         />
       ) : (
-        <ModeHint
-          icon={<IconBook size={26} />}
-          title="Explain mode"
-          lines={[
-            "Select code in the editor, then hover over it to see a detailed explanation.",
-            "The explanation appears inline, like a language-server hover.",
-          ]}
-        />
+        <ExplainPanel state={explain} />
       )}
 
       {mode === "agent" && (
@@ -499,22 +501,6 @@ function AgentBody({
       </div>
       {state.pendingApproval && <ApprovalModal approval={state.pendingApproval} onResolve={resolveApproval} />}
     </>
-  );
-}
-
-function ModeHint({ icon, title, lines }: { icon: JSX.Element; title: string; lines: string[] }): JSX.Element {
-  return (
-    <div className="transcript">
-      <div className="mode-hint">
-        <div className="spark">{icon}</div>
-        <h2>{title}</h2>
-        {lines.map((l, i) => (
-          <div key={i} className="mode-hint-line">
-            {l}
-          </div>
-        ))}
-      </div>
-    </div>
   );
 }
 
