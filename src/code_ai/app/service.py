@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from code_ai.app.conversation_store import ConversationStore
 from code_ai.app.session import ApplicationSession
 from code_ai.context.compression import CompressionResult, ContextCompressor
 from code_ai.core.orchestration import AgentOrchestrator, TurnResult
@@ -15,6 +18,8 @@ from code_ai.events.bus import AsyncEventBus, EventSubscriber
 from code_ai.events.models import EventEnvelope
 from code_ai.providers.base import ModelProvider
 from code_ai.tools.terminal.manager import PersistentTerminalManager
+
+logger = logging.getLogger(__name__)
 
 # Continuation submitted when the user approves a plan and switches to act mode.
 # It is added to the conversation (and echoed in the transcript) so the model
@@ -39,6 +44,7 @@ class CodeAIApplication:
         provider: ModelProvider,
         compressor: ContextCompressor,
         terminal_manager: PersistentTerminalManager | None = None,
+        conversation_store: ConversationStore | None = None,
     ) -> None:
         self.session = session
         self.event_bus = event_bus
@@ -46,8 +52,17 @@ class CodeAIApplication:
         self.provider = provider
         self.compressor = compressor
         self.terminal_manager = terminal_manager
+        self.conversation_store = conversation_store
+        # Id of the conversation currently loaded in the live session. Assigned
+        # by the client via reset_conversation/load_conversation; a turn persists
+        # under it so the user can resume the thread later.
+        self._conversation_id: str | None = None
         self._current_cancel: asyncio.Event | None = None
         self._current_task: asyncio.Task[TurnResult] | None = None
+
+    @property
+    def conversation_id(self) -> str | None:
+        return self._conversation_id
 
     async def start(self) -> None:
         self.session.state = AgentState.READY
@@ -83,6 +98,10 @@ class CodeAIApplication:
         finally:
             self._current_task = None
             self._current_cancel = None
+            # Persist the thread so it can be resumed later, even after a bridge
+            # restart. Best-effort: never let a storage hiccup surface as a turn
+            # failure.
+            self._persist_conversation()
 
     async def explain_code(self, *, code: str, path: str = "", language: str = "") -> str:
         """Return a Markdown explanation of a code snippet (one-off model call).
@@ -180,25 +199,99 @@ class CodeAIApplication:
         response = await self.provider.complete(request)
         return response.text or ""
 
-    async def reset_conversation(self) -> None:
+    async def reset_conversation(self, conversation_id: str | None = None) -> None:
         """Start a fresh conversation, keeping the system prompt and tools.
 
         Powers the embedding "new conversation" action: any running turn is
         cancelled and the transcript is dropped so the next message starts a
-        clean thread, while the leading system instructions are preserved.
+        clean thread, while the leading system instructions are preserved. The
+        optional ``conversation_id`` (from the client) tags the fresh thread so
+        the turns it accrues persist under that id and can be resumed later.
         """
+        await self._cancel_running_turn()
+        messages = self.orchestrator.conversation.messages
+        preserved = messages[:1] if messages and messages[0].role == "system" else []
+        messages[:] = preserved
+        self.orchestrator.conversation.reset_remote_state()
+        self._conversation_id = conversation_id or uuid.uuid4().hex
+        await self.orchestrator.set_state(AgentState.READY, phase="waiting_user")
+        await self.event_bus.emit("conversation.reset", {}, source="app")
+
+    async def list_conversations(self) -> list[dict[str, Any]]:
+        """Metadata for every saved conversation in this workspace, newest-first."""
+        if not self.conversation_store:
+            return []
+        return self.conversation_store.list()
+
+    async def load_conversation(self, conversation_id: str) -> dict[str, Any]:
+        """Resume a saved conversation: reload its messages into the live session.
+
+        The current system prompt is kept (so rules/skills stay current) and the
+        saved history replaces the rest, giving the model full context to
+        continue. Returns the stored messages so the UI can rebuild the
+        transcript when its own cache is empty.
+        """
+        if not self.conversation_store:
+            raise RuntimeError("Conversation persistence is not configured.")
+        record = self.conversation_store.load(conversation_id)
+        if record is None:
+            raise ValueError(f"No saved conversation with id {conversation_id!r}.")
+        await self._cancel_running_turn()
+        loaded = self.conversation_store.load_messages(conversation_id)
+        messages = self.orchestrator.conversation.messages
+        preserved = messages[:1] if messages and messages[0].role == "system" else []
+        messages[:] = preserved + loaded
+        # Drop any remote-state pointer: it belongs to the old process/turn, so
+        # the next request replays the full local history instead.
+        self.orchestrator.conversation.reset_remote_state()
+        self._conversation_id = conversation_id
+        await self.orchestrator.set_state(AgentState.READY, phase="waiting_user")
+        await self.event_bus.emit(
+            "conversation.loaded",
+            {"id": conversation_id, "message_count": len(loaded)},
+            source="app",
+        )
+        return {
+            "id": conversation_id,
+            "title": record.get("title", ""),
+            "messages": record.get("messages", []),
+        }
+
+    async def delete_conversation(self, conversation_id: str) -> bool:
+        if not self.conversation_store:
+            return False
+        deleted = self.conversation_store.delete(conversation_id)
+        if conversation_id == self._conversation_id:
+            self._conversation_id = None
+        return deleted
+
+    async def _cancel_running_turn(self) -> None:
         if self._current_task and not self._current_task.done():
             await self.cancel_current_turn()
             try:
                 await self._current_task
             except Exception:  # a cancelled turn may surface as an error; ignore
                 pass
-        messages = self.orchestrator.conversation.messages
-        preserved = messages[:1] if messages and messages[0].role == "system" else []
-        messages[:] = preserved
-        self.orchestrator.conversation.reset_remote_state()
-        await self.orchestrator.set_state(AgentState.READY, phase="waiting_user")
-        await self.event_bus.emit("conversation.reset", {}, source="app")
+
+    def _persist_conversation(self) -> None:
+        """Save the live (non-system) history under the current conversation id."""
+        if not self.conversation_store or not self._conversation_id:
+            return
+        non_system = [
+            m for m in self.orchestrator.conversation.messages if m.role != "system"
+        ]
+        if not non_system:
+            return
+        try:
+            self.conversation_store.save(
+                conversation_id=self._conversation_id,
+                messages=non_system,
+                previous_response_id=self.orchestrator.conversation.previous_response_id,
+            )
+        except Exception:  # pragma: no cover - persistence must never break a turn
+            logger.warning(
+                "Failed to persist conversation %s", self._conversation_id, exc_info=True
+            )
 
     async def cancel_current_turn(self) -> None:
         if self._current_cancel is not None:

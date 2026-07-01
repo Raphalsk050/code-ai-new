@@ -71,6 +71,21 @@ def project_rules_dir(workspace: Path | str) -> Path:
     return resolved / DEFAULT_CONFIG_DIRNAME / RULES_DIRNAME
 
 
+def project_conversations_dir(workspace: Path | str) -> Path:
+    """Directory holding saved conversations scoped to a single workspace.
+
+    Keyed by a hash of the absolute workspace path and kept under the config dir
+    (mirrors :func:`project_memories_dir`) so saved chats persist across sessions
+    and bridge restarts, let the user resume where they left off, and never leak
+    across unrelated projects.
+    """
+
+    resolved = Path(workspace).expanduser().resolve()
+    digest = hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()[:12]
+    slug = f"{resolved.name or 'root'}-{digest}"
+    return Path.home() / DEFAULT_CONFIG_DIRNAME / "projects" / slug / "conversations"
+
+
 def project_memories_dir(workspace: Path | str) -> Path:
     """Directory holding memories scoped to a single workspace.
 
