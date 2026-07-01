@@ -51,6 +51,10 @@
       {
         "command": "code-ai.inlineHintInfo",
         "title": "Code-AI: Inline Hint Source"
+      },
+      {
+        "command": "code-ai.testInlineHint",
+        "title": "Code-AI: Test Inline Hint at Cursor"
       }
     ],
     "menus": {
