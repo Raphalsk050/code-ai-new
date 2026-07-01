@@ -58,9 +58,24 @@ async def test_inline_complete_skips_empty_prefix() -> None:
 async def test_inline_complete_windows_large_context() -> None:
     provider = _FakeProvider("done")
     app = _app(provider)
-    await app.inline_complete(prefix="A" * 5000, suffix="B" * 5000, language="python")
+    await app.inline_complete(prefix="A" * 12000, suffix="B" * 6000, language="python")
     content = provider.request.messages[-1].content
-    # Only the trailing 2000 chars of prefix and leading 1000 of suffix are sent.
-    assert content.count("A") == 2000
-    assert content.count("B") == 1000
+    # Only the trailing 8000 chars of prefix and leading 3000 of suffix are sent.
+    assert content.count("A") == 8000
+    assert content.count("B") == 3000
     assert "<CURSOR>" in content
+
+
+async def test_inline_complete_strips_reasoning_block() -> None:
+    provider = _FakeProvider("<think>let me consider the types</think>\n    return a + b")
+    app = _app(provider)
+    out = await app.inline_complete(prefix="def add(a, b):\n", language="python")
+    assert out == "    return a + b"
+
+
+async def test_inline_complete_uses_large_output_budget() -> None:
+    provider = _FakeProvider("x")
+    app = _app(provider)
+    await app.inline_complete(prefix="foo")
+    # Reasoning models need room to finish thinking before emitting the snippet.
+    assert provider.request.max_output_tokens == 32768

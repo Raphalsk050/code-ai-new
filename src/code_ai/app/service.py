@@ -151,30 +151,37 @@ class CodeAIApplication:
 
         if not prefix.strip():
             return ""
-        # Only send a window around the cursor to keep latency low.
+        # Send a generous window around the cursor so the model has real context
+        # (imports, nearby defs, the comment describing intent) instead of
+        # guessing — the leading edge of the prefix and trailing edge of the
+        # suffix are the parts furthest from the cursor, so they get trimmed.
         prefix = prefix[-_INLINE_PREFIX_CHARS:]
         suffix = suffix[:_INLINE_SUFFIX_CHARS]
         config = self.session.config
-        location = f" (file: {path})" if path else ""
+        location = f"File: {path}\n" if path else ""
         system = Message(role="system", content=_INLINE_SYSTEM)
         user = Message(
             role="user",
             content=(
-                f"Language: {language or 'plain text'}{location}\n"
-                "Complete the code at <CURSOR>. Return only the insertion.\n\n"
-                f"{prefix}<CURSOR>{suffix}"
+                f"{location}"
+                f"Language: {language or 'plain text'}\n\n"
+                "Here is the file. The cursor is marked <CURSOR>. Output only the "
+                "text to insert there so the code reads naturally.\n\n"
+                "```\n"
+                f"{prefix}<CURSOR>{suffix}\n"
+                "```"
             ),
         )
         request = ModelRequest(
             model=config.inline_model.strip() or config.model,
-            # Reasoning models spend output budget on hidden thinking first, so a
-            # tight cap makes them return empty text (same reason explain_code is
-            # generous). Keep it bounded but roomy enough to emit a short snippet.
             messages=[system, user],
-            max_output_tokens=2048,
+            # Reasoning models spend output budget on hidden thinking first, so a
+            # tight cap makes them return empty text. Give them ample room to
+            # finish reasoning and still emit the completion.
+            max_output_tokens=32768,
         )
         response = await self.provider.complete(request)
-        return _strip_code_fence(response.text or "")
+        return _clean_inline_completion(response.text or "")
 
     async def analyze_refactor(
         self, *, code: str, path: str = "", language: str = ""
@@ -587,28 +594,50 @@ _EXPLAIN_SYSTEM = (
 
 
 _INLINE_SYSTEM = (
-    "You are a code autocompletion engine embedded in an editor. Continue the code "
-    "at the <CURSOR> marker. Output ONLY the raw text to insert at the cursor: no "
-    "explanations, no markdown fences, and never repeat code that already appears "
-    "before or after the cursor. Match the surrounding style and indentation. "
-    "Prefer completing the current line or a small, coherent block; stop at a "
-    "natural boundary. If no useful completion is possible, output nothing."
+    "You are a precise code-completion engine embedded in an editor, like GitHub "
+    "Copilot. You receive a source file with the caret marked as <CURSOR>. Predict "
+    "the exact text the developer would type next at the caret, continuing the code "
+    "and honoring any comment right above it that states the intent.\n"
+    "Rules:\n"
+    "- Output ONLY the raw text to insert at <CURSOR>. No prose, no explanations, "
+    "no markdown fences, no <think> tags.\n"
+    "- Continue naturally from the code before the caret and fit the code after it; "
+    "never repeat text that already appears before or after the caret.\n"
+    "- Match the file's language, style, indentation and naming.\n"
+    "- If a comment or docstring just before the caret describes behavior, "
+    "implement it.\n"
+    "- Complete a coherent unit (finish the line, expression, or a small block) and "
+    "stop at a natural boundary; do not rewrite the whole file.\n"
+    "- If there is genuinely nothing useful to add, output nothing."
 )
 
-# Keep prompts small so hints stay fast: only send a window around the cursor.
-_INLINE_PREFIX_CHARS = 2000
-_INLINE_SUFFIX_CHARS = 1000
+# Window of code sent around the cursor. Generous so the model sees imports,
+# nearby definitions and the intent comment rather than guessing; the edges
+# furthest from the cursor are trimmed first.
+_INLINE_PREFIX_CHARS = 8000
+_INLINE_SUFFIX_CHARS = 3000
 
 
-def _strip_code_fence(text: str) -> str:
-    """Drop a leading/trailing markdown code fence if the model added one."""
+def _clean_inline_completion(text: str) -> str:
+    """Sanitize a raw model reply into insertable ghost text.
+
+    Strips reasoning-model ``<think>`` blocks, markdown code fences and a leading
+    "Here is..." style preamble, so only the code to insert remains.
+    """
     import re
 
-    stripped = text.strip("\n")
-    if stripped.startswith("```"):
-        stripped = re.sub(r"^```[a-zA-Z0-9_+-]*\n?", "", stripped)
-        stripped = re.sub(r"\n?```\s*$", "", stripped)
-    return stripped
+    cleaned = text
+    # Drop any leaked reasoning block.
+    cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = cleaned.strip("\n")
+    # Unwrap a single fenced block (```lang ... ```), keeping only its body.
+    fenced = re.match(r"^```[a-zA-Z0-9_+-]*\n(.*?)\n?```\s*$", cleaned, flags=re.DOTALL)
+    if fenced:
+        cleaned = fenced.group(1)
+    else:
+        cleaned = re.sub(r"^```[a-zA-Z0-9_+-]*\n?", "", cleaned)
+        cleaned = re.sub(r"\n?```\s*$", "", cleaned)
+    return cleaned
 
 
 def _parse_improvements(text: str) -> list[dict[str, Any]]:
