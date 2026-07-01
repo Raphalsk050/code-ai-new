@@ -167,8 +167,11 @@ class CodeAIApplication:
         )
         request = ModelRequest(
             model=config.inline_model.strip() or config.model,
+            # Reasoning models spend output budget on hidden thinking first, so a
+            # tight cap makes them return empty text (same reason explain_code is
+            # generous). Keep it bounded but roomy enough to emit a short snippet.
             messages=[system, user],
-            max_output_tokens=256,  # hints are short; keep them snappy
+            max_output_tokens=2048,
         )
         response = await self.provider.complete(request)
         return _strip_code_fence(response.text or "")
