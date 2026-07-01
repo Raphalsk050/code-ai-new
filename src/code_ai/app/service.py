@@ -281,6 +281,17 @@ class CodeAIApplication:
             },
         }
 
+    async def list_models(self) -> list[str]:
+        """List the model identifiers the configured provider currently serves.
+
+        Backs the settings panel's "list models" affordance so the user can pick
+        a valid model instead of typing one. Queries the provider's catalog with
+        the currently-loaded config (base_url/api_mode/api_key).
+        """
+        from code_ai.providers.model_listing import list_available_models
+
+        return await list_available_models(self.session.config)
+
     async def update_settings(self, updates: dict[str, Any]) -> dict[str, Any]:
         """Persist and apply a batch of settings from the panel.
 
