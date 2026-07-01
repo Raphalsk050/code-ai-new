@@ -44,16 +44,35 @@ export const initialState: ViewState = {
   heartbeat: 0,
 };
 
+// AgentState values that mean the agent is actively doing something. Must stay
+// in sync with `code_ai.core.state.AgentState` — the bridge forwards those exact
+// names via `status.changed`, and the terminal UI keys off the same set
+// (`code_ai.ui.terminal.widgets.WORKING_STATES`).
 const WORKING_STATES = new Set([
-  "THINKING",
-  "RUNNING_TOOL",
-  "STREAMING",
+  "CALLING_MODEL",
+  "EXECUTING_TOOL",
   "COMPRESSING_CONTEXT",
   "CANCELLING",
 ]);
 
 export function isBusy(status: string): boolean {
   return WORKING_STATES.has(status);
+}
+
+/** Human label for a working state, mirroring the terminal `working_label`. */
+export function workingLabel(status: string): string {
+  switch (status) {
+    case "CALLING_MODEL":
+      return "calling model";
+    case "EXECUTING_TOOL":
+      return "running tools";
+    case "COMPRESSING_CONTEXT":
+      return "compacting context";
+    case "CANCELLING":
+      return "cancelling";
+    default:
+      return "working";
+  }
 }
 
 // -- helpers ---------------------------------------------------------------
