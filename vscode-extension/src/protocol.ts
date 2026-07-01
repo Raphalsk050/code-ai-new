@@ -121,4 +121,5 @@ export type WebviewToHost =
   | { type: "cancel" }
   | { type: "compact" }
   | { type: "resolveApproval"; call_id: string; scope: ApprovalScope; reason?: string }
-  | { type: "setPermissionMode"; mode: PermissionMode };
+  | { type: "setPermissionMode"; mode: PermissionMode }
+  | { type: "restartBridge" };

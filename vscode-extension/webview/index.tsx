@@ -31,6 +31,7 @@ import {
   IconCI,
   IconFile,
   IconPlus,
+  IconRefresh,
   IconSend,
   IconSettings,
   IconStop,
@@ -328,6 +329,7 @@ function App(): JSX.Element {
           onBack={() => setScreen(returnScreen)}
           onSave={(updates) => send({ type: "updateSettings", updates })}
           onPrefsChange={updatePrefs}
+          onRestart={() => send({ type: "restartBridge" })}
         />
       </div>
     );
@@ -382,6 +384,13 @@ function App(): JSX.Element {
             </button>
             <button className="icon-btn" title="New conversation" onClick={startNewConversation}>
               <IconPlus size={16} />
+            </button>
+            <button
+              className="icon-btn"
+              title="Restart Code-AI (reload settings without reloading the window)"
+              onClick={() => send({ type: "restartBridge" })}
+            >
+              <IconRefresh size={15} />
             </button>
             <button className="icon-btn" title="Settings" onClick={openSettings}>
               <IconSettings size={16} />
