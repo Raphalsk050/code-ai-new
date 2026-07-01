@@ -172,8 +172,24 @@ class BridgeServer:
             pass
 
     async def _h_new_conversation(self, params: dict[str, Any]) -> dict[str, Any]:
-        await self._app.reset_conversation()
-        return {"status": "ok"}
+        conversation_id = params.get("conversation_id") or params.get("id")
+        await self._app.reset_conversation(
+            conversation_id=str(conversation_id) if conversation_id else None
+        )
+        return {"status": "ok", "conversation_id": self._app.conversation_id}
+
+    async def _h_list_conversations(self, params: dict[str, Any]) -> dict[str, Any]:
+        return {"conversations": await self._app.list_conversations()}
+
+    async def _h_load_conversation(self, params: dict[str, Any]) -> dict[str, Any]:
+        conversation_id = str(params.get("conversation_id") or params.get("id") or "")
+        return await self._app.load_conversation(conversation_id)
+
+    async def _h_delete_conversation(self, params: dict[str, Any]) -> dict[str, Any]:
+        deleted = await self._app.delete_conversation(
+            str(params.get("conversation_id") or params.get("id") or "")
+        )
+        return {"deleted": deleted}
 
     async def _h_explain_code(self, params: dict[str, Any]) -> dict[str, Any]:
         markdown = await self._app.explain_code(
@@ -252,6 +268,9 @@ class BridgeServer:
     _HANDLERS: dict[str, Any] = {
         "submitUserMessage": _h_submit,
         "newConversation": _h_new_conversation,
+        "listConversations": _h_list_conversations,
+        "loadConversation": _h_load_conversation,
+        "deleteConversation": _h_delete_conversation,
         "getSettings": _h_get_settings,
         "listModels": _h_list_models,
         "updateSettings": _h_update_settings,
@@ -268,7 +287,9 @@ class BridgeServer:
     }
 
     # Methods whose model call may run long; dispatched off the read loop.
-    _CONCURRENT_METHODS = frozenset({"explainCode", "analyzeRefactor", "planRefactor", "listModels"})
+    _CONCURRENT_METHODS = frozenset(
+        {"explainCode", "analyzeRefactor", "planRefactor", "listModels"}
+    )
 
 
 async def run_bridge(app: CodeAIApplication, *, stdin: TextIO, stdout: TextIO) -> int:
