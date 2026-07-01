@@ -43,6 +43,10 @@
         "command": "code-ai.restart",
         "title": "Code-AI: Restart (reload settings)",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "code-ai.toggleInlineHints",
+        "title": "Code-AI: Toggle Inline Hints"
       }
     ],
     "menus": {
