@@ -58,6 +58,14 @@ class BudgetConfig:
     max_turn_wall_time_s: int = DEFAULT_BUDGETS["max_turn_wall_time_s"]
     subagent_explorer_timeout_s: int = DEFAULT_BUDGETS["subagent_explorer_timeout_s"]
     subagent_worker_timeout_s: int = DEFAULT_BUDGETS["subagent_worker_timeout_s"]
+    max_subagent_depth: int = DEFAULT_BUDGETS["max_subagent_depth"]
+    max_concurrent_subagents: int = DEFAULT_BUDGETS["max_concurrent_subagents"]
+    max_subagents_per_turn: int = DEFAULT_BUDGETS["max_subagents_per_turn"]
+    subagent_retry_max_attempts: int = DEFAULT_BUDGETS["subagent_retry_max_attempts"]
+    subagent_circuit_failure_threshold: int = DEFAULT_BUDGETS[
+        "subagent_circuit_failure_threshold"
+    ]
+    subagent_circuit_reset_s: int = DEFAULT_BUDGETS["subagent_circuit_reset_s"]
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any] | None) -> BudgetConfig:

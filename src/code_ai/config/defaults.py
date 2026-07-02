@@ -118,6 +118,16 @@ DEFAULT_BUDGETS: dict[str, int] = {
     "max_turn_wall_time_s": 900,
     "subagent_explorer_timeout_s": 120,
     "subagent_worker_timeout_s": 300,
+    # Sub-agent orchestration limits. Depth 1 means the main agent may delegate
+    # but a sub-agent may not delegate further (no unbounded recursion).
+    "max_subagent_depth": 1,
+    "max_concurrent_subagents": 4,
+    "max_subagents_per_turn": 12,
+    # Resilience: retry attempts per sub-agent (total tries, including the first)
+    # and the circuit breaker thresholds (consecutive failures / cooldown).
+    "subagent_retry_max_attempts": 2,
+    "subagent_circuit_failure_threshold": 3,
+    "subagent_circuit_reset_s": 30,
 }
 
 
