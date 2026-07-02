@@ -139,6 +139,8 @@ class TerminalViewModel:
                 for call in tool_calls:
                     name = call.get("name") if isinstance(call, dict) else None
                     self.conversation.append(f"model> requested {name or 'tool'} tool")
+        elif event.event_type == "tool.call.progress":
+            self._apply_tool_progress(event.payload)
         elif event.event_type == "tool.call.started":
             self.conversation.append(f"tool> {event.payload.get('name')} started")
         elif event.event_type == "tool.call.completed":
@@ -184,6 +186,32 @@ class TerminalViewModel:
             cumulative = event.payload.get("cumulative")
             if isinstance(cumulative, dict):
                 self.cumulative_usage = str(cumulative.get("total_tokens", "0"))
+
+    def _apply_tool_progress(self, payload: dict[object, object]) -> None:
+        """Render live 'writing code' feedback while a tool call streams in.
+
+        The line updates in place as the arguments grow, so a large write_file
+        shows the file and how much has been written so far instead of the UI
+        sitting idle until the finished diff appears. A distinct 'tool~' prefix
+        keeps this transient line apart from the started/completed 'tool>' lines.
+        """
+
+        name = str(payload.get("name") or "tool")
+        path = str(payload.get("path") or "").strip()
+        lines = payload.get("lines")
+        chars = payload.get("chars")
+        if path and isinstance(lines, int):
+            detail = f"writing {path} ({lines} lines)"
+        elif path:
+            detail = f"writing {path}"
+        else:
+            detail = f"building call ({chars} chars)" if chars is not None else "building call"
+        prefix = f"tool~ {name}: "
+        line = prefix + detail
+        if self.conversation and self.conversation[-1].startswith(prefix):
+            self.conversation[-1] = line
+        else:
+            self.conversation.append(line)
 
     def _apply_subagent_event(self, event: EventEnvelope) -> None:
         """Fold a ``subagent.*`` event into the live AGENTS panel state.
