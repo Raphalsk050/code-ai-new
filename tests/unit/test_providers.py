@@ -155,6 +155,87 @@ async def test_chat_completions_drops_unparseable_tool_call_without_failing() ->
     assert completed.response.tool_calls == []
 
 
+def _tool_call_chunk_fragment(name: str, arguments: str) -> dict[str, object]:
+    return {
+        "usage": None,
+        "choices": [
+            {
+                "finish_reason": None,
+                "delta": {
+                    "content": "",
+                    "tool_calls": [
+                        {"index": 0, "id": "", "function": {"name": name, "arguments": arguments}}
+                    ],
+                },
+            }
+        ],
+    }
+
+
+async def test_chat_completions_streams_tool_call_argument_deltas() -> None:
+    # While write_file's content streams in, the provider must surface partial
+    # progress so the UI isn't frozen until the whole call has arrived.
+    provider = _chat_provider(
+        [
+            _tool_call_chunk_fragment("write_file", '{"path": "a.py", "content": "'),
+            _tool_call_chunk_fragment("", 'print(1)\\nprint(2)"}'),
+        ]
+    )
+
+    events = [event async for event in provider.stream(_chat_request())]
+
+    deltas = [event for event in events if event.kind == "tool_call_delta"]
+    assert len(deltas) >= 2
+    assert deltas[-1].tool_call_name == "write_file"
+    assert deltas[-1].tool_call_arguments.endswith('print(2)"}')
+    assert len(deltas[-1].tool_call_arguments) > len(deltas[0].tool_call_arguments)
+    completed = events[-1]
+    assert completed.kind == "completed"
+    assert completed.response is not None
+    assert completed.response.tool_calls[0].name == "write_file"
+
+
+async def test_responses_streams_tool_call_argument_deltas() -> None:
+    events_in: list[dict[str, object]] = [
+        {
+            "type": "response.output_item.added",
+            "item": {"type": "function_call", "id": "fc_1", "name": "edit_code"},
+        },
+        {
+            "type": "response.function_call_arguments.delta",
+            "item_id": "fc_1",
+            "delta": '{"path": "a.py",',
+        },
+        {
+            "type": "response.function_call_arguments.delta",
+            "item_id": "fc_1",
+            "delta": ' "content": "x"}',
+        },
+        {
+            "type": "response.completed",
+            "response": {
+                "id": "r1",
+                "output": [
+                    {
+                        "type": "function_call",
+                        "call_id": "fc_1",
+                        "name": "edit_code",
+                        "arguments": '{"path": "a.py", "content": "x"}',
+                    }
+                ],
+            },
+        },
+    ]
+    provider = _responses_provider(events_in)
+
+    events = [event async for event in provider.stream(_chat_request())]
+
+    deltas = [event for event in events if event.kind == "tool_call_delta"]
+    assert len(deltas) == 2
+    assert deltas[0].tool_call_name == "edit_code"
+    assert deltas[-1].tool_call_arguments == '{"path": "a.py", "content": "x"}'
+
+
 def test_parse_arguments_tolerates_trailing_extra_data() -> None:
     assert parse_arguments('{"a": 1}{"b": 2}') == {"a": 1}
 
@@ -369,7 +450,12 @@ async def test_responses_function_call_argument_delta_is_not_visible_text() -> N
         )
     ]
 
-    assert [event.kind for event in events] == ["completed"]
+    kinds = [event.kind for event in events]
+    # Argument deltas must never pollute the chat as visible answer text; they
+    # are surfaced only as tool-call progress.
+    assert "text_delta" not in kinds
+    assert "tool_call_delta" in kinds
+    assert kinds[-1] == "completed"
     assert events[-1].response is not None
     assert events[-1].response.text == ""
     assert events[-1].response.tool_calls == [
