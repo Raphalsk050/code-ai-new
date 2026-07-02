@@ -77,6 +77,9 @@ _APPROVAL_SENSITIVE_CAPABILITIES = frozenset(
         ToolCapability.PROCESS,
         ToolCapability.INTERACTIVE_TERMINAL,
         ToolCapability.COMPUTER_CONTROL,
+        # Delegating runs sub-agents that may themselves write and run
+        # processes, so the user approves the delegation once at this boundary.
+        ToolCapability.DELEGATE,
     }
 )
 
