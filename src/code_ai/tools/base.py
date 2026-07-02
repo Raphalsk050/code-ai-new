@@ -23,6 +23,7 @@ class ToolCapability(StrEnum):
     INTERNAL_TRANSITION = "internal_transition"
     INTERNAL_COMPLETION = "internal_completion"
     MEMORY = "memory"
+    DELEGATE = "delegate"
 
 
 @dataclass(slots=True)
@@ -35,6 +36,12 @@ class ToolContext:
     terminal_manager: Any = None
     desktop_controller: Any = None
     memory: Any = None
+    # Dispatcher used by the delegation tool to run sub-agents. ``None`` on
+    # sub-agent contexts (they cannot delegate further) and whenever delegation
+    # is not wired. ``subagent_depth`` is the caller's depth in the delegation
+    # tree (0 for the main agent), forwarded so depth limits are enforced.
+    subagent_coordinator: Any = None
+    subagent_depth: int = 0
 
 
 class BaseTool(Protocol):
