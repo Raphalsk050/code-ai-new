@@ -97,6 +97,17 @@ class TurnResult:
     response: ModelResponse | None
     cancelled: bool = False
     error: str | None = None
+    # Set when the turn was wound down by a runtime safety budget instead of the
+    # model finishing on its own (see WIND_DOWN_* constants). ``text`` then holds
+    # a best-effort answer, so callers must not treat the turn as a clean success.
+    wind_down_reason: str | None = None
+
+
+# Wind-down reasons surfaced through ``TurnResult.wind_down_reason``.
+WIND_DOWN_TIME_BUDGET = "turn_time_budget_exhausted"
+WIND_DOWN_STEP_BUDGET = "model_step_budget_exhausted"
+WIND_DOWN_TOOL_BUDGET = "tool_call_budget_exhausted"
+WIND_DOWN_STALLED = "model_stalled"
 
 
 @dataclass(slots=True)
@@ -321,7 +332,7 @@ class AgentOrchestrator:
         for step in range(self.config.budgets.max_model_steps):
             self._raise_if_cancelled(state.cancel_event)
             if time.monotonic() > state.deadline:
-                return await self._wind_down(state, reason="turn_time_budget_exhausted")
+                return await self._wind_down(state, reason=WIND_DOWN_TIME_BUDGET)
 
             allowed = self._allowed_tool_names()
             tool_definitions = self.tool_registry.definitions(allowed)
@@ -370,7 +381,7 @@ class AgentOrchestrator:
                 return outcome
             await self.set_state(AgentState.CALLING_MODEL, phase="calling_model_after_tools")
 
-        return await self._wind_down(state, reason="model_step_budget_exhausted")
+        return await self._wind_down(state, reason=WIND_DOWN_STEP_BUDGET)
 
     async def _handle_no_tool_response(
         self, response: ModelResponse, state: _TurnState
@@ -687,7 +698,7 @@ class AgentOrchestrator:
                     "concrete next step instead of restating the plan."
                 ),
             )
-            return await self._wind_down(state, reason="model_stalled")
+            return await self._wind_down(state, reason=WIND_DOWN_STALLED)
         if state.stall_rounds >= limit // 2 and not state.stall_nudged:
             state.stall_nudged = True
             self.conversation.add_user(self._stall_nudge_text())
@@ -840,7 +851,7 @@ class AgentOrchestrator:
         calls = response.tool_calls
 
         if state.tool_calls_executed >= self.config.budgets.max_tool_calls:
-            return await self._wind_down(state, reason="tool_call_budget_exhausted")
+            return await self._wind_down(state, reason=WIND_DOWN_TOOL_BUDGET)
         state.tool_calls_executed += len(calls)
 
         # Evaluate policy for the whole batch against one consistent snapshot so a
@@ -1118,7 +1129,9 @@ class AgentOrchestrator:
             "I reached a runtime safety budget for this turn before fully completing the "
             "request. The work so far is preserved; re-run or narrow the request to continue."
         )
-        return await self._finish_turn(text, state.last_response, state)
+        return await self._finish_turn(
+            text, state.last_response, state, wind_down_reason=reason
+        )
 
     async def _finish_turn(
         self,
@@ -1127,6 +1140,7 @@ class AgentOrchestrator:
         state: _TurnState,
         *,
         error: str | None = None,
+        wind_down_reason: str | None = None,
     ) -> TurnResult:
         await self.set_state(AgentState.READY, phase="waiting_user")
         await self.event_bus.emit(
@@ -1134,7 +1148,12 @@ class AgentOrchestrator:
             {"text": text, "usage": self.usage.to_dict()},
             source="core.orchestrator",
         )
-        return TurnResult(text=text, response=response, error=error)
+        return TurnResult(
+            text=text,
+            response=response,
+            error=error,
+            wind_down_reason=wind_down_reason,
+        )
 
     def _best_effort_text(self, state: _TurnState) -> str:
         if state.last_response and state.last_response.text:
