@@ -53,6 +53,7 @@ class SubagentRuntime:
         workspace: WorkspacePolicy,
         base_registry: ToolRegistry,
         rules_text: str = "",
+        skills_text: str = "",
         review_service_factory: ReviewServiceFactory | None = None,
     ) -> None:
         self._config = config
@@ -60,6 +61,7 @@ class SubagentRuntime:
         self._workspace = workspace
         self._base_registry = base_registry
         self._rules_text = rules_text
+        self._skills_text = skills_text
         self._review_service_factory = review_service_factory
 
     def build(self, profile: SubagentProfile) -> BuiltSubagent:
@@ -73,6 +75,7 @@ class SubagentRuntime:
                 workspace=child_config.workspace,
                 language=child_config.language,
                 rules=self._rules_text,
+                skills=self._skills_text,
             )
 
         conversation = ConversationState(
