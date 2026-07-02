@@ -41,6 +41,27 @@ class ToolRegistry:
     def has(self, name: str) -> bool:
         return name in self._tools
 
+    def get(self, name: str) -> BaseTool | None:
+        return self._tools.get(name)
+
+    def select(self, allowed_capabilities: frozenset[ToolCapability]) -> ToolRegistry:
+        """Return a new registry holding only tools this capability set permits.
+
+        A tool is included when it declares at least one capability and *all* of
+        its capabilities fall within ``allowed_capabilities``. This is how a
+        sub-agent gets a registry restricted to its profile: a coder never sees
+        the interactive-terminal tools, an explorer never sees the writers. Tool
+        instances are shared by reference - they are stateless, so no isolation is
+        lost, and nothing that carries per-session state is ever handed over.
+        """
+        subset = ToolRegistry()
+        for name in self.names():
+            tool = self._tools[name]
+            caps = frozenset(getattr(tool, "capabilities", frozenset()))
+            if caps and caps <= allowed_capabilities:
+                subset.register(tool)
+        return subset
+
     async def execute(
         self, name: str, arguments: dict[str, Any], context: ToolContext
     ) -> dict[str, Any]:
