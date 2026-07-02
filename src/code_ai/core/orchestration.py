@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import json
 import random
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -66,6 +67,12 @@ _MAX_TOOL_FORMAT_RETRIES = 2
 _MAX_BUDGET_RETRIES = 2
 _TOOL_GUARD_POLL_SECONDS = 2.0
 _TOOL_GUARD_GRACE_SECONDS = 10.0
+# Minimum growth in a streaming tool call's arguments before we emit another
+# progress update, so a large write reports periodically rather than per-token.
+_TOOL_PROGRESS_STEP_CHARS = 160
+# Best-effort extraction of a "path" argument from partial (not-yet-valid) JSON,
+# so progress feedback can name the file being written before the call closes.
+_PARTIAL_PATH_RE = re.compile(r'"path"\s*:\s*"((?:[^"\\]|\\.)*)"')
 _ALLOWED_POLICY = PolicyDecision(True, "allowed", set())
 
 # Capabilities that mutate the workspace or run external processes. In "ask"
@@ -766,6 +773,11 @@ class AgentOrchestrator:
             if visible:
                 await self._emit_text_delta(visible)
 
+        # Per-index high-water mark of already-announced argument length, so a
+        # streaming tool call reports progress periodically instead of on every
+        # tiny chunk (which would flood the UI).
+        tool_progress_seen: dict[int, int] = {}
+
         async for event in self.provider.stream(request):
             self._raise_if_cancelled(cancel_event)
             if event.kind == "text_delta":
@@ -775,6 +787,9 @@ class AgentOrchestrator:
                     await self._emit_reasoning_delta(thought)
                 if answer:
                     await _emit_visible_answer(answer)
+                continue
+            if event.kind == "tool_call_delta":
+                await self._emit_tool_progress(event, tool_progress_seen)
                 continue
             await self._emit_provider_event(event)
             if event.kind == "reasoning_delta":
@@ -1176,6 +1191,42 @@ class AgentOrchestrator:
             source="provider",
         )
 
+    async def _emit_tool_progress(
+        self, event: ProviderEvent, seen: dict[int, int]
+    ) -> None:
+        """Announce that a tool call's arguments are still streaming in.
+
+        Emits a throttled ``tool.call.progress`` event so the UI can show live
+        feedback (e.g. a file being written) while a large call accumulates,
+        instead of appearing frozen until the whole call has arrived. The name
+        may still be empty on the very first fragments; we wait until it is known
+        so the feedback is meaningful.
+        """
+
+        name = event.tool_call_name
+        if not name:
+            return
+        arguments = event.tool_call_arguments
+        length = len(arguments)
+        last = seen.get(event.tool_call_index)
+        if last is not None and length - last < _TOOL_PROGRESS_STEP_CHARS:
+            return
+        seen[event.tool_call_index] = length
+
+        payload: dict[str, object] = {
+            "name": name,
+            "index": event.tool_call_index,
+            "chars": length,
+        }
+        path = _extract_partial_path(arguments)
+        if path:
+            payload["path"] = path
+        if name in {"write_file", "edit_code"}:
+            # Content newlines are JSON-escaped as the two characters "\n", so
+            # counting them approximates how many lines have been written so far.
+            payload["lines"] = arguments.count("\\n") + 1
+        await self.event_bus.emit("tool.call.progress", payload, source="provider")
+
     async def _emit_provider_event(self, event: ProviderEvent) -> None:
         if event.kind == "text_delta":
             await self._emit_text_delta(event.text_delta)
@@ -1338,3 +1389,20 @@ class AgentOrchestrator:
     def _raise_if_cancelled(cancel_event: asyncio.Event | None) -> None:
         if cancel_event and cancel_event.is_set():
             raise CancellationError("Turn cancelled.")
+
+
+def _extract_partial_path(arguments: str) -> str | None:
+    """Pull the ``path`` value out of a partial tool-call arguments string.
+
+    The arguments are still streaming, so the JSON is usually incomplete; but
+    ``path`` normally appears near the front, so a lenient regex recovers it well
+    before the call closes. Returns ``None`` when no complete path is present yet.
+    """
+
+    match = _PARTIAL_PATH_RE.search(arguments)
+    if match is None:
+        return None
+    try:
+        return json.loads(f'"{match.group(1)}"')
+    except json.JSONDecodeError:
+        return match.group(1)
