@@ -142,8 +142,15 @@ class AgentOrchestrator:
         failure_memory: FailureMemoryStore | None = None,
         memory: MemoryService | None = None,
         rules: RulesService | None = None,
+        system_prompt_builder: Callable[[], str] | None = None,
     ) -> None:
         self.config = config
+        # Optional override for how the leading system message is (re)built. The
+        # main agent leaves this unset and uses ``build_system_prompt`` with its
+        # learned lessons/memories/rules. A sub-agent injects its profile's own
+        # role prompt here, so ``_refresh_system_prompt`` keeps the delegated
+        # persona instead of overwriting it with the top-level agent prompt.
+        self._system_prompt_builder = system_prompt_builder
         self.provider = provider
         self.tool_registry = tool_registry
         self.conversation = conversation
@@ -193,6 +200,11 @@ class AgentOrchestrator:
         """
 
         if not self.conversation.messages:
+            return
+        if self._system_prompt_builder is not None:
+            self.conversation.messages[0] = Message(
+                role="system", content=self._system_prompt_builder()
+            )
             return
         lessons = self.failure_memory.render_for_prompt() if self.failure_memory else ""
         memories = self.memory.render_for_prompt() if self.memory else ""

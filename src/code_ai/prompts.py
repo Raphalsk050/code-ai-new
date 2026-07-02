@@ -171,6 +171,42 @@ repeat a mistake you have already recorded.
 {memories_section}{lessons_section}"""
 
 
+def build_subagent_system_prompt(
+    *,
+    role_prompt: str,
+    workspace: Path,
+    language: str,
+    rules: str = "",
+) -> str:
+    """System prompt for an isolated sub-agent.
+
+    Combines the profile's role instructions with the shared workspace framing
+    and mandatory rules. It deliberately omits the main agent's planning,
+    memory, and delegation guidance: a sub-agent runs one focused task, cannot
+    delegate further, and reports back by ending with a plain final answer -
+    there is no completion tool to call.
+    """
+
+    current_date = datetime.now().astimezone().date().isoformat()
+    rules_section = f"\n{rules.strip()}\n" if rules.strip() else ""
+    return f"""{role_prompt.strip()}
+
+You are a sub-agent dispatched by the main Code-AI agent to handle one delegated
+task. You work autonomously and cannot ask the user questions or delegate to
+further sub-agents. When you are done, your final message is the report handed
+back to the agent that dispatched you, so make it self-contained.
+
+Configured workspace: {workspace}
+Configured response language: {language}
+Current local date: {current_date}
+{rules_section}
+Keep all file and command operations inside the configured workspace. Local
+files are the source of truth: inspect before you act and follow existing
+project conventions. When a task needs file changes, action means calling the
+tools - never substitute a code block or explanation for a real edit.
+"""
+
+
 def build_failure_lesson_prompt(context: str) -> str:
     """Instruction for the bounded meta-call that distills a failure lesson."""
 
