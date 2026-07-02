@@ -127,3 +127,30 @@ def test_render_subagents_shows_marker_task_and_activity() -> None:
 def test_render_subagents_empty_is_just_header() -> None:
     text = render_subagents([], running_glyph="*", running_color="#ffffff").plain
     assert "0 agent(s)" in text
+
+
+def test_agents_and_plan_coexist_and_persist_at_turn_end() -> None:
+    # Regression: a turn that delegates (agents first) and then plans must show
+    # BOTH panels, and both must stay up when the turn returns to READY - the
+    # plan used to collapse at turn end, leaving only the AGENTS panel.
+    vm = TerminalViewModel()
+    _started(vm, "a1", "explorer", "investigate")
+    vm.apply(
+        _event(
+            "planning.plan.created",
+            {
+                "status": "ACTIVE",
+                "progress": "1/2",
+                "current_step": "Do the thing",
+                "current_step_status": "IN_PROGRESS",
+                "completed_steps": [],
+                "remaining_steps": ["Do the thing", "Verify"],
+            },
+        )
+    )
+    assert vm.plan_visible is True
+    assert vm.subagents_visible is True
+
+    vm.apply(_event("status.changed", {"state": "READY"}))
+    assert vm.plan_visible is True
+    assert vm.subagents_visible is True
