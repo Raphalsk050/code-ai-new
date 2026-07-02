@@ -25,11 +25,17 @@ from code_ai.core.memory import FailureMemoryStore, MemoryService, MemoryStore
 from code_ai.core.orchestration import AgentOrchestrator
 from code_ai.core.planning import PlannerService
 from code_ai.core.rules import RulesService
+from code_ai.core.subagents import (
+    SubagentCoordinator,
+    SubagentRuntime,
+    default_profile_registry,
+)
 from code_ai.events.bus import AsyncEventBus
 from code_ai.prompts import build_failure_lesson_prompt, build_system_prompt
 from code_ai.providers.base import ModelProvider
 from code_ai.providers.factory import create_provider
 from code_ai.providers.models import Message, ModelRequest
+from code_ai.tools.agents import DispatchAgentTool
 from code_ai.tools.base import ToolContext
 from code_ai.tools.computer import (
     ActivateApplicationTool,
@@ -217,6 +223,30 @@ def build_application(
         workspace=config.workspace,
     )
 
+    # Sub-agent orchestration. The runtime builds fully isolated orchestrators on
+    # demand (own conversation/usage/bus, capability-restricted tools); the
+    # coordinator owns their lifecycle, concurrency, and resilience. The dispatch
+    # tool is the model's entry point and is excluded from sub-agent registries
+    # by capability, so delegation cannot recurse.
+    profile_registry = default_profile_registry()
+    subagent_runtime = SubagentRuntime(
+        config=config,
+        provider=provider,
+        workspace=workspace,
+        base_registry=registry,
+        rules_text=rules.render_for_prompt(),
+        review_service_factory=lambda bus: ReviewService(
+            provider=provider, config=config, event_bus=bus
+        ),
+    )
+    subagent_coordinator = SubagentCoordinator(
+        runtime=subagent_runtime,
+        profile_registry=profile_registry,
+        event_bus=event_bus,
+        config=config,
+    )
+    registry.register(DispatchAgentTool(profile_registry))
+
     def tool_context(cancel_event: asyncio.Event | None) -> ToolContext:
         return ToolContext(
             config=config,
@@ -227,6 +257,8 @@ def build_application(
             terminal_manager=terminal_manager,
             desktop_controller=desktop_controller,
             memory=memory,
+            subagent_coordinator=subagent_coordinator,
+            subagent_depth=0,
         )
 
     orchestrator = AgentOrchestrator(
