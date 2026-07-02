@@ -284,3 +284,87 @@ ApprovalModal {
   margin: 0 1;
   width: 24;
 }
+
+/* --- Doctor / guided setup modal ---------------------------------------- */
+DoctorModal {
+  align: center middle;
+}
+
+#doctor-dialog {
+  width: 80%;
+  max-width: 96;
+  height: 80%;
+  border: thick #ff9f1c;
+  background: #111820;
+  padding: 1 2;
+}
+
+#doctor-header {
+  height: auto;
+  padding-bottom: 1;
+}
+
+#doctor-title {
+  width: 1fr;
+  content-align: center middle;
+  color: #ff9f1c;
+  text-style: bold;
+}
+
+/* The back and close buttons flank the centered title. */
+#doctor-back, #doctor-close, #doctor-close-2 {
+  width: auto;
+  min-width: 8;
+  border: none;
+  height: 1;
+  padding: 0 1;
+}
+
+#doctor-body {
+  height: 1fr;
+  overflow: auto auto;
+  scrollbar-size: 1 1;
+}
+
+/* Menu entries and step actions are full-width, stacked rows. */
+#doctor-body Button {
+  width: 1fr;
+  margin: 0 0 1 0;
+}
+
+.doctor-intro, .doctor-note {
+  color: #9fb3c8;
+  padding-bottom: 1;
+}
+
+.doctor-input {
+  margin-bottom: 1;
+}
+
+/* The action row lays its buttons side by side, each sharing the width. */
+.doctor-actions {
+  height: auto;
+}
+
+.doctor-actions Button {
+  width: 1fr;
+  margin: 0 1 0 0;
+}
+
+/* The fetched model list: hidden until "List models" runs, then capped so it
+   scrolls rather than pushing the dialog. */
+#doctor-model-list {
+  height: auto;
+  max-height: 12;
+  border: solid #8892a0;
+}
+
+.doctor-hidden {
+  display: none;
+}
+
+#doctor-status {
+  height: auto;
+  color: #d7dee8;
+  padding-top: 1;
+}
