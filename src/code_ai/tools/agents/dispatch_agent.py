@@ -8,6 +8,13 @@ from code_ai.core.subagents.profiles import SubagentProfileRegistry
 from code_ai.providers.models import ToolDefinition
 from code_ai.tools.base import ToolCapability, ToolContext
 
+# Rough serialized size of one report minus its summary (task preview, ids,
+# status, usage, JSON envelope). Used to split the parent's tool-output budget
+# across reports so the aggregate payload fits under the global bound instead
+# of being middle-truncated into invalid JSON.
+_REPORT_ENVELOPE_CHARS = 500
+_MIN_SUMMARY_CHARS = 1000
+
 
 class DispatchAgentTool:
     """Delegates focused subtasks to isolated sub-agents, optionally in parallel.
@@ -85,9 +92,18 @@ class DispatchAgentTool:
             cancel_event=context.cancel_event,
             depth=context.subagent_depth,
         )
+        # Give each summary an equal slice of the tool-output budget so a large
+        # fan-out degrades into shorter per-agent summaries, never a mangled blob.
+        budget = context.config.budgets.max_tool_output_chars
+        per_summary = max(
+            _MIN_SUMMARY_CHARS,
+            budget // max(1, len(reports)) - _REPORT_ENVELOPE_CHARS,
+        )
         return {
             "dispatched": len(reports),
-            "reports": [report.to_dict() for report in reports],
+            "reports": [
+                report.to_dict(max_summary_chars=per_summary) for report in reports
+            ],
         }
 
 
