@@ -31,9 +31,17 @@ class _RecordingDispatcher:
         return ""
 
 
+class _StubBudgets:
+    max_tool_output_chars = 12000
+
+
+class _StubConfig:
+    budgets = _StubBudgets()
+
+
 def _context(dispatcher, *, depth=0) -> ToolContext:
     return ToolContext(
-        config=None,
+        config=_StubConfig(),
         workspace=None,
         event_bus=None,
         subagent_coordinator=dispatcher,
@@ -75,6 +83,34 @@ async def test_dispatch_forwards_requests_and_returns_reports() -> None:
     sent, depth = dispatcher.calls[0]
     assert [r.agent_type for r in sent] == ["explorer", "coder"]
     assert depth == 0
+
+
+async def test_report_payload_is_bounded_per_report() -> None:
+    """A large fan-out must degrade into shorter summaries, not a mangled blob."""
+
+    class _VerboseDispatcher(_RecordingDispatcher):
+        async def dispatch(self, requests, *, cancel_event=None, depth=0):
+            return [
+                SubagentReport(
+                    agent_id=f"a{i}",
+                    agent_type=req.agent_type,
+                    task="t" * 5000,
+                    status=SubagentStatus.COMPLETED,
+                    summary="s" * 50000,
+                )
+                for i, req in enumerate(requests)
+            ]
+
+    tool = _tool()
+    tasks = [{"agent_type": "explorer", "prompt": f"q{i}"} for i in range(6)]
+    result = await tool.execute({"tasks": tasks}, _context(_VerboseDispatcher()))
+
+    budget = _StubBudgets.max_tool_output_chars
+    for report in result["reports"]:
+        assert len(report["task"]) < 400  # short echo, not the full prompt
+        assert len(report["summary"]) <= budget // 6 + 100
+    # Every report keeps a useful minimum even when the split is tight.
+    assert all(len(r["summary"]) >= 900 for r in result["reports"])
 
 
 async def test_missing_coordinator_raises() -> None:
