@@ -7,7 +7,7 @@ from typing import Protocol
 from uuid import uuid4
 
 from code_ai.config.models import AppConfig
-from code_ai.core.errors import CancellationError, TransientProviderError
+from code_ai.core.errors import CancellationError
 from code_ai.core.orchestration import WIND_DOWN_TIME_BUDGET, TurnResult
 from code_ai.core.subagents.profiles import SubagentProfile, SubagentProfileRegistry
 from code_ai.core.subagents.report import SubagentReport, SubagentStatus
@@ -166,19 +166,40 @@ class SubagentCoordinator:
             await self._emit_rejected(agent_id, profile.name, reason)
             return self._rejected(request, reason, agent_id=agent_id)
 
-        try:
-            report = await self._retry.run(
-                lambda: self._run(profile, request, agent_id, parent_cancel),
-                should_retry=lambda exc: isinstance(exc, TransientProviderError),
+        async def _attempt() -> SubagentReport:
+            try:
+                return await self._run(profile, request, agent_id, parent_cancel)
+            except Exception as exc:  # noqa: BLE001 - degrade, never crash the parent turn
+                return SubagentReport(
+                    agent_id=agent_id,
+                    agent_type=profile.name,
+                    task=request.prompt,
+                    status=SubagentStatus.FAILED,
+                    error=str(exc) or type(exc).__name__,
+                )
+
+        async def _note_retry(attempt: int, failed: SubagentReport) -> None:
+            await self._bus.emit(
+                "subagent.retrying",
+                {
+                    "agent_id": agent_id,
+                    "agent_type": profile.name,
+                    "attempt": attempt,
+                    "error": failed.error,
+                },
+                source="subagent",
             )
-        except Exception as exc:  # noqa: BLE001 - degrade, never crash the parent turn
-            report = SubagentReport(
-                agent_id=agent_id,
-                agent_type=profile.name,
-                task=request.prompt,
-                status=SubagentStatus.FAILED,
-                error=str(exc) or type(exc).__name__,
-            )
+
+        # Retry only genuine FAILED outcomes, each attempt with a freshly built
+        # sub-agent: a clean context is the best medicine when a weak model
+        # derails mid-task. Timeouts are excluded - they already consumed a full
+        # time budget, so a rerun would double the wall-clock cost for the same
+        # likely outcome.
+        report = await self._retry.until(
+            _attempt,
+            accept=lambda r: r.status is not SubagentStatus.FAILED,
+            on_retry=_note_retry,
+        )
 
         if report.status is SubagentStatus.COMPLETED:
             self._breaker.record_success(profile.name)

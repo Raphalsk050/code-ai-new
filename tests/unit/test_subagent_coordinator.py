@@ -239,6 +239,58 @@ async def test_empty_final_answer_maps_to_failed(tmp_path) -> None:
     assert "final answer" in reports[0].error
 
 
+async def test_failed_run_is_retried_with_a_fresh_subagent(tmp_path) -> None:
+    from code_ai.core.subagents.resilience import RetryPolicy
+
+    attempts = 0
+
+    async def behaviour(prompt, _cancel):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return TurnResult(text="", response=None, error="derailed")
+        return TurnResult(text="second try worked", response=None)
+
+    runtime = _FakeRuntime(behaviour)
+    events: list[str] = []
+    bus = AsyncEventBus()
+    bus.subscribe(lambda e: events.append(e.event_type))
+    coord = _coordinator(
+        tmp_path,
+        runtime,
+        event_bus=bus,
+        retry_policy=RetryPolicy(max_attempts=2, base_delay=0.0, jitter=0.0),
+    )
+    reports = await coord.dispatch([SubagentRequest("explorer", "x")])
+
+    assert reports[0].status is SubagentStatus.COMPLETED
+    assert reports[0].summary == "second try worked"
+    assert runtime.built == 2  # the retry got a freshly built sub-agent
+    assert "subagent.retrying" in events
+
+
+async def test_timeout_is_not_retried(tmp_path) -> None:
+    from code_ai.core.subagents.resilience import RetryPolicy
+
+    async def behaviour(prompt, cancel_event):
+        await asyncio.sleep(30)
+        return TurnResult(text="never", response=None)
+
+    runtime = _FakeRuntime(behaviour, timeout_seconds=0)
+    coord = _coordinator(
+        tmp_path,
+        runtime,
+        hard_grace_seconds=0.2,
+        retry_policy=RetryPolicy(max_attempts=3, base_delay=0.0, jitter=0.0),
+    )
+    reports = await asyncio.wait_for(
+        coord.dispatch([SubagentRequest("coder", "slow")]), timeout=5
+    )
+
+    assert reports[0].status is SubagentStatus.TIMEOUT
+    assert runtime.built == 1  # a full time budget is never spent twice
+
+
 async def test_circuit_breaker_opens_after_repeated_failures(tmp_path) -> None:
     async def behaviour(prompt, _cancel):
         return TurnResult(text="", response=None, error="provider down")
