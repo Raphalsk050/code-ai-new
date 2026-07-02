@@ -89,6 +89,59 @@ async def test_terminal_enter_submits_input_and_renders_events(tmp_path) -> None
         assert "ai> ok" in terminal_app.vm.conversation
 
 
+async def test_doctor_modal_navigates_menu_and_saves(tmp_path) -> None:
+    from textual.widgets import Button, Input
+
+    from code_ai.ui.terminal.doctor import DoctorModal
+
+    cfg_path = tmp_path / "config.json"
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app, config_path=cfg_path)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "/doctor"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+
+        # /doctor pushed the guided-setup modal; query within it (the top screen).
+        modal = terminal_app.screen
+        assert isinstance(modal, DoctorModal)
+
+        # The main menu lists every setup topic.
+        for step_id in ("api_mode", "base_url", "api_key", "model", "workspace"):
+            modal.query_one(f"#doctor-menu-{step_id}", Button)
+
+        # The model step offers list/test/save and reveals the back button.
+        await modal._set_step("model")
+        await pilot.pause(0.1)
+        modal.query_one("#doctor-input-model", Input)
+        modal.query_one("#doctor-test-model", Button)
+        modal.query_one("#doctor-list-model", Button)
+        assert modal.query_one("#doctor-back", Button).has_class("doctor-hidden") is False
+
+        # The back button (always at the top of the dialog) returns to the menu.
+        await pilot.click("#doctor-back")
+        await pilot.pause(0.1)
+        assert modal._step == "menu"
+        modal.query_one("#doctor-menu-model", Button)
+
+        # The base URL step exposes a Validate button (reachability check).
+        await modal._set_step("base_url")
+        await pilot.pause(0.1)
+        modal.query_one("#doctor-validate-base_url", Button)
+
+        # Saving a text field via its button persists to the config file and
+        # applies live.
+        await modal._set_step("language")
+        await pilot.pause(0.1)
+        modal.query_one("#doctor-input-language", Input).value = "pt-BR"
+        await pilot.click("#doctor-save-language")
+        await pilot.pause(0.1)
+        assert fake_app.session.config.language == "pt-BR"
+        assert cfg_path.exists()
+
+
 async def test_subagent_events_populate_agents_panel(tmp_path) -> None:
     fake_app = FakeTerminalApplication(tmp_path)
     terminal_app = create_terminal_app(fake_app)

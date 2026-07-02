@@ -91,6 +91,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
     )
 
     from code_ai.ui.terminal.approval import TerminalApprovalGateway
+    from code_ai.ui.terminal.doctor import DoctorModal
 
     class MultilineInput(TextArea):
         """Multi-line prompt with shell-style history recall.
@@ -654,6 +655,15 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 return
             if text.strip() == "/status":
                 self._append_conversation_line(self._session_text())
+                return
+            if text.strip() == "/doctor":
+                self.push_screen(
+                    DoctorModal(
+                        application,
+                        config_path=config_path,
+                        on_change=self._refresh_status,
+                    )
+                )
                 return
             if text.strip() == "/help":
                 self._append_conversation_line(render_suggestions("/"))
