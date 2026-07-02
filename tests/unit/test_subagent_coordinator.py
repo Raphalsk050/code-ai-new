@@ -200,6 +200,45 @@ async def test_timeout_yields_timeout_report_without_crashing(tmp_path) -> None:
     assert "time budget" in reports[0].error
 
 
+async def test_wound_down_time_budget_maps_to_timeout(tmp_path) -> None:
+    from code_ai.core.orchestration import WIND_DOWN_TIME_BUDGET
+
+    async def behaviour(prompt, _cancel):
+        return TurnResult(
+            text="partial findings", response=None, wind_down_reason=WIND_DOWN_TIME_BUDGET
+        )
+
+    coord = _coordinator(tmp_path, _FakeRuntime(behaviour))
+    reports = await coord.dispatch([SubagentRequest("explorer", "x")])
+
+    assert reports[0].status is SubagentStatus.TIMEOUT
+    assert reports[0].summary == "partial findings"  # best-effort text preserved
+    assert "time budget" in reports[0].error
+
+
+async def test_wound_down_stall_maps_to_failed_not_completed(tmp_path) -> None:
+    async def behaviour(prompt, _cancel):
+        return TurnResult(text="kept repeating", response=None, wind_down_reason="model_stalled")
+
+    coord = _coordinator(tmp_path, _FakeRuntime(behaviour))
+    reports = await coord.dispatch([SubagentRequest("explorer", "x")])
+
+    assert reports[0].status is SubagentStatus.FAILED
+    assert "model stalled" in reports[0].error
+    assert reports[0].summary == "kept repeating"
+
+
+async def test_empty_final_answer_maps_to_failed(tmp_path) -> None:
+    async def behaviour(prompt, _cancel):
+        return TurnResult(text="  ", response=None)
+
+    coord = _coordinator(tmp_path, _FakeRuntime(behaviour))
+    reports = await coord.dispatch([SubagentRequest("explorer", "x")])
+
+    assert reports[0].status is SubagentStatus.FAILED
+    assert "final answer" in reports[0].error
+
+
 async def test_circuit_breaker_opens_after_repeated_failures(tmp_path) -> None:
     async def behaviour(prompt, _cancel):
         return TurnResult(text="", response=None, error="provider down")

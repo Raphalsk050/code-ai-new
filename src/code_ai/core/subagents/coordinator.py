@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from code_ai.config.models import AppConfig
 from code_ai.core.errors import CancellationError, TransientProviderError
-from code_ai.core.orchestration import TurnResult
+from code_ai.core.orchestration import WIND_DOWN_TIME_BUDGET, TurnResult
 from code_ai.core.subagents.profiles import SubagentProfile, SubagentProfileRegistry
 from code_ai.core.subagents.report import SubagentReport, SubagentStatus
 from code_ai.core.subagents.resilience import CircuitBreaker, RetryPolicy
@@ -271,6 +271,38 @@ class SubagentCoordinator:
                 status=SubagentStatus.FAILED,
                 summary=result.text,
                 error=result.error,
+                usage=usage,
+            )
+        # A wound-down turn produced only a best-effort answer; reporting it as
+        # COMPLETED would let the parent model take the summary at face value.
+        if result.wind_down_reason == WIND_DOWN_TIME_BUDGET:
+            return SubagentReport(
+                agent_id=agent_id,
+                agent_type=profile.name,
+                task=request.prompt,
+                status=SubagentStatus.TIMEOUT,
+                summary=result.text,
+                error=f"Sub-agent exceeded its {built.timeout_seconds}s time budget.",
+                usage=usage,
+            )
+        if result.wind_down_reason is not None:
+            reason = result.wind_down_reason.replace("_", " ")
+            return SubagentReport(
+                agent_id=agent_id,
+                agent_type=profile.name,
+                task=request.prompt,
+                status=SubagentStatus.FAILED,
+                summary=result.text,
+                error=f"Sub-agent stopped before finishing: {reason}.",
+                usage=usage,
+            )
+        if not result.text.strip():
+            return SubagentReport(
+                agent_id=agent_id,
+                agent_type=profile.name,
+                task=request.prompt,
+                status=SubagentStatus.FAILED,
+                error="Sub-agent finished without producing a final answer.",
                 usage=usage,
             )
         return SubagentReport(
