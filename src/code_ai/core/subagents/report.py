@@ -3,6 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from code_ai.tools.output import bound_text
+
+# The serialized report is read by the orchestrating model, so every free-text
+# field is bounded: the parent wrote the task prompt itself, so a short echo is
+# enough to correlate a report with its request.
+_TASK_PREVIEW_CHARS = 300
+_ERROR_PREVIEW_CHARS = 1000
+DEFAULT_SUMMARY_CHARS = 4000
+
 
 class SubagentStatus(StrEnum):
     """Terminal outcome of a single sub-agent run.
@@ -40,13 +49,19 @@ class SubagentReport:
     def ok(self) -> bool:
         return self.status is SubagentStatus.COMPLETED
 
-    def to_dict(self) -> dict[str, object]:
+    def to_dict(
+        self, *, max_summary_chars: int = DEFAULT_SUMMARY_CHARS
+    ) -> dict[str, object]:
         return {
             "agent_id": self.agent_id,
             "agent_type": self.agent_type,
-            "task": self.task,
+            "task": bound_text(self.task, _TASK_PREVIEW_CHARS),
             "status": self.status.value,
-            "summary": self.summary,
-            "error": self.error,
+            "summary": bound_text(self.summary, max_summary_chars),
+            "error": (
+                None
+                if self.error is None
+                else bound_text(self.error, _ERROR_PREVIEW_CHARS)
+            ),
             "usage": dict(self.usage),
         }
