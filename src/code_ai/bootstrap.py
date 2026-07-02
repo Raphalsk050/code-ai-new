@@ -60,6 +60,7 @@ from code_ai.tools.internal import (
     RequestExternalGapTool,
     SubmitPlanTool,
 )
+from code_ai.tools.logcat import AnalyzeLogcatTool
 from code_ai.tools.memory import RememberTool
 from code_ai.tools.process import ExecuteCommandTool
 from code_ai.tools.registry import ToolRegistry
@@ -115,6 +116,7 @@ def build_tool_registry() -> ToolRegistry:
         ActivateApplicationTool(),
         ListApplicationsTool(),
         SystemInformationTool(),
+        AnalyzeLogcatTool(),
         WebSearchTool(),
         UseSkillTool(),
         CreateSkillTool(),
