@@ -136,6 +136,38 @@ def discover_skills(root: Path | None = None) -> list[SkillRecord]:
     return [records[key] for key in sorted(records, key=str.casefold)]
 
 
+def render_skills_catalog(root: Path | None = None) -> str:
+    """Render the available skills as a compact catalog for the system prompt.
+
+    Injecting the catalog (name + one-line description) means the model always
+    knows which skills exist and can load the fitting one on its own initiative,
+    instead of having to remember to run a discovery call first - the reason
+    skills were ignored whenever the user did not name them explicitly. Kept
+    cheap on purpose: only names and short descriptions travel in the prompt;
+    full skill bodies stay on disk and load on demand via ``use_skill``.
+    Returns ``""`` when there are no skills, so the prompt stays clean.
+    """
+
+    skills = discover_skills(root)
+    if not skills:
+        return ""
+    lines = [
+        "# Available skills",
+        "",
+        'These skills are available this session. When the current task matches one, '
+        'immediately load it with use_skill("<name>") and follow its instructions '
+        "before proceeding - do this on your own initiative, even if the user did not "
+        "mention the skill. Only skip a matching skill for a trivial one-shot answer.",
+        "",
+    ]
+    for record in skills:
+        description = " ".join(record.description.split())
+        if len(description) > 200:
+            description = description[:197].rstrip() + "..."
+        lines.append(f"- {record.name}: {description}" if description else f"- {record.name}")
+    return "\n".join(lines).strip()
+
+
 def load_skill(name: str, *, root: Path | None = None) -> SkillRecord:
     """Load a single skill by name, raising if it does not exist."""
 

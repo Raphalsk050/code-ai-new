@@ -12,6 +12,7 @@ from code_ai.tools.skills import CreateSkillTool, UseSkillTool
 from code_ai.tools.skills.common import (
     SKILLS_DIR_ENV,
     parse_skill_markdown,
+    render_skills_catalog,
     sanitize_skill_name,
 )
 from code_ai.util.paths import WorkspacePolicy
@@ -33,6 +34,42 @@ def skills_dir(tmp_path, monkeypatch):
     target.mkdir()
     monkeypatch.setenv(SKILLS_DIR_ENV, str(target))
     return target
+
+
+def test_render_skills_catalog_empty_when_no_skills(skills_dir) -> None:
+    assert render_skills_catalog() == ""
+
+
+def test_render_skills_catalog_lists_names_and_descriptions(skills_dir) -> None:
+    (skills_dir / "pdf-magic.md").write_text(
+        "---\nname: pdf-magic\ndescription: Extract tables from PDFs.\n---\n\nbody",
+        encoding="utf-8",
+    )
+    (skills_dir / "release-notes.md").write_text(
+        "---\nname: release-notes\ndescription: Draft release notes.\n---\n\nbody",
+        encoding="utf-8",
+    )
+    catalog = render_skills_catalog()
+
+    assert "# Available skills" in catalog
+    # The directive tells the model to act on its own initiative.
+    assert "use_skill" in catalog
+    assert "even if the user did not mention" in catalog
+    assert "- pdf-magic: Extract tables from PDFs." in catalog
+    assert "- release-notes: Draft release notes." in catalog
+    # Full skill bodies must not travel in the catalog; they load on demand.
+    assert "body" not in catalog
+
+
+def test_render_skills_catalog_truncates_long_description(skills_dir) -> None:
+    long_description = "x" * 400
+    (skills_dir / "verbose.md").write_text(
+        f"---\nname: verbose\ndescription: {long_description}\n---\n\nbody",
+        encoding="utf-8",
+    )
+    catalog = render_skills_catalog()
+    assert "..." in catalog
+    assert "x" * 400 not in catalog
 
 
 def test_sanitize_skill_name_rejects_traversal() -> None:

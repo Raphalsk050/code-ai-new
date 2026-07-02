@@ -75,6 +75,7 @@ from code_ai.tools.review import (
 from code_ai.tools.rules import CreateRuleTool
 from code_ai.tools.search import SearchCodeTool
 from code_ai.tools.skills import CreateSkillTool, UseSkillTool
+from code_ai.tools.skills.common import render_skills_catalog
 from code_ai.tools.skills.seed import seed_default_skills
 from code_ai.tools.system import SystemInformationTool
 from code_ai.tools.terminal import (
@@ -199,6 +200,7 @@ def build_application(
                     lessons=failure_memory.render_for_prompt(),
                     memories=memory.render_for_prompt(),
                     rules=rules.render_for_prompt(),
+                    skills=render_skills_catalog(),
                 ),
             )
         ]
@@ -237,6 +239,7 @@ def build_application(
         workspace=workspace,
         base_registry=registry,
         rules_text=rules.render_for_prompt(),
+        skills_text=render_skills_catalog(),
         review_service_factory=lambda bus: ReviewService(
             provider=provider, config=config, event_bus=bus
         ),
@@ -276,6 +279,7 @@ def build_application(
         failure_memory=failure_memory,
         memory=memory,
         rules=rules,
+        skills_catalog=render_skills_catalog,
     )
     session = ApplicationSession(session_id=event_bus.session_id, config=config)
     conversation_store = ConversationStore(project_conversations_dir(config.workspace))

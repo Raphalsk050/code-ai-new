@@ -32,10 +32,14 @@ def build_system_prompt(
     lessons: str = "",
     memories: str = "",
     rules: str = "",
+    skills: str = "",
 ) -> str:
     current_date = datetime.now().astimezone().date().isoformat()
     memories_section = f"\n\n{memories.strip()}\n" if memories.strip() else ""
     lessons_section = f"\n\n{lessons.strip()}\n" if lessons.strip() else ""
+    # The skill catalog is injected (like rules) so the model always sees which
+    # skills exist and loads the fitting one on its own, without a discovery call.
+    skills_section = f"{skills.strip()}\n\n" if skills.strip() else ""
     # Rules are mandatory and placed up front so they are never treated as
     # optional context. They come from ~/.code-ai/rules (global) and the
     # workspace's .code-ai/rules (project), and always apply.
@@ -156,14 +160,15 @@ conversation or ask you questions. Delegate only genuinely independent subtasks;
 do routine, sequential, or tightly-coupled work yourself. A sub-agent cannot
 delegate further, so keep the top-level breakdown here.
 
-Reusable skills live in ~/.code-ai/skills. At the start of a non-trivial task,
-proactively call use_skill with no name to see the available skills, and if one
-matches the request, call use_skill with its name and follow its instructions
-before proceeding. When the user asks you to capture, save, or reuse a workflow
-("create a skill", "remember how to do this"), or when you have just worked out a
+{skills_section}Skills live in ~/.code-ai/skills. If the catalog above lists a
+skill that fits the current task, load it with use_skill and follow it on your
+own, even when the user did not mention it. If no catalog is shown above and the
+task is non-trivial, you may call use_skill with no name to discover skills on
+disk first. When the user asks you to capture, save, or reuse a workflow ("create
+a skill", "remember how to do this"), or when you have just worked out a
 repeatable procedure worth keeping, call create_skill with a concise name, a
-one-line description, and the full instructions. Do not block on these: skip the
-lookup for trivial one-shot answers.
+one-line description, and the full instructions. Skip all of this for trivial
+one-shot answers.
 
 You have a persistent memory. Call the remember tool to save durable facts so you
 act on them in future turns and sessions. Save proactively, not only when asked:
@@ -187,6 +192,7 @@ def build_subagent_system_prompt(
     workspace: Path,
     language: str,
     rules: str = "",
+    skills: str = "",
 ) -> str:
     """System prompt for an isolated sub-agent.
 
@@ -199,6 +205,7 @@ def build_subagent_system_prompt(
 
     current_date = datetime.now().astimezone().date().isoformat()
     rules_section = f"\n{rules.strip()}\n" if rules.strip() else ""
+    skills_section = f"\n{skills.strip()}\n" if skills.strip() else ""
     return f"""{role_prompt.strip()}
 
 You are a sub-agent dispatched by the main Code-AI agent to handle one delegated
@@ -209,11 +216,12 @@ back to the agent that dispatched you, so make it self-contained.
 Configured workspace: {workspace}
 Configured response language: {language}
 Current local date: {current_date}
-{rules_section}
+{rules_section}{skills_section}
 Keep all file and command operations inside the configured workspace. Local
 files are the source of truth: inspect before you act and follow existing
 project conventions. When a task needs file changes, action means calling the
-tools - never substitute a code block or explanation for a real edit.
+tools - never substitute a code block or explanation for a real edit. If a skill
+in the catalog above fits this task, load it with use_skill and follow it.
 """
 
 
