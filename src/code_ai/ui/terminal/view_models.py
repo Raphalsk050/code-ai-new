@@ -47,6 +47,9 @@ class TerminalViewModel:
         elif event.event_type in {
             "planning.plan.created",
             "planning.plan.revised",
+            "planning.plan.completed",
+            "planning.plan.blocked",
+            "planning.plan.failed",
             "planning.step.started",
             "planning.step.completed",
             "planning.step.failed",
@@ -59,6 +62,10 @@ class TerminalViewModel:
                 self.conversation.append(f"plan> completed {self.current_step}")
             elif event.event_type == "planning.step.failed":
                 self.conversation.append(f"plan> failed {self.current_step}")
+            elif event.event_type == "planning.plan.completed":
+                self.conversation.append(f"plan> plan completed ({self.plan_progress})")
+            elif event.event_type in {"planning.plan.blocked", "planning.plan.failed"}:
+                self.conversation.append(f"plan> plan {self.plan_status.lower()}")
         elif event.event_type == "planning.evidence.recorded":
             summary = str(event.payload.get("summary") or "")
             evidence_type = str(event.payload.get("type") or "evidence")
@@ -278,7 +285,10 @@ class TerminalViewModel:
         self.planner_mode = str(payload.get("mode", self.planner_mode))
         self.phase = str(payload.get("phase", self.phase))
         self.plan_progress = str(payload.get("progress", self.plan_progress))
-        self.current_step = str(payload.get("current_step", self.current_step))
+        # A settled (completed) plan has no current step; show a dash instead of
+        # the stringified None or the stale last step.
+        current = payload.get("current_step", self.current_step)
+        self.current_step = str(current) if current is not None else "-"
         verification = payload.get("latest_verification_passed")
         if verification is not None:
             self.latest_verification_status = "passed" if verification else "not current"

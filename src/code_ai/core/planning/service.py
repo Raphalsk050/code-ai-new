@@ -886,6 +886,15 @@ class PlannerService:
             },
             source="core.planner",
         )
+        # The sidebar only re-renders on snapshot-carrying events; without this
+        # it freezes on the last "running" step even though complete_all() has
+        # already settled every step.
+        if self.agent_plan:
+            await self.event_bus.emit(
+                "planning.plan.completed",
+                self.plan_snapshot(),
+                source="core.planner",
+            )
         await self.event_bus.emit(
             "assistant.final",
             {"text": self.accepted_final_text},
@@ -902,10 +911,13 @@ class PlannerService:
         # instead of the turn spinning to a budget/stall wind-down that discards it.
         if claim.outcome == "blocked" and not (claim.remaining_issues or claim.limitations):
             claim = claim.model_copy(update={"remaining_issues": [claim.summary]})
+        terminal_status = (
+            PlanStatus.BLOCKED if claim.outcome == "blocked" else PlanStatus.FAILED
+        )
         if self.plan:
-            self.plan.status = (
-                PlanStatus.BLOCKED if claim.outcome == "blocked" else PlanStatus.FAILED
-            )
+            self.plan.status = terminal_status
+        if self.agent_plan:
+            self.agent_plan.settle(terminal_status)
         await self._emit_phase(PlanningPhase.BLOCKED)
         self.accepted_final_text = claim.summary
         await self.event_bus.emit(
@@ -913,6 +925,16 @@ class PlannerService:
             {"outcome": claim.outcome, "summary": claim.summary},
             source="core.planner",
         )
+        # Same as the success path: push the settled snapshot so the sidebar
+        # stops showing the interrupted step as still running.
+        if self.agent_plan:
+            await self.event_bus.emit(
+                "planning.plan.blocked"
+                if claim.outcome == "blocked"
+                else "planning.plan.failed",
+                self.plan_snapshot(),
+                source="core.planner",
+            )
         await self.event_bus.emit(
             "assistant.final",
             {"text": claim.summary},

@@ -350,11 +350,27 @@ class AgentPlan(BaseModel):
         self.current_index = len(self.steps) - 1
         self.status = PlanStatus.COMPLETED
 
+    def settle(self, status: PlanStatus) -> None:
+        """Freeze the plan in a terminal non-success state (blocked/failed).
+
+        The running step is marked FAILED so the sidebar shows where the plan
+        stopped, instead of a step that keeps spinning after the turn ended.
+        """
+        if self.status == PlanStatus.ACTIVE:
+            self.steps[self.current_index].status = PlanStepStatus.FAILED
+        self.status = status
+
     def snapshot(self) -> dict[str, object]:
         completed = [
             step.title for step in self.steps if step.status == PlanStepStatus.COMPLETED
         ]
-        current = self.current_step
+        # A settled (blocked/failed) plan still points at the step it stopped on,
+        # so the sidebar can render it as failed rather than silently pending.
+        current = (
+            None
+            if self.status == PlanStatus.COMPLETED
+            else self.steps[self.current_index]
+        )
         return {
             "status": self.status.value,
             "progress": f"{len(completed)}/{len(self.steps)}",

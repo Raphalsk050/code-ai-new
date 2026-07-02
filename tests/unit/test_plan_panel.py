@@ -89,3 +89,53 @@ def test_view_model_shows_completed_plan_checklist() -> None:
     vm.apply(_event("planning.plan.created", _snapshot()))
     vm.apply(_event("planning.step.completed", _snapshot(status="COMPLETED")))
     assert vm.plan_visible is True
+
+
+def test_view_model_settles_plan_on_plan_completed() -> None:
+    # planning.plan.completed carries the settled snapshot: every step done,
+    # no running step left, header flips to N/N COMPLETED.
+    vm = TerminalViewModel()
+    vm.apply(_event("planning.plan.created", _snapshot()))
+    assert any(s["status"] == "running" for s in vm.plan_steps)
+
+    vm.apply(
+        _event(
+            "planning.plan.completed",
+            _snapshot(
+                status="COMPLETED",
+                progress="3/3",
+                current_step=None,
+                current_step_status="",
+                completed_steps=[
+                    "Discover local context",
+                    "Implement reference file",
+                    "Verify and report",
+                ],
+                remaining_steps=[],
+            ),
+        )
+    )
+
+    assert vm.plan_status == "COMPLETED"
+    assert vm.plan_progress == "3/3"
+    assert vm.current_step == "-"
+    assert [s["status"] for s in vm.plan_steps] == ["done", "done", "done"]
+    assert vm.plan_visible is True
+    assert any("plan> plan completed (3/3)" in line for line in vm.conversation)
+
+
+def test_view_model_marks_stopped_step_failed_on_plan_blocked() -> None:
+    vm = TerminalViewModel()
+    vm.apply(_event("planning.plan.created", _snapshot()))
+
+    vm.apply(
+        _event(
+            "planning.plan.blocked",
+            _snapshot(status="BLOCKED", current_step_status="FAILED"),
+        )
+    )
+
+    assert vm.plan_status == "BLOCKED"
+    stopped = [s for s in vm.plan_steps if s["title"] == "Implement reference file"][0]
+    assert stopped["status"] == "failed"
+    assert any("plan> plan blocked" in line for line in vm.conversation)

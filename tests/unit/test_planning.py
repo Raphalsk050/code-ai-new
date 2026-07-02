@@ -554,6 +554,69 @@ def _capture(bus: AsyncEventBus) -> list:
     return events
 
 
+async def test_accepted_completion_emits_settled_plan_snapshot() -> None:
+    # The sidebar only re-renders on snapshot-carrying events. Without a final
+    # snapshot after complete_task is accepted, it freezes on the last running
+    # step ("3/4 · active") even though the plan settled internally.
+    bus = AsyncEventBus(session_id="session")
+    events = _capture(bus)
+    service = PlannerService(
+        config=PlannerConfig(double_check_completion=False),
+        event_bus=bus,
+        session_id="session",
+    )
+    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+    await service.submit_agent_plan(["Read example", "Write module", "Run tests"])
+    await service.record_tool_result(
+        tool_call_id="w1",
+        tool_name="write_file",
+        payload={"path": "src/example.py", "old_sha256": None, "new_sha256": "h1"},
+        success=True,
+    )
+    await service.record_tool_result(
+        tool_call_id="v1",
+        tool_name="execute_command",
+        payload={"argv": ["true"], "exit_code": 0, "stdout": "", "stderr": ""},
+        success=True,
+    )
+
+    decision = await service.evaluate_completion({"summary": "created and verified"})
+
+    assert decision.accepted is True
+    settled = [e for e in events if e.event_type == "planning.plan.completed"]
+    assert len(settled) == 1
+    payload = settled[0].payload
+    assert payload["status"] == "COMPLETED"
+    assert payload["progress"] == "3/3"
+    assert payload["remaining_steps"] == []
+    assert payload["current_step"] is None
+
+
+async def test_blocked_completion_emits_settled_plan_snapshot() -> None:
+    bus = AsyncEventBus(session_id="session")
+    events = _capture(bus)
+    service = PlannerService(
+        config=PlannerConfig(double_check_completion=False),
+        event_bus=bus,
+        session_id="session",
+    )
+    await service.begin_turn("Fix the login bug", provider_supports_tools=True)
+    await service.submit_agent_plan(["Reproduce", "Fix", "Verify"])
+
+    decision = await service.evaluate_completion(
+        {"summary": "Cannot reproduce without prod credentials.", "outcome": "blocked"}
+    )
+
+    assert decision.accepted is True
+    settled = [e for e in events if e.event_type == "planning.plan.blocked"]
+    assert len(settled) == 1
+    payload = settled[0].payload
+    assert payload["status"] == "BLOCKED"
+    # The step that was running is frozen as failed, not left spinning.
+    assert payload["current_step"] == "Reproduce"
+    assert payload["current_step_status"] == "FAILED"
+
+
 async def test_begin_turn_does_not_reveal_a_plan_before_the_model_authors_one() -> None:
     bus = AsyncEventBus(session_id="session")
     events = _capture(bus)
