@@ -1,3 +1,8 @@
+from code_ai.core.subagents.coordinator import (
+    Dispatcher,
+    SubagentCoordinator,
+    SubagentRequest,
+)
 from code_ai.core.subagents.profiles import (
     FORBIDDEN_SUBAGENT_CAPABILITIES,
     SubagentProfile,
@@ -11,16 +16,22 @@ from code_ai.core.subagents.resilience import (
     OpenCircuitError,
     RetryPolicy,
 )
+from code_ai.core.subagents.runtime import BuiltSubagent, SubagentRuntime
 
 __all__ = [
     "FORBIDDEN_SUBAGENT_CAPABILITIES",
+    "BuiltSubagent",
     "CircuitBreaker",
     "CircuitState",
+    "Dispatcher",
     "OpenCircuitError",
     "RetryPolicy",
+    "SubagentCoordinator",
     "SubagentProfile",
     "SubagentProfileRegistry",
     "SubagentReport",
+    "SubagentRequest",
+    "SubagentRuntime",
     "SubagentStatus",
     "default_profile_registry",
 ]
