@@ -78,6 +78,34 @@ class RetryPolicy:
                     await on_retry(attempt, exc)
                 await sleep(self._delay_for(attempt, rng))
 
+    async def until(
+        self,
+        operation: Callable[[], Awaitable[T]],
+        *,
+        accept: Callable[[T], bool],
+        on_retry: Callable[[int, T], Awaitable[None]] | None = None,
+        sleep: Sleeper = asyncio.sleep,
+        rng: Callable[[], float] = random.random,
+    ) -> T:
+        """Run ``operation`` until ``accept(result)`` or attempts run out.
+
+        Result-predicate counterpart of :meth:`run` for operations that degrade
+        their failures into values instead of raising. The last (still
+        unaccepted) result is returned unchanged when attempts are exhausted, so
+        the caller always gets a real outcome to act on. Exceptions are not
+        handled here - an operation that can raise should degrade or use
+        :meth:`run`.
+        """
+        attempt = 0
+        while True:
+            result = await operation()
+            attempt += 1
+            if attempt >= self.max_attempts or accept(result):
+                return result
+            if on_retry is not None:
+                await on_retry(attempt, result)
+            await sleep(self._delay_for(attempt, rng))
+
 
 class CircuitState(StrEnum):
     CLOSED = "closed"

@@ -130,6 +130,45 @@ def test_retry_policy_validates_arguments() -> None:
         RetryPolicy(base_delay=-1)
 
 
+async def test_until_retries_rejected_results_then_accepts() -> None:
+    policy = RetryPolicy(max_attempts=3, base_delay=0.0, jitter=0.0)
+    results = iter(["bad", "bad", "good"])
+    on_retry_calls: list[tuple[int, str]] = []
+
+    async def operation() -> str:
+        return next(results)
+
+    async def on_retry(attempt: int, result: str) -> None:
+        on_retry_calls.append((attempt, result))
+
+    result = await policy.until(
+        operation,
+        accept=lambda r: r == "good",
+        on_retry=on_retry,
+        sleep=_no_sleep,
+    )
+
+    assert result == "good"
+    assert on_retry_calls == [(1, "bad"), (2, "bad")]
+
+
+async def test_until_returns_last_result_when_attempts_run_out() -> None:
+    policy = RetryPolicy(max_attempts=2, base_delay=0.0, jitter=0.0)
+    calls = 0
+
+    async def operation() -> str:
+        nonlocal calls
+        calls += 1
+        return f"bad {calls}"
+
+    result = await policy.until(
+        operation, accept=lambda _r: False, sleep=_no_sleep
+    )
+
+    assert result == "bad 2"  # the real final outcome, not an exception
+    assert calls == 2
+
+
 # --------------------------------------------------------------------------- #
 # CircuitBreaker
 # --------------------------------------------------------------------------- #
