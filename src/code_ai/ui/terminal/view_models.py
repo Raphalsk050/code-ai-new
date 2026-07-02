@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from code_ai.events.models import EventEnvelope
-from code_ai.ui.terminal.widgets import build_plan_steps, plan_is_active
+from code_ai.ui.terminal.widgets import build_plan_steps
 
 
 @dataclass(slots=True)
@@ -37,10 +37,6 @@ class TerminalViewModel:
     def apply(self, event: EventEnvelope) -> None:
         if event.event_type == "status.changed":
             self.status = str(event.payload.get("state", self.status))
-            # The turn returning to an idle state means the plan is done with
-            # (answered, finished, or stopped): collapse the plan panel.
-            if self.status in {"READY", "FAILED", "CLOSED"}:
-                self.plan_visible = False
         elif event.event_type == "phase.changed":
             self.phase = str(event.payload.get("phase", self.phase))
         elif event.event_type == "planning.mode.changed":
@@ -93,14 +89,17 @@ class TerminalViewModel:
             missing = event.payload.get("missing_requirements", [])
             self.conversation.append(f"completion> rejected: {missing}")
         elif event.event_type == "assistant.final":
-            # Final evidence reached: collapse the plan panel as the turn closes.
-            self.plan_visible = False
             self.conversation.append(f"ai> {event.payload.get('text', '')}")
         elif event.event_type == "user.message":
-            # A new turn starts: drop any sub-agents left over from the last one
-            # so the AGENTS panel only ever shows this turn's delegations.
+            # A new turn starts: drop the previous turn's artifacts so the PLAN and
+            # AGENTS panels only ever show this turn's work. Both are turn-scoped and
+            # persist through the turn's end (unlike before, when the plan collapsed
+            # at turn end while agents lingered - the two are now symmetric), so a
+            # turn that both planned and delegated shows both panels side by side.
             self.subagents.clear()
             self.subagents_visible = False
+            self.plan_visible = False
+            self.plan_steps = []
             self.conversation.append(f"you> {event.payload.get('text', '')}")
         elif event.event_type == "model.request.started":
             step = event.payload.get("step")
@@ -259,8 +258,10 @@ class TerminalViewModel:
         steps = build_plan_steps(payload)
         if steps:
             self.plan_steps = steps
-        # Show the panel only while a defined plan is actively being worked on.
-        self.plan_visible = plan_is_active(payload) and bool(steps)
+        # Show the panel whenever the model has authored steps, and keep it up
+        # through the turn's end (it is cleared on the next user message). This
+        # mirrors the AGENTS panel's lifecycle so both stay visible together.
+        self.plan_visible = bool(self.plan_steps)
 
 
 def _subagent_progress_detail(payload: dict[object, object]) -> str:

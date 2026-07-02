@@ -53,30 +53,39 @@ def test_render_plan_includes_markers_and_titles() -> None:
     assert "1/3" in rendered
 
 
-def test_view_model_shows_plan_on_created_and_hides_on_final() -> None:
+def test_view_model_plan_persists_through_turn_end() -> None:
+    # The plan panel is a turn artifact: it stays visible through the turn's end
+    # (assistant.final and the return to READY) so a turn that both planned and
+    # delegated shows the plan alongside the AGENTS panel, instead of the plan
+    # collapsing and leaving only agents on screen.
     vm = TerminalViewModel()
     vm.apply(_event("planning.plan.created", _snapshot()))
     assert vm.plan_visible is True
     assert len(vm.plan_steps) == 3
 
     vm.apply(_event("assistant.final", {"text": "done"}))
-    assert vm.plan_visible is False
-    # Steps are retained (just hidden) so a re-show needs no rebuild.
+    assert vm.plan_visible is True
+    vm.apply(_event("status.changed", {"state": "READY"}))
+    assert vm.plan_visible is True
     assert len(vm.plan_steps) == 3
 
 
-def test_view_model_hides_plan_when_turn_returns_to_ready() -> None:
-    # Answer-only turns never emit assistant.final; returning to READY must
-    # still collapse the panel.
+def test_view_model_clears_plan_on_next_user_turn() -> None:
     vm = TerminalViewModel()
     vm.apply(_event("planning.plan.created", _snapshot()))
-    assert vm.plan_visible is True
     vm.apply(_event("status.changed", {"state": "READY"}))
+    assert vm.plan_visible is True
+
+    # The next user message starts a fresh turn and clears the previous plan.
+    vm.apply(_event("user.message", {"text": "next task"}))
     assert vm.plan_visible is False
+    assert vm.plan_steps == []
 
 
-def test_view_model_hides_plan_when_status_not_active() -> None:
+def test_view_model_shows_completed_plan_checklist() -> None:
+    # A finished plan keeps its checklist on screen (all steps done), like the
+    # AGENTS panel keeps completed agents, until the next user turn.
     vm = TerminalViewModel()
     vm.apply(_event("planning.plan.created", _snapshot()))
     vm.apply(_event("planning.step.completed", _snapshot(status="COMPLETED")))
-    assert vm.plan_visible is False
+    assert vm.plan_visible is True
