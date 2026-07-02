@@ -89,6 +89,48 @@ async def test_terminal_enter_submits_input_and_renders_events(tmp_path) -> None
         assert "ai> ok" in terminal_app.vm.conversation
 
 
+async def test_subagent_events_populate_agents_panel(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        sidebar = terminal_app.query_one("#sidebar")
+        agents_panel = terminal_app.query_one("#subagents")
+        # Idle: the whole sidebar (and the agents division) is hidden.
+        assert sidebar.display is False
+        assert agents_panel.display is False
+
+        await fake_app.emit(
+            "subagent.dispatch.requested", {"count": 2, "types": ["explorer", "explorer"]}
+        )
+        await fake_app.emit(
+            "subagent.started",
+            {"agent_id": "a1", "agent_type": "explorer", "task": "find the loader"},
+        )
+        await fake_app.emit(
+            "subagent.started",
+            {"agent_id": "a2", "agent_type": "coder", "task": "add a flag"},
+        )
+        await pilot.pause(0.2)
+
+        # A dispatch makes the sidebar and the AGENTS division appear.
+        assert sidebar.display is True
+        assert agents_panel.display is True
+        types = {a["agent_type"] for a in terminal_app.vm.subagents_list()}
+        assert types == {"explorer", "coder"}
+
+        await fake_app.emit(
+            "subagent.completed",
+            {"agent_id": "a1", "agent_type": "explorer", "summary": "found it"},
+        )
+        await pilot.pause(0.1)
+        assert terminal_app.vm.subagents["a1"]["status"] == "completed"
+        # The panel widget was fed the roster it renders from.
+        panel = terminal_app.query_one("#subagents-body")
+        panel_types = {agent["agent_type"] for agent in panel._agents}
+        assert panel_types == {"explorer", "coder"}
+
+
 async def test_ctrl_j_inserts_newline_and_enter_submits_multiline(tmp_path) -> None:
     fake_app = FakeTerminalApplication(tmp_path)
     terminal_app = create_terminal_app(fake_app)

@@ -141,15 +141,30 @@ Screen {
   color: #d7dee8;
 }
 
-#plan {
+/* Right sidebar: stacks the PLAN and AGENTS panels. Fixed width; the whole
+   column is hidden when neither panel has anything to show. */
+#sidebar {
   width: 38;
   min-width: 30;
+}
+
+/* Each panel is its own bordered division. When both are visible they split the
+   height; when one is hidden the other fills the sidebar. Content that outgrows
+   the space scrolls inside the panel rather than pushing the layout around. */
+#plan, #subagents {
+  width: 1fr;
+  height: 1fr;
   border: solid #8892a0;
   padding: 1;
 }
 
-#plan-body {
+#plan-scroll, #subagents-scroll {
   height: 1fr;
+  scrollbar-size-vertical: 1;
+}
+
+#plan-body, #subagents-body {
+  height: auto;
 }
 
 #working-indicator {

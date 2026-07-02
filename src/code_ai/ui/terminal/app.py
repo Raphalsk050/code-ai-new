@@ -36,9 +36,10 @@ from code_ai.ui.terminal.widgets import (
     render_context_meter,
     render_conversation_line,
     render_plan,
-    thinking_body,
+    render_subagents,
     resolve_spinner,
     spinner_color,
+    thinking_body,
     working_label,
 )
 
@@ -339,6 +340,58 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 render_plan(self._steps, self._progress, self._status, glyph, color)
             )
 
+    class SubagentPanel(Static):
+        """Live roster of delegated sub-agents, shown below the plan panel.
+
+        Mirrors the PlanPanel: each running agent's marker is the shared spinner,
+        so the timer only ticks while at least one agent is still working.
+        """
+
+        TICK = 0.08
+
+        def __init__(self, style: SpinnerStyle, **kwargs: Any) -> None:
+            super().__init__("", **kwargs)
+            self._style = style
+            self._agents: list[dict[str, str]] = []
+            self._frame = 0
+            self._running = False
+            self._timer = None
+
+        def on_mount(self) -> None:
+            self._timer = self.set_interval(self.TICK, self._tick, pause=True)
+            self._paint()
+
+        def set_style(self, style: SpinnerStyle) -> None:
+            self._style = style
+            self._paint()
+
+        def update_agents(self, agents: list[dict[str, str]]) -> None:
+            self._agents = agents
+            has_running = any(agent.get("status") == "running" for agent in agents)
+            if has_running and not self._running:
+                self._running = True
+                self._frame = 0
+                if self._timer is not None:
+                    self._timer.resume()
+            elif not has_running and self._running:
+                self._running = False
+                if self._timer is not None:
+                    self._timer.pause()
+            self._paint()
+
+        def _tick(self) -> None:
+            self._frame += 1
+            self._paint()
+
+        def _paint(self) -> None:
+            frames = self._style.frames
+            glyph = frames[self._frame % len(frames)]
+            if self._style.pulse:
+                color = spinner_color((self._frame * self.TICK) / WORKING_PULSE_PERIOD)
+            else:
+                color = WORKING_BASE_COLOR
+            self.update(render_subagents(self._agents, glyph, color))
+
     class CodeAITerminalApp(App[None]):
         CSS_PATH = "theme.tcss"
         BINDINGS = [
@@ -389,12 +442,28 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                         # drag-selectable like a terminal scrollback.
                         yield VerticalScroll(id="conversation")
                         yield Static("", id="stream-tail")
-                    with Vertical(id="plan"):
-                        yield Static("PLAN", classes="panel-title")
-                        yield PlanPanel(
-                            resolve_spinner(application.session.config.terminal_spinner),
-                            id="plan-body",
-                        )
+                    with Vertical(id="sidebar"):
+                        # Two stacked panels, each scrolls internally when its
+                        # content outgrows the space: the plan checklist on top,
+                        # the live sub-agent roster below it.
+                        with Vertical(id="plan"):
+                            yield Static("PLAN", classes="panel-title")
+                            with VerticalScroll(id="plan-scroll"):
+                                yield PlanPanel(
+                                    resolve_spinner(
+                                        application.session.config.terminal_spinner
+                                    ),
+                                    id="plan-body",
+                                )
+                        with Vertical(id="subagents"):
+                            yield Static("AGENTS", classes="panel-title")
+                            with VerticalScroll(id="subagents-scroll"):
+                                yield SubagentPanel(
+                                    resolve_spinner(
+                                        application.session.config.terminal_spinner
+                                    ),
+                                    id="subagents-body",
+                                )
                 yield WorkingIndicator(
                     resolve_spinner(application.session.config.terminal_spinner),
                     id="working-indicator",
@@ -855,6 +924,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             style = resolve_spinner(config.terminal_spinner)
             self.query_one("#working-indicator", WorkingIndicator).set_style(style)
             self.query_one("#plan-body", PlanPanel).set_style(style)
+            self.query_one("#subagents-body", SubagentPanel).set_style(style)
 
         def _persist_spinner(self, spinner: str) -> None:
             config = application.session.config
@@ -1020,7 +1090,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self._close_task = asyncio.ensure_future(application.close())
             try:
                 await asyncio.wait_for(asyncio.shield(self._close_task), timeout=2.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 self._arm_force_quit()
                 return
             except Exception:
@@ -1062,9 +1132,19 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self.query_one("#working-indicator", WorkingIndicator).set_running(
                 working, working_label(self.vm.status)
             )
+            # The right sidebar shows only while there is a plan and/or live
+            # sub-agents; each panel toggles on its own so one can show without
+            # the other, and the column is reclaimed entirely when both are idle.
             self.query_one("#plan").display = self.vm.plan_visible
+            self.query_one("#subagents").display = self.vm.subagents_visible
+            self.query_one("#sidebar").display = (
+                self.vm.plan_visible or self.vm.subagents_visible
+            )
             self.query_one("#plan-body", PlanPanel).update_plan(
                 self.vm.plan_steps, self.vm.plan_progress, self.vm.plan_status
+            )
+            self.query_one("#subagents-body", SubagentPanel).update_agents(
+                self.vm.subagents_list()
             )
 
         def _session_text(self) -> str:

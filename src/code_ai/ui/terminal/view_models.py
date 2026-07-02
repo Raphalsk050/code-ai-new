@@ -25,6 +25,14 @@ class TerminalViewModel:
     plan_visible: bool = False
     plan_status: str = ""
     plan_steps: list[dict[str, str]] = field(default_factory=list)
+    # Live sub-agent activity, keyed by agent_id and kept in dispatch order, so
+    # the AGENTS panel can show what each delegated agent is doing right now.
+    # Reset at the start of every user turn so a prior turn's agents never linger.
+    subagents: dict[str, dict[str, str]] = field(default_factory=dict)
+    subagents_visible: bool = False
+
+    def subagents_list(self) -> list[dict[str, str]]:
+        return list(self.subagents.values())
 
     def apply(self, event: EventEnvelope) -> None:
         if event.event_type == "status.changed":
@@ -89,6 +97,10 @@ class TerminalViewModel:
             self.plan_visible = False
             self.conversation.append(f"ai> {event.payload.get('text', '')}")
         elif event.event_type == "user.message":
+            # A new turn starts: drop any sub-agents left over from the last one
+            # so the AGENTS panel only ever shows this turn's delegations.
+            self.subagents.clear()
+            self.subagents_visible = False
             self.conversation.append(f"you> {event.payload.get('text', '')}")
         elif event.event_type == "model.request.started":
             step = event.payload.get("step")
@@ -154,6 +166,8 @@ class TerminalViewModel:
             name = event.payload.get("name")
             message = event.payload.get("message", "")
             self.conversation.append(f"tool> {name} failed: {message}")
+        elif event.event_type.startswith("subagent."):
+            self._apply_subagent_event(event)
         elif event.event_type in {"warning", "error"}:
             self.conversation.append(f"{event.event_type}> {event.payload.get('message', '')}")
         elif event.event_type == "usage.updated":
@@ -172,6 +186,67 @@ class TerminalViewModel:
             if isinstance(cumulative, dict):
                 self.cumulative_usage = str(cumulative.get("total_tokens", "0"))
 
+    def _apply_subagent_event(self, event: EventEnvelope) -> None:
+        """Fold a ``subagent.*`` event into the live AGENTS panel state.
+
+        Each dispatched agent is one row keyed by its id: it starts running, its
+        current tool is reflected as it works, and it settles into a terminal
+        marker (completed / failed / rejected). Terminal rows stay on screen -
+        the panel is cleared at the next user turn, not when an agent finishes -
+        so the user sees the outcome of the whole fan-out.
+        """
+        kind = event.event_type
+        payload = event.payload
+        agent_id = str(payload.get("agent_id") or "")
+        agent_type = str(payload.get("agent_type") or "agent")
+
+        if kind == "subagent.started":
+            self.subagents[agent_id] = {
+                "agent_id": agent_id,
+                "agent_type": agent_type,
+                "task": str(payload.get("task") or ""),
+                "status": "running",
+                "detail": "dispatched",
+            }
+            self.subagents_visible = True
+            self.conversation.append(f"subagent> {agent_type} started")
+        elif kind == "subagent.progress":
+            record = self.subagents.get(agent_id)
+            if record is not None:
+                record["detail"] = _subagent_progress_detail(payload)
+        elif kind == "subagent.completed":
+            self._settle_subagent(agent_id, agent_type, "completed", payload)
+            self.conversation.append(f"subagent> {agent_type} completed")
+        elif kind == "subagent.failed":
+            self._settle_subagent(agent_id, agent_type, "failed", payload)
+            self.conversation.append(f"subagent> {agent_type} failed")
+        elif kind == "subagent.rejected":
+            self.subagents[agent_id or f"rej-{len(self.subagents)}"] = {
+                "agent_id": agent_id,
+                "agent_type": agent_type,
+                "task": str(payload.get("reason") or ""),
+                "status": "rejected",
+                "detail": "not dispatched",
+            }
+            self.subagents_visible = True
+        elif kind == "subagent.circuit.open":
+            self.conversation.append(
+                f"subagent> {agent_type} temporarily disabled (repeated failures)"
+            )
+
+    def _settle_subagent(
+        self, agent_id: str, agent_type: str, status: str, payload: dict[object, object]
+    ) -> None:
+        record = self.subagents.get(agent_id)
+        detail = str(payload.get("error") or payload.get("summary") or "").strip()
+        detail = detail.replace("\n", " ")[:80] or status
+        if record is None:
+            record = {"agent_id": agent_id, "agent_type": agent_type, "task": ""}
+            self.subagents[agent_id or f"{status}-{len(self.subagents)}"] = record
+        record["status"] = status
+        record["detail"] = detail
+        self.subagents_visible = True
+
     def _apply_plan_payload(self, payload: dict[object, object]) -> None:
         self.planner_mode = str(payload.get("mode", self.planner_mode))
         self.phase = str(payload.get("phase", self.phase))
@@ -186,6 +261,21 @@ class TerminalViewModel:
             self.plan_steps = steps
         # Show the panel only while a defined plan is actively being worked on.
         self.plan_visible = plan_is_active(payload) and bool(steps)
+
+
+def _subagent_progress_detail(payload: dict[object, object]) -> str:
+    """A short 'what is this agent doing now' line from a progress event."""
+    event = str(payload.get("event") or "")
+    name = str(payload.get("name") or "").strip()
+    if event == "tool.call.started" and name:
+        return f"running {name}"
+    if event == "tool.call.completed" and name:
+        return f"{name} done"
+    if event == "tool.call.failed" and name:
+        return f"{name} failed"
+    if event == "model.response.completed":
+        return "thinking"
+    return name or "working"
 
 
 def _web_search_detail(result: dict[object, object]) -> str:
