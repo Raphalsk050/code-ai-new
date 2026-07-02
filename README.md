@@ -93,6 +93,25 @@ Non-interactive runs (headless, embedding clients) have no one to prompt, so
 gated tools are denied unless the mode is `auto` (for policy-allowed tools) or
 `bypass`. Set `permission_mode` accordingly for automation.
 
+## Sub-agents
+
+The agent can delegate focused subtasks to isolated sub-agents through the `dispatch_agent` tool, the way a lead engineer hands work to specialists.
+Each sub-agent runs its own provider/tool loop with a fresh conversation, its own usage ledger, and a tool registry restricted to its role - no mutable state is shared, and a sub-agent cannot delegate further.
+Communication is by message only: the parent passes a standalone prompt and the sub-agent returns a self-contained report.
+
+Three profiles ship by default:
+
+- `explorer`: read-only investigation (search and read the workspace and web). Used to fan out research in parallel.
+- `coder`: one focused, self-contained change (read, edit, run, verify).
+- `reviewer`: independent code review (reads and runs the review/build/test tools, never edits source).
+
+A single `dispatch_agent` call may carry several tasks; they run concurrently up to `max_concurrent_subagents`.
+Delegation is resilient by construction: each sub-agent has a wall-clock timeout scoped to its profile, transient failures retry with backoff, and a per-profile circuit breaker stops dispatching to a role that keeps failing.
+Every delegation resolves to a structured report - unknown types, limits, timeouts, and crashes degrade into feedback the model reacts to rather than crashing the turn.
+
+Because `dispatch_agent` carries the `delegate` capability, `ask` mode prompts once at the delegation boundary; the sub-agents then run without further prompts (so a parallel fan-out never blocks on approval).
+Relevant limits live under `budgets`: `max_subagent_depth` (default 1, no recursion), `max_concurrent_subagents`, `max_subagents_per_turn`, `subagent_explorer_timeout_s`, `subagent_worker_timeout_s`, and the `subagent_retry_max_attempts` / `subagent_circuit_*` resilience knobs.
+
 ## Sampling and reasoning
 
 The optional `sampling` section tunes how the model generates and whether its
@@ -219,6 +238,7 @@ code-ai --headless --events-jsonl run "Build the project"
 - `architecture_review`
 - `code_review`
 - `build_review`
+- `dispatch_agent`
 
 File and process tools resolve symlinks and enforce that all operations remain inside the configured workspace.
 
