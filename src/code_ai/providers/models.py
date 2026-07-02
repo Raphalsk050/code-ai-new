@@ -164,10 +164,26 @@ class ModelResponse:
 
 @dataclass(slots=True)
 class ProviderEvent:
-    kind: Literal["text_delta", "reasoning_delta", "tool_call", "completed", "usage", "warning"]
+    kind: Literal[
+        "text_delta",
+        "reasoning_delta",
+        "tool_call",
+        "tool_call_delta",
+        "completed",
+        "usage",
+        "warning",
+    ]
     text_delta: str = ""
     reasoning_delta: str = ""
     tool_call: ToolCall | None = None
     response: ModelResponse | None = None
     usage: TokenUsage | None = None
     warning: str | None = None
+    # Populated only on ``tool_call_delta`` events, which fire while a tool
+    # call's arguments are still streaming in. They carry the partial call so
+    # the UI can show live progress (e.g. a file being written) instead of
+    # freezing until the whole call has arrived. ``tool_call_arguments`` is the
+    # raw arguments text accumulated *so far* (not yet valid JSON).
+    tool_call_name: str = ""
+    tool_call_arguments: str = ""
+    tool_call_index: int = 0

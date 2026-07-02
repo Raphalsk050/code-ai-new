@@ -231,6 +231,14 @@ class OpenAIChatCompletionsProvider:
                 function = object_get(tool_delta, "function", {}) or {}
                 fragment["name"] += str(object_get(function, "name", "") or "")
                 fragment["arguments"] += str(object_get(function, "arguments", "") or "")
+                # Surface streaming progress so the UI isn't frozen while a large
+                # tool call (e.g. write_file's content) accumulates.
+                yield ProviderEvent(
+                    kind="tool_call_delta",
+                    tool_call_name=fragment["name"],
+                    tool_call_arguments=fragment["arguments"],
+                    tool_call_index=index,
+                )
 
         tool_calls: list[ToolCall] = []
         for index, fragment in sorted(tool_fragments.items()):

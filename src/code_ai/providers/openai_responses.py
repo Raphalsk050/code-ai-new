@@ -244,6 +244,12 @@ class OpenAIResponsesProvider:
         tool_calls: list[ToolCall] = []
         response_id: str | None = None
         usage: TokenUsage | None = None
+        # Track streaming function-call items so we can surface live progress:
+        # the name arrives on ``output_item.added`` and the arguments dribble in
+        # via ``function_call_arguments.delta`` before the final completion event.
+        fc_names: dict[str, str] = {}
+        fc_args: dict[str, str] = {}
+        fc_index: dict[str, int] = {}
 
         async for event in stream:
             if debug:
@@ -258,6 +264,27 @@ class OpenAIResponsesProvider:
             elif reasoning_delta:
                 reasoning_parts.append(reasoning_delta)
                 yield ProviderEvent(kind="reasoning_delta", reasoning_delta=reasoning_delta)
+            elif event_type == "response.output_item.added":
+                item = object_get(event, "item", {}) or {}
+                if str(object_get(item, "type", "")) in {"function_call", "tool_call"}:
+                    item_id = str(
+                        object_get(item, "id", "") or object_get(event, "item_id", "") or ""
+                    )
+                    if item_id:
+                        fc_names[item_id] = str(object_get(item, "name", "") or "")
+                        fc_index.setdefault(item_id, len(fc_index))
+            elif event_type == "response.function_call_arguments.delta":
+                item_id = str(object_get(event, "item_id", "") or "")
+                fc_args[item_id] = fc_args.get(item_id, "") + str(
+                    object_get(event, "delta", "") or ""
+                )
+                fc_index.setdefault(item_id, len(fc_index))
+                yield ProviderEvent(
+                    kind="tool_call_delta",
+                    tool_call_name=fc_names.get(item_id, ""),
+                    tool_call_arguments=fc_args[item_id],
+                    tool_call_index=fc_index.get(item_id, 0),
+                )
             elif is_completion_event:
                 response = object_get(event, "response", event)
                 response_id = (
