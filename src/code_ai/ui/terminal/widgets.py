@@ -266,6 +266,63 @@ def render_plan(
     return text
 
 
+# --- Sub-agents panel (live delegated-agent activity, below the plan) --------
+# Terminal-state glyphs; a running agent borrows the live spinner instead.
+_AGENT_MARKERS = {"completed": "✓", "failed": "✗", "rejected": "⊘"}
+_AGENT_MARKER_STYLES = {
+    "completed": "#48d17a",
+    "failed": "#e05252",
+    "rejected": "#e0a0a0",
+    "running": "#ff9f1c",
+}
+_AGENT_TYPE_STYLES = {
+    "running": "bold #d7dee8",
+    "completed": "#7b8493",
+    "failed": "#e0a0a0",
+    "rejected": "#9aa4b2",
+}
+_AGENT_DETAIL_STYLE = "#56606e"
+_AGENT_TASK_WIDTH = 30
+
+
+def render_subagents(
+    agents: list[dict[str, str]],
+    running_glyph: str,
+    running_color: str,
+) -> Text:
+    """Render the live sub-agent roster as Rich Text for the AGENTS panel.
+
+    One row per delegated agent: a status marker (the live spinner while it
+    runs), its type, the task it was given, and what it is doing right now.
+    """
+    text = Text()
+    running = sum(1 for agent in agents if agent.get("status") == "running")
+    header = f"{len(agents)} agent(s)"
+    if running:
+        header += f" · {running} running"
+    text.append(header + "\n", style=_PLAN_HEADER_STYLE)
+
+    for index, agent in enumerate(agents):
+        status = agent.get("status", "running")
+        agent_type = agent.get("agent_type", "agent")
+        task = _truncate_title(agent.get("task", ""), _AGENT_TASK_WIDTH)
+        detail = agent.get("detail", "")
+        if status == "running":
+            marker, marker_style = running_glyph, f"bold {running_color}"
+        else:
+            marker = _AGENT_MARKERS.get(status, "•")
+            marker_style = _AGENT_MARKER_STYLES.get(status, "#56606e")
+        text.append(marker + " ", style=marker_style)
+        text.append(agent_type, style=_AGENT_TYPE_STYLES.get(status, "#9aa4b2"))
+        if task:
+            text.append("\n  " + task, style=_AGENT_DETAIL_STYLE)
+        if detail:
+            text.append("\n  " + detail, style=_AGENT_DETAIL_STYLE)
+        if index < len(agents) - 1:
+            text.append("\n")
+    return text
+
+
 FALLBACK_CODE_AI_LOGO_TEXT = "code.ai"
 FALLBACK_CODE_AI_LOGO_ART = "       \n█▀▀ █▀█ █▀▄ █▀▀ ░ ▄▀█ █ \n█▄▄ █▄█ █▄▀ ██▄ ▄ █▀█ █ \n       "
 
@@ -453,6 +510,7 @@ _TRACE_PREFIXES = (
     "thinking>",
     "working>",
     "tool>",
+    "subagent>",
     "evidence>",
     "plan>",
     "approval>",
