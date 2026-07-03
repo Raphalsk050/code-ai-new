@@ -6,6 +6,13 @@ from dataclasses import dataclass
 
 from code_ai.providers.models import Message, ToolDefinition
 
+# Flat per-image cost estimate. Vision models spend a bounded number of visual
+# tokens per image (roughly 1-2k for a typical screenshot, regardless of file
+# size), so counting the base64 payload as prompt text would be off by orders
+# of magnitude: a 4MB screenshot is ~5MB of base64, "worth" ~600k text tokens,
+# which instantly (and wrongly) overflows the context budget.
+_IMAGE_TOKEN_ESTIMATE = 1500
+
 
 @dataclass(frozen=True, slots=True)
 class TokenCount:
@@ -45,10 +52,21 @@ class TokenCounter:
 
     def count_request(self, messages: list[Message], tools: list[ToolDefinition]) -> TokenCount:
         payload = {
-            "messages": [message.to_dict() for message in messages],
+            "messages": [_countable_message(message) for message in messages],
             "tools": [tool.to_dict() for tool in tools],
         }
         counted = self.count_text(json.dumps(payload, sort_keys=True, separators=(",", ":")))
-        if counted.estimated:
-            return counted
-        return TokenCount(tokens=counted.tokens, estimated=False, source=counted.source)
+        image_count = sum(len(message.images) for message in messages)
+        return TokenCount(
+            tokens=counted.tokens + image_count * _IMAGE_TOKEN_ESTIMATE,
+            estimated=counted.estimated or image_count > 0,
+            source=counted.source,
+        )
+
+
+def _countable_message(message: Message) -> dict:
+    """Wire dict with image payloads excluded from the text token count."""
+    record = message.to_dict()
+    if message.images:
+        record["content"] = message.content
+    return record
