@@ -45,15 +45,44 @@ class TokenUsage:
 
 
 @dataclass(slots=True)
+class ImageContent:
+    """An image attached to a message, carried as base64 so it can travel
+    through JSON persistence and every provider wire format unchanged."""
+
+    data: str
+    media_type: str = "image/png"
+
+    def to_data_url(self) -> str:
+        return f"data:{self.media_type};base64,{self.data}"
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
 class Message:
     role: Literal["system", "user", "assistant", "tool"]
     content: str
     tool_call_id: str | None = None
     name: str | None = None
     tool_calls: list[ToolCall] = field(default_factory=list)
+    images: list[ImageContent] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {"role": self.role, "content": self.content}
+        if self.images:
+            # OpenAI Chat Completions multipart shape: the text plus one
+            # image_url part per attachment, as a data URL. Vision-capable
+            # endpoints read the pixels; the placeholder text (e.g.
+            # "[Image #1]") keeps the message meaningful everywhere else.
+            parts: list[dict[str, Any]] = []
+            if self.content:
+                parts.append({"type": "text", "text": self.content})
+            parts.extend(
+                {"type": "image_url", "image_url": {"url": image.to_data_url()}}
+                for image in self.images
+            )
+            data["content"] = parts
         if self.tool_call_id:
             data["tool_call_id"] = self.tool_call_id
         if self.name:

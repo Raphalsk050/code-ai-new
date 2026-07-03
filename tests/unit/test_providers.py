@@ -3,7 +3,13 @@ from __future__ import annotations
 import pytest
 
 from code_ai.config.models import AppConfig
-from code_ai.providers.models import Message, ModelRequest, ProviderCapabilities, ToolCall
+from code_ai.providers.models import (
+    ImageContent,
+    Message,
+    ModelRequest,
+    ProviderCapabilities,
+    ToolCall,
+)
 from code_ai.providers.ollama import (
     _ollama_reasoning_delta,
     _ollama_usage,
@@ -410,6 +416,68 @@ def test_chat_completions_message_carries_structured_tool_calls() -> None:
     assert data["tool_calls"][0]["type"] == "function"
     assert data["tool_calls"][0]["function"]["name"] == "edit_code"
     assert json.loads(data["tool_calls"][0]["function"]["arguments"]) == {"path": "a.py"}
+
+
+def test_ollama_user_message_carries_images_as_raw_base64() -> None:
+    messages = messages_to_ollama(
+        [
+            Message(
+                role="user",
+                content="what is in this screenshot? [Image #1]",
+                images=[ImageContent(data="aGVsbG8=")],
+            )
+        ]
+    )
+    assert messages[0]["images"] == ["aGVsbG8="]
+    assert messages[0]["content"] == "what is in this screenshot? [Image #1]"
+
+
+def test_chat_completions_message_with_images_is_multipart() -> None:
+    data = Message(
+        role="user",
+        content="describe [Image #1]",
+        images=[ImageContent(data="aGVsbG8=")],
+    ).to_dict()
+    assert data["content"] == [
+        {"type": "text", "text": "describe [Image #1]"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8="}},
+    ]
+
+
+def test_chat_completions_message_without_images_keeps_plain_content() -> None:
+    assert Message(role="user", content="ola").to_dict()["content"] == "ola"
+
+
+def test_responses_input_carries_images_as_input_image_parts() -> None:
+    items = _responses_input(
+        ModelRequest(
+            model="m",
+            messages=[
+                Message(
+                    role="user",
+                    content="describe [Image #1]",
+                    images=[ImageContent(data="aGVsbG8=")],
+                )
+            ],
+        )
+    )
+    assert items[0]["content"] == [
+        {"type": "input_text", "text": "describe [Image #1]"},
+        {"type": "input_image", "image_url": "data:image/png;base64,aGVsbG8="},
+    ]
+
+
+def test_responses_input_emits_image_only_messages() -> None:
+    # A message whose whole content is the image must not be silently dropped.
+    items = _responses_input(
+        ModelRequest(
+            model="m",
+            messages=[Message(role="user", content="", images=[ImageContent(data="aGVsbG8=")])],
+        )
+    )
+    assert items[0]["content"] == [
+        {"type": "input_image", "image_url": "data:image/png;base64,aGVsbG8="}
+    ]
 
 
 def test_ollama_public_thinking_field_is_normalized() -> None:

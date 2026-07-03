@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from code_ai.app.conversation_store import ConversationStore
-from code_ai.providers.models import Message, ToolCall
+from code_ai.providers.models import ImageContent, Message, ToolCall
 
 
 def _store(tmp_path: Path) -> ConversationStore:
@@ -32,6 +32,22 @@ def test_save_then_load_round_trips_messages(tmp_path: Path) -> None:
     record = store.load("c-1")
     assert record is not None
     assert record["previous_response_id"] == "resp-9"
+
+
+def test_save_then_load_round_trips_images(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.save(
+        conversation_id="c-img",
+        messages=[
+            Message(
+                role="user",
+                content="what is this? [Image #1]",
+                images=[ImageContent(data="aGVsbG8=", media_type="image/png")],
+            )
+        ],
+    )
+    (loaded,) = store.load_messages("c-img")
+    assert loaded.images == [ImageContent(data="aGVsbG8=", media_type="image/png")]
 
 
 def test_title_derives_from_first_user_message(tmp_path: Path) -> None:

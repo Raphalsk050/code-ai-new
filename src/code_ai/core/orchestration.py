@@ -37,6 +37,7 @@ from code_ai.prompts import build_system_prompt
 from code_ai.providers.base import ModelProvider
 from code_ai.providers.models import (
     FinishReason,
+    ImageContent,
     Message,
     ModelRequest,
     ModelResponse,
@@ -258,6 +259,7 @@ class AgentOrchestrator:
         cancel_event: asyncio.Event | None = None,
         context: str = "",
         resume_plan: bool = False,
+        images: list[ImageContent] | None = None,
     ) -> TurnResult:
         # Pull in any lessons/memories learned since this session's system prompt
         # was built, so the model benefits from them on this turn.
@@ -270,7 +272,7 @@ class AgentOrchestrator:
         # shows what the user actually typed.
         if context:
             self.conversation.add_user(context)
-        self.conversation.add_user(text)
+        self.conversation.add_user(text, images=images)
 
         state = _TurnState(
             cancel_event=cancel_event,

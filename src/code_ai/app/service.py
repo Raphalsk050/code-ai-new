@@ -17,6 +17,7 @@ from code_ai.core.state import AgentState
 from code_ai.events.bus import AsyncEventBus, EventSubscriber
 from code_ai.events.models import EventEnvelope
 from code_ai.providers.base import ModelProvider
+from code_ai.providers.models import ImageContent
 from code_ai.tools.terminal.manager import PersistentTerminalManager
 
 logger = logging.getLogger(__name__)
@@ -80,7 +81,12 @@ class CodeAIApplication:
         await self.event_bus.emit("session.ready", {}, source="app")
 
     async def submit_user_message(
-        self, text: str, *, context: str = "", resume_plan: bool = False
+        self,
+        text: str,
+        *,
+        context: str = "",
+        resume_plan: bool = False,
+        images: list[ImageContent] | None = None,
     ) -> TurnResult:
         if self._current_task and not self._current_task.done():
             raise RuntimeError("A turn is already running.")
@@ -91,6 +97,7 @@ class CodeAIApplication:
                 cancel_event=self._current_cancel,
                 context=context,
                 resume_plan=resume_plan,
+                images=images,
             )
         )
         try:

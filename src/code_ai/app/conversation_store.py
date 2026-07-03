@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from code_ai.providers.models import Message, ToolCall
+from code_ai.providers.models import ImageContent, Message, ToolCall
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,8 @@ def _message_to_record(message: Message) -> dict[str, Any]:
             {"id": call.id, "name": call.name, "arguments": call.arguments}
             for call in message.tool_calls
         ]
+    if message.images:
+        record["images"] = [image.to_dict() for image in message.images]
     return record
 
 
@@ -46,12 +48,21 @@ def _message_from_record(record: dict[str, Any]) -> Message:
         )
         for call in record.get("tool_calls") or []
     ]
+    images = [
+        ImageContent(
+            data=str(image.get("data") or ""),
+            media_type=str(image.get("media_type") or "image/png"),
+        )
+        for image in record.get("images") or []
+        if image.get("data")
+    ]
     return Message(
         role=record.get("role", "user"),
         content=str(record.get("content") or ""),
         tool_call_id=record.get("tool_call_id"),
         name=record.get("name"),
         tool_calls=calls,
+        images=images,
     )
 
 

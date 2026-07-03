@@ -39,18 +39,20 @@ def _responses_input(request: ModelRequest) -> list[dict[str, Any]]:
                 }
             )
             continue
-        if message.content:
+        if message.content or message.images:
             # The Responses API discriminates content parts by role: model output
             # (assistant) must be "output_text", while user/system input is
             # "input_text". Sending "input_text" for an assistant turn fails schema
             # validation with invalid_union on strict servers (e.g. LM Studio).
             part_type = "output_text" if message.role == "assistant" else "input_text"
-            items.append(
-                {
-                    "role": message.role,
-                    "content": [{"type": part_type, "text": message.content}],
-                }
+            parts: list[dict[str, Any]] = []
+            if message.content:
+                parts.append({"type": part_type, "text": message.content})
+            parts.extend(
+                {"type": "input_image", "image_url": image.to_data_url()}
+                for image in message.images
             )
+            items.append({"role": message.role, "content": parts})
         # Replay tool calls as structured function_call items so the model keeps
         # invoking tools instead of echoing them as text in its next answer.
         for call in message.tool_calls:

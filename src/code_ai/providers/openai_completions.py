@@ -113,7 +113,9 @@ class OpenAIChatCompletionsProvider:
             provider_reported_usage=True,
             remote_conversation_state=False,
             native_tokenization=False,
-            image_support=False,
+            # Multipart image_url content is standard Chat Completions; vision
+            # support ultimately depends on the model behind the endpoint.
+            image_support=True,
         )
         self._stream_options_supported = True
         self._sampling_supported = True
