@@ -1040,3 +1040,92 @@ async def test_config_help_picker_runs_argless_commands(tmp_path) -> None:
         assert input_widget.value == ""
         # /config show appends the redacted config to the conversation.
         assert any('"model"' in line for line in terminal_app.vm.conversation)
+
+
+async def test_agents_panel_mounts_one_card_per_subagent(tmp_path) -> None:
+    from textual.widgets import Collapsible
+
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(120, 45)) as pilot:
+        await fake_app.emit("user.message", {"text": "explore"})
+        for agent_id, name, task in (
+            ("a1", "Kepler", "map the loader and every config path in the repo"),
+            ("a2", "Feynman", "review the domain code"),
+        ):
+            await fake_app.emit(
+                "subagent.started",
+                {"agent_id": agent_id, "agent_type": "explorer", "name": name, "task": task},
+            )
+        await pilot.pause(0.2)
+
+        panel = terminal_app.query_one("#subagents-body")
+        cards = panel.query(".agent-card")
+        assert len(cards) == 2
+        assert "2 running" in str(panel.query_one(".agents-summary", Static).render())
+
+        # Each card: a header row and the delegated task folded shut.
+        first = cards.nodes[0]
+        header = str(first.query_one(".agent-card-header", Static).render())
+        assert "Kepler" in header and "explorer" in header
+        collapsible = first.query_one(Collapsible)
+        assert collapsible.collapsed is True
+        assert "\n" not in collapsible.title
+
+        # Clicking the preview expands the full task text.
+        await pilot.click(first.query_one("CollapsibleTitle"))
+        await pilot.pause(0.1)
+        assert collapsible.collapsed is False
+        body = str(first.query_one(".agent-task-body", Static).render())
+        assert "map the loader and every config path in the repo" in body
+
+
+async def test_agents_panel_keeps_expanded_card_across_updates(tmp_path) -> None:
+    from textual.widgets import Collapsible
+
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(120, 45)) as pilot:
+        await fake_app.emit("user.message", {"text": "explore"})
+        await fake_app.emit(
+            "subagent.started",
+            {"agent_id": "a1", "agent_type": "explorer", "name": "Kepler", "task": "t1"},
+        )
+        await pilot.pause(0.2)
+
+        panel = terminal_app.query_one("#subagents-body")
+        first = panel.query(".agent-card").nodes[0]
+        await pilot.click(first.query_one("CollapsibleTitle"))
+        await pilot.pause(0.1)
+        assert first.query_one(Collapsible).collapsed is False
+
+        # Progress and a later dispatch repaint the roster in place: the
+        # expanded card must survive, not be remounted shut.
+        await fake_app.emit(
+            "subagent.progress",
+            {"agent_id": "a1", "event": "tool.call.started", "tool": "read_file"},
+        )
+        await fake_app.emit(
+            "subagent.started",
+            {"agent_id": "a2", "agent_type": "coder", "name": "Newton", "task": "t2"},
+        )
+        await pilot.pause(0.2)
+        cards = panel.query(".agent-card")
+        assert len(cards) == 2
+        assert cards.nodes[0] is first
+        assert first.query_one(Collapsible).collapsed is False
+        assert "read_file" in str(first.query_one(".agent-task-body", Static).render())
+
+        # A settled agent flips its marker; a new turn clears the roster.
+        await fake_app.emit(
+            "subagent.completed",
+            {"agent_id": "a1", "agent_type": "explorer", "name": "Kepler", "summary": "ok"},
+        )
+        await pilot.pause(0.2)
+        assert str(first.query_one(".agent-card-header", Static).render()).startswith("✓")
+
+        await fake_app.emit("user.message", {"text": "next"})
+        await pilot.pause(0.2)
+        assert len(panel.query(".agent-card")) == 0

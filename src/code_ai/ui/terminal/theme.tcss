@@ -167,6 +167,43 @@ Screen {
   height: auto;
 }
 
+/* The roster summary ("3 agent(s) · 1 running") sits above the cards. */
+#subagents-body .agents-summary {
+  height: auto;
+  margin-bottom: 1;
+}
+
+/* Each sub-agent is its own card: a quietly bordered box with a blank line of
+   breathing room before the next one. */
+#subagents-body .agent-card {
+  height: auto;
+  border: round #2b3440;
+  padding: 0 1;
+  margin-bottom: 1;
+}
+
+/* The delegated task folds like the transcript's thinking block: a one-line
+   dim clickable preview, stripped of the default Collapsible chrome. */
+#subagents-body .agent-task {
+  height: auto;
+  width: 1fr;
+  background: transparent;
+  border-top: none;
+  padding: 0;
+}
+#subagents-body .agent-task > CollapsibleTitle {
+  padding: 0;
+  color: #6b7280;
+}
+#subagents-body .agent-task > CollapsibleTitle:hover {
+  color: #9aa4b2;
+  background: transparent;
+}
+#subagents-body .agent-task Contents {
+  padding: 0 0 0 2;
+  color: #6b7280;
+}
+
 #working-indicator {
   height: 1;
   padding: 0 1;
