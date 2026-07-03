@@ -233,31 +233,37 @@ class TerminalViewModel:
         payload = event.payload
         agent_id = str(payload.get("agent_id") or "")
         agent_type = str(payload.get("agent_type") or "agent")
+        # The Claude-style name assigned at creation; label rows by it and fall
+        # back to the type only for older events that carry no name.
+        name = str(payload.get("name") or "")
+        label = name or agent_type
 
         if kind == "subagent.started":
             self.subagents[agent_id] = {
                 "agent_id": agent_id,
                 "agent_type": agent_type,
+                "name": name,
                 "task": str(payload.get("task") or ""),
                 "status": "running",
                 "detail": "dispatched",
             }
             self.subagents_visible = True
-            self.conversation.append(f"subagent> {agent_type} started")
+            self.conversation.append(f"subagent> {label} ({agent_type}) started")
         elif kind == "subagent.progress":
             record = self.subagents.get(agent_id)
             if record is not None:
                 record["detail"] = _subagent_progress_detail(payload)
         elif kind == "subagent.completed":
-            self._settle_subagent(agent_id, agent_type, "completed", payload)
-            self.conversation.append(f"subagent> {agent_type} completed")
+            self._settle_subagent(agent_id, agent_type, name, "completed", payload)
+            self.conversation.append(f"subagent> {label} completed")
         elif kind == "subagent.failed":
-            self._settle_subagent(agent_id, agent_type, "failed", payload)
-            self.conversation.append(f"subagent> {agent_type} failed")
+            self._settle_subagent(agent_id, agent_type, name, "failed", payload)
+            self.conversation.append(f"subagent> {label} failed")
         elif kind == "subagent.rejected":
             self.subagents[agent_id or f"rej-{len(self.subagents)}"] = {
                 "agent_id": agent_id,
                 "agent_type": agent_type,
+                "name": name,
                 "task": str(payload.get("reason") or ""),
                 "status": "rejected",
                 "detail": "not dispatched",
@@ -269,13 +275,23 @@ class TerminalViewModel:
             )
 
     def _settle_subagent(
-        self, agent_id: str, agent_type: str, status: str, payload: dict[object, object]
+        self,
+        agent_id: str,
+        agent_type: str,
+        name: str,
+        status: str,
+        payload: dict[object, object],
     ) -> None:
         record = self.subagents.get(agent_id)
         detail = str(payload.get("error") or payload.get("summary") or "").strip()
         detail = detail.replace("\n", " ")[:80] or status
         if record is None:
-            record = {"agent_id": agent_id, "agent_type": agent_type, "task": ""}
+            record = {
+                "agent_id": agent_id,
+                "agent_type": agent_type,
+                "name": name,
+                "task": "",
+            }
             self.subagents[agent_id or f"{status}-{len(self.subagents)}"] = record
         record["status"] = status
         record["detail"] = detail
@@ -305,16 +321,18 @@ class TerminalViewModel:
 def _subagent_progress_detail(payload: dict[object, object]) -> str:
     """A short 'what is this agent doing now' line from a progress event."""
     event = str(payload.get("event") or "")
-    name = str(payload.get("name") or "").strip()
-    if event == "tool.call.started" and name:
-        return f"running {name}"
-    if event == "tool.call.completed" and name:
-        return f"{name} done"
-    if event == "tool.call.failed" and name:
-        return f"{name} failed"
+    # ``tool`` is the tool the sub-agent is running now; ``name`` on a progress
+    # event is the agent's own name, not the tool.
+    tool = str(payload.get("tool") or "").strip()
+    if event == "tool.call.started" and tool:
+        return f"running {tool}"
+    if event == "tool.call.completed" and tool:
+        return f"{tool} done"
+    if event == "tool.call.failed" and tool:
+        return f"{tool} failed"
     if event == "model.response.completed":
         return "thinking"
-    return name or "working"
+    return tool or "working"
 
 
 def _web_search_detail(result: dict[object, object]) -> str:

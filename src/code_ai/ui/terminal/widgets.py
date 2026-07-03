@@ -293,7 +293,8 @@ def render_subagents(
     """Render the live sub-agent roster as Rich Text for the AGENTS panel.
 
     One row per delegated agent: a status marker (the live spinner while it
-    runs), its type, the task it was given, and what it is doing right now.
+    runs), its Claude-style name with the agent type, the task it was given, and
+    what it is doing right now.
     """
     text = Text()
     running = sum(1 for agent in agents if agent.get("status") == "running")
@@ -305,6 +306,7 @@ def render_subagents(
     for index, agent in enumerate(agents):
         status = agent.get("status", "running")
         agent_type = agent.get("agent_type", "agent")
+        label = agent.get("name") or agent_type
         task = _truncate_title(agent.get("task", ""), _AGENT_TASK_WIDTH)
         detail = agent.get("detail", "")
         if status == "running":
@@ -313,7 +315,10 @@ def render_subagents(
             marker = _AGENT_MARKERS.get(status, "•")
             marker_style = _AGENT_MARKER_STYLES.get(status, "#56606e")
         text.append(marker + " ", style=marker_style)
-        text.append(agent_type, style=_AGENT_TYPE_STYLES.get(status, "#9aa4b2"))
+        text.append(label, style=_AGENT_TYPE_STYLES.get(status, "#9aa4b2"))
+        if agent.get("name"):
+            # The type as a dim suffix, so the name reads as the agent's identity.
+            text.append(f"  {agent_type}", style=_AGENT_DETAIL_STYLE)
         if task:
             text.append("\n  " + task, style=_AGENT_DETAIL_STYLE)
         if detail:

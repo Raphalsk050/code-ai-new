@@ -42,7 +42,7 @@ def test_progress_updates_current_activity() -> None:
                 "agent_id": "a1",
                 "agent_type": "coder",
                 "event": "tool.call.started",
-                "name": "write_file",
+                "tool": "write_file",
             },
         )
     )

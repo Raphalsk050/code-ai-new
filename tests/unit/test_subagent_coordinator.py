@@ -97,6 +97,34 @@ async def test_completed_run_maps_to_report(tmp_path) -> None:
     assert reports[0].agent_type == "explorer"
 
 
+async def test_agent_gets_a_name_used_in_report_and_events(tmp_path) -> None:
+    import re
+
+    async def behaviour(prompt, _cancel):
+        return TurnResult(text="ok", response=None)
+
+    runtime = _FakeRuntime(behaviour)
+    bus = AsyncEventBus()
+    seen: list[tuple[str, str]] = []
+    bus.subscribe(
+        lambda e: seen.append((e.event_type, str(e.payload.get("name"))))
+        if e.event_type.startswith("subagent.")
+        else None
+    )
+    coord = _coordinator(tmp_path, runtime, event_bus=bus)
+    reports = await coord.dispatch([SubagentRequest("explorer", "find X")])
+
+    name = reports[0].name
+    assert re.match(r"^[a-z]+-[a-z]+-[a-z]+$", name), name
+    # The same name is carried on the lifecycle events for this agent.
+    started = next(n for et, n in seen if et == "subagent.started")
+    completed = next(n for et, n in seen if et == "subagent.completed")
+    assert started == name
+    assert completed == name
+    # It also survives serialization for the model.
+    assert reports[0].to_dict()["name"] == name
+
+
 async def test_parallel_fan_out_runs_concurrently(tmp_path) -> None:
     gate = asyncio.Event()
     started = 0

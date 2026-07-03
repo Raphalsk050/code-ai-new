@@ -3,6 +3,7 @@ from code_ai.core.subagents.coordinator import (
     SubagentCoordinator,
     SubagentRequest,
 )
+from code_ai.core.subagents.naming import generate_agent_name
 from code_ai.core.subagents.profiles import (
     FORBIDDEN_SUBAGENT_CAPABILITIES,
     SubagentProfile,
@@ -24,6 +25,7 @@ __all__ = [
     "CircuitBreaker",
     "CircuitState",
     "Dispatcher",
+    "generate_agent_name",
     "OpenCircuitError",
     "RetryPolicy",
     "SubagentCoordinator",

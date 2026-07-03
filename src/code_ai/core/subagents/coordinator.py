@@ -9,6 +9,7 @@ from uuid import uuid4
 from code_ai.config.models import AppConfig
 from code_ai.core.errors import CancellationError
 from code_ai.core.orchestration import WIND_DOWN_TIME_BUDGET, TurnResult
+from code_ai.core.subagents.naming import generate_agent_name
 from code_ai.core.subagents.profiles import SubagentProfile, SubagentProfileRegistry
 from code_ai.core.subagents.report import SubagentReport, SubagentStatus
 from code_ai.core.subagents.resilience import CircuitBreaker, RetryPolicy
@@ -143,15 +144,18 @@ class SubagentCoordinator:
         parent_cancel: asyncio.Event | None,
         depth: int,
     ) -> SubagentReport:
+        # Identity assigned once, at creation: a stable id plus a human-friendly
+        # Claude-style name used in every log and reference (kept across retries).
         agent_id = uuid4().hex[:8]
+        name = generate_agent_name()
         profile = self._profiles.get(request.agent_type)
         if profile is None:
             reason = (
                 f"Unknown sub-agent type {request.agent_type!r}. "
                 f"Available types: {', '.join(self._profiles.names())}."
             )
-            await self._emit_rejected(agent_id, request.agent_type, reason)
-            return self._rejected(request, reason, agent_id=agent_id)
+            await self._emit_rejected(agent_id, name, request.agent_type, reason)
+            return self._rejected(request, reason, agent_id=agent_id, name=name)
 
         if not self._breaker.allows(profile.name):
             reason = (
@@ -160,19 +164,20 @@ class SubagentCoordinator:
             )
             await self._bus.emit(
                 "subagent.circuit.open",
-                {"agent_type": profile.name},
+                {"agent_type": profile.name, "agent_id": agent_id, "name": name},
                 source="subagent",
             )
-            await self._emit_rejected(agent_id, profile.name, reason)
-            return self._rejected(request, reason, agent_id=agent_id)
+            await self._emit_rejected(agent_id, name, profile.name, reason)
+            return self._rejected(request, reason, agent_id=agent_id, name=name)
 
         async def _attempt() -> SubagentReport:
             try:
-                return await self._run(profile, request, agent_id, parent_cancel)
+                return await self._run(profile, request, agent_id, name, parent_cancel)
             except Exception as exc:  # noqa: BLE001 - degrade, never crash the parent turn
                 return SubagentReport(
                     agent_id=agent_id,
                     agent_type=profile.name,
+                    name=name,
                     task=request.prompt,
                     status=SubagentStatus.FAILED,
                     error=str(exc) or type(exc).__name__,
@@ -184,6 +189,7 @@ class SubagentCoordinator:
                 {
                     "agent_id": agent_id,
                     "agent_type": profile.name,
+                    "name": name,
                     "attempt": attempt,
                     "error": failed.error,
                 },
@@ -214,10 +220,11 @@ class SubagentCoordinator:
         profile: SubagentProfile,
         request: SubagentRequest,
         agent_id: str,
+        name: str,
         parent_cancel: asyncio.Event | None,
     ) -> SubagentReport:
         built = self._runtime.build(profile)
-        forwarder = self._make_forwarder(agent_id, profile.name)
+        forwarder = self._make_forwarder(agent_id, name, profile.name)
         built.event_bus.subscribe(forwarder)
 
         await self._bus.emit(
@@ -225,6 +232,7 @@ class SubagentCoordinator:
             {
                 "agent_id": agent_id,
                 "agent_type": profile.name,
+                "name": name,
                 "task": bound_text(request.prompt, _SUMMARY_PREVIEW_CHARS),
             },
             source="subagent",
@@ -246,6 +254,7 @@ class SubagentCoordinator:
             return SubagentReport(
                 agent_id=agent_id,
                 agent_type=profile.name,
+                name=name,
                 task=request.prompt,
                 status=SubagentStatus.TIMEOUT,
                 error=f"Sub-agent exceeded its {built.timeout_seconds}s time budget.",
@@ -255,6 +264,7 @@ class SubagentCoordinator:
             return SubagentReport(
                 agent_id=agent_id,
                 agent_type=profile.name,
+                name=name,
                 task=request.prompt,
                 status=SubagentStatus.CANCELLED,
                 usage=built.usage.to_dict(),
@@ -265,7 +275,7 @@ class SubagentCoordinator:
                 await mirror
             built.event_bus.unsubscribe(forwarder)
 
-        return self._report_from_turn(result, profile, request, agent_id, built)
+        return self._report_from_turn(result, profile, request, agent_id, name, built)
 
     def _report_from_turn(
         self,
@@ -273,6 +283,7 @@ class SubagentCoordinator:
         profile: SubagentProfile,
         request: SubagentRequest,
         agent_id: str,
+        name: str,
         built: BuiltSubagent,
     ) -> SubagentReport:
         usage = built.usage.to_dict()
@@ -280,6 +291,7 @@ class SubagentCoordinator:
             return SubagentReport(
                 agent_id=agent_id,
                 agent_type=profile.name,
+                name=name,
                 task=request.prompt,
                 status=SubagentStatus.CANCELLED,
                 usage=usage,
@@ -288,6 +300,7 @@ class SubagentCoordinator:
             return SubagentReport(
                 agent_id=agent_id,
                 agent_type=profile.name,
+                name=name,
                 task=request.prompt,
                 status=SubagentStatus.FAILED,
                 summary=result.text,
@@ -300,6 +313,7 @@ class SubagentCoordinator:
             return SubagentReport(
                 agent_id=agent_id,
                 agent_type=profile.name,
+                name=name,
                 task=request.prompt,
                 status=SubagentStatus.TIMEOUT,
                 summary=result.text,
@@ -311,6 +325,7 @@ class SubagentCoordinator:
             return SubagentReport(
                 agent_id=agent_id,
                 agent_type=profile.name,
+                name=name,
                 task=request.prompt,
                 status=SubagentStatus.FAILED,
                 summary=result.text,
@@ -321,6 +336,7 @@ class SubagentCoordinator:
             return SubagentReport(
                 agent_id=agent_id,
                 agent_type=profile.name,
+                name=name,
                 task=request.prompt,
                 status=SubagentStatus.FAILED,
                 error="Sub-agent finished without producing a final answer.",
@@ -329,6 +345,7 @@ class SubagentCoordinator:
         return SubagentReport(
             agent_id=agent_id,
             agent_type=profile.name,
+            name=name,
             task=request.prompt,
             status=SubagentStatus.COMPLETED,
             summary=result.text,
@@ -345,7 +362,7 @@ class SubagentCoordinator:
         await parent.wait()
         child.set()
 
-    def _make_forwarder(self, agent_id: str, agent_type: str):
+    def _make_forwarder(self, agent_id: str, name: str, agent_type: str):
         async def handler(envelope: EventEnvelope) -> None:
             if envelope.event_type not in _FORWARDED_EVENTS:
                 return
@@ -354,18 +371,28 @@ class SubagentCoordinator:
                 {
                     "agent_id": agent_id,
                     "agent_type": agent_type,
+                    "name": name,
                     "event": envelope.event_type,
-                    "name": envelope.payload.get("name"),
+                    # The tool the sub-agent is running right now, from the
+                    # forwarded child event.
+                    "tool": envelope.payload.get("name"),
                 },
                 source="subagent",
             )
 
         return handler
 
-    async def _emit_rejected(self, agent_id: str, agent_type: str, reason: str) -> None:
+    async def _emit_rejected(
+        self, agent_id: str, name: str, agent_type: str, reason: str
+    ) -> None:
         await self._bus.emit(
             "subagent.rejected",
-            {"agent_id": agent_id, "agent_type": agent_type, "reason": reason},
+            {
+                "agent_id": agent_id,
+                "agent_type": agent_type,
+                "name": name,
+                "reason": reason,
+            },
             source="subagent",
         )
 
@@ -376,6 +403,7 @@ class SubagentCoordinator:
             {
                 "agent_id": report.agent_id,
                 "agent_type": report.agent_type,
+                "name": report.name,
                 "status": report.status.value,
                 "summary": bound_text(report.summary, _SUMMARY_PREVIEW_CHARS),
                 "error": report.error,
@@ -386,11 +414,12 @@ class SubagentCoordinator:
 
     @staticmethod
     def _rejected(
-        request: SubagentRequest, reason: str, *, agent_id: str = ""
+        request: SubagentRequest, reason: str, *, agent_id: str = "", name: str = ""
     ) -> SubagentReport:
         return SubagentReport(
             agent_id=agent_id or uuid4().hex[:8],
             agent_type=request.agent_type,
+            name=name or generate_agent_name(),
             task=request.prompt,
             status=SubagentStatus.REJECTED,
             error=reason,
