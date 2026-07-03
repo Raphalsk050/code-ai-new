@@ -303,6 +303,11 @@ class AgentPlan(BaseModel):
     steps: list[AgentPlanStep]
     current_index: int = 0
     status: PlanStatus = PlanStatus.ACTIVE
+    # The model called complete_plan_step on the final step. advance() refuses to
+    # settle that step (only completion settles the whole plan), but remembering
+    # the declaration lets a turn that ends in a clean final answer complete the
+    # plan instead of freezing the sidebar on a step the model reported done.
+    final_step_declared: bool = False
 
     @model_validator(mode="after")
     def _validate(self) -> AgentPlan:
@@ -327,6 +332,13 @@ class AgentPlan(BaseModel):
         if self.status != PlanStatus.ACTIVE:
             return None
         return self.steps[self.current_index]
+
+    @property
+    def on_final_step(self) -> bool:
+        return (
+            self.status == PlanStatus.ACTIVE
+            and self.current_index >= len(self.steps) - 1
+        )
 
     def advance(self) -> bool:
         """Mark the running step done and move to the next, if any.
