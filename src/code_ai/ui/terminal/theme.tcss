@@ -173,13 +173,12 @@ Screen {
   margin-bottom: 1;
 }
 
-/* Each sub-agent is its own card: a quietly bordered box with a blank line of
-   breathing room before the next one. */
+/* Each sub-agent is its own card: a quietly bordered box. The borders alone
+   separate neighbours; extra margin read as too much dead space between cards. */
 #subagents-body .agent-card {
   height: auto;
   border: round #2b3440;
   padding: 0 1;
-  margin-bottom: 1;
 }
 
 /* The delegated task folds like the transcript's thinking block: a one-line
