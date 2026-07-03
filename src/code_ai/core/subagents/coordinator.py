@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 from uuid import uuid4
@@ -109,10 +110,15 @@ class SubagentCoordinator:
     ) -> list[SubagentReport]:
         if not requests:
             return []
+        # A distinct genius-style name per agent in this fan-out, assigned up
+        # front so concurrently-dispatched agents never share a name.
+        make_name = self._name_factory()
         # Depth guard: a sub-agent (depth >= limit) cannot delegate further.
         if depth >= self._config.budgets.max_subagent_depth:
             return [
-                self._rejected(req, "Maximum sub-agent delegation depth reached.")
+                self._rejected(
+                    req, "Maximum sub-agent delegation depth reached.", name=make_name()
+                )
                 for req in requests
             ]
         # Per-turn cap: run the first N, refuse the overflow with a clear reason.
@@ -127,27 +133,46 @@ class SubagentCoordinator:
 
         semaphore = asyncio.Semaphore(self._config.budgets.max_concurrent_subagents)
 
-        async def _guarded(request: SubagentRequest) -> SubagentReport:
+        async def _guarded(request: SubagentRequest, name: str) -> SubagentReport:
             async with semaphore:
-                return await self._dispatch_one(request, cancel_event, depth)
+                return await self._dispatch_one(request, name, cancel_event, depth)
 
-        reports = list(await asyncio.gather(*(_guarded(req) for req in accepted)))
+        reports = list(
+            await asyncio.gather(
+                *(_guarded(req, make_name()) for req in accepted)
+            )
+        )
         reports.extend(
-            self._rejected(req, "Per-turn sub-agent limit reached; not dispatched.")
+            self._rejected(
+                req, "Per-turn sub-agent limit reached; not dispatched.", name=make_name()
+            )
             for req in overflow
         )
         return reports
 
+    @staticmethod
+    def _name_factory() -> Callable[[], str]:
+        """A generator of distinct genius-style names for one dispatch call."""
+        used: set[str] = set()
+
+        def make() -> str:
+            name = generate_agent_name(exclude=used)
+            used.add(name)
+            return name
+
+        return make
+
     async def _dispatch_one(
         self,
         request: SubagentRequest,
+        name: str,
         parent_cancel: asyncio.Event | None,
         depth: int,
     ) -> SubagentReport:
-        # Identity assigned once, at creation: a stable id plus a human-friendly
-        # Claude-style name used in every log and reference (kept across retries).
+        # Identity assigned once, at creation: a stable id plus the human-friendly
+        # genius-style name (assigned in dispatch), used in every log and
+        # reference and kept across retries.
         agent_id = uuid4().hex[:8]
-        name = generate_agent_name()
         profile = self._profiles.get(request.agent_type)
         if profile is None:
             reason = (
