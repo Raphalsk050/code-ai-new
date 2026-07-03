@@ -107,7 +107,9 @@ async def test_budget_overflow_via_length_finish_is_retried(tmp_path) -> None:
 async def test_budget_overflow_detected_via_usage_cap(tmp_path) -> None:
     provider = BudgetOverflowThenAnswerProvider(use_length_finish=False)
     app = build_application(
-        config=_config(tmp_path), provider=provider, failure_memory=FailureMemoryStore(tmp_path / "m")
+        config=_config(tmp_path),
+        provider=provider,
+        failure_memory=FailureMemoryStore(tmp_path / "m"),
     )
     events: list[str] = []
     app.subscribe(lambda event: events.append(event.event_type))
@@ -138,7 +140,9 @@ class AlwaysOverflowProvider(_BaseProvider):
 async def test_persistent_overflow_is_bounded_not_infinite(tmp_path) -> None:
     provider = AlwaysOverflowProvider()
     app = build_application(
-        config=_config(tmp_path), provider=provider, failure_memory=FailureMemoryStore(tmp_path / "m")
+        config=_config(tmp_path),
+        provider=provider,
+        failure_memory=FailureMemoryStore(tmp_path / "m"),
     )
 
     await app.start()

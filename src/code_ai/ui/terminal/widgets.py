@@ -7,7 +7,6 @@ from importlib import resources
 from rich.console import Console, RenderableType
 from rich.markdown import Markdown
 from rich.text import Text
-
 from textual.content import Content
 
 try:
