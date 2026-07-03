@@ -767,3 +767,103 @@ async def test_resubmitting_plan_emits_revised() -> None:
     assert len([e for e in events if e.event_type == "planning.plan.created"]) == 1
     assert len([e for e in events if e.event_type == "planning.plan.revised"]) == 1
     assert service.plan_snapshot()["current_step"] == "Revised step one"
+
+
+async def test_complete_plan_step_on_final_step_declares_instead_of_advancing() -> None:
+    # Regression: the model completed every step of its checklist via
+    # complete_plan_step, but the final call was silently ignored (the last step
+    # only settles with the whole plan) while the tool echoed success. The model
+    # then answered in prose believing it was done, and the sidebar froze at
+    # N-1/N. The final declaration must be remembered and the result made honest.
+    bus = AsyncEventBus(session_id="session")
+    service = PlannerService(config=PlannerConfig(), event_bus=bus, session_id="session")
+    await service.begin_turn("Analyse the repository", provider_supports_tools=True)
+    await service.submit_agent_plan(["Inspect files", "Present the summary"])
+
+    await service.record_tool_result(
+        tool_call_id="step_1",
+        tool_name="complete_plan_step",
+        payload={"completed_step": "Inspect files"},
+        success=True,
+    )
+    assert service.agent_plan.final_step_declared is False
+
+    await service.record_tool_result(
+        tool_call_id="step_2",
+        tool_name="complete_plan_step",
+        payload={"completed_step": "Present the summary"},
+        success=True,
+    )
+
+    snapshot = service.plan_snapshot()
+    assert snapshot["progress"] == "1/2"
+    assert snapshot["current_step"] == "Present the summary"
+    assert service.agent_plan.final_step_declared is True
+
+
+async def test_annotate_plan_step_payload_is_honest_only_on_final_step() -> None:
+    bus = AsyncEventBus(session_id="session")
+    service = PlannerService(config=PlannerConfig(), event_bus=bus, session_id="session")
+    await service.begin_turn("Analyse the repository", provider_supports_tools=True)
+    await service.submit_agent_plan(["Inspect files", "Present the summary"])
+
+    # Mid-plan the echo passes through untouched.
+    payload = {"completed_step": "Inspect files"}
+    assert service.annotate_plan_step_payload(payload) == payload
+
+    await service.record_tool_result(
+        tool_call_id="step_1",
+        tool_name="complete_plan_step",
+        payload=payload,
+        success=True,
+    )
+
+    annotated = service.annotate_plan_step_payload(
+        {"completed_step": "Present the summary"}
+    )
+    assert annotated["status"] == "final_step_still_running"
+    assert "complete_task" in annotated["note"]
+
+
+async def test_final_answer_settles_plan_whose_last_step_was_declared() -> None:
+    bus = AsyncEventBus(session_id="session")
+    events = _capture(bus)
+    service = PlannerService(config=PlannerConfig(), event_bus=bus, session_id="session")
+    await service.begin_turn("Analyse the repository", provider_supports_tools=True)
+    await service.submit_agent_plan(["Inspect files", "Present the summary"])
+    for step in ("Inspect files", "Present the summary"):
+        await service.record_tool_result(
+            tool_call_id=f"step_{step}",
+            tool_name="complete_plan_step",
+            payload={"completed_step": step},
+            success=True,
+        )
+
+    await service.settle_agent_plan_on_final_answer()
+
+    snapshot = service.plan_snapshot()
+    assert snapshot["status"] == "COMPLETED"
+    assert snapshot["progress"] == "2/2"
+    completed = [e for e in events if e.event_type == "planning.plan.completed"]
+    assert completed and completed[-1].payload["status"] == "COMPLETED"
+
+
+async def test_final_answer_leaves_undeclared_plan_active() -> None:
+    # Without the model ever declaring the final step done, a prose ending is
+    # genuinely unfinished work: the sidebar must keep showing where it stopped.
+    bus = AsyncEventBus(session_id="session")
+    service = PlannerService(config=PlannerConfig(), event_bus=bus, session_id="session")
+    await service.begin_turn("Analyse the repository", provider_supports_tools=True)
+    await service.submit_agent_plan(["Inspect files", "Present the summary"])
+    await service.record_tool_result(
+        tool_call_id="step_1",
+        tool_name="complete_plan_step",
+        payload={"completed_step": "Inspect files"},
+        success=True,
+    )
+
+    await service.settle_agent_plan_on_final_answer()
+
+    snapshot = service.plan_snapshot()
+    assert snapshot["status"] == "ACTIVE"
+    assert snapshot["progress"] == "1/2"

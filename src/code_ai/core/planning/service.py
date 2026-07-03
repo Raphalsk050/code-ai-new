@@ -654,6 +654,10 @@ class PlannerService:
         if not self.agent_plan or self.agent_plan.status != PlanStatus.ACTIVE:
             return
         if not self.agent_plan.advance():
+            # advance() refuses the final step by design; remember that the model
+            # declared it done so a clean final answer can settle the plan (see
+            # settle_agent_plan_on_final_answer).
+            self.agent_plan.final_step_declared = True
             return
         snapshot = self.plan_snapshot()
         await self.event_bus.emit(
@@ -667,6 +671,52 @@ class PlannerService:
                 snapshot,
                 source="core.planner",
             )
+
+    def annotate_plan_step_payload(
+        self, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Make complete_plan_step's result honest when it cannot advance.
+
+        The final checklist step stays running until the whole task settles, so
+        a plain echo would tell the model its checklist is finished while the
+        runtime still expects the task's actual conclusion. Without this note
+        the model believes it is done, answers in prose, and never learns why
+        the sidebar kept its last step spinning.
+        """
+        if self.agent_plan is None or not self.agent_plan.on_final_step:
+            return payload
+        return {
+            **payload,
+            "status": "final_step_still_running",
+            "note": (
+                "This is the plan's final step; it stays running until the task "
+                "settles. Do not call complete_plan_step again - conclude the "
+                "task now: call complete_task for workspace tasks, or deliver "
+                "your final answer."
+            ),
+        }
+
+    async def settle_agent_plan_on_final_answer(self) -> None:
+        """Complete the checklist when a turn ends cleanly in a final answer.
+
+        ``complete_all`` normally runs only when a ``complete_task`` claim is
+        accepted, but a read-only task legitimately ends in a plain prose
+        answer. When the model has already declared the final step done via
+        ``complete_plan_step``, that answer *is* the final step's execution, so
+        the plan settles instead of freezing the sidebar at N-1/N with the last
+        step spinning forever.
+        """
+        plan = self.agent_plan
+        if plan is None or plan.status != PlanStatus.ACTIVE:
+            return
+        if not plan.final_step_declared:
+            return
+        plan.complete_all()
+        await self.event_bus.emit(
+            "planning.plan.completed",
+            self.plan_snapshot(),
+            source="core.planner",
+        )
 
     async def _advance_after_evidence(
         self,
