@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from functools import partial
 from pathlib import Path
 from time import monotonic
@@ -11,7 +12,12 @@ from rich.text import Text
 from code_ai.bootstrap import build_application
 from code_ai.config.loader import persist_config_updates
 from code_ai.providers.model_listing import list_available_models
-from code_ai.ui.terminal.clipboard import copy_to_system_clipboard
+from code_ai.providers.models import ImageContent
+from code_ai.ui.terminal.clipboard import (
+    copy_to_system_clipboard,
+    paste_from_system_clipboard,
+    paste_image_from_system_clipboard,
+)
 from code_ai.ui.terminal.controller import TerminalController
 from code_ai.ui.terminal.slash_commands import (
     command_completion,
@@ -104,15 +110,25 @@ def create_terminal_app(application, *, config_path: Path | None = None):
         are pushed onto a history stack walked with Up/Down — but only when the
         cursor sits on the first/last line, so navigating a multi-line draft
         still moves between its lines like any editor.
+
+        Ctrl+V pastes from the OS clipboard, preferring an image rendition:
+        a pasted image becomes an ``[Image #N]`` placeholder in the text and
+        travels with the submitted prompt so a vision model can see it.
         """
 
         class Submitted(Message):
             """Posted when the user presses Enter to send the prompt."""
 
-            def __init__(self, input: MultilineInput, value: str) -> None:
+            def __init__(
+                self,
+                input: MultilineInput,
+                value: str,
+                images: list[ImageContent] | None = None,
+            ) -> None:
                 super().__init__()
                 self.input = input
                 self.value = value
+                self.images = list(images or [])
 
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             super().__init__(*args, **kwargs)
@@ -120,6 +136,38 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             # None means "not browsing"; the live draft is whatever is typed.
             self._history_index: int | None = None
             self._draft = ""
+            # Images pasted into the current draft, keyed by the placeholder
+            # text standing in for them ("[Image #1]", ...).
+            self._images: list[tuple[str, ImageContent]] = []
+
+        def attach_image(self, image: ImageContent) -> str:
+            placeholder = f"[Image #{len(self._images) + 1}]"
+            self._images.append((placeholder, image))
+            self.insert(placeholder)
+            return placeholder
+
+        def take_images(self, text: str) -> list[ImageContent]:
+            """Claim this draft's images whose placeholder survived editing.
+
+            Deleting an ``[Image #N]`` placeholder from the prompt drops that
+            attachment, exactly like removing it from the text. The pending
+            list is cleared either way — attachments never leak into the next
+            prompt (history recall re-sends only the placeholder text).
+            """
+            taken = [image for placeholder, image in self._images if placeholder in text]
+            self._images.clear()
+            return taken
+
+        def _paste_from_clipboard(self) -> None:
+            image_bytes = paste_image_from_system_clipboard()
+            if image_bytes is not None:
+                self.attach_image(
+                    ImageContent(data=base64.b64encode(image_bytes).decode("ascii"))
+                )
+                return
+            text = paste_from_system_clipboard()
+            if text:
+                self.insert(text)
 
         @property
         def value(self) -> str:
@@ -180,7 +228,17 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 # Enter sends the prompt; a newline needs an explicit modifier.
                 event.stop()
                 event.prevent_default()
-                self.post_message(self.Submitted(self, self.text))
+                self.post_message(
+                    self.Submitted(self, self.text, self.take_images(self.text))
+                )
+                return
+            if key == "ctrl+v":
+                # Explicit paste reads the OS clipboard directly, so an image
+                # (which the terminal's own paste path cannot deliver) becomes
+                # an attachment. Regular terminal paste still works unchanged.
+                event.stop()
+                event.prevent_default()
+                self._paste_from_clipboard()
                 return
             if key in ("shift+enter", "ctrl+j", "alt+enter"):
                 event.stop()
@@ -758,7 +816,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             if text.strip().startswith("/config"):
                 await self._dispatch_config(text.strip())
                 return
-            asyncio.create_task(self.controller.submit(text))
+            asyncio.create_task(self.controller.submit(text, images=event.images))
 
         async def _start_act_mode(self) -> None:
             """Switch to act mode and, when a plan is ready, run it right away.
