@@ -408,6 +408,11 @@ class AgentOrchestrator:
 
         if response.text:
             self.conversation.add_assistant(response.text, response.tool_calls)
+            if self.planner and self.planner.enabled:
+                # The prose answer is the final checklist step's execution when
+                # the model already declared that step done; settle the sidebar
+                # instead of leaving its last step spinning after the turn.
+                await self.planner.settle_agent_plan_on_final_answer()
         return await self._finish_turn(response.text, response, state)
 
     async def _recover_text_tool_calls(
@@ -983,6 +988,10 @@ class AgentOrchestrator:
                 rejection = await self._completion_rejection(call, payload)
                 if rejection is not None:
                     return rejection
+            if self.planner and self.planner.enabled and call.name == "complete_plan_step":
+                # On the final step the later planner advance is a deliberate
+                # no-op; the result must say so instead of echoing success.
+                payload = self.planner.annotate_plan_step_payload(payload)
             content = bound_text(
                 json.dumps(payload, indent=2, sort_keys=True, default=str),
                 self.config.budgets.max_tool_output_chars,
