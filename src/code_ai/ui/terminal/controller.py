@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from code_ai.app.service import CodeAIApplication
 from code_ai.events.models import EventEnvelope
+from code_ai.providers.models import ImageContent
 from code_ai.ui.terminal.view_models import TerminalViewModel
 
 
@@ -15,9 +16,9 @@ class TerminalController:
     async def handle_event(self, event: EventEnvelope) -> None:
         self.view_model.apply(event)
 
-    async def submit(self, text: str) -> None:
+    async def submit(self, text: str, images: list[ImageContent] | None = None) -> None:
         if text.strip():
-            await self.app.submit_user_message(text.strip())
+            await self.app.submit_user_message(text.strip(), images=list(images or []))
 
     async def compact(self) -> str:
         result = await self.app.request_context_compression()

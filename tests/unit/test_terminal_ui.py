@@ -26,6 +26,7 @@ class FakeTerminalApplication:
     def __init__(self, tmp_path) -> None:
         self.subscribers = []
         self.submitted: list[str] = []
+        self.submitted_images: list[list[object]] = []
         self.sequence = 0
         config = AppConfig.from_mapping(
             {"api_mode": "ollama", "workspace": str(tmp_path), "model": "fake-model"}
@@ -44,8 +45,9 @@ class FakeTerminalApplication:
         await self.emit("status.changed", {"state": "READY"})
         await self.emit("phase.changed", {"phase": "waiting_user"})
 
-    async def submit_user_message(self, text: str) -> TurnResult:
+    async def submit_user_message(self, text: str, *, images=None) -> TurnResult:
         self.submitted.append(text)
+        self.submitted_images.append(list(images or []))
         await self.emit("user.message", {"text": text})
         await self.emit("model.stream.delta", {"text": "ok"})
         return TurnResult(text="ok", response=None)
@@ -202,6 +204,70 @@ async def test_ctrl_j_inserts_newline_and_enter_submits_multiline(tmp_path) -> N
         await pilot.pause(0.2)
         assert fake_app.submitted == ["line1\nline2"]
         assert input_widget.text == ""
+
+
+async def test_ctrl_v_attaches_clipboard_image_and_submits_it(tmp_path, monkeypatch) -> None:
+    import base64
+
+    png = b"\x89PNG\r\n\x1a\nfake-pixels"
+    monkeypatch.setattr(
+        "code_ai.ui.terminal.app.paste_image_from_system_clipboard", lambda: png
+    )
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.focus()
+        await pilot.press("l", "o", "o", "k", "space")
+        await pilot.press("ctrl+v")
+        assert input_widget.text == "look [Image #1]"
+
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert fake_app.submitted == ["look [Image #1]"]
+        (images,) = fake_app.submitted_images
+        assert [image.data for image in images] == [base64.b64encode(png).decode("ascii")]
+        assert images[0].media_type == "image/png"
+
+
+async def test_deleting_the_placeholder_drops_the_attachment(tmp_path, monkeypatch) -> None:
+    png = b"\x89PNG\r\n\x1a\nfake-pixels"
+    monkeypatch.setattr(
+        "code_ai.ui.terminal.app.paste_image_from_system_clipboard", lambda: png
+    )
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.focus()
+        await pilot.press("ctrl+v")
+        assert input_widget.text == "[Image #1]"
+        # Editing the placeholder out of the prompt removes the attachment.
+        input_widget.value = "just words"
+
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert fake_app.submitted == ["just words"]
+        assert fake_app.submitted_images == [[]]
+
+
+async def test_ctrl_v_falls_back_to_text_paste_without_an_image(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "code_ai.ui.terminal.app.paste_image_from_system_clipboard", lambda: None
+    )
+    monkeypatch.setattr(
+        "code_ai.ui.terminal.app.paste_from_system_clipboard", lambda: "copied text"
+    )
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.focus()
+        await pilot.press("ctrl+v")
+        assert input_widget.text == "copied text"
 
 
 async def test_ctrl_c_copies_active_selection_instead_of_quitting(tmp_path) -> None:
