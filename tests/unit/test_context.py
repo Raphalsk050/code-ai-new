@@ -4,7 +4,13 @@ from code_ai.context.compression import ContextCompressor
 from code_ai.context.conversation import ConversationState
 from code_ai.context.token_counting import TokenCounter
 from code_ai.events.bus import AsyncEventBus
-from code_ai.providers.models import Message, ModelRequest, ModelResponse, ToolCall
+from code_ai.providers.models import (
+    ImageContent,
+    Message,
+    ModelRequest,
+    ModelResponse,
+    ToolCall,
+)
 
 
 class _StubProvider:
@@ -44,6 +50,47 @@ def test_add_assistant_ignores_empty_turn() -> None:
     conversation = ConversationState()
     conversation.add_assistant("", None)
     assert conversation.messages == []
+
+
+def test_images_are_counted_flat_not_by_base64_size() -> None:
+    import base64
+
+    counter = TokenCounter(model="unknown-local-model")
+    # A realistic pasted screenshot: megabytes of base64.
+    huge = ImageContent(data=base64.b64encode(b"\x89PNG" + b"\x00" * 4_000_000).decode("ascii"))
+    text_only = counter.count_request([Message(role="user", content="look [Image #1]")], [])
+    with_image = counter.count_request(
+        [Message(role="user", content="look [Image #1]", images=[huge])], []
+    )
+
+    # The image adds a bounded visual-token estimate, never its payload size.
+    added = with_image.tokens - text_only.tokens
+    assert 0 < added <= 2000
+    assert with_image.estimated
+
+
+async def test_pasted_screenshot_does_not_overflow_the_context_budget() -> None:
+    import base64
+
+    # Regression: counting the base64 payload as prompt text made a single
+    # pasted screenshot "not fit in the context window".
+    bus = AsyncEventBus(session_id="session")
+    conversation = ConversationState()
+    huge = ImageContent(data=base64.b64encode(b"\x89PNG" + b"\x00" * 4_000_000).decode("ascii"))
+    conversation.add_user("what is in this screenshot? [Image #1]", images=[huge])
+
+    compressor = ContextCompressor(
+        counter=TokenCounter(model="unknown-local-model"),
+        max_context_tokens=256000,
+        threshold=0.82,
+        target=0.55,
+        output_reserve=32768,
+        event_bus=bus,
+    )
+    result = await compressor.ensure_capacity(conversation, [])
+
+    assert not result.compressed
+    assert conversation.messages[0].images == [huge]
 
 
 async def test_compression_preserves_recent_request_and_resets_remote_state() -> None:
