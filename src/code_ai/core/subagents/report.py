@@ -41,7 +41,7 @@ class SubagentReport:
     agent_type: str
     task: str
     status: SubagentStatus
-    # Human-friendly ``adjective-adjective-noun`` name assigned at creation and
+    # Human-friendly genius-style name (e.g. "Turing") assigned at creation and
     # used in every log/reference to this agent. Defaults to empty for the few
     # call sites that predate a name (e.g. a bare rejection).
     name: str = ""
