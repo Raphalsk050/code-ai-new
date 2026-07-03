@@ -41,6 +41,10 @@ class SubagentReport:
     agent_type: str
     task: str
     status: SubagentStatus
+    # Human-friendly ``adjective-adjective-noun`` name assigned at creation and
+    # used in every log/reference to this agent. Defaults to empty for the few
+    # call sites that predate a name (e.g. a bare rejection).
+    name: str = ""
     summary: str = ""
     error: str | None = None
     usage: dict[str, int] = field(default_factory=dict)
@@ -55,6 +59,7 @@ class SubagentReport:
         return {
             "agent_id": self.agent_id,
             "agent_type": self.agent_type,
+            "name": self.name,
             "task": bound_text(self.task, _TASK_PREVIEW_CHARS),
             "status": self.status.value,
             "summary": bound_text(self.summary, max_summary_chars),
