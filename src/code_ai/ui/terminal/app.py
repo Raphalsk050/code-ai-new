@@ -36,9 +36,12 @@ from code_ai.ui.terminal.widgets import (
     render_context_meter,
     render_conversation_line,
     render_plan,
-    render_subagents,
+    render_subagent_header,
+    render_subagent_task,
+    render_subagents_summary,
     resolve_spinner,
     spinner_color,
+    subagent_task_preview,
     thinking_body,
     working_label,
 )
@@ -341,22 +344,75 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 render_plan(self._steps, self._progress, self._status, glyph, color)
             )
 
-    class SubagentPanel(Static):
+    class SubagentCard(Vertical):
+        """One delegated sub-agent's card: a title row over its folded task.
+
+        The delegated task collapses into a ``Collapsible`` (like the
+        transcript's "thinking" block): a one-line dim preview the user can
+        click to read the full text and the agent's latest activity.
+        """
+
+        def __init__(self, agent: dict[str, str], **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self._agent = dict(agent)
+            self._glyph = " "
+            self._color = WORKING_BASE_COLOR
+
+        def compose(self) -> ComposeResult:
+            yield Static("", classes="agent-card-header")
+            yield Collapsible(
+                Static("", classes="agent-task-body", markup=False),
+                title=subagent_task_preview(self._agent.get("task", "")),
+                collapsed=True,
+                classes="agent-task",
+            )
+
+        def on_mount(self) -> None:
+            self._apply()
+
+        def paint(self, agent: dict[str, str], glyph: str, color: str) -> None:
+            self._agent = dict(agent)
+            self._glyph = glyph
+            self._color = color
+            # A freshly created card paints itself in on_mount instead; its
+            # composed children do not exist yet.
+            if self.is_mounted:
+                self._apply()
+
+        def _apply(self) -> None:
+            self.query_one(".agent-card-header", Static).update(
+                render_subagent_header(self._agent, self._glyph, self._color)
+            )
+            self.query_one(Collapsible).title = subagent_task_preview(
+                self._agent.get("task", "")
+            )
+            self.query_one(".agent-task-body", Static).update(
+                render_subagent_task(self._agent)
+            )
+
+    class SubagentPanel(Vertical):
         """Live roster of delegated sub-agents, shown below the plan panel.
 
-        Mirrors the PlanPanel: each running agent's marker is the shared spinner,
-        so the timer only ticks while at least one agent is still working.
+        One card per agent (see SubagentCard) under a one-line summary. Cards
+        are keyed by agent id and repainted in place — never remounted while
+        the roster only grows — so a task the user expanded stays expanded.
+        Mirrors the PlanPanel's spinner: running cards borrow the shared
+        glyph, and the timer only ticks while at least one agent is working.
         """
 
         TICK = 0.08
 
         def __init__(self, style: SpinnerStyle, **kwargs: Any) -> None:
-            super().__init__("", **kwargs)
+            super().__init__(**kwargs)
             self._style = style
             self._agents: list[dict[str, str]] = []
+            self._cards: dict[str, SubagentCard] = {}
             self._frame = 0
             self._running = False
             self._timer = None
+
+        def compose(self) -> ComposeResult:
+            yield Static("", classes="agents-summary")
 
         def on_mount(self) -> None:
             self._timer = self.set_interval(self.TICK, self._tick, pause=True)
@@ -368,6 +424,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
 
         def update_agents(self, agents: list[dict[str, str]]) -> None:
             self._agents = agents
+            self._sync_cards()
             has_running = any(agent.get("status") == "running" for agent in agents)
             if has_running and not self._running:
                 self._running = True
@@ -380,6 +437,32 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                     self._timer.pause()
             self._paint()
 
+        def _sync_cards(self) -> None:
+            """Mount/remove cards so one exists per roster entry.
+
+            The roster only appends within a turn and resets between turns, so
+            growth reuses the existing cards (keeping their collapsed state)
+            and anything else rebuilds from scratch.
+            """
+            keys = [
+                agent.get("agent_id") or f"agent-{index}"
+                for index, agent in enumerate(self._agents)
+            ]
+            current = list(self._cards)
+            if keys == current:
+                return
+            if keys[: len(current)] != current:
+                for card in self._cards.values():
+                    card.remove()
+                self._cards = {}
+                current = []
+            for key, agent in zip(
+                keys[len(current) :], self._agents[len(current) :], strict=True
+            ):
+                card = SubagentCard(agent, classes="agent-card")
+                self._cards[key] = card
+                self.mount(card)
+
         def _tick(self) -> None:
             self._frame += 1
             self._paint()
@@ -391,7 +474,11 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 color = spinner_color((self._frame * self.TICK) / WORKING_PULSE_PERIOD)
             else:
                 color = WORKING_BASE_COLOR
-            self.update(render_subagents(self._agents, glyph, color))
+            self.query_one(".agents-summary", Static).update(
+                render_subagents_summary(self._agents)
+            )
+            for card, agent in zip(self._cards.values(), self._agents, strict=True):
+                card.paint(agent, glyph, color)
 
     class CodeAITerminalApp(App[None]):
         CSS_PATH = "theme.tcss"
