@@ -285,46 +285,60 @@ _AGENT_DETAIL_STYLE = "#56606e"
 _AGENT_TASK_WIDTH = 30
 
 
-def render_subagents(
-    agents: list[dict[str, str]],
-    running_glyph: str,
-    running_color: str,
-) -> Text:
-    """Render the live sub-agent roster as Rich Text for the AGENTS panel.
-
-    One row per delegated agent: a status marker (the live spinner while it
-    runs), its Claude-style name with the agent type, the task it was given, and
-    what it is doing right now.
-    """
-    text = Text()
+def render_subagents_summary(agents: list[dict[str, str]]) -> Text:
+    """The AGENTS panel's one-line roster summary ("3 agent(s) · 1 running")."""
     running = sum(1 for agent in agents if agent.get("status") == "running")
     header = f"{len(agents)} agent(s)"
     if running:
         header += f" · {running} running"
-    text.append(header + "\n", style=_PLAN_HEADER_STYLE)
+    return Text(header, style=_PLAN_HEADER_STYLE)
 
-    for index, agent in enumerate(agents):
-        status = agent.get("status", "running")
-        agent_type = agent.get("agent_type", "agent")
-        label = agent.get("name") or agent_type
-        task = _truncate_title(agent.get("task", ""), _AGENT_TASK_WIDTH)
-        detail = agent.get("detail", "")
-        if status == "running":
-            marker, marker_style = running_glyph, f"bold {running_color}"
-        else:
-            marker = _AGENT_MARKERS.get(status, "•")
-            marker_style = _AGENT_MARKER_STYLES.get(status, "#56606e")
-        text.append(marker + " ", style=marker_style)
-        text.append(label, style=_AGENT_TYPE_STYLES.get(status, "#9aa4b2"))
-        if agent.get("name"):
-            # The type as a dim suffix, so the name reads as the agent's identity.
-            text.append(f"  {agent_type}", style=_AGENT_DETAIL_STYLE)
-        if task:
-            text.append("\n  " + task, style=_AGENT_DETAIL_STYLE)
-        if detail:
-            text.append("\n  " + detail, style=_AGENT_DETAIL_STYLE)
-        if index < len(agents) - 1:
-            text.append("\n")
+
+def render_subagent_header(
+    agent: dict[str, str],
+    running_glyph: str,
+    running_color: str,
+) -> Text:
+    """One sub-agent card's title row: status marker, name, dim type suffix.
+
+    The marker is the live spinner while the agent runs and a terminal glyph
+    (✓ / ✗ / ⊘) once it settles.
+    """
+    text = Text()
+    status = agent.get("status", "running")
+    agent_type = agent.get("agent_type", "agent")
+    label = agent.get("name") or agent_type
+    if status == "running":
+        marker, marker_style = running_glyph, f"bold {running_color}"
+    else:
+        marker = _AGENT_MARKERS.get(status, "•")
+        marker_style = _AGENT_MARKER_STYLES.get(status, "#56606e")
+    text.append(marker + " ", style=marker_style)
+    text.append(label, style=_AGENT_TYPE_STYLES.get(status, "#9aa4b2"))
+    if agent.get("name"):
+        # The type as a dim suffix, so the name reads as the agent's identity.
+        text.append(f"  {agent_type}", style=_AGENT_DETAIL_STYLE)
+    return text
+
+
+def subagent_task_preview(task: str) -> str:
+    """Collapsed-title preview of a delegated task: one flattened, capped line.
+
+    Multi-line tasks are squashed to single spaces so the Collapsible title
+    never wraps; the full text lives in the expanded body.
+    """
+    flattened = " ".join(task.split())
+    return _truncate_title(flattened or "task", _AGENT_TASK_WIDTH)
+
+
+def render_subagent_task(agent: dict[str, str]) -> Text:
+    """Expanded card body: the full delegated task plus the latest activity."""
+    text = Text()
+    task = agent.get("task", "").strip()
+    detail = agent.get("detail", "").strip()
+    text.append(task or "(no task)", style=_AGENT_DETAIL_STYLE)
+    if detail:
+        text.append("\n· " + detail, style=_AGENT_DETAIL_STYLE)
     return text
 
 
