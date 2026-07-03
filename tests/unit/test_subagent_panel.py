@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from code_ai.events.models import EventEnvelope
 from code_ai.ui.terminal.view_models import TerminalViewModel
-from code_ai.ui.terminal.widgets import render_subagents
+from code_ai.ui.terminal.widgets import (
+    render_subagent_header,
+    render_subagent_task,
+    render_subagents_summary,
+    subagent_task_preview,
+)
 
 
 def _event(event_type: str, payload: dict[str, object]) -> EventEnvelope:
@@ -97,36 +102,60 @@ def test_new_user_turn_clears_prior_agents() -> None:
     assert vm.subagents_visible is False
 
 
-def test_render_subagents_shows_marker_task_and_activity() -> None:
+def test_summary_counts_agents_and_running() -> None:
     agents = [
-        {
-            "agent_type": "explorer",
-            "task": "map the loader",
-            "status": "running",
-            "detail": "running read_file",
-        },
-        {"agent_type": "coder", "task": "add flag", "status": "completed", "detail": "done"},
-        {
-            "agent_type": "reviewer",
-            "task": "review diff",
-            "status": "failed",
-            "detail": "timeout",
-        },
+        {"agent_type": "explorer", "status": "running"},
+        {"agent_type": "coder", "status": "completed"},
+        {"agent_type": "reviewer", "status": "failed"},
     ]
-    text = render_subagents(agents, running_glyph="*", running_color="#ffffff").plain
-
+    text = render_subagents_summary(agents).plain
     assert "3 agent(s)" in text
     assert "1 running" in text
-    assert "explorer" in text and "map the loader" in text
+
+
+def test_summary_empty_is_just_the_count() -> None:
+    assert render_subagents_summary([]).plain == "0 agent(s)"
+
+
+def test_card_header_shows_spinner_name_and_type() -> None:
+    agent = {"agent_type": "explorer", "name": "Turing", "status": "running"}
+    text = render_subagent_header(agent, running_glyph="*", running_color="#ffffff").plain
+    assert text.startswith("* ")
+    assert "Turing" in text
+    assert "explorer" in text
+
+
+def test_card_header_settled_markers() -> None:
+    done = render_subagent_header(
+        {"agent_type": "coder", "status": "completed"}, "*", "#ffffff"
+    ).plain
+    failed = render_subagent_header(
+        {"agent_type": "reviewer", "status": "failed"}, "*", "#ffffff"
+    ).plain
+    assert done.startswith("✓ ")
+    assert failed.startswith("✗ ")
+    # Without a name the type doubles as the label, shown once.
+    assert done.count("coder") == 1
+
+
+def test_task_preview_flattens_and_truncates() -> None:
+    preview = subagent_task_preview("map the\nloader and every\nconfig path in the repo")
+    assert "\n" not in preview
+    assert preview.endswith("…")
+    assert len(preview) <= 30
+    # Short tasks pass through untouched; empty ones get a placeholder.
+    assert subagent_task_preview("add flag") == "add flag"
+    assert subagent_task_preview("") == "task"
+
+
+def test_task_body_has_full_task_and_activity() -> None:
+    agent = {
+        "task": "map the loader and every config path in the repo",
+        "detail": "running read_file",
+    }
+    text = render_subagent_task(agent).plain
+    assert "map the loader and every config path in the repo" in text
     assert "running read_file" in text
-    # Terminal markers for the settled agents.
-    assert "✓" in text
-    assert "✗" in text
-
-
-def test_render_subagents_empty_is_just_header() -> None:
-    text = render_subagents([], running_glyph="*", running_color="#ffffff").plain
-    assert "0 agent(s)" in text
 
 
 def test_agents_and_plan_coexist_and_persist_at_turn_end() -> None:
