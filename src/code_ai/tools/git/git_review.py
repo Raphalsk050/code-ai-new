@@ -64,7 +64,9 @@ class GitReviewTool:
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         focus = arguments.get("focus")
-        focus = focus.strip().lower() if isinstance(focus, str) and focus.strip() else _DEFAULT_FOCUS
+        focus = (
+            focus.strip().lower() if isinstance(focus, str) and focus.strip() else _DEFAULT_FOCUS
+        )
         bundle = _BUNDLES.get(focus, _BUNDLES[_DEFAULT_FOCUS])
         cwd = context.workspace.relative_workdir(None)
         timeout = min(

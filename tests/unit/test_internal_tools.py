@@ -3,9 +3,9 @@ from __future__ import annotations
 import asyncio
 
 from code_ai.config.models import AppConfig
+from code_ai.core.errors import ToolArgumentError
 from code_ai.events.bus import AsyncEventBus
 from code_ai.tools.base import ToolContext
-from code_ai.core.errors import ToolArgumentError
 from code_ai.tools.internal import (
     CompleteTaskTool,
     FinishDiscoveryTool,

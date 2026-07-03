@@ -4,7 +4,7 @@ import json
 import os
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -118,7 +118,7 @@ class ModelDebugLogger:
     def _emit(self, label: str, payload: Any) -> None:
         try:
             body = json.dumps(_jsonable(payload), indent=2, ensure_ascii=False, default=str)
-            stamp = datetime.now(timezone.utc).isoformat()
+            stamp = datetime.now(UTC).isoformat()
             block = f"\n===== {label} @ {stamp} =====\n{body}\n"
             with _WRITE_LOCK:
                 with self._path.open("a", encoding="utf-8") as handle:

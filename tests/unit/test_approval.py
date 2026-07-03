@@ -79,7 +79,9 @@ def test_render_preview_highlights_by_language() -> None:
     from code_ai.ui.terminal.approval import _render_preview
 
     meta, body = _render_preview(
-        ApprovalRequest("c", "write_file", {"path": "demo.py", "content": "def x():\n    return 1\n"}, "s")
+        ApprovalRequest(
+            "c", "write_file", {"path": "demo.py", "content": "def x():\n    return 1\n"}, "s"
+        )
     )
     assert "demo.py" in meta
     assert body.lexer.name == "Python"
@@ -194,7 +196,6 @@ async def test_approval_modal_shows_justification_when_learn_enabled() -> None:
 
 async def test_approval_modal_hides_justification_when_learn_disabled() -> None:
     from textual.app import App
-    from textual.widgets import Static
 
     from code_ai.ui.terminal.approval import ApprovalModal
 

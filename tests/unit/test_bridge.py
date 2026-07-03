@@ -119,7 +119,9 @@ class _StubApp:
         self.analyzed = {"code": code, "path": path, "language": language}
         return [{"id": "x", "title": "T", "rationale": "R", "impact": "high"}]
 
-    async def plan_refactor(self, *, code: str, path: str = "", language: str = "", improvements: list) -> str:
+    async def plan_refactor(
+        self, *, code: str, path: str = "", language: str = "", improvements: list
+    ) -> str:
         self.planned = {"code": code, "improvements": improvements}
         return "# plan"
 
@@ -128,7 +130,12 @@ class _StubApp:
 
     async def update_settings(self, updates: dict) -> dict:
         self.updated_settings = updates
-        return {"applied": list(updates), "restart_required": [], "errors": {}, "settings": {"model": "m"}}
+        return {
+            "applied": list(updates),
+            "restart_required": [],
+            "errors": {},
+            "settings": {"model": "m"},
+        }
 
     async def request_context_compression(self) -> CompressionResult:
         return CompressionResult(
