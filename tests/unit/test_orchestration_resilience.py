@@ -672,3 +672,96 @@ async def test_per_tool_timeout_cooperatively_cancels_without_killing_turn(tmp_p
     assert "tool.call.failed" in events
     assert result.cancelled is False
     assert result.text == "after timeout"
+
+
+class ChecklistThenProseProvider(_BaseProvider):
+    """Submits a checklist, declares every step done, then answers in prose.
+
+    Mirrors the field failure: the final complete_plan_step cannot advance (the
+    last step only settles with the whole plan), the model believes it is done
+    and ends the turn with a prose answer instead of complete_task.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        if self.calls == 1:
+            calls = [
+                ToolCall(
+                    id="c1",
+                    name="submit_plan",
+                    arguments={
+                        "steps": ["Inspect the workspace", "Present the summary"]
+                    },
+                )
+            ]
+        elif self.calls == 2:
+            calls = [
+                ToolCall(
+                    id="c2",
+                    name="complete_plan_step",
+                    arguments={"completed_step": "Inspect the workspace"},
+                )
+            ]
+        elif self.calls == 3:
+            calls = [
+                ToolCall(
+                    id="c3",
+                    name="complete_plan_step",
+                    arguments={"completed_step": "Present the summary"},
+                )
+            ]
+        else:
+            yield ProviderEvent(
+                kind="completed",
+                response=ModelResponse(
+                    text="Here is the architecture summary.",
+                    finish_reason=FinishReason.STOP,
+                ),
+            )
+            return
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(
+                tool_calls=calls, finish_reason=FinishReason.TOOL_CALLS
+            ),
+        )
+
+
+async def test_prose_finish_settles_fully_declared_checklist(tmp_path) -> None:
+    # Field regression: an analysis turn whose model completed every checklist
+    # step via complete_plan_step and then answered in prose left the sidebar
+    # frozen at N-1/N with the last step spinning, because only complete_task
+    # used to settle the plan.
+    provider = ChecklistThenProseProvider()
+    app = build_application(config=_config(tmp_path), provider=provider)
+    events: list = []
+    app.subscribe(lambda event: events.append(event))
+
+    await app.start()
+    result = await app.submit_user_message(
+        "analyze the repository architecture and present a summary"
+    )
+    await app.close()
+
+    assert result.error is None
+    assert result.text == "Here is the architecture summary."
+
+    # The final complete_plan_step result is honest about not advancing.
+    step_results = [
+        event.payload.get("result")
+        for event in events
+        if event.event_type == "tool.call.completed"
+        and event.payload.get("name") == "complete_plan_step"
+    ]
+    assert len(step_results) == 2
+    assert "status" not in step_results[0]
+    assert step_results[1]["status"] == "final_step_still_running"
+
+    # The prose ending settles the checklist so the sidebar shows it complete.
+    completed = [e for e in events if e.event_type == "planning.plan.completed"]
+    assert completed
+    assert completed[-1].payload["status"] == "COMPLETED"
+    assert completed[-1].payload["progress"] == "2/2"
