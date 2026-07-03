@@ -115,7 +115,7 @@ async def test_agent_gets_a_name_used_in_report_and_events(tmp_path) -> None:
     reports = await coord.dispatch([SubagentRequest("explorer", "find X")])
 
     name = reports[0].name
-    assert re.match(r"^[a-z]+-[a-z]+-[a-z]+$", name), name
+    assert re.match(r"^[A-Z][a-zA-Z]+(?:-\d+)?$", name), name
     # The same name is carried on the lifecycle events for this agent.
     started = next(n for et, n in seen if et == "subagent.started")
     completed = next(n for et, n in seen if et == "subagent.completed")
@@ -123,6 +123,21 @@ async def test_agent_gets_a_name_used_in_report_and_events(tmp_path) -> None:
     assert completed == name
     # It also survives serialization for the model.
     assert reports[0].to_dict()["name"] == name
+
+
+async def test_fan_out_names_are_distinct(tmp_path) -> None:
+    async def behaviour(prompt, _cancel):
+        return TurnResult(text="ok", response=None)
+
+    runtime = _FakeRuntime(behaviour)
+    coord = _coordinator(tmp_path, runtime)
+    reports = await coord.dispatch(
+        [SubagentRequest("explorer", str(i)) for i in range(8)]
+    )
+
+    names = [r.name for r in reports]
+    assert all(names)
+    assert len(set(names)) == len(names)  # no two agents share a name
 
 
 async def test_parallel_fan_out_runs_concurrently(tmp_path) -> None:
