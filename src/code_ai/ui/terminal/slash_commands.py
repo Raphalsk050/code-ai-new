@@ -70,6 +70,11 @@ SLASH_COMMANDS = [
         "/config model ",
     ),
     SlashCommand(
+        "/config vision-model <name>",
+        "Vision model that reads pasted images for a non-multimodal main model.",
+        "/config vision-model ",
+    ),
+    SlashCommand(
         "/config api-key <key>",
         "Persist the provider API key (redacted). Restart required.",
         "/config api-key ",
@@ -229,6 +234,20 @@ def handle_config_command(application: Any, command_text: str, *, config_path: P
             config_path=config_path,
             changes={"model": " ".join(parts[2:])},
             live_fields={"model"},
+            restart_required=False,
+        )
+    if action == "vision-model":
+        if len(parts) < 3:
+            return "command> Usage: /config vision-model <name|off>"
+        value = " ".join(parts[2:])
+        # "off"/"none" restores the default: images go to the main model.
+        if value.strip().lower() in {"off", "none"}:
+            value = ""
+        return _apply_config_change(
+            application,
+            config_path=config_path,
+            changes={"vision_model": value},
+            live_fields={"vision_model"},
             restart_required=False,
         )
     if action == "language":
