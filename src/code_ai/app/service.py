@@ -401,6 +401,7 @@ class CodeAIApplication:
         "terminal_theme",
         "inline_hints_enabled",
         "inline_model",
+        "vision_model",
     }
     # Top-level fields the providers read once at bootstrap; need a restart.
     _RESTART_SETTINGS = {"api_mode", "base_url", "api_key", "workspace"}
@@ -427,6 +428,7 @@ class CodeAIApplication:
             "learn": config.learn,
             "inline_hints_enabled": config.inline_hints_enabled,
             "inline_model": config.inline_model,
+            "vision_model": config.vision_model,
             "max_context_tokens": config.budgets.max_context_tokens,
             "workspace": str(config.workspace),
             "supported": {
