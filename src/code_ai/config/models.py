@@ -339,6 +339,12 @@ class AppConfig:
     # the agent uses a stronger one.
     inline_hints_enabled: bool = False
     inline_model: str = ""
+    # Vision sidekick for non-multimodal main models. When set, images pasted
+    # into a prompt are described by this model in a one-off call and the
+    # description is injected into the conversation instead of the raw pixels,
+    # so the main model never receives image payloads it cannot read. Empty
+    # sends images straight to the main model (multimodal setups).
+    vision_model: str = ""
     debug: bool = False
     show_ui: bool = True
     ssl_verification: bool = False
@@ -382,6 +388,7 @@ class AppConfig:
             model=str(data.get("model", "gemma4:31b-cloud")),
             inline_hints_enabled=bool(data.get("inline_hints_enabled", False)),
             inline_model=str(data.get("inline_model", "")),
+            vision_model=str(data.get("vision_model", "")),
             debug=bool(data.get("debug", False)),
             show_ui=bool(data.get("show_ui", True)),
             ssl_verification=bool(data.get("ssl_verification", False)),
