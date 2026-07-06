@@ -249,6 +249,25 @@ command operations inside the configured workspace, and be explicit about
 verification that was actually performed.
 """
 
+VISION_ANALYSIS_PROMPT = """You are the eyes of a coding agent whose main model \
+cannot see images. Describe every attached image exhaustively and factually so \
+the agent can act on your description alone.
+
+For each image, numbered [Image #1], [Image #2], ... in attachment order:
+- Transcribe ALL visible text verbatim: code, error messages, logs, terminal
+  output, file names, menu labels, URLs. Preserve formatting and line breaks in
+  fenced code blocks.
+- Describe the layout and visual structure: what kind of screen it is (editor,
+  terminal, browser, diagram, photo), colors or highlights that carry meaning
+  (red underlines, failing badges, selected rows), and spatial relationships.
+- Point out anything that looks like a problem: errors, warnings, misaligned
+  UI, unexpected values.
+
+Do not answer the user's request, do not speculate beyond what is visible, and
+do not omit text because it seems unimportant. Output only the descriptions,
+one section per image, headed by its [Image #N] tag.
+"""
+
 TASK_CLASSIFICATION_PROMPT = """Classify the user's task into a bounded task profile.
 Return strict JSON only. Do not downgrade obvious implementation, fix, update,
 create, or refactor requests into read-only explanations.

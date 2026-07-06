@@ -33,7 +33,7 @@ from code_ai.core.planning.policy import PolicyDecision
 from code_ai.core.rules import RulesService
 from code_ai.core.state import AgentState
 from code_ai.events.bus import AsyncEventBus
-from code_ai.prompts import build_system_prompt
+from code_ai.prompts import VISION_ANALYSIS_PROMPT, build_system_prompt
 from code_ai.providers.base import ModelProvider
 from code_ai.providers.models import (
     FinishReason,
@@ -272,6 +272,14 @@ class AgentOrchestrator:
         # shows what the user actually typed.
         if context:
             self.conversation.add_user(context)
+        if images and self._vision_model():
+            analysis = await self._describe_images(text, images)
+            if analysis is not None:
+                # The vision model already turned the pixels into text; keep the
+                # raw images out of the conversation so a non-multimodal main
+                # model never receives payloads it cannot read.
+                self.conversation.add_user(analysis)
+                images = None
         self.conversation.add_user(text, images=images)
 
         state = _TurnState(
@@ -301,6 +309,73 @@ class AgentOrchestrator:
             await self._emit_error(exc)
             await self.set_state(AgentState.FAILED, phase="failed")
             raise
+
+    def _vision_model(self) -> str:
+        """The configured image-analysis model, or "" when images should go
+        straight to the main model (multimodal setups, or same model anyway)."""
+        model = self.config.vision_model.strip()
+        return "" if model == self.config.model.strip() else model
+
+    async def _describe_images(self, text: str, images: list[ImageContent]) -> str | None:
+        """Turn attached images into text via the configured vision model.
+
+        The main model may not be multimodal, so ``vision_model`` acts as its
+        eyes: a one-off call outside the conversation (no tools, no history)
+        produces a task-focused description that travels as plain text instead
+        of pixels. Returns None on any failure so the caller can degrade to
+        attaching the raw images, which is exactly the pre-vision behavior.
+        """
+        model = self._vision_model()
+        await self.set_state(AgentState.CALLING_MODEL, phase="analyzing_images")
+        await self.event_bus.emit(
+            "vision.analysis.started",
+            {"model": model, "images": len(images)},
+            source="core.orchestrator",
+        )
+        request = ModelRequest(
+            model=model,
+            messages=[
+                Message(role="system", content=VISION_ANALYSIS_PROMPT),
+                Message(
+                    role="user",
+                    content=(
+                        "Describe the attached images. The user's request they "
+                        f"belong to, for context only:\n{text}"
+                    ),
+                    images=list(images),
+                ),
+            ],
+            # Transcribing dense screenshots takes room, and reasoning models
+            # spend output budget on hidden thinking first.
+            max_output_tokens=8192,
+        )
+        try:
+            response = await self.provider.complete(request)
+        except Exception as exc:
+            await self.event_bus.emit(
+                "vision.analysis.failed",
+                {"model": model, "error": str(exc)},
+                source="core.orchestrator",
+            )
+            return None
+        description = (response.text or "").strip()
+        if not description:
+            await self.event_bus.emit(
+                "vision.analysis.failed",
+                {"model": model, "error": "empty response"},
+                source="core.orchestrator",
+            )
+            return None
+        await self.event_bus.emit(
+            "vision.analysis.completed",
+            {"model": model, "images": len(images)},
+            source="core.orchestrator",
+        )
+        return (
+            f"[Image analysis by {model}] The next user message references "
+            "attached images; this is what they contain, transcribed by a "
+            "vision model:\n\n" + description
+        )
 
     async def _begin_planner(
         self, text: str, state: _TurnState, *, resume: bool = False
