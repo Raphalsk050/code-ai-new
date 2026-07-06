@@ -23,10 +23,18 @@ _STEPS: tuple[tuple[str, str, str], ...] = (
     ("base_url", "Base URL", "Where the provider lives (validate reachability)"),
     ("api_key", "API key", "Provider credential (paste from clipboard)"),
     ("model", "Model", "Pick from the catalog and test it live"),
+    ("vision_model", "Vision model", "Reads pasted images for a non-multimodal main model"),
     ("workspace", "Workspace", "The project directory the agent works in"),
     ("language", "Language", "Language the agent replies in"),
     ("permission", "Permission mode", "When the agent must ask before acting"),
     ("effort", "Reasoning effort", "Thinking budget (OpenAI Responses API)"),
+)
+
+# A 1x1 PNG attached to the vision-model live test, so the test exercises the
+# image path instead of only proving the model answers text.
+_TEST_IMAGE_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ"
+    "/pLvAAAAAElFTkSuQmCC"
 )
 
 _API_MODE_CHOICES = ("responses", "completions", "ollama")
@@ -133,7 +141,9 @@ class DoctorModal(ModalScreen[None]):
                 password=True,
             )
         if step == "model":
-            return "Model", self._model_widgets()
+            return "Model", self._model_widgets("model")
+        if step == "vision_model":
+            return "Vision model", self._model_widgets("vision_model")
         if step == "workspace":
             return "Workspace", self._text_widgets(
                 "workspace",
@@ -177,6 +187,8 @@ class DoctorModal(ModalScreen[None]):
             return "configured" if config.api_key else "not set"
         if step_id == "model":
             return config.model
+        if step_id == "vision_model":
+            return config.vision_model or "not set"
         if step_id == "workspace":
             return str(config.workspace)
         if step_id == "language":
@@ -236,26 +248,36 @@ class DoctorModal(ModalScreen[None]):
         widgets.append(Horizontal(*row, classes="doctor-actions"))
         return widgets
 
-    def _model_widgets(self) -> list[Any]:
-        widgets: list[Any] = [
-            Static(
+    def _model_widgets(self, field: str) -> list[Any]:
+        if field == "model":
+            note = (
                 "Type or paste a model name, or list your provider's catalog and "
-                "pick one. Test runs a quick live call to confirm it responds.",
-                classes="doctor-note",
-            ),
+                "pick one. Test runs a quick live call to confirm it responds."
+            )
+            value = self._config.model
+        else:  # vision_model
+            note = (
+                "Vision sidekick that reads pasted images when the main model is "
+                "not multimodal. Leave empty and save to send images to the main "
+                "model instead. Test sends a tiny image to confirm the model "
+                "accepts one."
+            )
+            value = self._config.vision_model
+        widgets: list[Any] = [
+            Static(note, classes="doctor-note"),
             Input(
-                value=self._config.model,
-                id="doctor-input-model",
+                value=value,
+                id=f"doctor-input-{field}",
                 classes="doctor-input",
             ),
             Horizontal(
-                Button("Paste", id="doctor-paste-model"),
-                Button("List models", id="doctor-list-model"),
-                Button("Test model", id="doctor-test-model"),
-                Button("Save", variant="primary", id="doctor-save-model"),
+                Button("Paste", id=f"doctor-paste-{field}"),
+                Button("List models", id=f"doctor-list-{field}"),
+                Button("Test model", id=f"doctor-test-{field}"),
+                Button("Save", variant="primary", id=f"doctor-save-{field}"),
                 classes="doctor-actions",
             ),
-            OptionList(id="doctor-model-list", classes="doctor-hidden"),
+            OptionList(id=f"doctor-model-list-{field}", classes="doctor-hidden"),
         ]
         return widgets
 
@@ -278,14 +300,17 @@ class DoctorModal(ModalScreen[None]):
             self._save_text(button_id[len("doctor-save-") :])
         elif button_id.startswith("doctor-validate-"):
             await self._validate_base_url(button_id[len("doctor-validate-") :])
-        elif button_id == "doctor-list-model":
-            await self._list_models()
-        elif button_id == "doctor-test-model":
-            await self._test_model()
+        elif button_id.startswith("doctor-list-"):
+            await self._list_models(button_id[len("doctor-list-") :])
+        elif button_id.startswith("doctor-test-"):
+            await self._test_model(button_id[len("doctor-test-") :])
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
-        # Picking a listed model drops its name into the model field to save/test.
-        self.query_one("#doctor-input-model", Input).value = str(event.option.prompt)
+        # Picking a listed model drops its name into the step's input field
+        # (the option list id carries which model field this step edits).
+        list_id = event.option_list.id or ""
+        field = list_id[len("doctor-model-list-") :] or "model"
+        self.query_one(f"#doctor-input-{field}", Input).value = str(event.option.prompt)
 
     # ------------------------------------------------------------------ #
     # Actions
@@ -331,36 +356,48 @@ class DoctorModal(ModalScreen[None]):
             return
         self._status(f"✓ Reachable — {len(models)} model(s) available.")
 
-    async def _list_models(self) -> None:
+    async def _list_models(self, field: str) -> None:
         self._status("Fetching models…")
         try:
-            candidate = self._candidate_config(
-                model=self.query_one("#doctor-input-model", Input).value.strip()
-                or self._config.model
-            )
-            models = await list_available_models(candidate)
+            # Listing only needs the endpoint; the live config already carries a
+            # valid main model, so no override (the vision field may be empty,
+            # which AppConfig would reject as a main model).
+            models = await list_available_models(self._candidate_config())
         except Exception as exc:  # noqa: BLE001
             self._status(f"✗ {exc}")
             return
-        option_list = self.query_one("#doctor-model-list", OptionList)
+        option_list = self.query_one(f"#doctor-model-list-{field}", OptionList)
         option_list.clear_options()
         option_list.add_options(models)
         option_list.set_class(False, "doctor-hidden")
         self._status(f"{len(models)} model(s) — pick one to fill the field.")
 
-    async def _test_model(self) -> None:
+    async def _test_model(self, field: str) -> None:
         from code_ai.providers.factory import create_provider
-        from code_ai.providers.models import Message, ModelRequest
+        from code_ai.providers.models import ImageContent, Message, ModelRequest
 
-        model = self.query_one("#doctor-input-model", Input).value.strip() or self._config.model
+        fallback = self._config.model if field == "model" else self._config.vision_model
+        model = self.query_one(f"#doctor-input-{field}", Input).value.strip() or fallback
+        if not model:
+            self._status("✗ Type a model name to test.")
+            return
         self._status(f"Testing {model}…")
+        # The vision test attaches a tiny image so it exercises the image path;
+        # a text-only probe would pass for models that cannot see at all.
+        images = [ImageContent(data=_TEST_IMAGE_B64)] if field == "vision_model" else []
         try:
             candidate = self._candidate_config(model=model)
             provider = create_provider(candidate)
             try:
                 request = ModelRequest(
                     model=candidate.model,
-                    messages=[Message(role="user", content="Reply with the single word OK.")],
+                    messages=[
+                        Message(
+                            role="user",
+                            content="Reply with the single word OK.",
+                            images=images,
+                        )
+                    ],
                     max_output_tokens=32,
                     use_remote_conversation_state=False,
                 )

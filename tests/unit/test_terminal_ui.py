@@ -111,7 +111,7 @@ async def test_doctor_modal_navigates_menu_and_saves(tmp_path) -> None:
         assert isinstance(modal, DoctorModal)
 
         # The main menu lists every setup topic.
-        for step_id in ("api_mode", "base_url", "api_key", "model", "workspace"):
+        for step_id in ("api_mode", "base_url", "api_key", "model", "vision_model", "workspace"):
             modal.query_one(f"#doctor-menu-{step_id}", Button)
 
         # The model step offers list/test/save and reveals the back button.
@@ -121,6 +121,17 @@ async def test_doctor_modal_navigates_menu_and_saves(tmp_path) -> None:
         modal.query_one("#doctor-test-model", Button)
         modal.query_one("#doctor-list-model", Button)
         assert modal.query_one("#doctor-back", Button).has_class("doctor-hidden") is False
+
+        # The vision-model step reuses the same list/test/save tooling and
+        # saving it persists like any other field.
+        await modal._set_step("vision_model")
+        await pilot.pause(0.1)
+        modal.query_one("#doctor-list-vision_model", Button)
+        modal.query_one("#doctor-test-vision_model", Button)
+        modal.query_one("#doctor-input-vision_model", Input).value = "qwen2.5-vl:7b"
+        await pilot.click("#doctor-save-vision_model")
+        await pilot.pause(0.1)
+        assert fake_app.session.config.vision_model == "qwen2.5-vl:7b"
 
         # The back button (always at the top of the dialog) returns to the menu.
         await pilot.click("#doctor-back")
