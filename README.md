@@ -225,6 +225,21 @@ Stream JSON Lines events:
 code-ai --headless --events-jsonl run "Build the project"
 ```
 
+### Pasting images
+
+Ctrl+V in the prompt reads the OS clipboard directly, so an image (a screenshot, a copied picture) becomes an `[Image #N]` attachment that travels with the prompt to vision-capable models.
+Text on the clipboard is pasted as usual.
+
+Reading the clipboard requires a platform tool:
+
+- macOS: works out of the box via AppleScript; installing `pngpaste` (`brew install pngpaste`) makes image capture faster.
+- Windows: works out of the box via PowerShell.
+- Linux (Wayland): install `wl-clipboard` (provides `wl-copy`/`wl-paste`).
+- Linux (X11): install `xclip` (or `xsel`, text only - it cannot read images).
+
+On Linux the session's display server owns the clipboard, so the matching tool must be installed; when none is found, Ctrl+V shows a notification with the package to install.
+PNG, JPEG, WebP and GIF clipboard images are supported.
+
 ## Available Tools
 
 - `read_file`
