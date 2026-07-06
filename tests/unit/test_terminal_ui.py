@@ -211,7 +211,8 @@ async def test_ctrl_v_attaches_clipboard_image_and_submits_it(tmp_path, monkeypa
 
     png = b"\x89PNG\r\n\x1a\nfake-pixels"
     monkeypatch.setattr(
-        "code_ai.ui.terminal.app.paste_image_from_system_clipboard", lambda: png
+        "code_ai.ui.terminal.app.paste_image_from_system_clipboard",
+        lambda: (png, "image/png"),
     )
     fake_app = FakeTerminalApplication(tmp_path)
     terminal_app = create_terminal_app(fake_app)
@@ -234,7 +235,8 @@ async def test_ctrl_v_attaches_clipboard_image_and_submits_it(tmp_path, monkeypa
 async def test_deleting_the_placeholder_drops_the_attachment(tmp_path, monkeypatch) -> None:
     png = b"\x89PNG\r\n\x1a\nfake-pixels"
     monkeypatch.setattr(
-        "code_ai.ui.terminal.app.paste_image_from_system_clipboard", lambda: png
+        "code_ai.ui.terminal.app.paste_image_from_system_clipboard",
+        lambda: (png, "image/png"),
     )
     fake_app = FakeTerminalApplication(tmp_path)
     terminal_app = create_terminal_app(fake_app)
