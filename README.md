@@ -240,6 +240,11 @@ Reading the clipboard requires a platform tool:
 On Linux the session's display server owns the clipboard, so the matching tool must be installed; when none is found, Ctrl+V shows a notification with the package to install.
 PNG, JPEG, WebP and GIF clipboard images are supported.
 
+If the main model is not multimodal, set a vision sidekick with `/config vision-model <name>` (or `"vision_model"` in the config file), e.g. a local `qwen2.5-vl` served by the same provider.
+When set, pasted images are transcribed by that model in a one-off call and the description is injected into the conversation as text, so the main model never receives image payloads it cannot read.
+If the vision call fails, the raw images are attached as before.
+`/config vision-model off` disables it.
+
 ## Available Tools
 
 - `read_file`
