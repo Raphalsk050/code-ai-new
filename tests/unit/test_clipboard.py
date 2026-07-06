@@ -206,3 +206,29 @@ def test_windows_reader_returns_none_on_empty_output(monkeypatch) -> None:
 
     monkeypatch.setattr(clipboard.subprocess, "run", fake_run)
     assert clipboard._read_image_windows() is None
+
+
+def test_linux_clipboard_packages_suggests_wayland_package(monkeypatch) -> None:
+    monkeypatch.setattr(clipboard.sys, "platform", "linux")
+    monkeypatch.setattr(clipboard.shutil, "which", lambda _name: None)
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    assert clipboard.linux_clipboard_packages() == ("wl-clipboard",)
+
+
+def test_linux_clipboard_packages_suggests_x11_package(monkeypatch) -> None:
+    monkeypatch.setattr(clipboard.sys, "platform", "linux")
+    monkeypatch.setattr(clipboard.shutil, "which", lambda _name: None)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setenv("DISPLAY", ":0")
+    assert clipboard.linux_clipboard_packages() == ("xclip",)
+
+
+def test_linux_clipboard_packages_empty_when_tool_installed(monkeypatch) -> None:
+    monkeypatch.setattr(clipboard.sys, "platform", "linux")
+    monkeypatch.setattr(clipboard.shutil, "which", lambda name: name == "xclip" or None)
+    assert clipboard.linux_clipboard_packages() == ()
+
+
+def test_linux_clipboard_packages_empty_on_other_platforms(monkeypatch) -> None:
+    monkeypatch.setattr(clipboard.sys, "platform", "darwin")
+    assert clipboard.linux_clipboard_packages() == ()

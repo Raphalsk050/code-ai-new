@@ -15,6 +15,7 @@ from code_ai.providers.model_listing import list_available_models
 from code_ai.providers.models import ImageContent
 from code_ai.ui.terminal.clipboard import (
     copy_to_system_clipboard,
+    linux_clipboard_packages,
     paste_from_system_clipboard,
     paste_image_from_system_clipboard,
 )
@@ -172,6 +173,18 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             text = paste_from_system_clipboard()
             if text:
                 self.insert(text)
+                return
+            packages = linux_clipboard_packages()
+            if packages:
+                # Nothing was pasted because no clipboard tool exists on this
+                # machine; without a hint the failure is indistinguishable
+                # from an empty clipboard.
+                self.notify(
+                    "Área de transferência inacessível: instale "
+                    + " ou ".join(packages)
+                    + " para habilitar o Ctrl+V.",
+                    severity="warning",
+                )
 
         @property
         def value(self) -> str:

@@ -132,6 +132,24 @@ def paste_image_from_system_clipboard() -> tuple[bytes, str] | None:
     return data, media_type
 
 
+def linux_clipboard_packages() -> tuple[str, ...]:
+    """System packages that would make the clipboard reachable.
+
+    Empty when a clipboard tool is already installed or this isn't Linux -
+    i.e. when there is nothing to tell the user to install.
+    """
+
+    if sys.platform in ("darwin", "win32"):
+        return ()
+    if any(shutil.which(name) for name in ("wl-paste", "xclip", "xsel")):
+        return ()
+    if os.environ.get("WAYLAND_DISPLAY"):
+        return ("wl-clipboard",)
+    if os.environ.get("DISPLAY"):
+        return ("xclip",)
+    return ("wl-clipboard", "xclip")
+
+
 def _sniff_image_type(data: bytes) -> str | None:
     """MIME type derived from the payload's magic bytes, or None.
 
