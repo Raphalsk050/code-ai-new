@@ -773,6 +773,24 @@ def test_config_model_command_persists_and_updates_active_config(tmp_path) -> No
     assert saved["model"] == "other-model"
 
 
+def test_config_vision_model_command_persists_and_updates_active_config(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    config_path = tmp_path / "config.json"
+    result = handle_config_command(
+        fake_app,
+        "/config vision-model qwen2.5-vl:7b",
+        config_path=config_path,
+    )
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert "Applied now" in result
+    assert fake_app.session.config.vision_model == "qwen2.5-vl:7b"
+    assert saved["vision_model"] == "qwen2.5-vl:7b"
+
+    # "off" clears the setting, sending images to the main model again.
+    handle_config_command(fake_app, "/config vision-model off", config_path=config_path)
+    assert fake_app.session.config.vision_model == ""
+
+
 def test_config_api_key_command_persists_and_redacts(tmp_path) -> None:
     fake_app = FakeTerminalApplication(tmp_path)
     config_path = tmp_path / "config.json"
