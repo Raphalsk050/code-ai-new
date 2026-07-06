@@ -159,10 +159,14 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             return taken
 
         def _paste_from_clipboard(self) -> None:
-            image_bytes = paste_image_from_system_clipboard()
-            if image_bytes is not None:
+            pasted_image = paste_image_from_system_clipboard()
+            if pasted_image is not None:
+                data, media_type = pasted_image
                 self.attach_image(
-                    ImageContent(data=base64.b64encode(image_bytes).decode("ascii"))
+                    ImageContent(
+                        data=base64.b64encode(data).decode("ascii"),
+                        media_type=media_type,
+                    )
                 )
                 return
             text = paste_from_system_clipboard()
@@ -228,9 +232,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 # Enter sends the prompt; a newline needs an explicit modifier.
                 event.stop()
                 event.prevent_default()
-                self.post_message(
-                    self.Submitted(self, self.text, self.take_images(self.text))
-                )
+                self.post_message(self.Submitted(self, self.text, self.take_images(self.text)))
                 return
             if key == "ctrl+v":
                 # Explicit paste reads the OS clipboard directly, so an image
@@ -369,9 +371,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self._style = style
             self._paint()
 
-        def update_plan(
-            self, steps: list[dict[str, str]], progress: str, status: str
-        ) -> None:
+        def update_plan(self, steps: list[dict[str, str]], progress: str, status: str) -> None:
             self._steps = steps
             self._progress = progress
             self._status = status
@@ -398,9 +398,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 color = spinner_color((self._frame * self.TICK) / WORKING_PULSE_PERIOD)
             else:
                 color = WORKING_BASE_COLOR
-            self.update(
-                render_plan(self._steps, self._progress, self._status, glyph, color)
-            )
+            self.update(render_plan(self._steps, self._progress, self._status, glyph, color))
 
     class SubagentCard(Vertical):
         """One delegated sub-agent's card: a title row over its folded task.
@@ -441,12 +439,8 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self.query_one(".agent-card-header", Static).update(
                 render_subagent_header(self._agent, self._glyph, self._color)
             )
-            self.query_one(Collapsible).title = subagent_task_preview(
-                self._agent.get("task", "")
-            )
-            self.query_one(".agent-task-body", Static).update(
-                render_subagent_task(self._agent)
-            )
+            self.query_one(Collapsible).title = subagent_task_preview(self._agent.get("task", ""))
+            self.query_one(".agent-task-body", Static).update(render_subagent_task(self._agent))
 
     class SubagentPanel(Vertical):
         """Live roster of delegated sub-agents, shown below the plan panel.
@@ -514,9 +508,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                     card.remove()
                 self._cards = {}
                 current = []
-            for key, agent in zip(
-                keys[len(current) :], self._agents[len(current) :], strict=True
-            ):
+            for key, agent in zip(keys[len(current) :], self._agents[len(current) :], strict=True):
                 card = SubagentCard(agent, classes="agent-card")
                 self._cards[key] = card
                 self.mount(card)
@@ -532,9 +524,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 color = spinner_color((self._frame * self.TICK) / WORKING_PULSE_PERIOD)
             else:
                 color = WORKING_BASE_COLOR
-            self.query_one(".agents-summary", Static).update(
-                render_subagents_summary(self._agents)
-            )
+            self.query_one(".agents-summary", Static).update(render_subagents_summary(self._agents))
             for card, agent in zip(self._cards.values(), self._agents, strict=True):
                 card.paint(agent, glyph, color)
 
@@ -596,18 +586,14 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                             yield Static("PLAN", classes="panel-title")
                             with VerticalScroll(id="plan-scroll"):
                                 yield PlanPanel(
-                                    resolve_spinner(
-                                        application.session.config.terminal_spinner
-                                    ),
+                                    resolve_spinner(application.session.config.terminal_spinner),
                                     id="plan-body",
                                 )
                         with Vertical(id="subagents"):
                             yield Static("AGENTS", classes="panel-title")
                             with VerticalScroll(id="subagents-scroll"):
                                 yield SubagentPanel(
-                                    resolve_spinner(
-                                        application.session.config.terminal_spinner
-                                    ),
+                                    resolve_spinner(application.session.config.terminal_spinner),
                                     id="subagents-body",
                                 )
                 yield WorkingIndicator(
@@ -639,9 +625,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 self, application.session.config
             )
             self._apply_configured_terminal_theme()
-            self._apply_session_collapsed(
-                application.session.config.terminal_session_collapsed
-            )
+            self._apply_session_collapsed(application.session.config.terminal_session_collapsed)
             self.theme_changed_signal.subscribe(self, self._persist_terminal_theme)
             await application.start()
             self._refresh_status()
@@ -752,9 +736,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
         async def on_text_area_changed(self, event: TextArea.Changed) -> None:
             self._set_command_suggestions(event.text_area.text)
 
-        async def on_multiline_input_submitted(
-            self, event: MultilineInput.Submitted
-        ) -> None:
+        async def on_multiline_input_submitted(self, event: MultilineInput.Submitted) -> None:
             text = event.value
             event.input.remember(text)
             event.input.clear_value()
@@ -1054,9 +1036,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                     explicit_path=config_path,
                 )
             except Exception as exc:
-                self._append_conversation_line(
-                    f"warning> Could not persist banner font: {exc}"
-                )
+                self._append_conversation_line(f"warning> Could not persist banner font: {exc}")
                 return
             config.terminal_banner_font = validated.terminal_banner_font
             self._refresh_logo()
@@ -1093,9 +1073,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                     explicit_path=config_path,
                 )
             except Exception as exc:
-                self._append_conversation_line(
-                    f"warning> Could not persist spinner: {exc}"
-                )
+                self._append_conversation_line(f"warning> Could not persist spinner: {exc}")
                 return
             config.terminal_spinner = validated.terminal_spinner
             self._refresh_spinner()
@@ -1106,8 +1084,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                     SimpleCommand(
                         style.label,
                         partial(self._persist_spinner, style.key),
-                        f"Use the '{style.label}' working animation ("
-                        f"{''.join(style.frames)}).",
+                        f"Use the '{style.label}' working animation ({''.join(style.frames)}).",
                     )
                     for style in WORKING_SPINNERS.values()
                 ],
@@ -1116,9 +1093,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
 
         async def _select_model_interactive(self) -> None:
             config = application.session.config
-            self._append_conversation_line(
-                f"command> Fetching models from {config.base_url} ..."
-            )
+            self._append_conversation_line(f"command> Fetching models from {config.base_url} ...")
             try:
                 models = await list_available_models(config)
             except Exception as exc:
@@ -1167,9 +1142,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                     explicit_path=config_path,
                 )
             except Exception as exc:
-                self._append_conversation_line(
-                    f"warning> Could not persist terminal theme: {exc}"
-                )
+                self._append_conversation_line(f"warning> Could not persist terminal theme: {exc}")
                 return
             config.terminal_theme = validated.terminal_theme
 
@@ -1292,15 +1265,11 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             # the other, and the column is reclaimed entirely when both are idle.
             self.query_one("#plan").display = self.vm.plan_visible
             self.query_one("#subagents").display = self.vm.subagents_visible
-            self.query_one("#sidebar").display = (
-                self.vm.plan_visible or self.vm.subagents_visible
-            )
+            self.query_one("#sidebar").display = self.vm.plan_visible or self.vm.subagents_visible
             self.query_one("#plan-body", PlanPanel).update_plan(
                 self.vm.plan_steps, self.vm.plan_progress, self.vm.plan_status
             )
-            self.query_one("#subagents-body", SubagentPanel).update_agents(
-                self.vm.subagents_list()
-            )
+            self.query_one("#subagents-body", SubagentPanel).update_agents(self.vm.subagents_list())
 
         def _session_text(self) -> str:
             config = application.session.config
