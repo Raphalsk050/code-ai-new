@@ -383,8 +383,10 @@ class PlannerService:
                 f"Task checklist: {self.agent_plan.snapshot()['progress']} "
                 f"(current: {current_label}).\n"
                 "This checklist position reflects only the steps you have reported "
-                "finishing. When you actually complete the current step, call "
-                "complete_plan_step so it advances to the next one. Call submit_plan "
+                "finishing. The moment you finish the current step, call "
+                "complete_plan_step with its title - in the same tool batch as the "
+                "step's final action - so progress is marked immediately. Never "
+                "save the marking calls for the end of the task. Call submit_plan "
                 "again only if your approach genuinely changes.\n"
             )
         header = (
