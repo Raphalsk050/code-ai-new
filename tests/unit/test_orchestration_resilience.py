@@ -546,17 +546,32 @@ class AnswersInProseProvider(_BaseProvider):
         )
 
 
-async def test_misclassified_question_is_answered_not_forced_into_tools(tmp_path) -> None:
-    # "explain ... the adder function" trips the "add" mutation marker, so the task
-    # is misread as a workspace mutation and the phase escalates to EXECUTE after the
-    # auto-listing. The model only wants to answer in prose: it must be nudged toward
-    # tools at most once, then have *its* answer surfaced — not be spiralled into a
-    # system correction delivered to the user as the reply.
+async def test_explanation_question_is_answered_directly_without_nudging(tmp_path) -> None:
+    # "explain what the adder function does" used to trip the "add" mutation
+    # marker by substring; word-boundary matching plus the explanation-start
+    # veto now classify it as a question, so the prose answer is accepted on
+    # the very first round - no corrective nudge, no evidence demands.
     provider = AnswersInProseProvider()
     app = build_application(config=_config(tmp_path), provider=provider)
 
     await app.start()
     result = await app.submit_user_message("explain what the adder function does")
+    await app.close()
+
+    assert result.error is None
+    assert result.text == "The adder function returns the sum of its two arguments."
+    assert provider.calls == 1
+
+
+async def test_misclassified_mutation_is_answered_not_forced_into_tools(tmp_path) -> None:
+    # A genuinely mutation-classified request answered only in prose must be
+    # nudged toward tools at most once, then have *its* answer surfaced — not
+    # be spiralled into a system correction delivered to the user as the reply.
+    provider = AnswersInProseProvider()
+    app = build_application(config=_config(tmp_path), provider=provider)
+
+    await app.start()
+    result = await app.submit_user_message("update the adder function docs")
     await app.close()
 
     assert result.error is None

@@ -470,9 +470,9 @@ class AgentOrchestrator:
     async def _handle_no_tool_response(
         self, response: ModelResponse, state: _TurnState
     ) -> TurnResult | None:
-        # Fail-open. The surface classifier may have mislabelled a question as a
-        # mutation (e.g. "explain the adder function" trips the "add" marker), so
-        # we nudge the model toward tools at most once. If it still answers in
+        # Fail-open. The surface classifier may still mislabel a request as a
+        # mutation (keyword heuristics are inherently imperfect), so we nudge
+        # the model toward tools at most once. If it still answers in
         # prose, we surface *its* answer rather than spiralling into repeated
         # corrections and ultimately handing the user a system message instead of
         # a reply. The only hard completion gate is the evidence-based
