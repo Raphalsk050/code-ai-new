@@ -621,3 +621,80 @@ async def test_direct_greeting_answers_directly_without_forcing_agentic_flow(tmp
     assert result.text == "Olá! Como posso ajudar?"
     assert provider.requests
     assert "tool.call.requested" not in events
+
+
+class FakePlanThenBlockingQuestionProvider:
+    """Submits a checklist, then ends the turn asking the user a question."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        return ProviderCapabilities(
+            streaming=True, tool_calling=True, provider_reported_usage=False
+        )
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        if self.calls == 1:
+            yield ProviderEvent(
+                kind="completed",
+                response=ModelResponse(
+                    tool_calls=[
+                        ToolCall(
+                            id="call_plan",
+                            name="submit_plan",
+                            arguments={
+                                "steps": [
+                                    "Inspect the project files",
+                                    "Summarise what is implemented",
+                                ]
+                            },
+                        )
+                    ],
+                    finish_reason=FinishReason.TOOL_CALLS,
+                ),
+            )
+            return
+        text = "Which module should I inspect first?"
+        yield ProviderEvent(kind="text_delta", text_delta=text)
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text=text, finish_reason=FinishReason.STOP),
+        )
+
+    async def complete(self, request: ModelRequest) -> ModelResponse:
+        async for event in self.stream(request):
+            if event.response:
+                return event.response
+        return ModelResponse()
+
+    async def close(self) -> None:
+        return None
+
+
+async def test_turn_ending_in_a_question_pauses_the_checklist(tmp_path) -> None:
+    # Regression: the turn ended in waiting_user with the checklist still ACTIVE
+    # and its current step IN_PROGRESS, so the sidebar spinner ran forever while
+    # nothing was executing. Every turn exit must pause an unsettled plan.
+    config = AppConfig.from_mapping(
+        {"api_mode": "ollama", "workspace": str(tmp_path), "model": "fake"}
+    )
+    provider = FakePlanThenBlockingQuestionProvider()
+    app = build_application(config=config, provider=provider)
+    events = []
+    app.subscribe(lambda event: events.append(event))
+
+    await app.start()
+    result = await app.submit_user_message("leia o projeto e me diga o que falta")
+    await app.close()
+
+    assert "Which module" in result.text
+    planner = app.orchestrator.planner
+    assert planner is not None and planner.agent_plan is not None
+    assert planner.agent_plan.status.value == "WAITING"
+    waiting = [e for e in events if e.event_type == "planning.plan.waiting"]
+    assert waiting, "turn end must emit the paused snapshot for the sidebar"
+    assert waiting[-1].payload["status"] == "WAITING"
+    assert waiting[-1].payload["current_step"] == "Inspect the project files"

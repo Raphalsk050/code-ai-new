@@ -379,13 +379,30 @@ class AgentPlan(BaseModel):
         self.current_index = len(self.steps) - 1
         self.status = PlanStatus.COMPLETED
 
+    def pause(self) -> None:
+        """Suspend an active plan while control is handed back to the user.
+
+        The turn ended without settling the plan (a blocking question, a prose
+        answer, a cancellation, a failure); the current step keeps its position
+        but the plan is no longer running, so the sidebar must stop spinning.
+        :meth:`resume` reactivates it when a follow-up turn picks the plan up.
+        """
+        if self.status == PlanStatus.ACTIVE:
+            self.status = PlanStatus.WAITING
+
+    def resume(self) -> None:
+        if self.status == PlanStatus.WAITING:
+            self.status = PlanStatus.ACTIVE
+
     def settle(self, status: PlanStatus) -> None:
         """Freeze the plan in a terminal non-success state (blocked/failed).
 
         The running step is marked FAILED so the sidebar shows where the plan
         stopped, instead of a step that keeps spinning after the turn ended.
+        A paused (WAITING) plan settles the same way: it still points at the
+        step it stopped on.
         """
-        if self.status == PlanStatus.ACTIVE:
+        if self.status in {PlanStatus.ACTIVE, PlanStatus.WAITING}:
             self.steps[self.current_index].status = PlanStepStatus.FAILED
         self.status = status
 
