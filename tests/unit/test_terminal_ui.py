@@ -28,6 +28,7 @@ class FakeTerminalApplication:
         self.submitted: list[str] = []
         self.submitted_images: list[list[object]] = []
         self.sequence = 0
+        self.plan_snapshot: dict[str, object] = {}
         config = AppConfig.from_mapping(
             {"api_mode": "ollama", "workspace": str(tmp_path), "model": "fake-model"}
         )
@@ -36,6 +37,9 @@ class FakeTerminalApplication:
             state=AgentState.READY,
             tool_registry=SimpleNamespace(names=lambda: ["read_file"]),
         )
+
+    def get_plan_snapshot(self) -> dict[str, object]:
+        return self.plan_snapshot
 
     def subscribe(self, subscriber):
         self.subscribers.append(subscriber)
@@ -195,6 +199,68 @@ async def test_subagent_events_populate_agents_panel(tmp_path) -> None:
         panel = terminal_app.query_one("#subagents-body")
         panel_types = {agent["agent_type"] for agent in panel._agents}
         assert panel_types == {"explorer", "coder"}
+
+
+def _plan_snapshot(status: str = "ACTIVE") -> dict[str, object]:
+    return {
+        "status": status,
+        "progress": "1/3",
+        "current_step": "Implement the module",
+        "current_step_status": "IN_PROGRESS",
+        "completed_steps": ["Inspect files"],
+        "remaining_steps": ["Implement the module", "Verify"],
+    }
+
+
+async def test_clear_keeps_the_live_task_checklist_on_screen(tmp_path) -> None:
+    # Regression: /clear (Ctrl+L) blind-hid the plan panel even mid-task. With
+    # no plan event guaranteed to fire again soon (a long step, a paused plan),
+    # the user lost sight of the in-flight task with no way to bring it back.
+    # Clearing wipes the transcript; the live checklist is runtime state and
+    # must be rebuilt from the backend snapshot.
+    fake_app = FakeTerminalApplication(tmp_path)
+    fake_app.plan_snapshot = _plan_snapshot()
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        await fake_app.emit("planning.plan.created", _plan_snapshot())
+        await pilot.pause(0.1)
+        assert terminal_app.query_one("#plan").display is True
+
+        await terminal_app.action_clear()
+        await pilot.pause(0.1)
+
+        assert terminal_app.vm.conversation == []
+        assert terminal_app.vm.plan_visible is True
+        assert terminal_app.query_one("#plan").display is True
+        titles = [step["title"] for step in terminal_app.vm.plan_steps]
+        assert titles == ["Inspect files", "Implement the module", "Verify"]
+        assert terminal_app.vm.plan_progress == "1/3"
+
+
+async def test_clear_keeps_a_paused_checklist_and_drops_a_settled_one(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        # A plan paused at turn end (WAITING) is still the current task: keep it.
+        fake_app.plan_snapshot = _plan_snapshot(status="WAITING")
+        await fake_app.emit("planning.plan.created", _plan_snapshot())
+        await pilot.pause(0.1)
+        await terminal_app.action_clear()
+        assert terminal_app.vm.plan_visible is True
+        assert terminal_app.vm.plan_status == "WAITING"
+
+        # A settled plan belongs to the cleared transcript: it goes with it.
+        fake_app.plan_snapshot = _plan_snapshot(status="COMPLETED")
+        await terminal_app.action_clear()
+        assert terminal_app.vm.plan_visible is False
+        assert terminal_app.vm.plan_steps == []
+
+        # No plan at all (nothing submitted yet): panel stays hidden.
+        fake_app.plan_snapshot = {}
+        await terminal_app.action_clear()
+        assert terminal_app.vm.plan_visible is False
 
 
 async def test_ctrl_j_inserts_newline_and_enter_submits_multiline(tmp_path) -> None:

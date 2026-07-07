@@ -47,6 +47,10 @@ class TerminalController:
     async def replan(self, reason: str | None = None) -> str:
         return await self.app.request_replan(reason=reason)
 
+    def plan_snapshot(self) -> dict[str, object]:
+        """The backend's authoritative plan snapshot (see PlannerService)."""
+        return self.app.get_plan_snapshot()
+
     def plan_status(self) -> str:
         snapshot = self.app.get_plan_snapshot()
         return (
