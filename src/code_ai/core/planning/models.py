@@ -340,6 +340,23 @@ class AgentPlan(BaseModel):
             and self.current_index >= len(self.steps) - 1
         )
 
+    def resolve_completed_index(self, title: str) -> int:
+        """Index of the not-yet-completed step the model declared finished.
+
+        The model reports *which* step it completed by title; when that step sits
+        ahead of the cursor (the model did several steps' work in one burst and
+        only then reported), the cursor must catch up through it instead of
+        lagging one advance behind until the end of the task. Falls back to the
+        current step when the title is missing or matches nothing pending, which
+        preserves the plain advance-by-one behaviour.
+        """
+        normalized = title.strip().casefold()
+        if normalized:
+            for index in range(self.current_index, len(self.steps)):
+                if self.steps[index].title.strip().casefold() == normalized:
+                    return index
+        return self.current_index
+
     def advance(self) -> bool:
         """Mark the running step done and move to the next, if any.
 
