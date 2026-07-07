@@ -48,6 +48,7 @@ class TerminalViewModel:
             "planning.plan.created",
             "planning.plan.revised",
             "planning.plan.completed",
+            "planning.plan.waiting",
             "planning.plan.blocked",
             "planning.plan.failed",
             "planning.step.started",
@@ -64,6 +65,10 @@ class TerminalViewModel:
                 self.conversation.append(f"plan> failed {self.current_step}")
             elif event.event_type == "planning.plan.completed":
                 self.conversation.append(f"plan> plan completed ({self.plan_progress})")
+            elif event.event_type == "planning.plan.waiting":
+                self.conversation.append(
+                    f"plan> paused, waiting for you ({self.plan_progress})"
+                )
             elif event.event_type in {"planning.plan.blocked", "planning.plan.failed"}:
                 self.conversation.append(f"plan> plan {self.plan_status.lower()}")
         elif event.event_type == "planning.evidence.recorded":

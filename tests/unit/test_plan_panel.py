@@ -124,6 +124,41 @@ def test_view_model_settles_plan_on_plan_completed() -> None:
     assert any("plan> plan completed (3/3)" in line for line in vm.conversation)
 
 
+def test_build_plan_steps_pauses_current_step_when_plan_waits() -> None:
+    # A WAITING plan has nothing executing: the current step must render paused
+    # (a fixed marker, no spinner), not running.
+    steps = build_plan_steps(_snapshot(status="WAITING"))
+    assert [s["status"] for s in steps] == ["done", "paused", "pending"]
+
+
+def test_render_plan_shows_paused_step_without_spinner() -> None:
+    steps = build_plan_steps(_snapshot(status="WAITING"))
+    rendered = render_plan(steps, "1/3", "WAITING", "|", "#ff9f1c").plain
+    assert "◌ Implement reference file" in rendered
+    assert "aguardando você" in rendered
+    assert "| Implement reference file" not in rendered
+    assert "executando" not in rendered
+
+
+def test_view_model_pauses_plan_on_waiting_event() -> None:
+    # Regression: a turn that ended waiting for the user (ask_user question,
+    # prose answer, failure) left the sidebar's current step spinning forever.
+    # The planning.plan.waiting snapshot must flip it to paused and keep the
+    # panel visible.
+    vm = TerminalViewModel()
+    vm.apply(_event("planning.plan.created", _snapshot()))
+    assert any(s["status"] == "running" for s in vm.plan_steps)
+
+    vm.apply(_event("planning.plan.waiting", _snapshot(status="WAITING")))
+
+    assert vm.plan_status == "WAITING"
+    assert not any(s["status"] == "running" for s in vm.plan_steps)
+    paused = [s for s in vm.plan_steps if s["title"] == "Implement reference file"][0]
+    assert paused["status"] == "paused"
+    assert vm.plan_visible is True
+    assert any("plan> paused, waiting for you" in line for line in vm.conversation)
+
+
 def test_view_model_marks_stopped_step_failed_on_plan_blocked() -> None:
     vm = TerminalViewModel()
     vm.apply(_event("planning.plan.created", _snapshot()))
