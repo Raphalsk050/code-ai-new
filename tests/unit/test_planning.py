@@ -954,6 +954,163 @@ async def test_final_answer_leaves_undeclared_plan_active() -> None:
     assert snapshot["progress"] == "1/2"
 
 
+async def test_outside_workspace_mutation_completes_on_command_evidence(tmp_path) -> None:
+    # Regression: a mutation whose target lives outside the workspace (~/.zshrc)
+    # can never produce workspace file-change evidence - file tools are
+    # workspace-bound - so the completion gate trapped the model until it
+    # fabricated pointless workspace files just to satisfy the evidence demand.
+    # Command evidence must settle such a task.
+    bus = AsyncEventBus(session_id="session")
+    service = PlannerService(
+        config=PlannerConfig(), event_bus=bus, session_id="session", workspace=tmp_path
+    )
+    await service.begin_turn(
+        "edite o arquivo ~/.zshrc e adicione um alias gs", provider_supports_tools=True
+    )
+    assert service.external_targets == ("~/.zshrc",)
+
+    await service.record_tool_result(
+        tool_call_id="cmd_1",
+        tool_name="execute_command",
+        payload={
+            "argv": ["zsh", "-c", "echo \"alias gs='git status'\" >> ~/.zshrc"],
+            "exit_code": 0,
+            "stdout": "",
+        },
+        success=True,
+    )
+
+    decision = await service.evaluate_completion(
+        {"summary": "Alias adicionado ao ~/.zshrc.", "changed_paths": ["~/.zshrc"]}
+    )
+    # First acceptance round trips on the double-check; the reconfirmation passes.
+    if not decision.accepted:
+        assert all("file-change" not in item for item in decision.missing_requirements)
+        decision = await service.evaluate_completion(
+            {"summary": "Alias adicionado ao ~/.zshrc.", "changed_paths": ["~/.zshrc"]}
+        )
+    assert decision.accepted
+    assert "~/.zshrc" in decision.final_text
+
+
+async def test_outside_workspace_mutation_without_action_evidence_guides_model(
+    tmp_path,
+) -> None:
+    # With an external target but no command run yet, the gate must not ask for
+    # workspace file evidence (which invites fabrication); it points at
+    # execute_command instead.
+    bus = AsyncEventBus(session_id="session")
+    service = PlannerService(
+        config=PlannerConfig(), event_bus=bus, session_id="session", workspace=tmp_path
+    )
+    await service.begin_turn(
+        "edite /etc/hosts e adicione uma entrada", provider_supports_tools=True
+    )
+    assert service.external_targets == ("/etc/hosts",)
+
+    decision = await service.evaluate_completion({"summary": "Feito."})
+
+    assert decision.accepted is False
+    assert any("execute_command" in item for item in decision.missing_requirements)
+    assert all(
+        "file-change evidence" not in item for item in decision.missing_requirements
+    )
+
+
+async def test_workspace_mutation_gate_stays_strict_without_external_targets() -> None:
+    # No external targets: the strict file-change requirement is untouched.
+    bus = AsyncEventBus(session_id="session")
+    service = PlannerService(config=PlannerConfig(), event_bus=bus, session_id="session")
+    await service.begin_turn("crie src/example.py", provider_supports_tools=True)
+    assert service.external_targets == ()
+
+    await service.record_tool_result(
+        tool_call_id="cmd_1",
+        tool_name="execute_command",
+        payload={"argv": ["echo", "hi"], "exit_code": 0, "stdout": "hi"},
+        success=True,
+    )
+    decision = await service.evaluate_completion({"summary": "Feito."})
+
+    assert decision.accepted is False
+    assert any("file-change" in item for item in decision.missing_requirements)
+
+
+async def test_boundary_rejection_teaches_planner_the_external_target(tmp_path) -> None:
+    # The objective may not name the path ("configure meu shell"); the model then
+    # tries write_file on ~/.zshrc and gets a boundary error. That rejection is
+    # direct evidence of an external target and must widen the completion gate.
+    bus = AsyncEventBus(session_id="session")
+    events = _capture(bus)
+    service = PlannerService(
+        config=PlannerConfig(), event_bus=bus, session_id="session", workspace=tmp_path
+    )
+    await service.begin_turn(
+        "adicione um alias gs no meu shell", provider_supports_tools=True
+    )
+    assert service.external_targets == ()
+
+    await service.note_workspace_boundary_rejection(
+        "write_file", {"path": "~/.zshrc", "content": "alias gs='git status'"}
+    )
+
+    assert service.external_targets == ("~/.zshrc",)
+    detected = [
+        e for e in events if e.event_type == "planning.external_target.detected"
+    ]
+    assert detected and detected[-1].payload["path"] == "~/.zshrc"
+
+    # Duplicate rejections and workspace-internal paths change nothing.
+    await service.note_workspace_boundary_rejection("write_file", {"path": "~/.zshrc"})
+    await service.note_workspace_boundary_rejection(
+        "write_file", {"path": str(tmp_path / "inside.txt")}
+    )
+    assert service.external_targets == ("~/.zshrc",)
+
+
+async def test_external_claimed_paths_do_not_trip_the_mismatch_check(tmp_path) -> None:
+    # Honestly claiming the external target as a changed path must not be read
+    # as a mismatch against the (empty) workspace hash ledger.
+    bus = AsyncEventBus(session_id="session")
+    service = PlannerService(
+        config=PlannerConfig(double_check_completion=False),
+        event_bus=bus,
+        session_id="session",
+        workspace=tmp_path,
+    )
+    await service.begin_turn("edite ~/.zshrc e adicione um alias", provider_supports_tools=True)
+    await service.record_tool_result(
+        tool_call_id="cmd_1",
+        tool_name="execute_command",
+        payload={"argv": ["zsh", "-c", "echo x >> ~/.zshrc"], "exit_code": 0},
+        success=True,
+    )
+
+    decision = await service.evaluate_completion(
+        {"summary": "Feito.", "changed_paths": ["~/.zshrc"]}
+    )
+
+    assert decision.accepted is True
+
+
+def test_external_path_targets_extraction(tmp_path) -> None:
+    from code_ai.core.planning.service import _external_path_targets
+
+    root = tmp_path
+    assert _external_path_targets("edite ~/.zshrc por favor", root) == ("~/.zshrc",)
+    assert _external_path_targets("adicione em /etc/hosts uma entrada.", root) == (
+        "/etc/hosts",
+    )
+    # Paths inside the workspace are not external.
+    assert _external_path_targets(f"edite {root}/src/main.py", root) == ()
+    # URLs must not be misread as paths.
+    assert _external_path_targets("veja https://example.com/docs/setup", root) == ()
+    # No workspace: nothing is outside.
+    assert _external_path_targets("edite ~/.zshrc", None) == ()
+    # Deduplicated, order preserved.
+    assert _external_path_targets("mude ~/.zshrc e depois ~/.zshrc", root) == ("~/.zshrc",)
+
+
 async def test_suspend_pauses_active_plan_and_emits_waiting() -> None:
     # Regression: a turn that ends waiting for the user (a blocking question, a
     # prose answer, a cancellation, a failure) left the checklist ACTIVE with the

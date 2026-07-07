@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -87,6 +88,12 @@ class PlannerService:
         self.ledger = EvidenceLedger(session_id=session_id)
         self.approved_external_gaps: tuple[ApprovedExternalGap, ...] = ()
         self.approved_external_gap = False
+        # Paths the task targets that live *outside* the workspace (e.g. ~/.zshrc).
+        # File tools are workspace-bound, so these can only be changed through
+        # commands; the completion gate must accept command evidence for them
+        # instead of demanding workspace file-change evidence the task cannot
+        # honestly produce. Seeded from the objective, grown by boundary errors.
+        self.external_targets: tuple[str, ...] = ()
         self.no_progress_rounds = 0
         self.double_check_pending = False
         self.accepted_final_text: str | None = None
@@ -163,6 +170,7 @@ class PlannerService:
         self.ledger = EvidenceLedger(session_id=self.session_id)
         self.approved_external_gaps = ()
         self.approved_external_gap = self.profile.allows_web_first
+        self.external_targets = _external_path_targets(text, self._workspace)
         self.no_progress_rounds = 0
         self.double_check_pending = False
         self.accepted_final_text = None
@@ -307,6 +315,64 @@ class PlannerService:
             self.no_progress_rounds = 0
         return records
 
+    async def note_workspace_boundary_rejection(
+        self, tool_name: str, arguments: dict[str, Any]
+    ) -> None:
+        """Learn mid-turn that the task's real target lives outside the workspace.
+
+        A file tool rejecting a path with a boundary error is direct evidence the
+        model is trying to change an external file. Remembering the target lets
+        the completion gate accept command evidence for it instead of demanding
+        workspace file-change evidence - which is what pushes models to fabricate
+        pointless workspace files just to satisfy the gate.
+        """
+        path = str(arguments.get("path") or "").strip()
+        if not path or not self._path_is_outside_workspace(path):
+            return
+        if path in self.external_targets:
+            return
+        self.external_targets = (*self.external_targets, path)
+        await self.event_bus.emit(
+            "planning.external_target.detected",
+            {
+                "tool_name": tool_name,
+                "path": path,
+                "external_targets": list(self.external_targets),
+            },
+            source="core.planner",
+        )
+
+    def _path_is_outside_workspace(self, path_value: str) -> bool:
+        """Best-effort: does this path resolve outside the workspace root?
+
+        With no configured workspace nothing is "outside", and unresolvable
+        paths are treated as internal so the strict evidence gate stays intact.
+        """
+        if self._workspace is None:
+            return False
+        try:
+            root = self._workspace.expanduser().resolve()
+            candidate = Path(path_value).expanduser()
+            if not candidate.is_absolute():
+                candidate = root / candidate
+            resolved = candidate.resolve(strict=False)
+        except (OSError, ValueError):
+            return False
+        return resolved != root and not resolved.is_relative_to(root)
+
+    def _has_external_action_evidence(self) -> bool:
+        """Whether any successful system action could have applied the external change.
+
+        Commands and terminal interactions are the only channels that can touch
+        files outside the workspace, so their success is the honest stand-in for
+        the file-change evidence the ledger cannot hash there.
+        """
+        return self.ledger.has_success(
+            EvidenceType.COMMAND_SUCCEEDED,
+            EvidenceType.VERIFICATION_PASSED,
+            EvidenceType.TERMINAL_OBSERVED,
+        )
+
     async def record_policy_denial(
         self,
         *,
@@ -405,7 +471,16 @@ class PlannerService:
             f"Current step kind: {current.kind.value if current else 'none'}\n"
             f"Required evidence: {required_evidence}\n"
             f"Changed paths: {self.ledger.current_changed_paths()}\n"
-            f"Latest verification passed: {self.ledger.latest_verification_passed}\n"
+            + (
+                f"Outside-workspace target(s): {sorted(self.external_targets)}. "
+                "File tools only work inside the workspace: change these targets "
+                "with execute_command and confirm with a read-back command. Never "
+                "create or edit workspace files just to satisfy completion "
+                "evidence.\n"
+                if self.external_targets
+                else ""
+            )
+            + f"Latest verification passed: {self.ledger.latest_verification_passed}\n"
             f"Approved external gaps: {[gap.to_dict() for gap in self.approved_external_gaps]}\n"
             f"Recent evidence: {self.ledger.compact_recent(limit=8)}\n"
             f"Recommended tools now: {sorted(recommended_tool_names)}\n"
@@ -957,12 +1032,25 @@ class PlannerService:
             self.agent_plan.complete_all()
         changed_paths = self.ledger.current_changed_paths()
         verification = self._completion_verification_note(changed_paths)
+        # An outside-workspace change never enters the ledger's hash map; name the
+        # external targets instead of reporting a misleading "none".
+        if changed_paths:
+            changed_line = f"Changed paths: {', '.join(changed_paths)}"
+        elif self.external_targets:
+            changed_line = (
+                "Outside-workspace target(s): "
+                + ", ".join(self.external_targets)
+                + " (applied via commands; not covered by project verification)"
+            )
+            verification = ""
+        else:
+            changed_line = "Changed paths: none"
         self.accepted_final_text = bound_text(
             "\n".join(
                 item
                 for item in (
                     claim.summary,
-                    f"Changed paths: {', '.join(changed_paths) if changed_paths else 'none'}",
+                    changed_line,
                     verification,
                 )
                 if item
@@ -1065,13 +1153,31 @@ class PlannerService:
         # changed files must be verified before completing — that catches mutations
         # the keyword classifier missed (e.g. "faça um jogo de pong", read as
         # conversation), so the gate keys off real evidence, not the label.
+        # Exception: a mutation whose target lives *outside* the workspace cannot
+        # produce workspace file-change evidence (file tools are workspace-bound),
+        # so demanding it only pushes the model to fabricate pointless workspace
+        # files. Command/terminal evidence is the honest currency there.
         if self.profile.requires_workspace_mutation and not has_file_change:
-            missing.append("no successful file-change evidence exists.")
+            if not self.external_targets:
+                missing.append("no successful file-change evidence exists.")
+            elif not self._has_external_action_evidence():
+                missing.append(
+                    "the requested change targets paths outside the workspace "
+                    f"({sorted(self.external_targets)}); apply it with "
+                    "execute_command (file tools are workspace-only) instead of "
+                    "creating workspace files to produce evidence."
+                )
         if has_file_change and not verified:
             missing.append("no current successful verification evidence exists.")
         if has_file_change or self.profile.requires_workspace_mutation:
             actual_paths = set(self.ledger.current_changed_paths())
-            claimed_paths = set(claim.changed_paths)
+            # Paths outside the workspace never enter the ledger's hash map, so
+            # honestly claiming an external target must not read as a mismatch.
+            claimed_paths = {
+                path
+                for path in claim.changed_paths
+                if not self._path_is_outside_workspace(path)
+            }
             if claimed_paths and claimed_paths != actual_paths:
                 missing.append(
                     f"claimed changed paths {sorted(claimed_paths)} do not match "
@@ -1096,14 +1202,22 @@ class PlannerService:
         # Once a mutation's change is settled (file changed and verification either
         # passed or does not apply, e.g. a documentation-only edit) we trust the
         # evidence and stop blocking on a lagging checklist cursor — for both the
-        # model's plan and the internal skeleton.
+        # model's plan and the internal skeleton. An outside-workspace mutation
+        # settles on command evidence, the only channel that can touch it.
         mutation_settled = bool(
             self.profile
             and self.profile.requires_workspace_mutation
             and has_file_change
             and verified
         )
-        if mutation_settled:
+        external_settled = bool(
+            self.profile
+            and self.profile.requires_workspace_mutation
+            and not has_file_change
+            and self.external_targets
+            and self._has_external_action_evidence()
+        )
+        if mutation_settled or external_settled:
             return []
         if self.agent_plan is not None:
             pending = [
@@ -1196,6 +1310,45 @@ _EXTERNAL_DECISION_MARKERS = {
     "version",
     "versao",
 }
+
+
+# Path-like tokens in free text: "~", "~/...", or an absolute "/..." segment.
+# The lookbehind keeps URL fragments ("https://host/x"), protocol-relative
+# references and word-internal slashes ("e/ou") from being misread as paths.
+_PATH_TOKEN_RE = re.compile(r"(?<![:\w/])(~(?:/[\w.+-][\w./+-]*)?|/[\w.+-][\w./+-]*)")
+
+
+def _external_path_targets(text: str, workspace: Path | None) -> tuple[str, ...]:
+    """Path-like tokens in the objective that resolve outside the workspace root.
+
+    Purely a *signal*, never a hard classification: it widens what the
+    completion gate accepts as evidence (commands instead of workspace file
+    hashes) but removes no requirement for ordinary workspace tasks. With no
+    workspace configured nothing is "outside", and unresolvable tokens are
+    ignored, so a false positive costs nothing and a miss degrades to the
+    boundary-error fallback (see note_workspace_boundary_rejection).
+    """
+    if workspace is None:
+        return ()
+    try:
+        root = workspace.expanduser().resolve()
+    except OSError:
+        return ()
+    targets: list[str] = []
+    for token in _PATH_TOKEN_RE.findall(text):
+        cleaned = token.rstrip(".,;:!?)('\"")
+        if not cleaned or cleaned == "/":
+            continue
+        try:
+            resolved = Path(cleaned).expanduser().resolve(strict=False)
+        except (OSError, ValueError):
+            continue
+        if not resolved.is_absolute():
+            continue
+        if resolved != root and not resolved.is_relative_to(root):
+            if cleaned not in targets:
+                targets.append(cleaned)
+    return tuple(targets)
 
 
 def _coerce_plan_step_titles(steps: object) -> list[str]:
