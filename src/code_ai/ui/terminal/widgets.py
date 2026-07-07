@@ -189,14 +189,20 @@ def spinner_color(progress: float) -> str:
 # --- Plan panel (planned-steps checklist beside the conversation) -----------
 # Per-step marker glyphs and colors. The running step's glyph is supplied by
 # the live spinner instead of a fixed marker.
-_PLAN_MARKERS = {"done": "✓", "pending": "○", "failed": "✗"}
+_PLAN_MARKERS = {"done": "✓", "pending": "○", "failed": "✗", "paused": "◌"}
 _PLAN_TITLE_STYLES = {
     "done": "#7b8493",
     "running": "bold #d7dee8",
     "pending": "#9aa4b2",
     "failed": "#e0a0a0",
+    "paused": "#9aa4b2",
 }
-_PLAN_MARKER_STYLES = {"done": "#48d17a", "pending": "#56606e", "failed": "#e05252"}
+_PLAN_MARKER_STYLES = {
+    "done": "#48d17a",
+    "pending": "#56606e",
+    "failed": "#e05252",
+    "paused": "#8892a0",
+}
 _PLAN_SUB_STYLE = "#56606e"
 _PLAN_HEADER_STYLE = "#8892a0"
 _PLAN_TITLE_WIDTH = 32
@@ -212,18 +218,26 @@ def build_plan_steps(payload: dict[object, object]) -> list[dict[str, str]]:
 
     ``completed_steps`` and ``remaining_steps`` are both emitted in plan order,
     and steps run sequentially, so the completed ones are always the prefix.
-    The current step is flagged running (or failed) and the rest pending.
+    The current step is flagged running (failed, or paused when the plan is
+    WAITING on the user - nothing is executing, so it must not spin) and the
+    rest pending.
     """
     completed = [str(title) for title in (payload.get("completed_steps") or [])]
     remaining = [str(title) for title in (payload.get("remaining_steps") or [])]
     current = payload.get("current_step")
     current_label = None if current is None else str(current)
     current_status = str(payload.get("current_step_status") or "")
+    plan_waiting = str(payload.get("status") or "") == "WAITING"
 
     steps: list[dict[str, str]] = [{"title": title, "status": "done"} for title in completed]
     for title in remaining:
         if current_label is not None and title == current_label:
-            status = "failed" if current_status == "FAILED" else "running"
+            if current_status == "FAILED":
+                status = "failed"
+            elif plan_waiting:
+                status = "paused"
+            else:
+                status = "running"
         else:
             status = "pending"
         steps.append({"title": title, "status": status})
@@ -260,6 +274,8 @@ def render_plan(
         text.append(title, style=_PLAN_TITLE_STYLES.get(status, "#9aa4b2"))
         if status == "running":
             text.append("\n  executando", style=_PLAN_SUB_STYLE)
+        elif status == "paused":
+            text.append("\n  aguardando você", style=_PLAN_SUB_STYLE)
         if index < len(steps) - 1:
             text.append("\n")
     return text
