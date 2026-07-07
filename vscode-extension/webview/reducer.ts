@@ -304,6 +304,8 @@ export function applyEvent(state: ViewState, event: EventEnvelope): ViewState {
       return { ...state, items: push(state.items, { kind: "notice", id, level: "plan", text: `✓ ${p.current_step ?? "step"}` }) };
     case "planning.step.failed":
       return { ...state, items: push(state.items, { kind: "notice", id, level: "error", text: `✗ ${p.current_step ?? "step"}` }) };
+    case "planning.plan.waiting":
+      return { ...state, items: push(state.items, { kind: "notice", id, level: "plan", text: `◌ paused, waiting for you (${p.progress ?? ""})` }) };
 
     case "warning":
       return { ...state, items: push(state.items, { kind: "notice", id, level: "warning", text: String(p.message ?? "") }) };
