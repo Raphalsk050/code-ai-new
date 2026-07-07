@@ -271,7 +271,9 @@ class PlannerService:
             # The model owns its checklist cursor: it advances only when the model
             # declares a step finished, never by a heuristic that cannot know which
             # of the model's free-form steps a given piece of evidence belongs to.
-            await self._advance_agent_plan()
+            await self._advance_agent_plan(
+                completed_step=str(payload.get("completed_step") or "")
+            )
             return []
         before = self.progress_signature()
         step_id = self.current_step.step_id if self.current_step else None
@@ -643,34 +645,44 @@ class PlannerService:
             source="core.planner",
         )
 
-    async def _advance_agent_plan(self) -> None:
-        """Move the sidebar cursor one step forward when the model reports a step done.
+    async def _advance_agent_plan(self, *, completed_step: str = "") -> None:
+        """Move the sidebar cursor forward when the model reports a step done.
 
         Driven solely by the model's complete_plan_step calls, so the checklist
         tracks real declared progress rather than racing one step ahead per piece
-        of evidence. The last step stays running until completion settles the
-        whole plan, so the panel always shows a live step.
+        of evidence. When the declared title names a step *ahead* of the cursor
+        (the model worked through several steps before reporting), the cursor
+        catches up through that step - one completed/started event per step, so
+        the sidebar marks each one instead of freezing until complete_task's
+        complete_all() flips everything at once. The last step stays running
+        until completion settles the whole plan, so the panel always shows a
+        live step.
         """
         if not self.agent_plan or self.agent_plan.status != PlanStatus.ACTIVE:
             return
-        if not self.agent_plan.advance():
-            # advance() refuses the final step by design; remember that the model
-            # declared it done so a clean final answer can settle the plan (see
-            # settle_agent_plan_on_final_answer).
-            self.agent_plan.final_step_declared = True
-            return
-        snapshot = self.plan_snapshot()
-        await self.event_bus.emit(
-            "planning.step.completed",
-            snapshot,
-            source="core.planner",
-        )
-        if self.agent_plan.current_step:
+        target = self.agent_plan.resolve_completed_index(completed_step)
+        while (
+            self.agent_plan.status == PlanStatus.ACTIVE
+            and self.agent_plan.current_index <= target
+        ):
+            if not self.agent_plan.advance():
+                # advance() refuses the final step by design; remember that the
+                # model declared it done so a clean final answer can settle the
+                # plan (see settle_agent_plan_on_final_answer).
+                self.agent_plan.final_step_declared = True
+                return
+            snapshot = self.plan_snapshot()
             await self.event_bus.emit(
-                "planning.step.started",
+                "planning.step.completed",
                 snapshot,
                 source="core.planner",
             )
+            if self.agent_plan.current_step:
+                await self.event_bus.emit(
+                    "planning.step.started",
+                    snapshot,
+                    source="core.planner",
+                )
 
     def annotate_plan_step_payload(
         self, payload: dict[str, Any]
