@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import random
 import re
 import time
@@ -68,6 +69,8 @@ _MAX_TOOL_FORMAT_RETRIES = 2
 _MAX_BUDGET_RETRIES = 2
 _TOOL_GUARD_POLL_SECONDS = 2.0
 _TOOL_GUARD_GRACE_SECONDS = 10.0
+
+logger = logging.getLogger(__name__)
 # Minimum growth in a streaming tool call's arguments before we emit another
 # progress update, so a large write reports periodically rather than per-token.
 _TOOL_PROGRESS_STEP_CHARS = 160
@@ -293,11 +296,13 @@ class AgentOrchestrator:
             state.progress_signature = self._progress_signature()
             return await self._run_model_loop(state)
         except CancellationError:
+            await self._suspend_plan_sidebar()
             await self.set_state(AgentState.READY, phase="waiting_user")
             await self.event_bus.emit("turn.cancelled", {}, source="core.orchestrator")
             return TurnResult(text="", response=state.last_response, cancelled=True)
         except ProviderError as exc:
             # Provider exhausted retries: degrade gracefully instead of crashing the turn.
+            await self._suspend_plan_sidebar()
             await self._emit_error(exc)
             await self.set_state(AgentState.FAILED, phase="failed")
             return TurnResult(
@@ -306,6 +311,7 @@ class AgentOrchestrator:
                 error=str(exc),
             )
         except Exception as exc:
+            await self._suspend_plan_sidebar()
             await self._emit_error(exc)
             await self.set_state(AgentState.FAILED, phase="failed")
             raise
@@ -1219,6 +1225,22 @@ class AgentOrchestrator:
             text, state.last_response, state, wind_down_reason=reason
         )
 
+    async def _suspend_plan_sidebar(self) -> None:
+        """Stop the checklist's running step whenever a turn hands control back.
+
+        Called on every turn exit path - clean finish, blocking question,
+        wind-down, cancellation, provider failure, unexpected error - so a plan
+        the turn did not settle can never keep a step spinning while the agent
+        sits in ``waiting_user``. Best-effort by design: settling the sidebar
+        must never mask the error that ended the turn.
+        """
+        if not (self.planner and self.planner.enabled):
+            return
+        try:
+            await self.planner.suspend_agent_plan()
+        except Exception:  # pragma: no cover - defensive: UI settling only
+            logger.exception("Failed to suspend the plan sidebar at turn end.")
+
     async def _finish_turn(
         self,
         text: str,
@@ -1228,6 +1250,7 @@ class AgentOrchestrator:
         error: str | None = None,
         wind_down_reason: str | None = None,
     ) -> TurnResult:
+        await self._suspend_plan_sidebar()
         await self.set_state(AgentState.READY, phase="waiting_user")
         await self.event_bus.emit(
             "turn.completed",

@@ -201,6 +201,10 @@ class PlannerService:
         self.double_check_pending = False
         self.accepted_final_text = None
         await self._emit_phase(PlanningPhase.EXECUTE)
+        # A plan paused at the previous turn's end (see suspend_agent_plan) comes
+        # back to life: the current step starts running again in the sidebar.
+        if self.agent_plan and self.agent_plan.status == PlanStatus.WAITING:
+            self.agent_plan.resume()
         if self.agent_plan and self.agent_plan.status == PlanStatus.ACTIVE:
             await self.event_bus.emit(
                 "planning.step.started",
@@ -709,6 +713,30 @@ class PlannerService:
                 "your final answer."
             ),
         }
+
+    async def suspend_agent_plan(self) -> None:
+        """Pause the checklist when a turn ends without settling the plan.
+
+        Every turn exit that leaves the model-authored checklist ACTIVE - a
+        blocking ask_user question, a prose answer without a declared final
+        step, a cancellation, a provider failure, an exhausted budget - hands
+        control back to the user (phase ``waiting_user``) while the sidebar
+        still shows a spinning step. That step would spin forever: nothing is
+        running anymore. Pause the plan and push the WAITING snapshot so every
+        surface renders the step as paused; a resumed turn reactivates it (see
+        ``_resume_turn``) and the next fresh turn replaces it anyway.
+
+        Idempotent and safe on every path: settled/absent plans are left alone.
+        """
+        plan = self.agent_plan
+        if plan is None or plan.status != PlanStatus.ACTIVE:
+            return
+        plan.pause()
+        await self.event_bus.emit(
+            "planning.plan.waiting",
+            self.plan_snapshot(),
+            source="core.planner",
+        )
 
     async def settle_agent_plan_on_final_answer(self) -> None:
         """Complete the checklist when a turn ends cleanly in a final answer.
