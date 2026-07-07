@@ -37,6 +37,7 @@ from code_ai.ui.terminal.widgets import (
     WORKING_SPINNERS,
     WORKING_STATES,
     SpinnerStyle,
+    build_plan_steps,
     conversation_line_class,
     load_code_ai_logo,
     normalize_banner_font,
@@ -1207,11 +1208,27 @@ def create_terminal_app(application, *, config_path: Path | None = None):
 
         async def action_clear(self) -> None:
             self.vm.conversation.clear()
-            self.vm.plan_visible = False
-            self.vm.plan_steps = []
             await self.query_one("#conversation", VerticalScroll).remove_children()
             self.query_one("#stream-tail", Static).update("")
             self._committed = 0
+            # /clear wipes the transcript, not the live task: a checklist that
+            # is still running (or paused waiting for the user) is runtime
+            # state, and blind-hiding it lost sight of an in-flight task with
+            # no event guaranteed to bring it back. Rebuild the panel from the
+            # backend's authoritative snapshot; settled plans clear along with
+            # the transcript they belong to.
+            snapshot = self.controller.plan_snapshot()
+            status = str(snapshot.get("status") or "")
+            steps = (
+                build_plan_steps(snapshot) if status in {"ACTIVE", "WAITING"} else []
+            )
+            self.vm.plan_steps = steps
+            self.vm.plan_visible = bool(steps)
+            if steps:
+                self.vm.plan_progress = str(
+                    snapshot.get("progress") or self.vm.plan_progress
+                )
+                self.vm.plan_status = status
             self._refresh_status()
 
         async def action_quit(self) -> None:
