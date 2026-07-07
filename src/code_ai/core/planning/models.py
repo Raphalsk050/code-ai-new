@@ -559,30 +559,46 @@ def _contains_any(text: str, needles: set[str]) -> bool:
     return any(needle in text for needle in needles)
 
 
+# Mutation verbs, matched on word boundaries so a verb *inside* another word
+# never trips the gate ("adder" is not "add", "descreva" is not "escreva").
+# Morphological suffixes cover the common PT/EN inflections ("adicione",
+# "adicionar", "updated", "atualizando"), which plain substring markers missed.
+_MUTATION_RE = re.compile(
+    r"\b(?:"
+    r"add(?:ed|ing|s)?|adicion\w*|appl(?:y|ies|ied|ying)|"
+    r"atualiz\w*|chang(?:e|es|ed|ing)|consert\w*|corrig\w*|corrija|"
+    r"creat(?:e|es|ed|ing)|cri(?:e|ar|a)|edit(?:e|ar|a|ed|ing|s)?|"
+    r"escrev\w*|fix(?:es|ed|ing)?|implement\w*|modif\w*|"
+    r"refator\w*|refactor\w*|remov\w*|renam\w*|renome\w*|updat\w*"
+    r")\b"
+)
+
+# A message that *opens* as a question or an explanation request is asking to
+# understand something, not to change it - even when a mutation verb appears as
+# the subject ("explique a função update_user", "como adicionar um endpoint?").
+# Misreading these as mutations traps the turn behind a file-change evidence
+# gate no explanation can ever satisfy. The veto is deliberately biased: a real
+# mutation phrased as a question degrades gracefully (tools stay available and
+# any actual file change still demands verification through the evidence-keyed
+# gate), while a trapped explanation has no way out.
+_EXPLANATION_START_RE = re.compile(
+    r"^(?:"
+    r"explique|explica|me explique|me explica|explain|"
+    r"descreva|descreve|describe|"
+    r"o que|oque|what|por que|porque|why|como|how|"
+    r"qual|quais|which|quando|when|onde|where|quem|who|"
+    r"me diga|diga|tell me|"
+    r"resuma|resumo|summarize|summarise|"
+    r"analise|análise|analyze|analyse|"
+    r"entenda|help me understand|walk me through"
+    r")\b"
+)
+
+
 def _is_mutation_request(text: str) -> bool:
-    mutation_markers = {
-        "add",
-        "adicionar",
-        "apply",
-        "atualiz",  # PT "atualizar/atualize/atualiza/atualizando" (update)
-        "change",
-        "conserte",
-        "corrija",
-        "create",
-        "crie",
-        "edit",
-        "escreva",  # PT "write"
-        "fix",
-        "implemente",
-        "implement",
-        "modify",
-        "refactor",
-        "refatore",
-        "remove",
-        "rename",
-        "update",
-    }
-    return _contains_any(text, mutation_markers)
+    if _EXPLANATION_START_RE.match(text.strip()):
+        return False
+    return bool(_MUTATION_RE.search(text))
 
 
 def _is_command_request(text: str) -> bool:
