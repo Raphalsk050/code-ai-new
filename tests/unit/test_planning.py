@@ -703,6 +703,91 @@ async def test_complete_plan_step_advances_model_checklist() -> None:
     assert snapshot["current_step"] == "Write the module"
 
 
+async def test_complete_plan_step_catches_up_to_the_named_step() -> None:
+    # Regression: the model worked through several checklist steps in one burst
+    # and only then reported the last of them. The cursor used to advance a single
+    # step per call regardless of the declared title, so the sidebar lagged behind
+    # real progress until complete_task's complete_all() flipped everything at
+    # once at the very end. Naming a later step must catch the cursor up through
+    # it, emitting one completed event per step so the panel marks each one.
+    bus = AsyncEventBus(session_id="session")
+    events = _capture(bus)
+    service = PlannerService(
+        config=PlannerConfig(), event_bus=bus, session_id="session"
+    )
+    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+    await service.submit_agent_plan(
+        ["Inspect files", "Write the module", "Add the tests", "Verify"]
+    )
+
+    await service.record_tool_result(
+        tool_call_id="step_1",
+        tool_name="complete_plan_step",
+        payload={"completed_step": "Add the tests"},
+        success=True,
+    )
+
+    snapshot = service.plan_snapshot()
+    assert snapshot["completed_steps"] == [
+        "Inspect files",
+        "Write the module",
+        "Add the tests",
+    ]
+    assert snapshot["current_step"] == "Verify"
+    completed_events = [
+        e for e in events if e.event_type == "planning.step.completed"
+    ]
+    assert len(completed_events) == 3
+
+
+async def test_complete_plan_step_naming_the_final_step_declares_it() -> None:
+    # Catching up to the *final* step must not settle it (only completion does);
+    # it completes everything before it and records the declaration so a clean
+    # final answer can settle the plan.
+    bus = AsyncEventBus(session_id="session")
+    service = PlannerService(
+        config=PlannerConfig(), event_bus=bus, session_id="session"
+    )
+    await service.begin_turn("Analyse the repository", provider_supports_tools=True)
+    await service.submit_agent_plan(
+        ["Inspect files", "Summarise findings", "Present the summary"]
+    )
+
+    await service.record_tool_result(
+        tool_call_id="step_1",
+        tool_name="complete_plan_step",
+        payload={"completed_step": "Present the summary"},
+        success=True,
+    )
+
+    snapshot = service.plan_snapshot()
+    assert snapshot["progress"] == "2/3"
+    assert snapshot["current_step"] == "Present the summary"
+    assert service.agent_plan.final_step_declared is True
+
+
+async def test_complete_plan_step_with_unknown_title_advances_one() -> None:
+    # A title that matches nothing pending (free-form phrasing, or a step already
+    # completed) falls back to the plain advance-by-one behaviour.
+    bus = AsyncEventBus(session_id="session")
+    service = PlannerService(
+        config=PlannerConfig(), event_bus=bus, session_id="session"
+    )
+    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+    await service.submit_agent_plan(["Inspect files", "Write the module", "Verify"])
+
+    await service.record_tool_result(
+        tool_call_id="step_1",
+        tool_name="complete_plan_step",
+        payload={"completed_step": "Finished looking at the files"},
+        success=True,
+    )
+
+    snapshot = service.plan_snapshot()
+    assert snapshot["completed_steps"] == ["Inspect files"]
+    assert snapshot["current_step"] == "Write the module"
+
+
 async def test_advancing_model_checklist_counts_as_progress() -> None:
     # Regression: the model advancing its own checklist via complete_plan_step is
     # real forward progress the user sees in the sidebar. progress_signature must
