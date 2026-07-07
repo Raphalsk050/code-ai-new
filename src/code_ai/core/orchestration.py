@@ -27,6 +27,7 @@ from code_ai.core.errors import (
     CommandTimeoutError,
     ProviderError,
     TransientProviderError,
+    WorkspaceBoundaryError,
 )
 from code_ai.core.memory import FailureMemoryStore, MemoryService
 from code_ai.core.planning import PlannerService
@@ -1101,6 +1102,24 @@ class AgentOrchestrator:
                 },
                 source="core.orchestrator",
             )
+            content = str(exc)
+            if isinstance(exc, WorkspaceBoundaryError):
+                # The model tried to touch a file outside the workspace. Teach the
+                # planner the task's real target is external (so completion stops
+                # demanding workspace file evidence) and point the model at the
+                # one channel that can do it, instead of leaving it to invent
+                # workspace files that satisfy the evidence gate.
+                if self.planner and self.planner.enabled:
+                    await self.planner.note_workspace_boundary_rejection(
+                        call.name, call.arguments
+                    )
+                content = (
+                    f"{exc}\nFile tools only operate inside the workspace. To "
+                    "change a file outside the workspace, use execute_command "
+                    "(subject to user approval) and confirm the result with a "
+                    "read-back command. Do not create or edit workspace files "
+                    "just to satisfy completion evidence."
+                )
             await self._record_failure(
                 trigger="tool_error",
                 signature=f"tool_error:{call.name}",
@@ -1116,7 +1135,7 @@ class AgentOrchestrator:
             )
             return _ToolOutcome(
                 result=ToolResult(
-                    tool_call_id=call.id, name=call.name, content=str(exc), is_error=True
+                    tool_call_id=call.id, name=call.name, content=content, is_error=True
                 ),
                 payload=None,
             )
