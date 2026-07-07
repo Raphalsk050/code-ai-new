@@ -132,6 +132,46 @@ def test_time_marker_still_matches_as_a_whole_word() -> None:
     assert profile.requires_external_information is True
 
 
+def test_explanation_requests_are_never_mutations() -> None:
+    # Regression: mutation verbs matched by substring ("adder" tripped "add",
+    # "descreva" tripped "escreva") and questions *about* code that mutates
+    # ("explique a função update_user") were classified as workspace mutations.
+    # The completion gate then demanded file-change evidence for a plain
+    # explanation - a requirement no honest answer could ever satisfy.
+    explanations = [
+        "explique a função update_user",
+        "explain what the adder function does",
+        "me explique como adicionar um endpoint nesse projeto",
+        "como funciona o create_user?",
+        "por que o update falha às vezes?",
+        "descreva o fluxo de criação de conta",
+        "qual arquivo implementa o parser?",
+        "how do I add a custom rule?",
+        "me diga o que falta implementar no projeto",
+    ]
+    for text in explanations:
+        profile = TaskProfile.from_user_text(text)
+        assert profile.requires_workspace_mutation is False, text
+        assert profile.requires_verification is False, text
+
+
+def test_mutation_requests_keep_their_evidence_gate() -> None:
+    # The explanation veto must not weaken real mutations, including inflected
+    # forms the old substring markers missed ("adicione", "remova").
+    mutations = [
+        "adicione um endpoint de health check",
+        "remova o código morto de utils.py",
+        "adicione X como fallback do parser",
+        "edite o arquivo config.toml e atualize a versao",
+        "fix the failing test in tests/unit",
+        "escreva um script de deploy",
+        "update the README with the new flags",
+    ]
+    for text in mutations:
+        profile = TaskProfile.from_user_text(text)
+        assert profile.requires_workspace_mutation is True, text
+
+
 async def test_local_edit_settles_misclassified_research_plan() -> None:
     # Graceful degradation: even if a task is misclassified as external research,
     # a real local file mutation must settle the plan toward completion instead of
