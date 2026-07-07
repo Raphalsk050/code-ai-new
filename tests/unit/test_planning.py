@@ -952,3 +952,92 @@ async def test_final_answer_leaves_undeclared_plan_active() -> None:
     snapshot = service.plan_snapshot()
     assert snapshot["status"] == "ACTIVE"
     assert snapshot["progress"] == "1/2"
+
+
+async def test_suspend_pauses_active_plan_and_emits_waiting() -> None:
+    # Regression: a turn that ends waiting for the user (a blocking question, a
+    # prose answer, a cancellation, a failure) left the checklist ACTIVE with the
+    # current step IN_PROGRESS, so the sidebar spinner kept running forever while
+    # the agent sat idle in waiting_user. Suspending must pause the plan and push
+    # a WAITING snapshot so every surface renders the step as paused.
+    bus = AsyncEventBus(session_id="session")
+    events = _capture(bus)
+    service = PlannerService(config=PlannerConfig(), event_bus=bus, session_id="session")
+    await service.begin_turn("Analyse the repository", provider_supports_tools=True)
+    await service.submit_agent_plan(["Inspect files", "Present the summary"])
+
+    await service.suspend_agent_plan()
+
+    snapshot = service.plan_snapshot()
+    assert snapshot["status"] == "WAITING"
+    assert snapshot["current_step"] == "Inspect files"
+    waiting = [e for e in events if e.event_type == "planning.plan.waiting"]
+    assert len(waiting) == 1
+    assert waiting[-1].payload["status"] == "WAITING"
+
+    # Idempotent: a second suspension (another exit path firing) is a no-op.
+    await service.suspend_agent_plan()
+    assert len([e for e in events if e.event_type == "planning.plan.waiting"]) == 1
+
+
+async def test_suspend_leaves_settled_or_absent_plans_alone() -> None:
+    bus = AsyncEventBus(session_id="session")
+    events = _capture(bus)
+    service = PlannerService(config=PlannerConfig(), event_bus=bus, session_id="session")
+    await service.begin_turn("Analyse the repository", provider_supports_tools=True)
+
+    # No plan submitted yet: nothing to pause.
+    await service.suspend_agent_plan()
+    assert not [e for e in events if e.event_type == "planning.plan.waiting"]
+
+    # A settled plan stays settled.
+    await service.submit_agent_plan(["Inspect files", "Present the summary"])
+    service.agent_plan.complete_all()
+    await service.suspend_agent_plan()
+    assert service.plan_snapshot()["status"] == "COMPLETED"
+    assert not [e for e in events if e.event_type == "planning.plan.waiting"]
+
+
+async def test_resumed_turn_reactivates_a_waiting_plan() -> None:
+    # The plan→act handoff (and any resumed continuation) must bring a paused
+    # checklist back to life: the current step runs again in the sidebar.
+    bus = AsyncEventBus(session_id="session")
+    service = PlannerService(config=PlannerConfig(), event_bus=bus, session_id="session")
+    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+    await service.submit_agent_plan(["Inspect files", "Write the module"])
+    await service.suspend_agent_plan()
+    assert service.plan_snapshot()["status"] == "WAITING"
+
+    events = _capture(bus)
+    await service.begin_turn(
+        "Plano aprovado. Execute agora.", provider_supports_tools=True, resume=True
+    )
+
+    snapshot = service.plan_snapshot()
+    assert snapshot["status"] == "ACTIVE"
+    assert snapshot["current_step"] == "Inspect files"
+    started = [e for e in events if e.event_type == "planning.step.started"]
+    assert started and started[-1].payload["status"] == "ACTIVE"
+
+
+async def test_suspended_plan_still_advances_after_resume() -> None:
+    # End-to-end pause/resume: progress made after the resume lands on the same
+    # checklist instead of a stale or frozen one.
+    bus = AsyncEventBus(session_id="session")
+    service = PlannerService(config=PlannerConfig(), event_bus=bus, session_id="session")
+    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+    await service.submit_agent_plan(["Inspect files", "Write the module", "Verify"])
+    await service.suspend_agent_plan()
+    await service.begin_turn("continue", provider_supports_tools=True, resume=True)
+
+    await service.record_tool_result(
+        tool_call_id="step_1",
+        tool_name="complete_plan_step",
+        payload={"completed_step": "Inspect files"},
+        success=True,
+    )
+
+    snapshot = service.plan_snapshot()
+    assert snapshot["status"] == "ACTIVE"
+    assert snapshot["completed_steps"] == ["Inspect files"]
+    assert snapshot["current_step"] == "Write the module"
