@@ -698,3 +698,127 @@ async def test_turn_ending_in_a_question_pauses_the_checklist(tmp_path) -> None:
     assert waiting, "turn end must emit the paused snapshot for the sidebar"
     assert waiting[-1].payload["status"] == "WAITING"
     assert waiting[-1].payload["current_step"] == "Inspect the project files"
+
+
+class FakeOutsideWorkspaceEditProvider:
+    """Tries write_file on an external path, falls back to a command, completes.
+
+    Scripted by agentic step. Failure-memory reflection requests are answered
+    with plain text and consume no step - their timing is asynchronous, so
+    indexing by raw call count would make the script nondeterministic.
+    """
+
+    def __init__(self, outside_path: str) -> None:
+        self.outside_path = outside_path
+        self.agent_steps = 0
+        self.write_file_result = ""
+
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        return ProviderCapabilities(
+            streaming=True, tool_calling=True, provider_reported_usage=False
+        )
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        if any(
+            message.role == "user" and "reviewing a failure" in message.content
+            for message in request.messages
+        ):
+            yield ProviderEvent(
+                kind="completed",
+                response=ModelResponse(text="noted", finish_reason=FinishReason.STOP),
+            )
+            return
+        self.agent_steps += 1
+        for message in request.messages:
+            if message.role == "tool" and message.tool_call_id == "write_1":
+                # The boundary rejection the model saw for its write_file attempt.
+                self.write_file_result = message.content
+        completion_args = {
+            "summary": f"Created {self.outside_path} via command.",
+            "changed_paths": [self.outside_path],
+        }
+        script = {
+            1: ToolCall(
+                id="write_1",
+                name="write_file",
+                arguments={"path": self.outside_path, "content": "hello\n"},
+            ),
+            2: ToolCall(
+                id="cmd_1",
+                name="execute_command",
+                arguments={"command": f"touch {self.outside_path}"},
+            ),
+            3: ToolCall(id="done_1", name="complete_task", arguments=completion_args),
+            4: ToolCall(
+                id="done_2",
+                name="complete_task",
+                arguments={**completion_args, "double_check_acknowledged": True},
+            ),
+        }
+        call = script.get(self.agent_steps)
+        if call is not None:
+            yield ProviderEvent(
+                kind="completed",
+                response=ModelResponse(
+                    tool_calls=[call], finish_reason=FinishReason.TOOL_CALLS
+                ),
+            )
+            return
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text="done", finish_reason=FinishReason.STOP),
+        )
+
+    async def complete(self, request: ModelRequest) -> ModelResponse:
+        async for event in self.stream(request):
+            if event.response:
+                return event.response
+        return ModelResponse()
+
+    async def close(self) -> None:
+        return None
+
+
+async def test_outside_workspace_edit_completes_without_workspace_evidence(tmp_path) -> None:
+    # Regression: a mutation targeting a file outside the workspace could never
+    # satisfy the completion gate (file tools are workspace-bound and the ledger
+    # only hashes workspace files), so the model was pushed to fabricate
+    # workspace files as evidence. The boundary rejection must teach the planner
+    # the target is external, guide the model to execute_command, and command
+    # evidence must then settle the completion.
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    outside = tmp_path / "outside" / "config.txt"
+    outside.parent.mkdir()
+    config = AppConfig.from_mapping(
+        {
+            "api_mode": "ollama",
+            "workspace": str(workspace),
+            "model": "fake",
+            "permission_mode": "bypass",
+        }
+    )
+    provider = FakeOutsideWorkspaceEditProvider(str(outside))
+    app = build_application(config=config, provider=provider)
+    events = []
+    app.subscribe(lambda event: events.append(event))
+
+    await app.start()
+    result = await app.submit_user_message(
+        f"edite o arquivo {outside} e garanta que ele exista"
+    )
+    await app.close()
+
+    # The boundary error taught the model the right channel...
+    assert "outside the workspace" in provider.write_file_result
+    assert "execute_command" in provider.write_file_result
+    # ...the planner learned the external target...
+    planner = app.orchestrator.planner
+    assert str(outside) in planner.external_targets
+    # ...the command really ran and completion settled on its evidence.
+    assert outside.exists()
+    assert "planning.completion.accepted" in {e.event_type for e in events}
+    assert str(outside) in result.text
+    # No fabricated evidence files appeared inside the workspace.
+    assert list(workspace.iterdir()) == []

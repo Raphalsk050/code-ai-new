@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
-from code_ai.core.errors import ToolArgumentError
+from code_ai.core.errors import ToolArgumentError, WorkspaceBoundaryError
 from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.schema import tool_schema
 
@@ -53,7 +54,17 @@ class CompleteTaskTool:
             raise ToolArgumentError("summary is required.")
         changed_paths = _string_list(arguments.get("changed_paths"))
         for path in changed_paths:
-            context.workspace.resolve(path, must_exist=True)
+            try:
+                context.workspace.resolve(path, must_exist=True)
+            except WorkspaceBoundaryError:
+                # A task may legitimately change files *outside* the workspace
+                # (applied via commands, since file tools are workspace-bound).
+                # Claiming such a path must not blow up the completion claim -
+                # the planner's evidence gate arbitrates it - but the file must
+                # really exist so the claim stays honest.
+                candidate = Path(path).expanduser()
+                if not (candidate.is_absolute() and candidate.exists()):
+                    raise
         return {
             "outcome": outcome,
             "summary": summary,
