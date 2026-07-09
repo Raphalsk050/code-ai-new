@@ -1026,6 +1026,35 @@ class AgentOrchestrator:
             {"tool_call_id": call.id, "name": call.name, "arguments": call.arguments},
             source="core.orchestrator",
         )
+        # Evidence preconditions run before the approval prompt: a call the
+        # planner will defer for missing evidence should never cost the user an
+        # approval decision. The gate is advisory (one nudge, then fail-open),
+        # so this can delay a call by one round-trip but never trap the turn.
+        precondition_gap = (
+            self.planner.precondition_gap(call.name, call.arguments)
+            if self.planner and self.planner.enabled
+            else None
+        )
+        if precondition_gap:
+            await self.event_bus.emit(
+                "tool.call.failed",
+                {
+                    "tool_call_id": call.id,
+                    "name": call.name,
+                    "message": precondition_gap,
+                    "type": "ToolPreconditionDeferred",
+                },
+                source="core.orchestrator",
+            )
+            return _ToolOutcome(
+                result=ToolResult(
+                    tool_call_id=call.id,
+                    name=call.name,
+                    content=precondition_gap,
+                    is_error=True,
+                ),
+                payload=None,
+            )
         authorization = await self._authorize_call(call, decision, state)
         if not authorization.allowed:
             policy_denied = decision is not None and not decision.allowed

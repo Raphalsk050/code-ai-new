@@ -822,3 +822,90 @@ async def test_outside_workspace_edit_completes_without_workspace_evidence(tmp_p
     assert str(outside) in result.text
     # No fabricated evidence files appeared inside the workspace.
     assert list(workspace.iterdir()) == []
+
+
+class FakeBlindWriteThenReadProvider:
+    """Tries to overwrite an existing file blind, is deferred, reads, retries."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.precondition_result = ""
+
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        return ProviderCapabilities(
+            streaming=True, tool_calling=True, provider_reported_usage=False
+        )
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        if self.calls == 2:
+            for message in request.messages:
+                if message.role == "tool" and "Precondition check" in message.content:
+                    self.precondition_result = message.content
+        script: dict[int, ToolCall] = {
+            1: ToolCall(
+                id="blind_1",
+                name="write_file",
+                arguments={"path": "config.py", "content": "TIMEOUT = 60\n"},
+            ),
+            2: ToolCall(id="read_1", name="read_file", arguments={"path": "config.py"}),
+            3: ToolCall(
+                id="write_1",
+                name="write_file",
+                arguments={"path": "config.py", "content": "TIMEOUT = 60\n"},
+            ),
+        }
+        call = script.get(
+            self.calls,
+            ToolCall(
+                id=f"complete_{self.calls}",
+                name="complete_task",
+                arguments={
+                    "summary": "Updated config.py timeout.",
+                    "double_check_acknowledged": True,
+                },
+            ),
+        )
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(
+                tool_calls=[call], finish_reason=FinishReason.TOOL_CALLS
+            ),
+        )
+
+    async def complete(self, request: ModelRequest) -> ModelResponse:
+        async for event in self.stream(request):
+            if event.response:
+                return event.response
+        return ModelResponse()
+
+    async def close(self) -> None:
+        return None
+
+
+async def test_blind_overwrite_is_deferred_until_the_file_is_read(tmp_path) -> None:
+    (tmp_path / "config.py").write_text("TIMEOUT = 30\n", encoding="utf-8")
+    config = AppConfig.from_mapping(
+        {
+            "api_mode": "ollama",
+            "workspace": str(tmp_path),
+            "model": "fake",
+            "permission_mode": "bypass",
+        }
+    )
+    provider = FakeBlindWriteThenReadProvider()
+    app = build_application(config=config, provider=provider)
+    events = []
+    app.subscribe(lambda event: events.append(event.event_type))
+
+    await app.start()
+    result = await app.submit_user_message("atualize o timeout no config.py para 60")
+    await app.close()
+
+    # The blind first write was deferred with guidance, not executed...
+    assert "read_file" in provider.precondition_result
+    assert (tmp_path / "config.py").read_text(encoding="utf-8") == "TIMEOUT = 60\n"
+    # ...and the turn still completed cleanly after read + retry.
+    assert "Updated config.py timeout." in result.text
+    assert result.error is None
