@@ -10,6 +10,10 @@ from uuid import uuid4
 from code_ai.config.models import AppConfig
 from code_ai.core.errors import CancellationError
 from code_ai.core.orchestration import WIND_DOWN_TIME_BUDGET, TurnResult
+from code_ai.core.subagents.evidence import (
+    SubagentEvidenceCollector,
+    SubagentEvidenceItem,
+)
 from code_ai.core.subagents.naming import generate_agent_name
 from code_ai.core.subagents.profiles import SubagentProfile, SubagentProfileRegistry
 from code_ai.core.subagents.report import SubagentReport, SubagentStatus
@@ -251,6 +255,11 @@ class SubagentCoordinator:
         built = self._runtime.build(profile)
         forwarder = self._make_forwarder(agent_id, name, profile.name)
         built.event_bus.subscribe(forwarder)
+        # Every workspace action the child performs is collected as evidence and
+        # attached to whatever report this run ends in - the parent's planner
+        # must learn about real file changes even when the child times out.
+        evidence = SubagentEvidenceCollector()
+        built.event_bus.subscribe(evidence)
 
         await self._bus.emit(
             "subagent.started",
@@ -284,6 +293,7 @@ class SubagentCoordinator:
                 status=SubagentStatus.TIMEOUT,
                 error=f"Sub-agent exceeded its {built.timeout_seconds}s time budget.",
                 usage=built.usage.to_dict(),
+                evidence=evidence.items(),
             )
         except CancellationError:
             return SubagentReport(
@@ -293,14 +303,18 @@ class SubagentCoordinator:
                 task=request.prompt,
                 status=SubagentStatus.CANCELLED,
                 usage=built.usage.to_dict(),
+                evidence=evidence.items(),
             )
         finally:
             mirror.cancel()
             with contextlib.suppress(BaseException):
                 await mirror
             built.event_bus.unsubscribe(forwarder)
+            built.event_bus.unsubscribe(evidence)
 
-        return self._report_from_turn(result, profile, request, agent_id, name, built)
+        return self._report_from_turn(
+            result, profile, request, agent_id, name, built, evidence.items()
+        )
 
     def _report_from_turn(
         self,
@@ -310,6 +324,7 @@ class SubagentCoordinator:
         agent_id: str,
         name: str,
         built: BuiltSubagent,
+        evidence: list[SubagentEvidenceItem],
     ) -> SubagentReport:
         usage = built.usage.to_dict()
         if result.cancelled:
@@ -320,6 +335,7 @@ class SubagentCoordinator:
                 task=request.prompt,
                 status=SubagentStatus.CANCELLED,
                 usage=usage,
+                evidence=evidence,
             )
         if result.error is not None:
             return SubagentReport(
@@ -331,6 +347,7 @@ class SubagentCoordinator:
                 summary=result.text,
                 error=result.error,
                 usage=usage,
+                evidence=evidence,
             )
         # A wound-down turn produced only a best-effort answer; reporting it as
         # COMPLETED would let the parent model take the summary at face value.
@@ -344,6 +361,7 @@ class SubagentCoordinator:
                 summary=result.text,
                 error=f"Sub-agent exceeded its {built.timeout_seconds}s time budget.",
                 usage=usage,
+                evidence=evidence,
             )
         if result.wind_down_reason is not None:
             reason = result.wind_down_reason.replace("_", " ")
@@ -356,6 +374,7 @@ class SubagentCoordinator:
                 summary=result.text,
                 error=f"Sub-agent stopped before finishing: {reason}.",
                 usage=usage,
+                evidence=evidence,
             )
         if not result.text.strip():
             return SubagentReport(
@@ -366,6 +385,7 @@ class SubagentCoordinator:
                 status=SubagentStatus.FAILED,
                 error="Sub-agent finished without producing a final answer.",
                 usage=usage,
+                evidence=evidence,
             )
         return SubagentReport(
             agent_id=agent_id,
@@ -375,6 +395,7 @@ class SubagentCoordinator:
             status=SubagentStatus.COMPLETED,
             summary=result.text,
             usage=usage,
+            evidence=evidence,
         )
 
     @staticmethod
