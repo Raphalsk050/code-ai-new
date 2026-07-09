@@ -220,19 +220,23 @@ def build_application(
     terminal_manager = PersistentTerminalManager()
     desktop_controller = DesktopController()
     review_service = ReviewService(provider=provider, config=config, event_bus=event_bus)
-    planner = PlannerService(
-        config=config.planner,
-        event_bus=event_bus,
-        session_id=event_bus.session_id,
-        workspace=config.workspace,
-    )
-
     # Sub-agent orchestration. The runtime builds fully isolated orchestrators on
     # demand (own conversation/usage/bus, capability-restricted tools); the
     # coordinator owns their lifecycle, concurrency, and resilience. The dispatch
     # tool is the model's entry point and is excluded from sub-agent registries
     # by capability, so delegation cannot recurse.
     profile_registry = default_profile_registry()
+    planner = PlannerService(
+        config=config.planner,
+        event_bus=event_bus,
+        session_id=event_bus.session_id,
+        workspace=config.workspace,
+        # Delegating to a profile that can write is gated behind reconnaissance
+        # evidence, so the planner must know which profiles those are.
+        write_agent_types=frozenset(
+            profile.name for profile in profile_registry.all() if profile.writes
+        ),
+    )
     subagent_runtime = SubagentRuntime(
         config=config,
         provider=provider,

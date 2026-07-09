@@ -37,8 +37,13 @@ class DispatchAgentTool:
             "this to parallelize independent work - e.g. fan out several read-only "
             "explorations at once, or hand a self-contained change to a worker while "
             "you continue. Give each sub-agent a precise, standalone prompt: it "
-            "cannot see this conversation and cannot ask you questions. Available "
-            "agent types:\n" + self._profiles.describe()
+            "cannot see this conversation and cannot ask you questions, so ground "
+            "the prompt in evidence you have actually gathered (real paths, real "
+            "findings) and state the expected outcome. Each report includes an "
+            "evidence digest of what the sub-agent really did (files read/changed, "
+            "commands run with exit codes); reconcile reports against it instead of "
+            "taking summaries at face value. Available agent types:\n"
+            + self._profiles.describe()
         )
         self.input_schema = {
             "type": "object",
@@ -61,7 +66,18 @@ class DispatchAgentTool:
                                 "type": "string",
                                 "description": (
                                     "The complete, standalone instruction for this "
-                                    "sub-agent, including all context it needs."
+                                    "sub-agent, including all context it needs: the "
+                                    "concrete file paths and findings you have already "
+                                    "gathered, not assumptions."
+                                ),
+                            },
+                            "expected_outcome": {
+                                "type": "string",
+                                "description": (
+                                    "One or two sentences stating what a successful "
+                                    "result looks like (what must exist, pass, or be "
+                                    "answered). Appended to the sub-agent's brief and "
+                                    "your yardstick for judging its report."
                                 ),
                             },
                         },
@@ -121,5 +137,13 @@ def _parse_requests(arguments: dict[str, Any]) -> list[SubagentRequest]:
             raise ToolArgumentError(f"tasks[{index}].agent_type is required.")
         if not prompt:
             raise ToolArgumentError(f"tasks[{index}].prompt is required.")
+        expected = str(item.get("expected_outcome") or "").strip()
+        if expected:
+            # The sub-agent cannot see the conversation, so its success bar
+            # travels inside the brief; the dispatcher judges the report by it.
+            prompt = (
+                f"{prompt}\n\nExpected outcome (your report will be judged "
+                f"against this): {expected}"
+            )
         requests.append(SubagentRequest(agent_type=agent_type, prompt=prompt))
     return requests

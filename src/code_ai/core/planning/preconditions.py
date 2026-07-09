@@ -20,6 +20,7 @@ class PreconditionGate:
     def __init__(self, *, workspace: Path | None) -> None:
         self._workspace = workspace
         self._nudged_paths: set[str] = set()
+        self._delegation_nudged = False
 
     def unread_mutation_gap(
         self,
@@ -64,6 +65,55 @@ class PreconditionGate:
             "If you genuinely already know its content, simply retry and the "
             "call will proceed."
         )
+
+    def blind_delegation_gap(
+        self,
+        arguments: dict[str, object],
+        *,
+        has_local_grounding: bool,
+        write_agent_types: frozenset[str],
+    ) -> str | None:
+        """Reason to defer delegating implementation before any reconnaissance.
+
+        A write-capable sub-agent only knows what its prompt says - it cannot
+        see the conversation or ask questions. Dispatching one before the
+        orchestrator has read or searched anything means the prompt is built
+        from assumptions, and the sub-agent will faithfully implement those
+        assumptions. Read-only (explorer/reviewer) delegations are never gated:
+        fanning out explorers *is* the reconnaissance. Nudges once per session,
+        then fails open.
+        """
+        if self._delegation_nudged or has_local_grounding or not write_agent_types:
+            return None
+        blind_types = self._requested_write_agent_types(arguments, write_agent_types)
+        if not blind_types:
+            return None
+        self._delegation_nudged = True
+        return (
+            "Precondition check: you are delegating implementation to "
+            f"write-capable sub-agent(s) ({', '.join(blind_types)}) before "
+            "gathering any evidence about this workspace. A sub-agent only "
+            "knows what its prompt says, so a prompt written from assumptions "
+            "produces work built on assumptions. First investigate - read or "
+            "search the relevant code yourself, or fan out read-only explorer "
+            "agents - then delegate with a prompt grounded in real paths and "
+            "findings, stating the expected outcome. If the task genuinely "
+            "needs no local context, simply retry and the dispatch will proceed."
+        )
+
+    @staticmethod
+    def _requested_write_agent_types(
+        arguments: dict[str, object], write_agent_types: frozenset[str]
+    ) -> list[str]:
+        tasks = arguments.get("tasks")
+        if not isinstance(tasks, list):
+            return []
+        requested = {
+            str(task.get("agent_type") or "").strip().lower()
+            for task in tasks
+            if isinstance(task, dict)
+        }
+        return sorted(requested & write_agent_types)
 
     def _locate(self, path_value: str) -> tuple[str, Path] | None:
         """Resolve a tool path argument to (workspace-relative posix, absolute).

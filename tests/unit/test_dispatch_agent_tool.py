@@ -131,3 +131,27 @@ async def test_invalid_arguments_are_rejected() -> None:
         await tool.execute({"tasks": [{"agent_type": "explorer"}]}, _context(dispatcher))
     with pytest.raises(ToolArgumentError):
         await tool.execute({"tasks": [{"prompt": "no type"}]}, _context(dispatcher))
+
+
+async def test_expected_outcome_travels_inside_the_brief() -> None:
+    dispatcher = _RecordingDispatcher()
+    tool = _tool()
+    await tool.execute(
+        {
+            "tasks": [
+                {
+                    "agent_type": "coder",
+                    "prompt": "add a /health endpoint in src/api.py",
+                    "expected_outcome": "GET /health returns 200 and tests pass",
+                },
+                {"agent_type": "explorer", "prompt": "map the router"},
+            ]
+        },
+        _context(dispatcher),
+    )
+
+    sent, _ = dispatcher.calls[0]
+    assert "Expected outcome" in sent[0].prompt
+    assert "GET /health returns 200" in sent[0].prompt
+    # Tasks without the field keep their prompt untouched.
+    assert sent[1].prompt == "map the router"
