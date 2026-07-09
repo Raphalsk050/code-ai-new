@@ -69,6 +69,7 @@ class PlannerService:
         session_id: str,
         workspace: Path | None = None,
         verification_detector: Callable[[Path], ProjectVerification] = detect_project_verification,
+        write_agent_types: frozenset[str] = frozenset(),
     ) -> None:
         self.config = config
         self.event_bus = event_bus
@@ -100,6 +101,10 @@ class PlannerService:
         self.accepted_final_text: str | None = None
         # Evidence-based preconditions checked before action-taking tools run.
         self._precondition_gate = PreconditionGate(workspace=workspace)
+        # Sub-agent profile names that can mutate the workspace; delegating to
+        # one of these before any reconnaissance is gated. Empty (the default
+        # for directly-constructed services) disables the delegation gate.
+        self._write_agent_types = write_agent_types
         # Workspace-relative paths whose current content the agent has observed
         # (read, written, or reported by a sub-agent). Deliberately survives
         # begin_turn's per-turn ledger reset: a file read two turns ago is still
@@ -340,8 +345,31 @@ class PlannerService:
         """
         if not self.enabled:
             return None
+        if tool_name == "dispatch_agent":
+            return self._precondition_gate.blind_delegation_gap(
+                arguments,
+                has_local_grounding=self._has_delegation_grounding(),
+                write_agent_types=self._write_agent_types,
+            )
         return self._precondition_gate.unread_mutation_gap(
             tool_name, arguments, known_content_paths=self._known_content_paths
+        )
+
+    def _has_delegation_grounding(self) -> bool:
+        """Whether the orchestrator has observed enough to brief a coder.
+
+        Real content knowledge counts (files read/written this session, local
+        searches, a deliberately concluded discovery); a bare workspace listing
+        does not - knowing file names is not understanding the code a coder
+        prompt must describe.
+        """
+        if self._known_content_paths:
+            return True
+        return self.ledger.has_success(
+            EvidenceType.FILE_READ,
+            EvidenceType.LOCAL_SEARCH_MATCH,
+            EvidenceType.LOCAL_SEARCH_COMPLETED,
+            EvidenceType.DISCOVERY_COMPLETED,
         )
 
     async def note_workspace_boundary_rejection(

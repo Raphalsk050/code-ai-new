@@ -144,3 +144,90 @@ async def test_file_created_this_session_is_known_content(tmp_path) -> None:
     )
     (tmp_path / "script.py").write_text("print('x')\n")
     assert service.precondition_gap("edit_code", {"path": "script.py"}) is None
+
+
+# ------------------------------------------------------------------ #
+# Delegation gate: implementation is not delegated on assumptions
+# ------------------------------------------------------------------ #
+_WRITERS = frozenset({"coder"})
+
+
+def _coder_dispatch() -> dict:
+    return {"tasks": [{"agent_type": "coder", "prompt": "add the endpoint"}]}
+
+
+def test_blind_coder_delegation_is_deferred_once(tmp_path) -> None:
+    gate = PreconditionGate(workspace=tmp_path)
+
+    first = gate.blind_delegation_gap(
+        _coder_dispatch(), has_local_grounding=False, write_agent_types=_WRITERS
+    )
+    assert first is not None and "coder" in first and "explorer" in first
+
+    # Fail-open: one nudge per session, then the dispatch proceeds.
+    second = gate.blind_delegation_gap(
+        _coder_dispatch(), has_local_grounding=False, write_agent_types=_WRITERS
+    )
+    assert second is None
+
+
+def test_explorer_fan_out_is_never_gated(tmp_path) -> None:
+    gate = PreconditionGate(workspace=tmp_path)
+    arguments = {
+        "tasks": [
+            {"agent_type": "explorer", "prompt": "map the config"},
+            {"agent_type": "reviewer", "prompt": "assess module X"},
+        ]
+    }
+    gap = gate.blind_delegation_gap(
+        arguments, has_local_grounding=False, write_agent_types=_WRITERS
+    )
+    assert gap is None  # read-only delegation IS the reconnaissance
+
+
+def test_grounded_coder_delegation_proceeds(tmp_path) -> None:
+    gate = PreconditionGate(workspace=tmp_path)
+    gap = gate.blind_delegation_gap(
+        _coder_dispatch(), has_local_grounding=True, write_agent_types=_WRITERS
+    )
+    assert gap is None
+
+
+async def test_planner_gates_dispatch_until_local_evidence_exists(tmp_path) -> None:
+    service = PlannerService(
+        config=PlannerConfig(double_check_completion=False),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+        workspace=tmp_path,
+        write_agent_types=frozenset({"coder"}),
+    )
+    await service.begin_turn("adicione um endpoint", provider_supports_tools=True)
+
+    assert service.precondition_gap("dispatch_agent", _coder_dispatch()) is not None
+
+    # A bare workspace listing is not understanding; reading a file is.
+    await service.record_tool_result(
+        tool_call_id="r1",
+        tool_name="read_file",
+        payload={"path": "api.py", "sha256": "h1"},
+        success=True,
+    )
+    assert service.precondition_gap("dispatch_agent", _coder_dispatch()) is None
+
+
+async def test_workspace_listing_alone_does_not_ground_delegation(tmp_path) -> None:
+    service = PlannerService(
+        config=PlannerConfig(double_check_completion=False),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+        workspace=tmp_path,
+        write_agent_types=frozenset({"coder"}),
+    )
+    await service.begin_turn("adicione um endpoint", provider_supports_tools=True)
+    await service.record_tool_result(
+        tool_call_id="l1",
+        tool_name="list_files",
+        payload={"path": ".", "entries": [{"path": "api.py"}]},
+        success=True,
+    )
+    assert service.precondition_gap("dispatch_agent", _coder_dispatch()) is not None
