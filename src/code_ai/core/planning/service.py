@@ -24,6 +24,7 @@ from code_ai.core.planning.models import (
     TaskProfile,
 )
 from code_ai.core.planning.policy import PlannerToolPolicy, PolicyDecision
+from code_ai.core.planning.preconditions import PreconditionGate
 from code_ai.core.verification import (
     ProjectVerification,
     detect_project_verification,
@@ -97,6 +98,13 @@ class PlannerService:
         self.no_progress_rounds = 0
         self.double_check_pending = False
         self.accepted_final_text: str | None = None
+        # Evidence-based preconditions checked before action-taking tools run.
+        self._precondition_gate = PreconditionGate(workspace=workspace)
+        # Workspace-relative paths whose current content the agent has observed
+        # (read, written, or reported by a sub-agent). Deliberately survives
+        # begin_turn's per-turn ledger reset: a file read two turns ago is still
+        # known content, so the read-before-write gate must not demand a re-read.
+        self._known_content_paths: set[str] = set()
 
     @property
     def enabled(self) -> bool:
@@ -299,6 +307,12 @@ class PlannerService:
             is_verification_command=self._is_verification_command,
         )
         for record in records:
+            if record.success and record.evidence_type in {
+                EvidenceType.FILE_READ,
+                EvidenceType.FILE_CREATED,
+                EvidenceType.FILE_CHANGED,
+            }:
+                self._known_content_paths.update(record.affected_paths)
             await self.event_bus.emit(
                 "planning.evidence.recorded",
                 record.compact(),
@@ -314,6 +328,21 @@ class PlannerService:
         if self.progress_signature() != before:
             self.no_progress_rounds = 0
         return records
+
+    def precondition_gap(self, tool_name: str, arguments: dict[str, Any]) -> str | None:
+        """Advisory evidence check before an action-taking tool runs.
+
+        Returns a corrective instruction when the call is not yet grounded in
+        enough evidence (e.g. mutating an existing file that was never read),
+        or ``None`` when the call may proceed. Each gate nudges at most once
+        and then fails open, so a wrong heuristic costs one round-trip, never
+        a trapped turn.
+        """
+        if not self.enabled:
+            return None
+        return self._precondition_gate.unread_mutation_gap(
+            tool_name, arguments, known_content_paths=self._known_content_paths
+        )
 
     async def note_workspace_boundary_rejection(
         self, tool_name: str, arguments: dict[str, Any]
@@ -472,6 +501,14 @@ class PlannerService:
             f"Required evidence: {required_evidence}\n"
             f"Changed paths: {self.ledger.current_changed_paths()}\n"
             + (
+                "Files whose current content you have seen (read or written): "
+                f"{self._known_paths_preview()}. Before modifying any *other* "
+                "existing file, read it first so the change is grounded in its "
+                "actual content.\n"
+                if self._known_content_paths
+                else ""
+            )
+            + (
                 f"Outside-workspace target(s): {sorted(self.external_targets)}. "
                 "File tools only work inside the workspace: change these targets "
                 "with execute_command and confirm with a read-back command. Never "
@@ -512,6 +549,13 @@ class PlannerService:
             "claim completion from prose. For workspace changes, call write_file or "
             "edit_code; for completion, call complete_task after verification evidence exists."
         )
+
+    def _known_paths_preview(self, *, limit: int = 15) -> str:
+        paths = sorted(self._known_content_paths)
+        if len(paths) <= limit:
+            return str(paths)
+        shown = paths[:limit]
+        return f"{shown} (+{len(paths) - limit} more)"
 
     def corrective_message(self, *, recommended_tool_names: set[str]) -> str:
         current = self.current_step
