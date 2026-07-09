@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from code_ai.core.subagents.evidence import SubagentEvidenceItem, compact_evidence_items
 from code_ai.tools.output import bound_text
 
 # The serialized report is read by the orchestrating model, so every free-text
@@ -11,6 +12,9 @@ from code_ai.tools.output import bound_text
 _TASK_PREVIEW_CHARS = 300
 _ERROR_PREVIEW_CHARS = 1000
 DEFAULT_SUMMARY_CHARS = 4000
+# Evidence items are compact (paths, hashes, argv), but a long-running coder can
+# accumulate many; the digest is bounded so a report never dwarfs its summary.
+_MAX_EVIDENCE_ITEMS = 80
 
 
 class SubagentStatus(StrEnum):
@@ -48,6 +52,11 @@ class SubagentReport:
     summary: str = ""
     error: str | None = None
     usage: dict[str, int] = field(default_factory=dict)
+    # Ordered digest of the workspace actions the sub-agent actually performed
+    # (files read/created/changed, commands run). Filled for every terminal
+    # status - a timed-out coder may still have changed real files on disk, and
+    # the parent must learn about those changes either way.
+    evidence: list[SubagentEvidenceItem] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -69,4 +78,10 @@ class SubagentReport:
                 else bound_text(self.error, _ERROR_PREVIEW_CHARS)
             ),
             "usage": dict(self.usage),
+            "evidence": [
+                item.to_dict()
+                for item in compact_evidence_items(
+                    self.evidence, max_items=_MAX_EVIDENCE_ITEMS
+                )
+            ],
         }

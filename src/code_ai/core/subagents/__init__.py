@@ -3,6 +3,10 @@ from code_ai.core.subagents.coordinator import (
     SubagentCoordinator,
     SubagentRequest,
 )
+from code_ai.core.subagents.evidence import (
+    SubagentEvidenceCollector,
+    SubagentEvidenceItem,
+)
 from code_ai.core.subagents.naming import generate_agent_name
 from code_ai.core.subagents.profiles import (
     FORBIDDEN_SUBAGENT_CAPABILITIES,
@@ -29,6 +33,8 @@ __all__ = [
     "OpenCircuitError",
     "RetryPolicy",
     "SubagentCoordinator",
+    "SubagentEvidenceCollector",
+    "SubagentEvidenceItem",
     "SubagentProfile",
     "SubagentProfileRegistry",
     "SubagentReport",

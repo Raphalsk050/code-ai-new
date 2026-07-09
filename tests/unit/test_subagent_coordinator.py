@@ -402,3 +402,50 @@ async def test_emits_lifecycle_events(tmp_path) -> None:
     assert "subagent.dispatch.requested" in events
     assert "subagent.started" in events
     assert "subagent.completed" in events
+
+
+async def test_child_workspace_actions_travel_back_as_evidence(tmp_path) -> None:
+    """The digest of what the child actually did is attached to its report."""
+
+    class _BusAwareRuntime(_FakeRuntime):
+        def build(self, profile) -> BuiltSubagent:
+            bus = AsyncEventBus()
+
+            async def behaviour(prompt, _cancel):
+                await bus.emit(
+                    "tool.call.completed",
+                    {
+                        "name": "write_file",
+                        "result": {
+                            "path": "api.py",
+                            "old_sha256": None,
+                            "new_sha256": "h1",
+                        },
+                    },
+                )
+                await bus.emit(
+                    "tool.call.completed",
+                    {
+                        "name": "execute_command",
+                        "result": {"argv": ["pytest", "-q"], "exit_code": 0},
+                    },
+                )
+                return TurnResult(text="implemented", response=None)
+
+            return BuiltSubagent(
+                orchestrator=_FakeOrchestrator(behaviour),
+                event_bus=bus,
+                usage=_FakeUsage(),
+                timeout_seconds=5,
+            )
+
+    coord = _coordinator(tmp_path, _BusAwareRuntime(None))
+    reports = await coord.dispatch([SubagentRequest("coder", "add endpoint")])
+
+    assert reports[0].status is SubagentStatus.COMPLETED
+    kinds = [item.kind for item in reports[0].evidence]
+    assert kinds == ["file_created", "command"]
+    # The digest survives serialization for the parent model and ledger.
+    serialized = reports[0].to_dict()["evidence"]
+    assert serialized[0]["path"] == "api.py"
+    assert serialized[1]["argv"] == ["pytest", "-q"]

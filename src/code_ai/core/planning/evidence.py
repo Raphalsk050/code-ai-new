@@ -401,7 +401,115 @@ def _records_from_payload(
                 summary=summary,
             )
         ]
+    if tool_name == "dispatch_agent":
+        return _records_from_subagent_reports(
+            common=common,
+            payload=payload,
+            is_verification_command=is_verification_command,
+        )
     return []
+
+
+def _records_from_subagent_reports(
+    *,
+    common: dict[str, Any],
+    payload: dict[str, Any],
+    is_verification_command: Callable[[list[str]], bool] | None,
+) -> list[EvidenceRecord]:
+    """Convert delegated sub-agents' evidence digests into parent ledger records.
+
+    Sub-agents act directly on the shared workspace, so their file changes and
+    verification runs are as real as the parent's own - without this conversion
+    the completion gate would reject a delegated implementation for "missing"
+    evidence and push the model to redo (or fabricate) the work. Items are
+    replayed in the order the sub-agent performed them, so a verification that
+    ran after the last change still counts as current.
+    """
+    reports = payload.get("reports")
+    if not isinstance(reports, list):
+        return []
+    records: list[EvidenceRecord] = []
+    for report in reports:
+        if not isinstance(report, dict):
+            continue
+        agent = str(report.get("name") or report.get("agent_type") or "sub-agent")
+        for raw_item in report.get("evidence") or []:
+            if not isinstance(raw_item, dict):
+                continue
+            record = _record_from_subagent_item(
+                common=common,
+                agent=agent,
+                item=raw_item,
+                is_verification_command=is_verification_command,
+            )
+            if record is not None:
+                records.append(record)
+    return records
+
+
+def _record_from_subagent_item(
+    *,
+    common: dict[str, Any],
+    agent: str,
+    item: dict[str, Any],
+    is_verification_command: Callable[[list[str]], bool] | None,
+) -> EvidenceRecord | None:
+    # The digest reflects tool calls that actually completed inside the child,
+    # so every item except a failed command is a successful observation - the
+    # dispatch call's own success flag (in ``common``) does not apply per item.
+    fields = {**common}
+    fields.pop("success", None)
+    kind = str(item.get("kind") or "")
+    path = str(item.get("path") or "")
+    if kind == "file_read" and path:
+        return EvidenceRecord(
+            **fields,
+            success=True,
+            evidence_type=EvidenceType.FILE_READ,
+            summary=f"Sub-agent {agent} read {path}.",
+            affected_paths=[path],
+        )
+    if kind in {"file_created", "file_changed"} and path:
+        new_hash = str(item.get("new_sha256") or "")
+        return EvidenceRecord(
+            **fields,
+            success=True,
+            evidence_type=EvidenceType.FILE_CREATED
+            if kind == "file_created"
+            else EvidenceType.FILE_CHANGED,
+            summary=f"Sub-agent {agent} wrote {path}.",
+            affected_paths=[path],
+            old_hashes={path: item.get("old_sha256")},
+            new_hashes={path: new_hash} if new_hash else {},
+        )
+    if kind == "command":
+        argv = item.get("argv") or []
+        exit_code = item.get("exit_code")
+        succeeded = exit_code == 0
+        is_verification = (
+            is_verification_command(argv) if is_verification_command else True
+        )
+        if is_verification:
+            evidence_type = (
+                EvidenceType.VERIFICATION_PASSED
+                if succeeded
+                else EvidenceType.VERIFICATION_FAILED
+            )
+        else:
+            evidence_type = (
+                EvidenceType.COMMAND_SUCCEEDED
+                if succeeded
+                else EvidenceType.COMMAND_FAILED
+            )
+        return EvidenceRecord(
+            **fields,
+            success=succeeded,
+            evidence_type=evidence_type,
+            summary=f"Sub-agent {agent} ran {argv!r} (exit {exit_code}).",
+            command_argv=argv,
+            command_exit_code=exit_code if isinstance(exit_code, int) else None,
+        )
+    return None
 
 
 def _summary(payload: dict[str, Any], max_chars: int) -> str:
