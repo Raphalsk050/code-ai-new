@@ -21,6 +21,51 @@ class PreconditionGate:
         self._workspace = workspace
         self._nudged_paths: set[str] = set()
         self._delegation_nudged = False
+        self._artifact_nudged = False
+
+    def note_turn_started(self) -> None:
+        """Reset the per-turn nudges when a fresh user request begins.
+
+        The unrequested-artifact nudge is scoped to one request: each turn
+        carries its own intent, so a nudge spent in the previous question must
+        not silently wave through a file creation in the next one. Path and
+        delegation nudges stay session-scoped on purpose - their evidence basis
+        (what was read, what was explored) also spans the session.
+        """
+        self._artifact_nudged = False
+
+    def unrequested_artifact_gap(
+        self,
+        tool_name: str,
+        arguments: dict[str, object],
+        *,
+        task_requests_mutation: bool,
+    ) -> str | None:
+        """Reason to defer a file write the user's request never asked for.
+
+        The classic failure at the *end* of a read-only task: told that prose
+        does not complete tasks, the model manufactures a deliverable - an
+        unrequested notes/summary/analysis document - just to have completion
+        evidence. Fires exactly at the write attempt (before any approval
+        prompt reaches the user), once per turn, then fails open so a
+        misclassified genuine change costs one round-trip at most.
+        """
+        if task_requests_mutation or tool_name not in _MUTATION_TOOLS:
+            return None
+        if self._artifact_nudged:
+            return None
+        self._artifact_nudged = True
+        path = str(arguments.get("path") or "").strip()
+        target = f" on '{path}'" if path else ""
+        return (
+            "Precondition check: this task was classified as read-only (a "
+            f"question or analysis), yet you are calling {tool_name}{target}. "
+            "Answering a question never requires creating or editing files: put "
+            "your findings directly in your chat answer instead of writing "
+            "notes, summaries, or report documents the user never asked for. "
+            "If the user's request genuinely requires this exact file change, "
+            "retry the call and it will proceed."
+        )
 
     def unread_mutation_gap(
         self,

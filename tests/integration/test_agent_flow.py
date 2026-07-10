@@ -909,3 +909,87 @@ async def test_blind_overwrite_is_deferred_until_the_file_is_read(tmp_path) -> N
     # ...and the turn still completed cleanly after read + retry.
     assert "Updated config.py timeout." in result.text
     assert result.error is None
+
+
+class FakeAnswerViaDocumentProvider:
+    """Reads code to answer a question, then tries to write a summary document.
+
+    Reproduces the reported failure: at the end of a read-only question the
+    model manufactures an ANALYSIS.md as "completion evidence" instead of just
+    answering. The runtime must defer that write and accept the prose answer.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.artifact_result = ""
+
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        return ProviderCapabilities(
+            streaming=True, tool_calling=True, provider_reported_usage=False
+        )
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        if self.calls == 3:
+            for message in request.messages:
+                if message.role == "tool" and "Precondition check" in message.content:
+                    self.artifact_result = message.content
+        if self.calls == 1:
+            response = ModelResponse(
+                tool_calls=[
+                    ToolCall(id="read_1", name="read_file", arguments={"path": "main.py"})
+                ],
+                finish_reason=FinishReason.TOOL_CALLS,
+            )
+        elif self.calls == 2:
+            # The unnecessary artifact: writing the findings to a document.
+            response = ModelResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="doc_1",
+                        name="write_file",
+                        arguments={"path": "ANALYSIS.md", "content": "# Findings\n"},
+                    )
+                ],
+                finish_reason=FinishReason.TOOL_CALLS,
+            )
+        else:
+            text = "O projeto e um script unico em main.py que imprime uma saudacao."
+            yield ProviderEvent(kind="text_delta", text_delta=text)
+            response = ModelResponse(text=text, finish_reason=FinishReason.STOP)
+        yield ProviderEvent(kind="completed", response=response)
+
+    async def complete(self, request: ModelRequest) -> ModelResponse:
+        async for event in self.stream(request):
+            if event.response:
+                return event.response
+        return ModelResponse()
+
+    async def close(self) -> None:
+        return None
+
+
+async def test_question_is_answered_in_prose_without_creating_documents(tmp_path) -> None:
+    (tmp_path / "main.py").write_text("print('hello')\n", encoding="utf-8")
+    config = AppConfig.from_mapping(
+        {
+            "api_mode": "ollama",
+            "workspace": str(tmp_path),
+            "model": "fake",
+            "permission_mode": "bypass",
+        }
+    )
+    provider = FakeAnswerViaDocumentProvider()
+    app = build_application(config=config, provider=provider)
+
+    await app.start()
+    result = await app.submit_user_message("como funciona a base de codigo desse projeto?")
+    await app.close()
+
+    # The unrequested document write was deferred with guidance...
+    assert "chat answer" in provider.artifact_result
+    assert not (tmp_path / "ANALYSIS.md").exists()
+    # ...and the prose answer was accepted as the task's completion.
+    assert "main.py" in result.text
+    assert result.error is None
