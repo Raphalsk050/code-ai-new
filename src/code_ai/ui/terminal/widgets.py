@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass
 from importlib import resources
 
+from markdown_it import MarkdownIt
+from markdown_it.token import Token
 from rich.console import Console, RenderableType
 from rich.markdown import Markdown
 from rich.text import Text
@@ -495,6 +497,47 @@ ASSISTANT_LINE_PREFIX = "ai> "
 _DEFAULT_MARKDOWN_WIDTH = 80
 
 
+def _parse_markdown_keeping_markup_visible(body: str) -> list[Token]:
+    """Parse Markdown so raw XML/HTML in the answer stays visible.
+
+    Rich's ``Markdown`` has no renderer for ``html_block``/``html_inline``
+    tokens: it silently drops them. An answer quoting an XML/HTML document
+    outside a code fence (which models do all the time when asked to produce
+    XML) then simply vanishes from the terminal — the user sees the prose
+    around a hole where the document should be. Rewrite block HTML into a
+    fenced code block (preserving its line structure, with highlighting) and
+    inline HTML into literal text, so angle-bracket content always renders.
+    """
+    parser = MarkdownIt().enable("strikethrough").enable("table")
+    tokens = parser.parse(body)
+    rewritten: list[Token] = []
+    for token in tokens:
+        if token.type == "html_block":
+            # markdown-it splits one document into several html_block tokens
+            # (the <?xml?> prolog and the root element, for instance); merge
+            # runs of them so the document renders as one contiguous block.
+            previous = rewritten[-1] if rewritten else None
+            if previous is not None and previous.type == "fence" and previous.meta.get(
+                "from_html_block"
+            ):
+                previous.content += token.content
+                continue
+            fence = Token("fence", "code", 0)
+            fence.content = token.content
+            fence.info = "xml"
+            fence.markup = "```"
+            fence.block = True
+            fence.meta = {"from_html_block": True}
+            rewritten.append(fence)
+            continue
+        if token.type == "inline" and token.children:
+            for child in token.children:
+                if child.type == "html_inline":
+                    child.type = "text"
+        rewritten.append(token)
+    return rewritten
+
+
 def markdown_to_content(body: str, width: int) -> Content:
     """Render Markdown to a Textual-native :class:`Content`.
 
@@ -511,7 +554,11 @@ def markdown_to_content(body: str, width: int) -> Content:
     """
     width = max(20, width)
     console = Console(width=width)
-    segments = console.render(Markdown(body), console.options.update_width(width))
+    markdown = Markdown(body)
+    # Re-parse with the HTML-preserving token rewrite; ``parsed`` is what
+    # ``Markdown.__rich_console__`` walks, so this is the one override point.
+    markdown.parsed = _parse_markdown_keeping_markup_visible(body)
+    segments = console.render(markdown, console.options.update_width(width))
     text = Text()
     for segment in segments:
         if segment.control:
