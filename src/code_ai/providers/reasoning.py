@@ -89,13 +89,18 @@ class ReasoningTagFilter:
         """Release held text at end of stream as ``(answer, reasoning)``.
 
         Leftover text is, by construction, an incomplete marker prefix. Inside a
-        think block it is reasoning; otherwise a truncated tag we drop so a
-        partial ``<thin`` or ``</thi`` never leaks into the answer.
+        think block it is reasoning. Outside one, a long fragment is a truncated
+        tag we drop so a partial ``<thin`` or ``</thi`` never leaks into the
+        answer - but a one- or two-character hold (a lone ``<`` or backtick that
+        happened to end the stream) is ordinary answer text and dropping it
+        visibly truncates the reply.
         """
         held = self._held
         self._held = ""
         if held and self._in_think:
             return "", held
+        if held and len(held) <= 2:
+            return held, ""
         return "", ""
 
     def _classify(self, candidate: str) -> tuple[str, str]:

@@ -904,10 +904,15 @@ class AgentOrchestrator:
             elif event.kind == "completed" and event.response:
                 completed = event.response
 
-        _, reasoning_tail = reasoning_filter.flush()
+        answer_tail, reasoning_tail = reasoning_filter.flush()
         if reasoning_tail:
             reasoning_parts.append(reasoning_tail)
             await self._emit_reasoning_delta(reasoning_tail)
+        if answer_tail:
+            # A short literal hold (e.g. a closing backtick) released at end of
+            # stream still belongs to the visible answer; route it through the
+            # same tool-call filter as every other answer fragment.
+            await _emit_visible_answer(answer_tail)
         tail = text_filter.flush()
         if tail:
             await self._emit_text_delta(tail)
