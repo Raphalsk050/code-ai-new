@@ -187,6 +187,7 @@ class PlannerService:
         self.no_progress_rounds = 0
         self.double_check_pending = False
         self.accepted_final_text = None
+        self._precondition_gate.note_turn_started()
         if self.profile.requires_workspace_mutation and not provider_supports_tools:
             raise ToolExecutionError(
                 "This implementation task requires tool-calling support; chat text cannot "
@@ -351,6 +352,15 @@ class PlannerService:
                 has_local_grounding=self._has_delegation_grounding(),
                 write_agent_types=self._write_agent_types,
             )
+        # Checked first: on a read-only task the write itself is the anomaly,
+        # so "you were not asked to write files" beats "read the file first".
+        artifact_gap = self._precondition_gate.unrequested_artifact_gap(
+            tool_name,
+            arguments,
+            task_requests_mutation=self._task_produces_workspace_effects(),
+        )
+        if artifact_gap:
+            return artifact_gap
         return self._precondition_gate.unread_mutation_gap(
             tool_name, arguments, known_content_paths=self._known_content_paths
         )
@@ -572,10 +582,43 @@ class PlannerService:
                 "- End by telling the user to switch to act mode (/act) to execute "
                 "the plan."
             )
+        if self._task_produces_workspace_effects():
+            return header + (
+                "Rules: prefer the recommended tools, work on the current step, and do not "
+                "claim completion from prose. For workspace changes, call write_file or "
+                "edit_code; for completion, call complete_task after verification evidence exists."
+            )
+        # Read-only task: the completion rules above would misdirect the model.
+        # Told "do not claim completion from prose" while holding only reading
+        # evidence, models invent a deliverable - typically writing an unrequested
+        # notes/summary document at the end just to have "completion evidence".
+        # For a question, the prose answer IS the deliverable.
         return header + (
-            "Rules: prefer the recommended tools, work on the current step, and do not "
-            "claim completion from prose. For workspace changes, call write_file or "
-            "edit_code; for completion, call complete_task after verification evidence exists."
+            "READ-ONLY TASK - the user asked for information, not for workspace "
+            "changes.\n"
+            "Rules:\n"
+            "- Gather evidence with the recommended read-only tools and keep the "
+            "analysis internal.\n"
+            "- When you have enough evidence, answer the user directly in the chat. "
+            "Your prose answer completes this task; calling complete_task is not "
+            "required.\n"
+            "- Do NOT create or edit any file. Nobody asked for a document: if you "
+            "are about to write notes, a summary, or an analysis file, put that "
+            "content in your answer instead."
+        )
+
+    def _task_produces_workspace_effects(self) -> bool:
+        """Whether this task's deliverable lives in the workspace (or a command).
+
+        Mutation and command tasks legitimately end in tool actions and a
+        complete_task claim. Everything else (inspection, research, explanation)
+        ends in a chat answer, and the task context must say so explicitly.
+        """
+        if self.profile is None:
+            return True  # fail toward the stricter, action-oriented rules
+        return (
+            self.profile.requires_workspace_mutation
+            or self.profile.intent == TaskIntent.COMMAND_EXECUTION
         )
 
     def _known_paths_preview(self, *, limit: int = 15) -> str:
