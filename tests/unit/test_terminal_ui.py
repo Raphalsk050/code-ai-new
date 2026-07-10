@@ -1292,3 +1292,44 @@ async def test_agents_panel_keeps_expanded_card_across_updates(tmp_path) -> None
         await fake_app.emit("user.message", {"text": "next"})
         await pilot.pause(0.2)
         assert len(panel.query(".agent-card")) == 0
+
+
+def test_markdown_answer_keeps_raw_xml_visible() -> None:
+    # Rich's Markdown silently drops html_block/html_inline tokens, so an
+    # answer quoting an XML document outside a code fence vanished from the
+    # chat entirely - the user saw prose around a hole where the XML should be.
+    from code_ai.ui.terminal.widgets import markdown_to_content
+
+    body = (
+        "Aqui esta o exemplo.xml:\n\n"
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<biblioteca nome="minha">\n'
+        '  <livro id="1" ano="1899">\n'
+        "    <titulo>Dom Casmurro</titulo>\n"
+        "  </livro>\n"
+        "</biblioteca>\n\n"
+        "O arquivo <b>foi criado</b>."
+    )
+    plain = markdown_to_content(body, 78).plain
+
+    for fragment in (
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<biblioteca nome="minha">',
+        "<titulo>Dom Casmurro</titulo>",
+        "</biblioteca>",
+        "<b>foi criado</b>",  # inline HTML also renders literally
+    ):
+        assert fragment in plain, f"missing from rendered answer: {fragment}"
+    # The prolog and the root element are one contiguous block: no blank hole
+    # between the merged html_block tokens.
+    xml_start = plain.index("<?xml")
+    xml_end = plain.index("</biblioteca>")
+    assert "\n\n" not in plain[xml_start:xml_end]
+
+
+def test_markdown_fenced_code_still_renders_normally() -> None:
+    from code_ai.ui.terminal.widgets import markdown_to_content
+
+    body = 'Veja:\n\n```xml\n<a b="c"/>\n```\n'
+    plain = markdown_to_content(body, 78).plain
+    assert '<a b="c"/>' in plain
