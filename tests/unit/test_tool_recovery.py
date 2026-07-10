@@ -278,3 +278,21 @@ def test_attempt_detector_flags_markup() -> None:
 def test_attempt_detector_ignores_plain_prose() -> None:
     assert not looks_like_attempted_tool_call("Here is the answer to your question.")
     assert not looks_like_attempted_tool_call("")
+
+
+def test_stream_filter_releases_short_trailing_hold_at_flush() -> None:
+    # Observed with a real model: the answer ended with an inline-code span
+    # ("Elemento `<autor>`") right before a structured tool call. The closing
+    # backtick was held as a potential ```tool_call prefix and flush() dropped
+    # it, visibly truncating the committed answer.
+    flt = ToolCallStreamFilter()
+    visible = flt.feed("Elemento `<autor>") + flt.feed("`")
+    visible += flt.flush()
+    assert visible == "Elemento `<autor>`"
+
+
+def test_stream_filter_still_drops_truncated_marker_at_flush() -> None:
+    flt = ToolCallStreamFilter()
+    visible = flt.feed("Answer text <tool_ca")
+    visible += flt.flush()
+    assert visible == "Answer text "

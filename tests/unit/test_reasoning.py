@@ -122,3 +122,19 @@ def test_split_reasoning_tags_is_noop_without_markup() -> None:
 
     assert answer == "plain answer, nothing to strip"
     assert reasoning == ""
+
+
+def test_reasoning_filter_releases_short_trailing_hold_as_answer() -> None:
+    flt = ReasoningTagFilter()
+    answer, reasoning = flt.feed("O elemento e <")
+    tail_answer, tail_reasoning = flt.flush()
+    assert answer + tail_answer == "O elemento e <"
+    assert reasoning + tail_reasoning == ""
+
+
+def test_reasoning_filter_still_drops_truncated_tag_at_flush() -> None:
+    flt = ReasoningTagFilter()
+    answer, _ = flt.feed("done </thi")
+    tail_answer, tail_reasoning = flt.flush()
+    assert answer + tail_answer == "done "
+    assert tail_reasoning == ""
