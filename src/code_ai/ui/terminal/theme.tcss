@@ -151,19 +151,19 @@ Screen {
 /* Each panel is its own bordered division. When both are visible they split the
    height; when one is hidden the other fills the sidebar. Content that outgrows
    the space scrolls inside the panel rather than pushing the layout around. */
-#plan, #subagents {
+#plan, #subagents, #terminal {
   width: 1fr;
   height: 1fr;
   border: solid #8892a0;
   padding: 1;
 }
 
-#plan-scroll, #subagents-scroll {
+#plan-scroll, #subagents-scroll, #terminal-scroll {
   height: 1fr;
   scrollbar-size-vertical: 1;
 }
 
-#plan-body, #subagents-body {
+#plan-body, #subagents-body, #terminal-body {
   height: auto;
 }
 

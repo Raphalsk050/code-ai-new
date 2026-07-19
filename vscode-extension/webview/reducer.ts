@@ -307,6 +307,46 @@ export function applyEvent(state: ViewState, event: EventEnvelope): ViewState {
     case "planning.plan.waiting":
       return { ...state, items: push(state.items, { kind: "notice", id, level: "plan", text: `◌ paused, waiting for you (${p.progress ?? ""})` }) };
 
+    case "command.output": {
+      // Live output chunk from execute_command: stream it into the running tool
+      // card's detail so the user watches the command instead of a silent card.
+      const text = String(p.text ?? "");
+      if (!text) return state;
+      let idx = -1;
+      for (let i = state.items.length - 1; i >= 0; i--) {
+        const it = state.items[i];
+        if (it.kind === "tool" && it.status === "running") {
+          idx = i;
+          break;
+        }
+      }
+      if (idx < 0) return state;
+      const tool = state.items[idx] as Extract<Item, { kind: "tool" }>;
+      const copy = state.items.slice();
+      copy[idx] = { ...tool, detail: (tool.detail + text).slice(-240) };
+      return { ...state, items: copy };
+    }
+
+    case "terminal.screen.updated": {
+      // The interactive PTY's emulated screen changed (tool, /term, or the
+      // background poller). Render its newest rows as one in-place notice so
+      // a dev server's output stays visible without flooding the transcript.
+      const screen = String(p.screen ?? "");
+      const tail = screen
+        .split("\n")
+        .filter((line) => line.trim())
+        .slice(-4)
+        .join("\n");
+      const text = `[terminal] ${p.closed ? "(closed) " : ""}${tail}`.trim();
+      const last = state.items[state.items.length - 1];
+      if (last && last.kind === "notice" && last.text.startsWith("[terminal]")) {
+        const copy = state.items.slice();
+        copy[copy.length - 1] = { ...last, text };
+        return { ...state, items: copy };
+      }
+      return { ...state, items: push(state.items, { kind: "notice", id, level: "info", text }) };
+    }
+
     case "warning":
       return { ...state, items: push(state.items, { kind: "notice", id, level: "warning", text: String(p.message ?? "") }) };
     case "error":

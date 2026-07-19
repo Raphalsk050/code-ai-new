@@ -5,6 +5,11 @@ from dataclasses import dataclass, field
 from code_ai.events.models import EventEnvelope
 from code_ai.ui.terminal.widgets import build_plan_steps
 
+# Character budget for the live "cmd~" line that streams execute_command output.
+# Only the tail matters while it runs; the full stdout/stderr still arrives in
+# the tool.call.completed summary and the tool result itself.
+_COMMAND_TAIL_MAX_CHARS = 2000
+
 
 @dataclass(slots=True)
 class TerminalViewModel:
@@ -30,6 +35,16 @@ class TerminalViewModel:
     # Reset at the start of every user turn so a prior turn's agents never linger.
     subagents: dict[str, dict[str, str]] = field(default_factory=dict)
     subagents_visible: bool = False
+    # Live interactive-terminal state, driven by ``terminal.screen.updated``
+    # events (from the tools, the poller, or /term). Session-scoped, not
+    # turn-scoped: a dev server keeps running across turns, so the panel is
+    # NOT cleared on user.message — only when its session closes.
+    terminal_visible: bool = False
+    terminal_session_id: str = ""
+    terminal_screen: str = ""
+    terminal_rows: int = 24
+    terminal_cols: int = 80
+    terminal_closed: bool = False
 
     def subagents_list(self) -> list[dict[str, str]]:
         return list(self.subagents.values())
@@ -155,6 +170,10 @@ class TerminalViewModel:
                     self.conversation.append(f"model> requested {name or 'tool'} tool")
         elif event.event_type == "tool.call.progress":
             self._apply_tool_progress(event.payload)
+        elif event.event_type == "command.output":
+            self._apply_command_output(event.payload)
+        elif event.event_type == "terminal.screen.updated":
+            self._apply_terminal_screen(event.payload)
         elif event.event_type == "tool.call.started":
             self.conversation.append(f"tool> {event.payload.get('name')} started")
         elif event.event_type == "tool.call.completed":
@@ -274,6 +293,43 @@ class TerminalViewModel:
             self.conversation[-1] = line
         else:
             self.conversation.append(line)
+
+    def _apply_command_output(self, payload: dict[object, object]) -> None:
+        """Stream one execute_command output chunk into a live ``cmd~`` line.
+
+        Chunks append to a single in-place line (like the ``tool~`` progress
+        line) so the user watches the command's output as it happens instead of
+        the UI sitting idle until the process exits. Only the tail is kept —
+        the full output still lands in the tool result when the command ends.
+        """
+        text = str(payload.get("text") or "")
+        if not text:
+            return
+        prefix = "cmd~ "
+        if self.conversation and self.conversation[-1].startswith(prefix):
+            merged = self.conversation[-1] + text
+            self.conversation[-1] = self._bound_command_tail(merged, prefix)
+        else:
+            self.conversation.append(self._bound_command_tail(prefix + text, prefix))
+
+    @staticmethod
+    def _bound_command_tail(line: str, prefix: str) -> str:
+        if len(line) <= _COMMAND_TAIL_MAX_CHARS:
+            return line
+        return prefix + "…" + line[-_COMMAND_TAIL_MAX_CHARS:]
+
+    def _apply_terminal_screen(self, payload: dict[object, object]) -> None:
+        """Reflect an interactive terminal's emulated screen in the panel state."""
+        self.terminal_session_id = str(payload.get("session_id") or self.terminal_session_id)
+        self.terminal_screen = str(payload.get("screen") or "")
+        rows = payload.get("rows")
+        cols = payload.get("columns")
+        if isinstance(rows, int):
+            self.terminal_rows = rows
+        if isinstance(cols, int):
+            self.terminal_cols = cols
+        self.terminal_closed = bool(payload.get("closed"))
+        self.terminal_visible = True
 
     def _apply_subagent_event(self, event: EventEnvelope) -> None:
         """Fold a ``subagent.*`` event into the live AGENTS panel state.
