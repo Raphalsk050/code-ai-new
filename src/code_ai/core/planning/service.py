@@ -1300,9 +1300,17 @@ class PlannerService:
                     f"claimed changed paths {sorted(phantom)} have no recorded "
                     f"change evidence (recorded paths: {sorted(actual_paths)})."
                 )
-        missing.extend(
-            self._incomplete_plan_steps(has_file_change=has_file_change, verified=verified)
-        )
+        # Checklist reconciliation is guidance, not evidence: pending steps are
+        # listed only alongside a genuine evidence gap, to point the model back at
+        # its own plan. When every evidence requirement is satisfied, a lagging
+        # cursor must not cost a round-trip - acceptance settles the checklist via
+        # complete_all() anyway.
+        if missing:
+            missing.extend(
+                self._incomplete_plan_steps(
+                    has_file_change=has_file_change, verified=verified
+                )
+            )
         return missing
 
     def _incomplete_plan_steps(self, *, has_file_change: bool, verified: bool) -> list[str]:
