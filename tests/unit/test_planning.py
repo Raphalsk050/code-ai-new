@@ -438,37 +438,50 @@ async def test_completion_requires_verification_once_files_change_even_if_unclas
     assert any("verification" in item for item in rejected.missing_requirements)
 
 
-async def test_double_check_is_folded_into_the_evidence_rejection() -> None:
-    # The double-check must ride along with the evidence rejection instead of
-    # queuing a second rejection behind it: one rejection lists everything, the
-    # model fixes the evidence, and the next complete_task is accepted.
+async def test_double_check_is_folded_into_the_evidence_rejection(tmp_path) -> None:
+    # A high-risk change (three files touched) selects the strict policy, and the
+    # double-check must ride along with the evidence rejection instead of queuing
+    # a second rejection behind it: one rejection lists everything, the model
+    # fixes the evidence, and the next complete_task is accepted.
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
     service = PlannerService(
         config=PlannerConfig(),  # double_check_completion defaults to True
         event_bus=AsyncEventBus(session_id="session"),
         session_id="session",
+        workspace=tmp_path,
     )
-    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+    await service.begin_turn(
+        "Create src/a.py, src/b.py and src/c.py", provider_supports_tools=True
+    )
+    for index, path in enumerate(("src/a.py", "src/b.py", "src/c.py")):
+        await service.record_tool_result(
+            tool_call_id=f"w{index}",
+            tool_name="write_file",
+            payload={"path": path, "old_sha256": None, "new_sha256": f"h{index}"},
+            success=True,
+        )
 
-    first = await service.evaluate_completion({"summary": "done"})
+    first = await service.evaluate_completion({"summary": "created the modules"})
 
     assert first.accepted is False
-    assert any("file-change" in item for item in first.missing_requirements)
+    assert any("verification" in item for item in first.missing_requirements)
     assert any("Double-check" in item for item in first.missing_requirements)
 
     await service.record_tool_result(
-        tool_call_id="w1",
-        tool_name="write_file",
-        payload={"path": "src/example.py", "old_sha256": None, "new_sha256": "h1"},
+        tool_call_id="v1",
+        tool_name="execute_command",
+        payload={"argv": ["pytest"], "exit_code": 0, "stdout": "", "stderr": ""},
         success=True,
     )
-    second = await service.evaluate_completion({"summary": "created the module"})
+    second = await service.evaluate_completion({"summary": "created and verified"})
 
     assert second.accepted is True
 
 
-async def test_acknowledged_double_check_completes_in_one_call() -> None:
-    # A claim arriving with double_check_acknowledged already reconciled the
-    # checklist, so the runtime must not spend a round-trip re-asking for it.
+async def test_low_risk_mutation_completes_without_double_check() -> None:
+    # A routine single-file change with settled evidence pays no double-check
+    # tax: the first well-evidenced complete_task is accepted, even with
+    # double_check_completion enabled.
     service = PlannerService(
         config=PlannerConfig(),
         event_bus=AsyncEventBus(session_id="session"),
@@ -482,8 +495,66 @@ async def test_acknowledged_double_check_completes_in_one_call() -> None:
         success=True,
     )
 
+    decision = await service.evaluate_completion({"summary": "created the module"})
+
+    assert decision.accepted is True
+
+
+async def test_misclassified_analysis_completes_as_prose_after_one_nudge() -> None:
+    # "atualize ..." trips the mutation regex, but the model treats the task as
+    # analysis: it reads files and never attempts a write. The first
+    # complete_task is still nudged toward evidence; insisting without new
+    # evidence releases the turn as a prose answer instead of looping.
+    service = PlannerService(
+        config=PlannerConfig(),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    await service.begin_turn(
+        "atualize sua visao do fluxo de login e me explique os riscos",
+        provider_supports_tools=True,
+    )
+    assert service.profile.requires_workspace_mutation is True
+    await service.record_tool_result(
+        tool_call_id="r1",
+        tool_name="read_file",
+        payload={"path": "src/login.py", "sha256": "abc"},
+        success=True,
+    )
+
+    first = await service.evaluate_completion({"summary": "análise entregue"})
+    assert first.accepted is False
+    assert any("file-change" in item for item in first.missing_requirements)
+
+    second = await service.evaluate_completion({"summary": "análise entregue"})
+
+    assert second.accepted is True
+    assert "no change was attempted" in second.final_text
+
+
+async def test_acknowledged_double_check_completes_in_one_call() -> None:
+    # Even a high-risk change (three files touched selects the strict policy)
+    # completes in one call when the claim arrives with
+    # double_check_acknowledged: the reconciliation already happened, so the
+    # runtime must not spend a round-trip re-asking for it.
+    service = PlannerService(
+        config=PlannerConfig(),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    await service.begin_turn(
+        "Create src/a.py, src/b.py and src/c.py", provider_supports_tools=True
+    )
+    for index, path in enumerate(("src/a.py", "src/b.py", "src/c.py")):
+        await service.record_tool_result(
+            tool_call_id=f"w{index}",
+            tool_name="write_file",
+            payload={"path": path, "old_sha256": None, "new_sha256": f"h{index}"},
+            success=True,
+        )
+
     decision = await service.evaluate_completion(
-        {"summary": "created the module", "double_check_acknowledged": True}
+        {"summary": "created the modules", "double_check_acknowledged": True}
     )
 
     assert decision.accepted is True
