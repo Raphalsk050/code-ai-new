@@ -1035,16 +1035,50 @@ class PlannerService:
         """Complete the checklist when a turn ends cleanly in a final answer.
 
         ``complete_all`` normally runs only when a ``complete_task`` claim is
-        accepted, but a read-only task legitimately ends in a plain prose
-        answer. When the model has already declared the final step done via
-        ``complete_plan_step``, that answer *is* the final step's execution, so
-        the plan settles instead of freezing the sidebar at N-1/N with the last
-        step spinning forever.
+        accepted, but a read-only task legitimately ends in a plain prose answer.
+
+        The plan settles on that answer when *either*:
+
+        - the model has already declared the final step done via
+          ``complete_plan_step`` (the answer is that step's execution), or
+        - the task's deliverable *is* prose (inspection / research /
+          conversation) *and* the model has completed at least one checklist
+          step. For those tasks the final answer is the completion signal -
+          exactly the role ``complete_task`` plays for mutation tasks, and what
+          the read-only task context already tells the model ("Your prose answer
+          completes this task"). Requiring a separate ``complete_plan_step`` on
+          the last step otherwise strands genuinely finished work at "waiting
+          for you", since models routinely answer in prose without declaring the
+          closing step (the observed failure: a checklist frozen at 1/N after a
+          full answer was already delivered).
+
+        The "completed at least one step" guard keeps the pure pause case apart:
+        a turn that submits a plan and then immediately asks the user a
+        clarifying question in prose - without finishing any step - is genuinely
+        unfinished, so its plan is left ACTIVE for :meth:`suspend_agent_plan` to
+        pause and the sidebar to show where it stopped. It is an imperfect
+        signal (a model could finish one step and then ask about the next), but
+        it is the honest state-only separator available at turn end.
+
+        Mutation/command tasks stay conservative regardless of progress: their
+        real completion runs through the evidence gate (``complete_task`` ->
+        ``_accept_success_completion``), so an undeclared prose ending is never
+        marked done here without verification.
+
+        This call only fires from the clean no-tool final-answer path; blocking
+        questions raised via ``ask_user``, cancellations and wind-downs suspend
+        the plan instead.
         """
         plan = self.agent_plan
         if plan is None or plan.status != PlanStatus.ACTIVE:
             return
-        if not plan.final_step_declared:
+        completed_steps = sum(
+            1 for step in plan.steps if step.status == PlanStepStatus.COMPLETED
+        )
+        prose_deliverable_done = (
+            not self._task_produces_workspace_effects() and completed_steps > 0
+        )
+        if not (plan.final_step_declared or prose_deliverable_done):
             return
         plan.complete_all()
         await self.event_bus.emit(
