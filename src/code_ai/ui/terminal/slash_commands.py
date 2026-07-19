@@ -61,6 +61,19 @@ SLASH_COMMANDS = [
     SlashCommand("/goal resume", "Resume a blocked goal and restart the loop."),
     SlashCommand("/cancel", "Cancel the active turn."),
     SlashCommand(
+        "/term <texto>",
+        "Type a line into the shared interactive terminal session.",
+        "/term ",
+    ),
+    SlashCommand("/term start", "Open an interactive terminal in the workspace."),
+    SlashCommand("/term status", "Show the terminal session and its screen."),
+    SlashCommand(
+        "/term ctrl <c|d|z>",
+        "Send a control key (e.g. Ctrl+C) to the terminal.",
+        "/term ctrl ",
+    ),
+    SlashCommand("/term kill", "Terminate the interactive terminal session."),
+    SlashCommand(
         "/debug <on|off|status>",
         "Log raw model requests/responses for parser debugging.",
         "/debug ",

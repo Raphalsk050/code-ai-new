@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from code_ai.app.service import CodeAIApplication
-from code_ai.core.errors import GoalStateError
+from code_ai.core.errors import GoalStateError, TerminalSessionError
 from code_ai.events.models import EventEnvelope
 from code_ai.providers.models import ImageContent
 from code_ai.ui.terminal.view_models import TerminalViewModel
@@ -61,6 +61,97 @@ class TerminalController:
             f"progress: {snapshot.get('progress')}\n"
             f"current: {snapshot.get('current_step')}\n"
             f"verification passed: {snapshot.get('latest_verification_passed')}"
+        )
+
+    # -- interactive terminal (/term) ---------------------------------------
+    # The same PTY sessions the model drives through its terminal tools, now
+    # reachable by the human: /term types into the session, so user and agent
+    # share one live terminal instead of the user being locked out of it.
+
+    async def terminal_start(self, command: str | None = None) -> str:
+        manager = getattr(self.app, "terminal_manager", None)
+        if manager is None:
+            return "term> Terminal indisponível nesta sessão."
+        try:
+            session_id = manager.create(
+                cwd=self.app.session.config.workspace, command=command
+            )
+        except TerminalSessionError as exc:
+            return f"term> {exc}"
+        await self._emit_terminal_screen(manager, session_id)
+        return (
+            f"term> Sessão {session_id[:8]} iniciada. Digite /term <texto> para "
+            "enviar comandos; /term ctrl c interrompe; /term kill encerra."
+        )
+
+    async def terminal_send(self, text: str) -> str:
+        def type_and_run(manager, session_id: str) -> None:
+            manager.send_text(session_id, text)
+            manager.send_enter(session_id)
+
+        return await self._terminal_action(type_and_run)
+
+    async def terminal_enter(self) -> str:
+        return await self._terminal_action(
+            lambda manager, session_id: manager.send_enter(session_id)
+        )
+
+    async def terminal_control(self, key: str) -> str:
+        return await self._terminal_action(
+            lambda manager, session_id: manager.send_control(session_id, key)
+        )
+
+    async def terminal_kill(self) -> str:
+        manager = getattr(self.app, "terminal_manager", None)
+        session_id = manager.latest_session_id() if manager else None
+        if manager is None or session_id is None:
+            return "term> Nenhuma sessão de terminal ativa."
+        try:
+            manager.terminate(session_id)
+        except TerminalSessionError as exc:
+            return f"term> {exc}"
+        self.view_model.terminal_closed = True
+        await self.app.event_bus.emit(
+            "terminal.screen.updated",
+            {"session_id": session_id, "screen": self.view_model.terminal_screen,
+             "closed": True},
+            source="ui.term",
+        )
+        return f"term> Sessão {session_id[:8]} encerrada."
+
+    def terminal_status(self) -> str:
+        manager = getattr(self.app, "terminal_manager", None)
+        session_id = manager.latest_session_id() if manager else None
+        if manager is None or session_id is None:
+            return (
+                "term> Nenhuma sessão ativa. Use /term start [comando] para abrir "
+                "um terminal interativo."
+            )
+        screen = manager.read_screen(session_id)
+        return (
+            f"term> Sessão {session_id[:8]} · {screen.get('columns')}x"
+            f"{screen.get('rows')}"
+            f"{' · encerrada' if screen.get('closed') else ''}\n"
+            f"{screen.get('screen') or '(tela vazia)'}"
+        )
+
+    async def _terminal_action(self, action) -> str:
+        """Run one manager action against the latest session and emit its screen."""
+        manager = getattr(self.app, "terminal_manager", None)
+        session_id = manager.latest_session_id() if manager else None
+        if manager is None or session_id is None:
+            return "term> Nenhuma sessão ativa. Use /term start [comando] primeiro."
+        try:
+            action(manager, session_id)
+        except TerminalSessionError as exc:
+            return f"term> {exc}"
+        await self._emit_terminal_screen(manager, session_id)
+        return ""
+
+    async def _emit_terminal_screen(self, manager, session_id: str) -> None:
+        screen = manager.read_screen(session_id)
+        await self.app.event_bus.emit(
+            "terminal.screen.updated", screen, source="ui.term"
         )
 
     # -- persistent goal (/goal) -------------------------------------------

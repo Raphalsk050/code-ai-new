@@ -47,6 +47,7 @@ from code_ai.ui.terminal.widgets import (
     render_subagent_header,
     render_subagent_task,
     render_subagents_summary,
+    render_terminal_screen,
     resolve_spinner,
     spinner_color,
     subagent_task_preview,
@@ -623,6 +624,13 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                                     resolve_spinner(application.session.config.terminal_spinner),
                                     id="subagents-body",
                                 )
+                        # Live viewport of the interactive PTY session (agent-
+                        # or user-driven); appears with the first screen update
+                        # and stays across turns while the session lives.
+                        with Vertical(id="terminal"):
+                            yield Static("TERMINAL", classes="panel-title")
+                            with VerticalScroll(id="terminal-scroll"):
+                                yield Static("", id="terminal-body", markup=False)
                 yield WorkingIndicator(
                     resolve_spinner(application.session.config.terminal_spinner),
                     id="working-indicator",
@@ -802,6 +810,9 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             if text.strip() == "/goal" or text.strip().startswith("/goal "):
                 await self._handle_goal_command(text.strip())
                 return
+            if text.strip() == "/term" or text.strip().startswith("/term "):
+                await self._handle_term_command(text.strip())
+                return
             if text.strip() == "/cancel":
                 await self.controller.cancel()
                 return
@@ -876,6 +887,40 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 self._append_conversation_line(line)
 
             asyncio.create_task(_define())
+
+        async def _handle_term_command(self, stripped: str) -> None:
+            """Dispatch ``/term`` — the user's keyboard into the shared PTY.
+
+            The interactive terminal session is the same one the model drives
+            through its terminal tools, so the user can take over (answer a
+            prompt, Ctrl+C a runaway server) at any point. Anything after
+            ``/term`` that is not a known subcommand is typed into the session
+            verbatim followed by Enter.
+            """
+            argument = stripped[len("/term") :].strip()
+            if argument in {"", "status"}:
+                self._append_conversation_line(self.controller.terminal_status())
+                return
+            if argument == "start" or argument.startswith("start "):
+                command = argument[len("start") :].strip() or None
+                self._append_conversation_line(await self.controller.terminal_start(command))
+                return
+            if argument == "kill":
+                self._append_conversation_line(await self.controller.terminal_kill())
+                return
+            if argument == "enter":
+                self._append_conversation_line(await self.controller.terminal_enter())
+                return
+            if argument == "ctrl" or argument.startswith("ctrl "):
+                key = argument[len("ctrl") :].strip().lstrip("+").strip()
+                if len(key) != 1:
+                    self._append_conversation_line(
+                        "term> Uso: /term ctrl <letra> (ex.: /term ctrl c)"
+                    )
+                    return
+                self._append_conversation_line(await self.controller.terminal_control(key))
+                return
+            self._append_conversation_line(await self.controller.terminal_send(argument))
 
         async def _start_deep_plan(self, objective: str) -> None:
             """Switch to plan mode and, if an objective was given, plan it now.
@@ -1339,7 +1384,20 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             # the other, and the column is reclaimed entirely when both are idle.
             self.query_one("#plan").display = self.vm.plan_visible
             self.query_one("#subagents").display = self.vm.subagents_visible
-            self.query_one("#sidebar").display = self.vm.plan_visible or self.vm.subagents_visible
+            self.query_one("#terminal").display = self.vm.terminal_visible
+            self.query_one("#sidebar").display = (
+                self.vm.plan_visible or self.vm.subagents_visible or self.vm.terminal_visible
+            )
+            if self.vm.terminal_visible:
+                self.query_one("#terminal-body", Static).update(
+                    render_terminal_screen(
+                        self.vm.terminal_session_id,
+                        self.vm.terminal_screen,
+                        self.vm.terminal_rows,
+                        self.vm.terminal_cols,
+                        self.vm.terminal_closed,
+                    )
+                )
             self.query_one("#plan-body", PlanPanel).update_plan(
                 self.vm.plan_steps, self.vm.plan_progress, self.vm.plan_status
             )

@@ -1,61 +1,61 @@
 from __future__ import annotations
 
-import os
-import platform
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
 
 from code_ai.core.errors import TerminalSessionError
+from code_ai.tools.terminal.backends import PtySession, create_pty_session
+
+# Signature of the platform-session factory (see backends.create_pty_session);
+# injectable so tests can drive the manager with a fake PTY.
+SessionFactory = Callable[..., PtySession]
 
 
 @dataclass(slots=True)
 class TerminalSession:
     session_id: str
-    child: object
+    child: PtySession
     screen: object
     stream: object
     cwd: Path
     rows: int
     cols: int
     closed: bool = False
+    # Fingerprint of the last screen handed out by poll(), so the poller only
+    # emits an update when the rendered display actually changed.
+    last_display: str = field(default="", compare=False)
 
 
 class PersistentTerminalManager:
-    """Owns POSIX PTY sessions and their emulated screens."""
+    """Owns PTY sessions and their emulated screens on every platform.
 
-    def __init__(self) -> None:
+    The platform-specific spawning/IO lives behind the ``PtySession`` Strategy
+    (pexpect on POSIX, pywinpty/ConPTY on Windows — see ``backends``); this
+    class only manages session lifecycle and the ``pyte`` screen emulation.
+    """
+
+    def __init__(self, *, session_factory: SessionFactory | None = None) -> None:
         self._sessions: dict[str, TerminalSession] = {}
-        self._supported = platform.system() != "Windows"
-        self._pexpect = None
+        self._session_factory = session_factory or create_pty_session
         self._pyte = None
 
     def _load(self) -> None:
-        if not self._supported:
-            raise TerminalSessionError("Persistent terminal control is POSIX-only in this version.")
-        if self._pexpect is None or self._pyte is None:
+        if self._pyte is None:
             try:
-                import pexpect  # type: ignore
                 import pyte  # type: ignore
             except Exception as exc:
                 raise TerminalSessionError(
-                    "pexpect and pyte are required for persistent terminals."
+                    "pyte is required for persistent terminals."
                 ) from exc
-            self._pexpect = pexpect
             self._pyte = pyte
 
     def create(
         self, *, cwd: Path, command: str | None = None, rows: int = 24, cols: int = 80
     ) -> str:
         self._load()
-        shell = command or os.environ.get("SHELL") or "/bin/sh"
-        child = self._pexpect.spawn(
-            shell,
-            cwd=str(cwd),
-            dimensions=(rows, cols),
-            encoding="utf-8",
-            timeout=0,
-        )
+        child = self._session_factory(cwd=cwd, command=command, rows=rows, cols=cols)
         screen = self._pyte.Screen(cols, rows)
         stream = self._pyte.Stream(screen)
         session_id = str(uuid4())
@@ -72,17 +72,17 @@ class PersistentTerminalManager:
 
     def send_enter(self, session_id: str) -> None:
         session = self._get(session_id)
-        session.child.sendline("")
+        session.child.send_line("")
         self._drain(session_id)
 
     def send_control(self, session_id: str, key: str) -> None:
         session = self._get(session_id)
-        session.child.sendcontrol(key)
+        session.child.send_control(key)
         self._drain(session_id)
 
     def resize(self, session_id: str, rows: int, cols: int) -> None:
         session = self._get(session_id)
-        session.child.setwinsize(rows, cols)
+        session.child.resize(rows, cols)
         session.screen.resize(cols, rows)
         session.rows = rows
         session.cols = cols
@@ -93,7 +93,7 @@ class PersistentTerminalManager:
 
     def terminate(self, session_id: str) -> None:
         session = self._get(session_id)
-        session.child.terminate(force=True)
+        session.child.terminate()
         session.closed = True
 
     def read_screen(self, session_id: str, *, include_cursor: bool = True) -> dict[str, object]:
@@ -105,11 +105,37 @@ class PersistentTerminalManager:
             "rows": session.rows,
             "columns": session.cols,
             "screen": display.rstrip(),
-            "closed": session.closed or not session.child.isalive(),
+            "closed": session.closed or not session.child.is_alive(),
         }
         if include_cursor:
             payload["cursor"] = {"x": session.screen.cursor.x, "y": session.screen.cursor.y}
         return payload
+
+    def poll(self) -> list[dict[str, object]]:
+        """Drain every live session; return the screens that changed since last poll.
+
+        Interactive sessions keep producing output on their own (dev servers,
+        long builds), so the application polls this periodically and emits a
+        ``terminal.screen.updated`` for each changed screen — the UI shows the
+        terminal live instead of only at tool-call boundaries.
+        """
+        changed: list[dict[str, object]] = []
+        for session_id, session in list(self._sessions.items()):
+            if session.closed:
+                continue
+            snapshot = self.read_screen(session_id)
+            fingerprint = f"{snapshot['screen']}\x00{snapshot['closed']}"
+            if fingerprint != session.last_display:
+                session.last_display = fingerprint
+                changed.append(snapshot)
+        return changed
+
+    def latest_session_id(self) -> str | None:
+        """Id of the most recently created session still open, if any."""
+        for session_id in reversed(list(self._sessions)):
+            if not self._sessions[session_id].closed:
+                return session_id
+        return None
 
     def close_all(self) -> None:
         for session_id in list(self._sessions):
@@ -130,7 +156,7 @@ class PersistentTerminalManager:
         session = self._sessions[session_id]
         while True:
             try:
-                data = session.child.read_nonblocking(size=4096, timeout=0)
+                data = session.child.read_nonblocking(4096)
             except Exception:
                 return
             if not data:
