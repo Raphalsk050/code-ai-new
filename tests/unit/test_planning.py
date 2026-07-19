@@ -438,6 +438,57 @@ async def test_completion_requires_verification_once_files_change_even_if_unclas
     assert any("verification" in item for item in rejected.missing_requirements)
 
 
+async def test_double_check_is_folded_into_the_evidence_rejection() -> None:
+    # The double-check must ride along with the evidence rejection instead of
+    # queuing a second rejection behind it: one rejection lists everything, the
+    # model fixes the evidence, and the next complete_task is accepted.
+    service = PlannerService(
+        config=PlannerConfig(),  # double_check_completion defaults to True
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+
+    first = await service.evaluate_completion({"summary": "done"})
+
+    assert first.accepted is False
+    assert any("file-change" in item for item in first.missing_requirements)
+    assert any("Double-check" in item for item in first.missing_requirements)
+
+    await service.record_tool_result(
+        tool_call_id="w1",
+        tool_name="write_file",
+        payload={"path": "src/example.py", "old_sha256": None, "new_sha256": "h1"},
+        success=True,
+    )
+    second = await service.evaluate_completion({"summary": "created the module"})
+
+    assert second.accepted is True
+
+
+async def test_acknowledged_double_check_completes_in_one_call() -> None:
+    # A claim arriving with double_check_acknowledged already reconciled the
+    # checklist, so the runtime must not spend a round-trip re-asking for it.
+    service = PlannerService(
+        config=PlannerConfig(),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+    await service.record_tool_result(
+        tool_call_id="w1",
+        tool_name="write_file",
+        payload={"path": "src/example.py", "old_sha256": None, "new_sha256": "h1"},
+        success=True,
+    )
+
+    decision = await service.evaluate_completion(
+        {"summary": "created the module", "double_check_acknowledged": True}
+    )
+
+    assert decision.accepted is True
+
+
 async def test_documentation_only_change_completes_without_verification() -> None:
     # A pure documentation change (a Markdown tracker) has nothing executable to
     # verify, so completion must not be blocked on verification evidence.

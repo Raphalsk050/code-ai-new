@@ -41,6 +41,13 @@ class CompleteTaskTool:
                     "task left undone that the user should know about."
                 ),
             },
+            "double_check_acknowledged": {
+                "type": "boolean",
+                "description": (
+                    "Set to true after reconciling every acceptance criterion with "
+                    "actual evidence; skips the runtime's double-check round-trip."
+                ),
+            },
         },
         required=("summary",),
     )

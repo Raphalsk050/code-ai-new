@@ -688,6 +688,12 @@ class PlannerService:
             return await self._accept_non_success_completion(claim)
 
         missing = self._successful_completion_missing_requirements(claim)
+        if self._double_check_required(claim):
+            # Folded into the *same* rejection as any missing evidence, so the
+            # double-check costs at most one round-trip in total instead of a
+            # second rejection queued behind an evidence rejection.
+            self.double_check_pending = True
+            missing.extend(_DOUBLE_CHECK_CHECKLIST)
         if missing:
             await self.event_bus.emit(
                 "planning.completion.rejected",
@@ -700,35 +706,26 @@ class PlannerService:
                 missing_requirements=tuple(missing),
             )
 
-        if (
-            self.config.double_check_completion
-            and self.profile
-            and self.profile.requires_workspace_mutation
-        ):
-            if not self.double_check_pending:
-                self.double_check_pending = True
-                checklist = (
-                    "Double-check required before successful completion.",
-                    "Reconcile every acceptance criterion with actual evidence.",
-                    "Confirm verification still reflects the current workspace state.",
-                    "Call complete_task again after reconciling the evidence.",
-                )
-                await self.event_bus.emit(
-                    "planning.completion.rejected",
-                    {"missing_requirements": list(checklist)},
-                    source="core.planner",
-                )
-                return CompletionDecision(
-                    accepted=False,
-                    outcome="success",
-                    missing_requirements=checklist,
-                )
-
         await self._accept_success_completion(claim)
         return CompletionDecision(
             accepted=True,
             outcome="success",
             final_text=self.accepted_final_text or claim.summary,
+        )
+
+    def _double_check_required(self, claim: CompletionClaim) -> bool:
+        """Whether this claim still owes the double-check round-trip.
+
+        A claim that arrives with ``double_check_acknowledged`` already did the
+        reconciliation the checklist asks for, so demanding the round-trip again
+        would only tax the turn without adding evidence.
+        """
+        return bool(
+            self.config.double_check_completion
+            and self.profile
+            and self.profile.requires_workspace_mutation
+            and not self.double_check_pending
+            and not claim.double_check_acknowledged
         )
 
     def progress_signature(self) -> tuple[object, ...]:
@@ -1353,6 +1350,18 @@ class PlannerService:
 
     def current_step_index_is_last(self) -> bool:
         return bool(self.plan and self.plan.current_step_index >= len(self.plan.steps) - 1)
+
+
+# Reconciliation checklist appended to a completion rejection when the
+# double-check applies. Always folded into the same rejection as any missing
+# evidence so it never costs a second round-trip on its own.
+_DOUBLE_CHECK_CHECKLIST = (
+    "Double-check required before successful completion.",
+    "Reconcile every acceptance criterion with actual evidence.",
+    "Confirm verification still reflects the current workspace state.",
+    "Call complete_task again with double_check_acknowledged=true after "
+    "reconciling the evidence.",
+)
 
 
 # File suffixes whose changes carry no executable behaviour, so there is nothing
