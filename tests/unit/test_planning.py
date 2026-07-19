@@ -665,6 +665,33 @@ async def test_model_plan_does_not_block_completion_once_change_is_verified() ->
     assert decision.accepted is True
 
 
+async def test_pending_checklist_alone_does_not_block_completion() -> None:
+    # A doc-only change satisfies every evidence requirement (verification does
+    # not apply), so a lagging model-authored checklist cursor must not be the
+    # only reason a completion is rejected - acceptance settles the checklist.
+    service = PlannerService(
+        config=PlannerConfig(double_check_completion=False),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    await service.begin_turn("Create PROGRESSO.md", provider_supports_tools=True)
+    await service.submit_agent_plan(["Write the tracker", "Review wording", "Announce"])
+    await service.record_tool_result(
+        tool_call_id="w1",
+        tool_name="write_file",
+        payload={"path": "PROGRESSO.md", "old_sha256": None, "new_sha256": "h1"},
+        success=True,
+    )
+    assert any(step.status.value == "PENDING" for step in service.agent_plan.steps)
+
+    decision = await service.evaluate_completion({"summary": "created the tracker"})
+
+    assert decision.accepted is True
+    assert all(
+        step.status.value == "COMPLETED" for step in service.agent_plan.steps
+    )
+
+
 async def test_blocked_completion_is_accepted_without_structured_issues() -> None:
     # A genuine "blocked" outcome must never trap the agent: even when the model
     # only supplies a summary (no remaining_issues/limitations), completion is
