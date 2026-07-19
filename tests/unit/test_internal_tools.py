@@ -96,16 +96,22 @@ async def test_complete_task_defaults_to_success_with_summary_only(tmp_path) -> 
         "outcome",
         "remaining_issues",
         "limitations",
+        "double_check_acknowledged",
     }
     assert set(tool.input_schema["properties"]) == {
         "summary",
         "outcome",
         "remaining_issues",
         "limitations",
+        "double_check_acknowledged",
     }
     assert tool.input_schema["properties"]["outcome"]["type"] == ["string", "null"]
     assert tool.input_schema["properties"]["remaining_issues"]["type"] == ["array", "null"]
     assert tool.input_schema["properties"]["limitations"]["type"] == ["array", "null"]
+    assert tool.input_schema["properties"]["double_check_acknowledged"]["type"] == [
+        "boolean",
+        "null",
+    ]
 
     result = await tool.execute({"summary": "Done."}, context)
 
