@@ -163,6 +163,10 @@ DEFAULT_PLANNER: dict[str, object] = {
     "max_replans": 3,
     "max_step_attempts": 3,
     "max_no_progress_rounds": 3,
+    # Consecutive complete_task rejections tolerated while the progress
+    # fingerprint stays frozen before the gate fails open and accepts with the
+    # unresolved requirements surfaced as limitations.
+    "max_completion_rejections": 2,
     "persist_plan": True,
 }
 
