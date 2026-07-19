@@ -786,6 +786,9 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 reason = text.strip()[len("/replan") :].strip() or None
                 self._append_conversation_line(await self.controller.replan(reason))
                 return
+            if text.strip() == "/goal" or text.strip().startswith("/goal "):
+                await self._handle_goal_command(text.strip())
+                return
             if text.strip() == "/cancel":
                 await self.controller.cancel()
                 return
@@ -832,6 +835,34 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self._append_conversation_line(
                 "command> Modo act ativado. Descreva a tarefa para começar."
             )
+
+        async def _handle_goal_command(self, stripped: str) -> None:
+            """Dispatch ``/goal`` and its subcommands.
+
+            Anything after ``/goal`` that is not a known subcommand is the
+            objective itself. Defining a goal derives acceptance criteria via a
+            model call, so it runs as a background task to keep the prompt
+            responsive; the proposed criteria land in the transcript when ready.
+            """
+            argument = stripped[len("/goal") :].strip()
+            if argument in {"", "status"}:
+                self._append_conversation_line(self.controller.goal_status())
+                return
+            if argument in {"start", "resume"}:
+                self._append_conversation_line(await self.controller.start_goal())
+                return
+            if argument == "stop":
+                self._append_conversation_line(await self.controller.stop_goal())
+                return
+            self._append_conversation_line(
+                "goal> Derivando critérios de aceitação para o objetivo…"
+            )
+
+            async def _define() -> None:
+                line = await self.controller.define_goal(argument)
+                self._append_conversation_line(line)
+
+            asyncio.create_task(_define())
 
         async def _start_deep_plan(self, objective: str) -> None:
             """Switch to plan mode and, if an objective was given, plan it now.

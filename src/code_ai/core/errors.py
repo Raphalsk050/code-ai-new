@@ -44,3 +44,7 @@ class CancellationError(CodeAIError):
 
 class TerminalSessionError(ToolExecutionError):
     """Persistent terminal operation failed."""
+
+
+class GoalStateError(CodeAIError):
+    """An illegal goal lifecycle transition was requested."""

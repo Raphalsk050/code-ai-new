@@ -100,6 +100,8 @@ class TerminalViewModel:
         elif event.event_type == "planning.completion.rejected":
             missing = event.payload.get("missing_requirements", [])
             self.conversation.append(f"completion> rejected: {missing}")
+        elif event.event_type.startswith("goal."):
+            self._apply_goal_event(event)
         elif event.event_type == "assistant.final":
             self.conversation.append(f"ai> {event.payload.get('text', '')}")
         elif event.event_type == "user.message":
@@ -198,6 +200,54 @@ class TerminalViewModel:
             cumulative = event.payload.get("cumulative")
             if isinstance(cumulative, dict):
                 self.cumulative_usage = str(cumulative.get("total_tokens", "0"))
+
+    def _apply_goal_event(self, event: EventEnvelope) -> None:
+        """Reflect the /goal loop's lifecycle in the transcript.
+
+        Per-criterion evaluations are deliberately not echoed one line each —
+        the iteration summary carries the met/total count, and /goal status
+        shows the full breakdown on demand.
+        """
+        kind = event.event_type
+        payload = event.payload
+        if kind == "goal.defined":
+            self.conversation.append(
+                f"goal> objetivo definido: {payload.get('objective', '')}"
+            )
+        elif kind == "goal.activated":
+            self.conversation.append(
+                "goal> loop iniciado "
+                f"(máx. {payload.get('max_iterations')} iterações)"
+            )
+        elif kind == "goal.resumed":
+            self.conversation.append("goal> objetivo retomado")
+        elif kind == "goal.iteration.started":
+            self.conversation.append(
+                f"goal> iteração {payload.get('iteration')}/"
+                f"{payload.get('max_iterations')} iniciada"
+            )
+        elif kind == "goal.iteration.completed":
+            self.conversation.append(
+                f"goal> iteração {payload.get('iteration')} avaliada: "
+                f"{payload.get('criteria_met')}/{payload.get('criteria_total')} "
+                "critérios atendidos"
+            )
+        elif kind == "goal.satisfied":
+            self.conversation.append(
+                "goal> ✔ objetivo cumprido em "
+                f"{payload.get('iterations')} iteração(ões)"
+            )
+        elif kind == "goal.blocked":
+            self.conversation.append(
+                f"goal> bloqueado: {payload.get('reason', '')} — use /goal resume "
+                "para continuar ou /goal stop para encerrar"
+            )
+        elif kind == "goal.exhausted":
+            self.conversation.append(
+                f"goal> limite de segurança atingido: {payload.get('reason', '')}"
+            )
+        elif kind == "goal.stopped":
+            self.conversation.append(f"goal> parado: {payload.get('reason', '')}")
 
     def _apply_tool_progress(self, payload: dict[object, object]) -> None:
         """Render live 'writing code' feedback while a tool call streams in.

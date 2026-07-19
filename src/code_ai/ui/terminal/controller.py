@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from code_ai.app.service import CodeAIApplication
+from code_ai.core.errors import GoalStateError
 from code_ai.events.models import EventEnvelope
 from code_ai.providers.models import ImageContent
 from code_ai.ui.terminal.view_models import TerminalViewModel
@@ -61,3 +62,76 @@ class TerminalController:
             f"current: {snapshot.get('current_step')}\n"
             f"verification passed: {snapshot.get('latest_verification_passed')}"
         )
+
+    # -- persistent goal (/goal) -------------------------------------------
+
+    async def define_goal(self, objective: str) -> str:
+        try:
+            snapshot = await self.app.define_goal(objective)
+        except GoalStateError as exc:
+            return f"goal> {exc}"
+        lines = self._format_goal_criteria(snapshot)
+        if snapshot.get("started"):
+            return (
+                "goal> Objetivo definido e loop iniciado (critérios derivados "
+                "automaticamente):\n" + lines
+            )
+        return (
+            "goal> Objetivo definido. Critérios de aceitação propostos:\n"
+            + lines
+            + "\n\nUse /goal start para começar (o agente só para quando todos "
+            "os critérios passarem), ou /goal stop para descartar."
+        )
+
+    async def start_goal(self) -> str:
+        try:
+            snapshot = await self.app.start_goal()
+        except GoalStateError as exc:
+            return f"goal> {exc}"
+        return (
+            "goal> Loop iniciado. O agente vai iterar até todos os critérios "
+            f"passarem ({snapshot.get('criteria_progress')} no momento). "
+            "Use /goal stop para interromper."
+        )
+
+    async def stop_goal(self) -> str:
+        try:
+            snapshot = await self.app.stop_goal()
+        except GoalStateError as exc:
+            return f"goal> {exc}"
+        return f"goal> Parada solicitada. Status: {snapshot.get('status')}."
+
+    def goal_status(self) -> str:
+        snapshot = self.app.goal_snapshot()
+        if snapshot.get("status") == "none":
+            return "goal> Nenhum objetivo definido. Use /goal <objetivo>."
+        header = (
+            "goal> Status do objetivo\n"
+            f"objetivo: {snapshot.get('objective')}\n"
+            f"status: {snapshot.get('status')}"
+            f"{' (loop rodando)' if snapshot.get('loop_running') else ''}\n"
+            f"iterações: {snapshot.get('iterations')}\n"
+            f"critérios: {snapshot.get('criteria_progress')}"
+        )
+        reason = str(snapshot.get("stop_reason") or "")
+        if reason:
+            header += f"\nmotivo: {reason}"
+        return header + "\n" + self._format_goal_criteria(snapshot)
+
+    @staticmethod
+    def _format_goal_criteria(snapshot: dict[str, object]) -> str:
+        criteria = snapshot.get("criteria")
+        if not isinstance(criteria, list) or not criteria:
+            return "  (nenhum critério)"
+        lines = []
+        for item in criteria:
+            if not isinstance(item, dict):
+                continue
+            met = item.get("met")
+            mark = "✓" if met else ("✗" if met is not None else "•")
+            line = f"  {mark} {item.get('label')}"
+            detail = str(item.get("detail") or "")
+            if detail and met is False:
+                line += f" — {detail}"
+            lines.append(line)
+        return "\n".join(lines)
