@@ -105,7 +105,9 @@ class PlannerService:
         self.double_check_pending = False
         self.accepted_final_text: str | None = None
         # Risk-proportional evidence gate for success completion claims.
-        self.completion_gate = CompletionGate()
+        self.completion_gate = CompletionGate(
+            max_rejections_without_progress=config.max_completion_rejections
+        )
         # Evidence-based preconditions checked before action-taking tools run.
         self._precondition_gate = PreconditionGate(workspace=workspace)
         # Sub-agent profile names that can mutate the workspace; delegating to
@@ -731,7 +733,9 @@ class PlannerService:
             )
 
         await self._accept_success_completion(
-            claim, acceptance_note=verdict.acceptance_note
+            claim,
+            acceptance_note=verdict.acceptance_note,
+            unresolved=verdict.missing_requirements if verdict.fail_open else (),
         )
         return CompletionDecision(
             accepted=True,
@@ -1238,7 +1242,11 @@ class PlannerService:
         return "No verification evidence was required."
 
     async def _accept_success_completion(
-        self, claim: CompletionClaim, *, acceptance_note: str = ""
+        self,
+        claim: CompletionClaim,
+        *,
+        acceptance_note: str = "",
+        unresolved: tuple[str, ...] = (),
     ) -> None:
         if self.plan and self.current_step and self.current_step.kind == PlanStepKind.COMPLETE:
             self.current_step.status = PlanStepStatus.COMPLETED
@@ -1261,6 +1269,13 @@ class PlannerService:
             verification = ""
         else:
             changed_line = "Changed paths: none"
+        # A fail-open acceptance stays honest: what the gate could not confirm is
+        # reported to the user instead of silently dropped.
+        unresolved_line = (
+            "Unresolved completion requirements: " + "; ".join(unresolved)
+            if unresolved
+            else ""
+        )
         self.accepted_final_text = bound_text(
             "\n".join(
                 item
@@ -1269,6 +1284,7 @@ class PlannerService:
                     changed_line,
                     verification,
                     acceptance_note,
+                    unresolved_line,
                 )
                 if item
             ),

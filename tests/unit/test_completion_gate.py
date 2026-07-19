@@ -285,6 +285,39 @@ def test_gate_restarts_pacing_when_progress_resumes() -> None:
     assert verdict.policy_name == "standard"
 
 
+def test_gate_fails_open_after_repeated_rejections_without_progress() -> None:
+    gate = CompletionGate(max_rejections_without_progress=2)
+    # A write was attempted, so the minimal release never applies; the standard
+    # policy keeps demanding file-change evidence that never arrives.
+    context = make_context(
+        has_file_change=False, write_attempted=True, changed_paths=()
+    )
+
+    assert gate.evaluate(context, progress_fingerprint=("fp", 1)).accepted is False
+    assert gate.evaluate(context, progress_fingerprint=("fp", 1)).accepted is False
+    verdict = gate.evaluate(context, progress_fingerprint=("fp", 1))
+
+    assert verdict.accepted is True
+    assert verdict.fail_open is True
+    # The unresolved requirements stay visible for the caller to surface.
+    assert any("file-change" in item for item in verdict.missing_requirements)
+    assert "unresolved requirements" in verdict.acceptance_note
+
+
+def test_gate_does_not_fail_open_while_progress_continues() -> None:
+    gate = CompletionGate(max_rejections_without_progress=2)
+    context = make_context(
+        has_file_change=False, write_attempted=True, changed_paths=()
+    )
+
+    # Each claim arrives with a fresh fingerprint: the model keeps moving, so
+    # the gate keeps guiding instead of giving up.
+    for round_number in range(5):
+        verdict = gate.evaluate(context, progress_fingerprint=("fp", round_number))
+        assert verdict.accepted is False
+        assert verdict.fail_open is False
+
+
 def test_gate_resets_counter_on_acceptance() -> None:
     gate = CompletionGate()
     rejected = make_context(
