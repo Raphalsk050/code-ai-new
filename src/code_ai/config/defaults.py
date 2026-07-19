@@ -171,12 +171,31 @@ DEFAULT_PLANNER: dict[str, object] = {
 }
 
 
+DEFAULT_GOAL: dict[str, object] = {
+    # Hard ceilings for the /goal loop: the runner never spins past these, so a
+    # goal that cannot converge ends in EXHAUSTED with an honest report instead
+    # of consuming the session forever.
+    "max_iterations": 25,
+    "max_goal_minutes": 60,
+    # Consecutive iterations failing the *same* criteria with no workspace
+    # progress before the goal blocks and escalates to the user.
+    "max_no_progress_iterations": 3,
+    # Whether JUDGE criteria are evaluated by a one-off model call. Disabled,
+    # they pass with an explicit caveat (deterministic criteria still gate).
+    "judge_enabled": True,
+    # Whether /goal waits for the user to confirm the derived acceptance
+    # criteria (/goal start) before the loop begins.
+    "confirm_criteria": True,
+}
+
+
 DEFAULT_CONFIG: dict[str, object] = {
     "api_key": PLACEHOLDER_API_KEY,
     "api_mode": "responses",
     "base_url": "http://localhost:11434/v1",
     "permission_mode": "ask",
     "budgets": DEFAULT_BUDGETS,
+    "goal": DEFAULT_GOAL,
     "planner": DEFAULT_PLANNER,
     "sampling": DEFAULT_SAMPLING,
     "language": "en",
