@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 
 from code_ai.config.defaults import (
     DEFAULT_BUDGETS,
+    DEFAULT_GOAL,
     DEFAULT_PLANNER,
     DEFAULT_SAMPLING,
     PLACEHOLDER_API_KEY,
@@ -160,6 +161,42 @@ class PlannerConfig:
             raise ConfigurationError("max_plan_steps must be 100 or lower.")
         if self.max_no_progress_rounds > 20:
             raise ConfigurationError("max_no_progress_rounds must be 20 or lower.")
+
+
+@dataclass(slots=True)
+class GoalConfig:
+    """Limits and behavior of the /goal persistent-objective loop."""
+
+    max_iterations: int = int(DEFAULT_GOAL["max_iterations"])
+    max_goal_minutes: int = int(DEFAULT_GOAL["max_goal_minutes"])
+    max_no_progress_iterations: int = int(DEFAULT_GOAL["max_no_progress_iterations"])
+    judge_enabled: bool = bool(DEFAULT_GOAL["judge_enabled"])
+    confirm_criteria: bool = bool(DEFAULT_GOAL["confirm_criteria"])
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any] | None) -> GoalConfig:
+        values = dict(DEFAULT_GOAL)
+        if data:
+            values.update(data)
+        return cls(
+            max_iterations=int(values["max_iterations"]),
+            max_goal_minutes=int(values["max_goal_minutes"]),
+            max_no_progress_iterations=int(values["max_no_progress_iterations"]),
+            judge_enabled=bool(values["judge_enabled"]),
+            confirm_criteria=bool(values["confirm_criteria"]),
+        )
+
+    def validate(self) -> None:
+        limits = {
+            "max_iterations": self.max_iterations,
+            "max_goal_minutes": self.max_goal_minutes,
+            "max_no_progress_iterations": self.max_no_progress_iterations,
+        }
+        for key, value in limits.items():
+            if value <= 0:
+                raise ConfigurationError(f"Goal value {key} must be positive.")
+        if self.max_iterations > 500:
+            raise ConfigurationError("goal.max_iterations must be 500 or lower.")
 
 
 def _resolve_tool_policy(data: dict[str, Any] | None) -> str:
@@ -331,6 +368,7 @@ class AppConfig:
     base_url: str = "http://localhost:11434/v1"
     permission_mode: str = "ask"
     budgets: BudgetConfig = field(default_factory=BudgetConfig)
+    goal: GoalConfig = field(default_factory=GoalConfig)
     planner: PlannerConfig = field(default_factory=PlannerConfig)
     sampling: SamplingConfig = field(default_factory=SamplingConfig)
     language: str = "en"
@@ -371,6 +409,9 @@ class AppConfig:
         budgets = BudgetConfig.from_mapping(
             data.get("budgets") if isinstance(data.get("budgets"), dict) else None
         )
+        goal = GoalConfig.from_mapping(
+            data.get("goal") if isinstance(data.get("goal"), dict) else None
+        )
         planner = PlannerConfig.from_mapping(
             data.get("planner") if isinstance(data.get("planner"), dict) else None
         )
@@ -384,6 +425,7 @@ class AppConfig:
             base_url=str(data.get("base_url", "http://localhost:11434/v1")),
             permission_mode=str(data.get("permission_mode", "ask")).strip().lower(),
             budgets=budgets,
+            goal=goal,
             planner=planner,
             sampling=sampling,
             language=str(data.get("language", "en")),
@@ -429,6 +471,7 @@ class AppConfig:
             raise ConfigurationError(f"workspace must exist and be a directory: {self.workspace}")
         self.workspace = self.workspace.resolve()
         self.budgets.validate()
+        self.goal.validate()
         self.planner.validate()
         self.sampling.validate()
         parsed = urlparse(self.base_url)

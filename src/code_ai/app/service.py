@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
@@ -9,8 +12,17 @@ from pathlib import Path
 from typing import Any
 
 from code_ai.app.conversation_store import ConversationStore
+from code_ai.app.goal_runner import GoalRunner
 from code_ai.app.session import ApplicationSession
 from code_ai.context.compression import CompressionResult, ContextCompressor
+from code_ai.core.errors import GoalStateError
+from code_ai.core.goal import (
+    AcceptanceCriterion,
+    CriterionKind,
+    GoalEvaluator,
+    GoalService,
+    GoalStatus,
+)
 from code_ai.core.orchestration import AgentOrchestrator, TurnResult
 from code_ai.core.planning import PlannerMode
 from code_ai.core.state import AgentState
@@ -19,6 +31,7 @@ from code_ai.events.models import EventEnvelope
 from code_ai.providers.base import ModelProvider
 from code_ai.providers.models import ImageContent
 from code_ai.tools.terminal.manager import PersistentTerminalManager
+from code_ai.util.redaction import sanitized_environment
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +73,11 @@ class CodeAIApplication:
         self._conversation_id: str | None = None
         self._current_cancel: asyncio.Event | None = None
         self._current_task: asyncio.Task[TurnResult] | None = None
+        # Persistent-goal machinery (/goal). The service holds the one goal per
+        # session; the runner/task pair exists only while the loop is running.
+        self._goal_service: GoalService | None = None
+        self._goal_runner: GoalRunner | None = None
+        self._goal_task: asyncio.Task[Any] | None = None
 
     @property
     def conversation_id(self) -> str | None:
@@ -544,6 +562,229 @@ class CodeAIApplication:
             return {"planner": "not configured"}
         return self.orchestrator.planner.plan_snapshot()
 
+    # -- persistent goal (/goal) -------------------------------------------
+
+    def _goal(self) -> GoalService:
+        if self._goal_service is None:
+            self._goal_service = GoalService(
+                config=self.session.config.goal, event_bus=self.event_bus
+            )
+        return self._goal_service
+
+    def goal_loop_running(self) -> bool:
+        return bool(self._goal_task and not self._goal_task.done())
+
+    def goal_snapshot(self) -> dict[str, Any]:
+        if self._goal_service is None:
+            return {"status": "none"}
+        snapshot = self._goal_service.snapshot()
+        snapshot["loop_running"] = self.goal_loop_running()
+        return snapshot
+
+    async def define_goal(self, objective: str) -> dict[str, Any]:
+        """Define a persistent goal and derive its acceptance criteria.
+
+        The criteria come from a one-off model call (outside the conversation)
+        and are only *proposed* here; the loop starts on :meth:`start_goal`
+        unless ``goal.confirm_criteria`` is disabled, in which case it starts
+        immediately.
+        """
+        if self.goal_loop_running():
+            raise GoalStateError(
+                "A goal loop is already running. Stop it with /goal stop first."
+            )
+        service = self._goal()
+        await service.define(objective)
+        criteria = await self._derive_goal_criteria(objective)
+        await service.propose_criteria(criteria)
+        started = False
+        if not self.session.config.goal.confirm_criteria:
+            await self.start_goal()
+            started = True
+        snapshot = self.goal_snapshot()
+        snapshot["started"] = started
+        return snapshot
+
+    async def start_goal(self) -> dict[str, Any]:
+        """Activate the defined goal (or resume a blocked one) and run the loop."""
+        service = self._goal()
+        if self.goal_loop_running():
+            raise GoalStateError("The goal loop is already running.")
+        goal = service.goal
+        if goal is None:
+            raise GoalStateError("No goal is defined. Use /goal <objetivo> first.")
+        if goal.status == GoalStatus.DRAFT:
+            await service.activate()
+        elif goal.status == GoalStatus.BLOCKED:
+            await service.resume()
+        elif goal.status != GoalStatus.ACTIVE:
+            raise GoalStateError(
+                f"The goal cannot start from status {goal.status.value}."
+            )
+        self._launch_goal_loop()
+        return self.goal_snapshot()
+
+    async def stop_goal(self) -> dict[str, Any]:
+        """Stop the goal loop (and the in-flight iteration's turn)."""
+        service = self._goal()
+        if service.goal is None:
+            raise GoalStateError("No goal is defined.")
+        if self._goal_runner is not None:
+            self._goal_runner.request_stop()
+        await self.cancel_current_turn()
+        if not self.goal_loop_running() and not service.goal.is_terminal:
+            # No running loop will observe the stop flag (draft/blocked goal),
+            # so settle the state machine directly.
+            await service.stop("stopped by user")
+        return self.goal_snapshot()
+
+    def _launch_goal_loop(self) -> None:
+        runner = GoalRunner(
+            service=self._goal(),
+            evaluator=self._build_goal_evaluator(),
+            config=self.session.config.goal,
+            run_iteration=self._run_goal_iteration,
+            progress_marker=self._goal_progress_marker,
+            evidence_summary=self._goal_evidence_summary,
+        )
+        self._goal_runner = runner
+        task = asyncio.create_task(runner.run())
+        self._goal_task = task
+        task.add_done_callback(self._on_goal_loop_done)
+
+    def _on_goal_loop_done(self, task: asyncio.Task[Any]) -> None:
+        self._goal_runner = None
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error("Goal loop crashed", exc_info=exc)
+            # Surface the crash in the transcript; fire-and-forget because this
+            # callback is synchronous.
+            asyncio.get_running_loop().create_task(
+                self.event_bus.emit(
+                    "error",
+                    {"message": f"Goal loop crashed: {exc}", "type": type(exc).__name__},
+                    source="app.goal",
+                )
+            )
+
+    async def _run_goal_iteration(self, prompt: str, context: str) -> TurnResult:
+        return await self.submit_user_message(prompt, context=context)
+
+    def _build_goal_evaluator(self) -> GoalEvaluator:
+        return GoalEvaluator(
+            command_port=self._run_goal_command,
+            judge_port=self._goal_judge,
+            workspace=self.session.config.workspace,
+            judge_enabled=self.session.config.goal.judge_enabled,
+        )
+
+    async def _run_goal_command(self, command: str) -> tuple[int | None, str]:
+        """Run one acceptance-criterion command from the workspace root.
+
+        Deliberately shell-based (criteria are user/model-authored one-liners
+        like ``pytest -q``) and bounded by the build timeout so a hanging check
+        cannot freeze the goal loop.
+        """
+        timeout = float(self.session.config.budgets.build_tool_timeout_s)
+        process = await asyncio.create_subprocess_shell(
+            command,
+            cwd=str(self.session.config.workspace),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            env=sanitized_environment(os.environ),
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(process.communicate(), timeout=timeout)
+        except TimeoutError:
+            process.kill()
+            await process.wait()
+            return None, f"criterion command timed out after {timeout:.0f}s"
+        output = (stdout or b"").decode("utf-8", errors="replace")
+        # Keep the tail: with test/build output the verdict lives at the end.
+        return process.returncode, output[-4000:]
+
+    async def _goal_judge(self, system: str, user: str) -> str:
+        from code_ai.providers.models import Message, ModelRequest
+
+        request = ModelRequest(
+            model=self.session.config.model,
+            messages=[
+                Message(role="system", content=system),
+                Message(role="user", content=user),
+            ],
+            # Reasoning models spend output budget on hidden thinking first; a
+            # tight cap would make them return empty text.
+            max_output_tokens=8192,
+        )
+        response = await self.provider.complete(request)
+        return response.text or ""
+
+    def _goal_progress_marker(self) -> str:
+        """Workspace half of the stagnation signature for the last iteration.
+
+        Content hashes (not just paths) so re-editing a file to genuinely new
+        content counts as progress while rewriting identical bytes does not.
+        """
+        planner = self.orchestrator.planner
+        if planner is None:
+            return ""
+        ledger = planner.ledger
+        return repr(
+            (
+                tuple(sorted(ledger.changed_hashes.items())),
+                ledger.latest_verification_passed,
+            )
+        )
+
+    def _goal_evidence_summary(self) -> str:
+        planner = self.orchestrator.planner
+        if planner is None:
+            return ""
+        return json.dumps(planner.ledger.compact_recent(limit=12), default=str)
+
+    async def _derive_goal_criteria(self, objective: str) -> list[AcceptanceCriterion]:
+        """Derive measurable acceptance criteria for the objective.
+
+        One-off model call outside the conversation; parsed defensively. Any
+        failure degrades to a single JUDGE criterion so /goal always works,
+        just with a subjective gate instead of deterministic ones.
+        """
+        from code_ai.providers.models import Message, ModelRequest
+
+        request = ModelRequest(
+            model=self.session.config.model,
+            messages=[
+                Message(role="system", content=_GOAL_CRITERIA_SYSTEM),
+                Message(
+                    role="user",
+                    content=(
+                        "Objective the agent must fulfill inside the workspace "
+                        f"{self.session.config.workspace}:\n{objective}"
+                    ),
+                ),
+            ],
+            max_output_tokens=8192,
+        )
+        try:
+            response = await self.provider.complete(request)
+            criteria = _parse_goal_criteria(response.text or "")
+        except Exception:
+            logger.warning("Goal criteria derivation failed", exc_info=True)
+            criteria = []
+        if criteria:
+            return criteria
+        return [
+            AcceptanceCriterion(
+                kind=CriterionKind.JUDGE,
+                description=(
+                    "O objetivo foi cumprido de forma completa e verificável: "
+                    f"{objective}"
+                ),
+            )
+        ]
+
     async def submit_question_answer(self, answer: str) -> None:
         await self.event_bus.emit(
             "interaction.question.answered",
@@ -558,6 +799,14 @@ class CodeAIApplication:
         self.event_bus.unsubscribe(subscriber)
 
     async def close(self) -> None:
+        if self._goal_runner is not None:
+            self._goal_runner.request_stop()
+        if self._goal_task and not self._goal_task.done():
+            self._goal_task.cancel()
+            try:
+                await self._goal_task
+            except BaseException:  # noqa: BLE001 - shutdown must not propagate
+                pass
         if self._current_task and not self._current_task.done():
             await self.cancel_current_turn()
             await self._current_task
@@ -569,6 +818,61 @@ class CodeAIApplication:
 
 
 ApplicationEventHandler = Callable[[EventEnvelope], Awaitable[None] | None]
+
+
+_GOAL_CRITERIA_SYSTEM = (
+    "You define measurable acceptance criteria for a persistent goal an "
+    "autonomous coding agent must fulfill inside the user's workspace. Return "
+    "ONLY a JSON array of 2 to 5 objects, no prose and no code fences. Each "
+    'object has: "kind" (one of "COMMAND", "FILE", "JUDGE"), "description" '
+    "(one sentence, in the same language as the objective), and depending on "
+    'kind: "command" (a non-interactive shell command that exits 0 exactly '
+    "when the criterion is met, runnable from the workspace root) for "
+    'COMMAND, or "path" (workspace-relative file path) plus optional '
+    '"pattern" (plain-text substring the file must contain) for FILE. Prefer '
+    "deterministic COMMAND/FILE criteria; use JUDGE only for genuinely "
+    "subjective qualities. Never invent commands for tools the project may "
+    "not have; when unsure of the project's tooling, prefer FILE or JUDGE."
+)
+
+_MAX_GOAL_CRITERIA = 6
+
+
+def _parse_goal_criteria(text: str) -> list[AcceptanceCriterion]:
+    """Extract validated criteria from a (possibly chatty) model reply."""
+    raw = text.strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```[a-zA-Z]*\n?", "", raw)
+        raw = re.sub(r"\n?```$", "", raw).strip()
+    start, end = raw.find("["), raw.rfind("]")
+    if start == -1 or end <= start:
+        return []
+    try:
+        data = json.loads(raw[start : end + 1])
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+    criteria: list[AcceptanceCriterion] = []
+    for item in data[:_MAX_GOAL_CRITERIA]:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("kind") or "").strip().upper()
+        if kind not in {member.value for member in CriterionKind}:
+            continue
+        try:
+            criteria.append(
+                AcceptanceCriterion(
+                    kind=CriterionKind(kind),
+                    description=str(item.get("description") or ""),
+                    command=str(item.get("command") or ""),
+                    path=str(item.get("path") or ""),
+                    pattern=str(item.get("pattern") or ""),
+                )
+            )
+        except Exception:
+            continue  # one malformed criterion must not sink the batch
+    return criteria
 
 
 _REFACTOR_ANALYZE_SYSTEM = (

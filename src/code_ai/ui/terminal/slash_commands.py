@@ -50,6 +50,15 @@ SLASH_COMMANDS = [
     ),
     SlashCommand("/plan-status", "Show planner phase and current step."),
     SlashCommand("/replan", "Request a bounded replan on the next turn."),
+    SlashCommand(
+        "/goal <objetivo>",
+        "Define a persistent goal; the agent iterates until it is verifiably met.",
+        "/goal ",
+    ),
+    SlashCommand("/goal start", "Confirm the proposed criteria and start the goal loop."),
+    SlashCommand("/goal status", "Show the goal, its criteria, and loop progress."),
+    SlashCommand("/goal stop", "Stop the goal loop (also cancels the running turn)."),
+    SlashCommand("/goal resume", "Resume a blocked goal and restart the loop."),
     SlashCommand("/cancel", "Cancel the active turn."),
     SlashCommand(
         "/debug <on|off|status>",
