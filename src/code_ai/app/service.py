@@ -78,6 +78,9 @@ class CodeAIApplication:
         self._goal_service: GoalService | None = None
         self._goal_runner: GoalRunner | None = None
         self._goal_task: asyncio.Task[Any] | None = None
+        # Background drain of interactive terminal sessions (see
+        # _poll_terminal_screens); exists only while the app is running.
+        self._terminal_poll_task: asyncio.Task[None] | None = None
 
     @property
     def conversation_id(self) -> str | None:
@@ -97,6 +100,28 @@ class CodeAIApplication:
             source="app",
         )
         await self.event_bus.emit("session.ready", {}, source="app")
+        if self.terminal_manager is not None and self._terminal_poll_task is None:
+            self._terminal_poll_task = asyncio.create_task(self._poll_terminal_screens())
+
+    async def _poll_terminal_screens(self) -> None:
+        """Push live PTY output to the UI even when no tool call is running.
+
+        Interactive sessions keep producing output on their own (dev servers,
+        long builds), but the terminal tools only emit a screen snapshot when
+        the model acts. This loop drains every session periodically and emits
+        ``terminal.screen.updated`` whenever the rendered display changed, so
+        the user watches the terminal live instead of only at tool boundaries.
+        """
+        while True:
+            await asyncio.sleep(0.5)
+            try:
+                changed = self.terminal_manager.poll()
+            except Exception:  # noqa: BLE001 - a dying session must not kill the poller
+                continue
+            for screen in changed:
+                await self.event_bus.emit(
+                    "terminal.screen.updated", screen, source="terminal.poller"
+                )
 
     async def submit_user_message(
         self,
@@ -810,6 +835,13 @@ class CodeAIApplication:
         if self._current_task and not self._current_task.done():
             await self.cancel_current_turn()
             await self._current_task
+        if self._terminal_poll_task is not None:
+            self._terminal_poll_task.cancel()
+            try:
+                await self._terminal_poll_task
+            except BaseException:  # noqa: BLE001 - shutdown must not propagate
+                pass
+            self._terminal_poll_task = None
         if self.terminal_manager:
             self.terminal_manager.close_all()
         await self.provider.close()

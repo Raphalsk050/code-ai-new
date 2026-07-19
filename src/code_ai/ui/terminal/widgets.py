@@ -359,6 +359,41 @@ def render_subagent_task(agent: dict[str, str]) -> Text:
     return text
 
 
+# --- Terminal panel (live interactive PTY screen, below the agents panel) ----
+_TERMINAL_HEADER_STYLE = "#8892a0"
+_TERMINAL_SCREEN_STYLE = "#d7dee8"
+_TERMINAL_CLOSED_STYLE = "#e0a0a0"
+# How many rows of the emulated screen the panel shows; the newest survive.
+_TERMINAL_PANEL_MAX_ROWS = 18
+
+
+def render_terminal_screen(
+    session_id: str,
+    screen: str,
+    rows: int,
+    cols: int,
+    closed: bool,
+) -> Text:
+    """Render the interactive terminal's emulated screen for the TERMINAL panel.
+
+    A short header (session id, dimensions, state) over the newest rows of the
+    ``pyte`` display. Only the tail is shown — the panel is a live viewport,
+    not a scrollback; the model (and the user via /term) can always read the
+    full screen through the read_screen tool.
+    """
+    text = Text()
+    header = f"{session_id[:8] or '-'} · {cols}x{rows}"
+    text.append(header, style=_TERMINAL_HEADER_STYLE)
+    if closed:
+        text.append("  encerrado", style=_TERMINAL_CLOSED_STYLE)
+    text.append("\n")
+    lines = screen.splitlines()
+    if len(lines) > _TERMINAL_PANEL_MAX_ROWS:
+        lines = lines[-_TERMINAL_PANEL_MAX_ROWS:]
+    text.append("\n".join(line.rstrip() for line in lines), style=_TERMINAL_SCREEN_STYLE)
+    return text
+
+
 FALLBACK_CODE_AI_LOGO_TEXT = "code.ai"
 FALLBACK_CODE_AI_LOGO_ART = "       \n█▀▀ █▀█ █▀▄ █▀▀ ░ ▄▀█ █ \n█▄▄ █▄█ █▄▀ ██▄ ▄ █▀█ █ \n       "
 
@@ -598,6 +633,9 @@ _TRACE_PREFIXES = (
     "policy>",
     "completion>",
     "permission>",
+    "term>",
+    # The live execute_command output line (see view_models._apply_command_output).
+    "cmd~",
 )
 # Multi-line trace text (the model's reasoning) carries its own blank lines; they
 # are collapsed so the dim trace stays compact instead of sprawling.

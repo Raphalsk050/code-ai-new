@@ -37,6 +37,13 @@ class FakeTerminalApplication:
             state=AgentState.READY,
             tool_registry=SimpleNamespace(names=lambda: ["read_file"]),
         )
+        # /term drives the shared PTY through the application's manager and
+        # event bus; tests plug a fake manager in when they exercise it.
+        self.terminal_manager = None
+        self.event_bus = SimpleNamespace(emit=self._emit_bus)
+
+    async def _emit_bus(self, event_type: str, payload: dict[str, object], source=None) -> None:
+        await self.emit(event_type, payload)
 
     def get_plan_snapshot(self) -> dict[str, object]:
         return self.plan_snapshot
@@ -1292,6 +1299,158 @@ async def test_agents_panel_keeps_expanded_card_across_updates(tmp_path) -> None
         await fake_app.emit("user.message", {"text": "next"})
         await pilot.pause(0.2)
         assert len(panel.query(".agent-card")) == 0
+
+
+class FakeUiTerminalManager:
+    """Manager double for the /term flow: records input, serves one screen."""
+
+    def __init__(self) -> None:
+        self.sent_text: list[tuple[str, str]] = []
+        self.entered: list[str] = []
+        self.controls: list[tuple[str, str]] = []
+        self.killed: list[str] = []
+        self.screen_text = "C:\\workspace> _"
+        self._session_id = "sess-1234abcd"
+
+    def create(self, *, cwd, command=None, rows: int = 24, cols: int = 80) -> str:
+        return self._session_id
+
+    def latest_session_id(self) -> str | None:
+        return self._session_id
+
+    def send_text(self, session_id: str, text: str) -> None:
+        self.sent_text.append((session_id, text))
+
+    def send_enter(self, session_id: str) -> None:
+        self.entered.append(session_id)
+
+    def send_control(self, session_id: str, key: str) -> None:
+        self.controls.append((session_id, key))
+
+    def terminate(self, session_id: str) -> None:
+        self.killed.append(session_id)
+
+    def read_screen(self, session_id: str, *, include_cursor: bool = True) -> dict[str, object]:
+        return {
+            "session_id": session_id,
+            "rows": 24,
+            "columns": 80,
+            "screen": self.screen_text,
+            "closed": False,
+        }
+
+
+async def test_term_commands_drive_the_shared_terminal_session(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    manager = FakeUiTerminalManager()
+    fake_app.terminal_manager = manager
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(120, 44)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+
+        # /term start opens the session and the TERMINAL panel appears with
+        # the live screen (fed by the terminal.screen.updated event).
+        input_widget.value = "/term start"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert any(
+            line.startswith("term> Sessão sess-123") for line in terminal_app.vm.conversation
+        )
+        assert terminal_app.vm.terminal_visible is True
+        assert terminal_app.vm.terminal_screen == "C:\\workspace> _"
+        assert terminal_app.query_one("#terminal").display is True
+        assert terminal_app.query_one("#sidebar").display is True
+
+        # Free text after /term is typed into the session followed by Enter —
+        # the user acts on the same PTY the agent drives.
+        input_widget.value = "/term echo hi"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert manager.sent_text == [("sess-1234abcd", "echo hi")]
+        assert manager.entered == ["sess-1234abcd"]
+
+        # Ctrl+C reaches the session (interrupt a runaway process).
+        input_widget.value = "/term ctrl c"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert manager.controls == [("sess-1234abcd", "c")]
+
+        # /term kill terminates it and the panel flips to closed.
+        input_widget.value = "/term kill"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert manager.killed == ["sess-1234abcd"]
+        assert terminal_app.vm.terminal_closed is True
+
+
+async def test_term_without_a_manager_degrades_gracefully(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "/term start"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert any("indisponível" in line for line in terminal_app.vm.conversation)
+        assert terminal_app.vm.terminal_visible is False
+
+
+def test_view_model_streams_command_output_chunks_in_place() -> None:
+    from code_ai.ui.terminal.view_models import TerminalViewModel
+
+    view_model = TerminalViewModel()
+    for sequence, chunk in enumerate(("building", " wheel", "\ndone"), start=1):
+        view_model.apply(
+            EventEnvelope.create(
+                event_type="command.output",
+                session_id="fake-session",
+                sequence=sequence,
+                payload={"stream": "stdout", "text": chunk},
+                source="tool.execute_command",
+            )
+        )
+
+    # All chunks merged into one live cmd~ line, not one line per chunk.
+    assert view_model.conversation == ["cmd~ building wheel\ndone"]
+
+
+def test_view_model_keeps_terminal_panel_across_turns() -> None:
+    from code_ai.ui.terminal.view_models import TerminalViewModel
+
+    view_model = TerminalViewModel()
+    view_model.apply(
+        EventEnvelope.create(
+            event_type="terminal.screen.updated",
+            session_id="fake-session",
+            sequence=1,
+            payload={
+                "session_id": "abc12345",
+                "rows": 24,
+                "columns": 80,
+                "screen": "$ npm run dev\nserver listening on :3000",
+                "closed": False,
+            },
+            source="terminal.poller",
+        )
+    )
+    assert view_model.terminal_visible is True
+    assert "listening" in view_model.terminal_screen
+
+    # A new user turn clears plan/agents (turn-scoped) but the terminal is
+    # session-scoped: a dev server keeps running, so the panel must survive.
+    view_model.apply(
+        EventEnvelope.create(
+            event_type="user.message",
+            session_id="fake-session",
+            sequence=2,
+            payload={"text": "continue"},
+            source="test",
+        )
+    )
+    assert view_model.terminal_visible is True
+    assert view_model.terminal_session_id == "abc12345"
 
 
 def test_markdown_answer_keeps_raw_xml_visible() -> None:

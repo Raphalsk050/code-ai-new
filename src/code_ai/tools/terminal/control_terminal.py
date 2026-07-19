@@ -9,7 +9,7 @@ from code_ai.tools.schema import tool_schema
 
 class ControlTerminalTool:
     name = "control_terminal"
-    description = "Create and control a persistent POSIX terminal session inside the workspace."
+    description = "Create and control a persistent terminal session inside the workspace."
     capabilities = frozenset({ToolCapability.INTERACTIVE_TERMINAL})
     input_schema = tool_schema(
         {
