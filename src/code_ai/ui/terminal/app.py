@@ -65,6 +65,12 @@ _PERMISSION_MODE_OPTIONS = [
 # How many rows of the live streaming line the (non-scrolling) tail strip shows.
 _STREAM_TAIL_MAX_ROWS = 14
 
+# Hard character budget for the live tail, independent of newlines. The strip is
+# ~16 rows tall (see #stream-tail in theme.tcss); a few thousand chars is more
+# than covers that on a wide pane, and it caps the per-delta word-wrap cost so a
+# long single-paragraph reasoning block can no longer freeze the terminal.
+_STREAM_TAIL_MAX_CHARS = 4000
+
 # Cap on how many committed lines are kept mounted in the scrollback. Each line
 # is a selectable widget, so this bounds widget count the way RichLog.max_lines
 # used to bound its strips; the oldest lines scroll off once the cap is hit.
@@ -79,6 +85,13 @@ def render_stream_tail(line: str):
     Show only the final rows while it streams; the complete text lands in the
     scrollable log once the turn finishes.
     """
+    # Cap by characters first: reasoning text often arrives as long paragraphs
+    # with few newlines, so the row cap alone never trims it and the full
+    # (unbounded) string gets word-wrapped on every delta — an O(n^2) freeze.
+    # The tail only shows a handful of rows and cannot scroll, so dropping the
+    # leading text is safe; the complete line is still committed in full.
+    if len(line) > _STREAM_TAIL_MAX_CHARS:
+        line = line[-_STREAM_TAIL_MAX_CHARS:]
     rows = line.split("\n")
     if len(rows) > _STREAM_TAIL_MAX_ROWS:
         line = "\n".join(rows[-_STREAM_TAIL_MAX_ROWS:])
