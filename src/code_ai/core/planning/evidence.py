@@ -122,6 +122,25 @@ class EvidenceLedger:
         wanted = set(types)
         return any(record.success and record.evidence_type in wanted for record in self.records)
 
+    def has_record(self, *types: EvidenceType) -> bool:
+        """Any record of these types, successful or not."""
+        wanted = set(types)
+        return any(record.evidence_type in wanted for record in self.records)
+
+    def mutation_was_attempted(self) -> bool:
+        """Whether any write-shaped action was tried this turn, even a failed one.
+
+        Its absence, on a mutation-labelled task, is the reclassification signal
+        the completion gate uses: the model never treated the task as a
+        mutation, whatever the surface classifier said.
+        """
+        return any(
+            record.tool_name in {"write_file", "edit_code"}
+            or record.evidence_type
+            in {EvidenceType.FILE_CREATED, EvidenceType.FILE_CHANGED}
+            for record in self.records
+        )
+
     def success_records(self, *types: EvidenceType) -> list[EvidenceRecord]:
         wanted = set(types)
         return [
