@@ -1205,17 +1205,44 @@ async def test_final_answer_settles_plan_whose_last_step_was_declared() -> None:
     assert completed and completed[-1].payload["status"] == "COMPLETED"
 
 
-async def test_final_answer_leaves_undeclared_plan_active() -> None:
-    # Without the model ever declaring the final step done, a prose ending is
-    # genuinely unfinished work: the sidebar must keep showing where it stopped.
+async def test_final_answer_settles_undeclared_read_only_plan() -> None:
+    # For a prose-deliverable task (inspection/research/conversation) the final
+    # answer IS the completion signal - the same role complete_task plays for a
+    # mutation task, and what the read-only task context already tells the model.
+    # Models routinely answer without declaring the closing step, so requiring a
+    # final complete_plan_step here stranded finished work at "waiting for you".
     bus = AsyncEventBus(session_id="session")
     service = PlannerService(config=PlannerConfig(), event_bus=bus, session_id="session")
     await service.begin_turn("Analyse the repository", provider_supports_tools=True)
+    assert service._task_produces_workspace_effects() is False
     await service.submit_agent_plan(["Inspect files", "Present the summary"])
     await service.record_tool_result(
         tool_call_id="step_1",
         tool_name="complete_plan_step",
         payload={"completed_step": "Inspect files"},
+        success=True,
+    )
+
+    await service.settle_agent_plan_on_final_answer()
+
+    snapshot = service.plan_snapshot()
+    assert snapshot["status"] == "COMPLETED"
+    assert snapshot["progress"] == "2/2"
+
+
+async def test_final_answer_leaves_undeclared_mutation_plan_active() -> None:
+    # A mutation task stays conservative: an undeclared prose ending is genuinely
+    # unfinished work (its real completion runs through the evidence gate), so the
+    # sidebar must keep showing where it stopped instead of claiming it is done.
+    bus = AsyncEventBus(session_id="session")
+    service = PlannerService(config=PlannerConfig(), event_bus=bus, session_id="session")
+    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+    assert service._task_produces_workspace_effects() is True
+    await service.submit_agent_plan(["Write the file", "Verify the change"])
+    await service.record_tool_result(
+        tool_call_id="step_1",
+        tool_name="complete_plan_step",
+        payload={"completed_step": "Write the file"},
         success=True,
     )
 
