@@ -342,7 +342,10 @@ async def test_mutation_task_rejects_code_block_until_tools_verify_and_complete(
     )
     assert "Created src/example.py" in result.text
     assert "agent.corrective_prompt.injected" in events
-    assert "planning.completion.rejected" in events
+    # A low-risk, verified single-file change completes on the first
+    # complete_task: the double-check tax only applies to high-risk changes.
+    assert "planning.completion.rejected" not in events
+    assert "planning.completion.accepted" in events
     assert "assistant.final" in events
 
 

@@ -8,6 +8,11 @@ from typing import Any
 
 from code_ai.config.models import PlannerConfig
 from code_ai.core.errors import ToolExecutionError
+from code_ai.core.planning.completion import (
+    CompletionContext,
+    CompletionGate,
+    changes_require_verification,
+)
 from code_ai.core.planning.evidence import EvidenceLedger, EvidenceRecord
 from code_ai.core.planning.models import (
     AgentPlan,
@@ -99,6 +104,8 @@ class PlannerService:
         self.no_progress_rounds = 0
         self.double_check_pending = False
         self.accepted_final_text: str | None = None
+        # Risk-proportional evidence gate for success completion claims.
+        self.completion_gate = CompletionGate()
         # Evidence-based preconditions checked before action-taking tools run.
         self._precondition_gate = PreconditionGate(workspace=workspace)
         # Sub-agent profile names that can mutate the workspace; delegating to
@@ -150,7 +157,7 @@ class PlannerService:
             PlanningPhase.REPAIR,
         }:
             return ""
-        if not _changes_require_verification(self.ledger.current_changed_paths()):
+        if not changes_require_verification(self.ledger.current_changed_paths()):
             return ""
         return f"Verification: {self.project_verification().prompt_hint()}\n"
 
@@ -187,6 +194,7 @@ class PlannerService:
         self.no_progress_rounds = 0
         self.double_check_pending = False
         self.accepted_final_text = None
+        self.completion_gate.reset()
         self._precondition_gate.note_turn_started()
         if self.profile.requires_workspace_mutation and not provider_supports_tools:
             raise ToolExecutionError(
@@ -222,6 +230,7 @@ class PlannerService:
         self.no_progress_rounds = 0
         self.double_check_pending = False
         self.accepted_final_text = None
+        self.completion_gate.reset()
         await self._emit_phase(PlanningPhase.EXECUTE)
         # A plan paused at the previous turn's end (see suspend_agent_plan) comes
         # back to life: the current step starts running again in the sidebar.
@@ -687,45 +696,138 @@ class PlannerService:
         if claim.outcome in {"blocked", "failed"}:
             return await self._accept_non_success_completion(claim)
 
-        missing = self._successful_completion_missing_requirements(claim)
-        if self._double_check_required(claim):
-            # Folded into the *same* rejection as any missing evidence, so the
-            # double-check costs at most one round-trip in total instead of a
-            # second rejection queued behind an evidence rejection.
-            self.double_check_pending = True
-            missing.extend(_DOUBLE_CHECK_CHECKLIST)
-        if missing:
+        invalid = self._claim_validity_gaps(claim)
+        if invalid:
             await self.event_bus.emit(
                 "planning.completion.rejected",
-                {"missing_requirements": list(missing)},
+                {"missing_requirements": list(invalid)},
                 source="core.planner",
             )
             return CompletionDecision(
                 accepted=False,
                 outcome="success",
-                missing_requirements=tuple(missing),
+                missing_requirements=tuple(invalid),
             )
 
-        await self._accept_success_completion(claim)
+        verdict = self.completion_gate.evaluate(
+            self._completion_context(claim),
+            progress_fingerprint=self.progress_signature(),
+        )
+        if verdict.double_check_requested:
+            self.double_check_pending = True
+        if not verdict.accepted:
+            await self.event_bus.emit(
+                "planning.completion.rejected",
+                {
+                    "missing_requirements": list(verdict.missing_requirements),
+                    "policy": verdict.policy_name,
+                },
+                source="core.planner",
+            )
+            return CompletionDecision(
+                accepted=False,
+                outcome="success",
+                missing_requirements=verdict.missing_requirements,
+            )
+
+        await self._accept_success_completion(
+            claim, acceptance_note=verdict.acceptance_note
+        )
         return CompletionDecision(
             accepted=True,
             outcome="success",
             final_text=self.accepted_final_text or claim.summary,
         )
 
-    def _double_check_required(self, claim: CompletionClaim) -> bool:
-        """Whether this claim still owes the double-check round-trip.
+    def _claim_validity_gaps(self, claim: CompletionClaim) -> list[str]:
+        """Structural problems with the claim itself, before any evidence policy.
 
-        A claim that arrives with ``double_check_acknowledged`` already did the
-        reconciliation the checklist asks for, so demanding the round-trip again
-        would only tax the turn without adding evidence.
+        These are practically unreachable through the normal tool flow (the tool
+        already rejects an empty summary; objectives are set once per turn), so
+        they are judged outside the gate's pacing counter.
         """
-        return bool(
-            self.config.double_check_completion
-            and self.profile
-            and self.profile.requires_workspace_mutation
-            and not self.double_check_pending
-            and not claim.double_check_acknowledged
+        if not (self.profile and self.plan):
+            return ["No active plan exists."]
+        gaps: list[str] = []
+        if claim.summary.strip() == "":
+            gaps.append("summary is required.")
+        if self.plan.objective != self.profile.objective:
+            gaps.append("plan objective no longer matches the original objective.")
+        return gaps
+
+    def _completion_context(self, claim: CompletionClaim) -> CompletionContext:
+        """Snapshot the evidence the completion policies are allowed to judge."""
+        assert self.profile is not None  # guarded by _claim_validity_gaps
+        has_file_change = self.ledger.has_success(
+            EvidenceType.FILE_CREATED, EvidenceType.FILE_CHANGED
+        )
+        changed_paths = tuple(self.ledger.current_changed_paths())
+        # Verification only applies when (a) the change is not documentation-only
+        # and (b) the project actually exposes a way to verify it. With no
+        # detectable test/build system we degrade gracefully and complete with a
+        # warning rather than trapping the agent demanding evidence it cannot get.
+        verification_applies = (
+            changes_require_verification(list(changed_paths))
+            and self.project_verification().has_any
+        )
+        verified = (
+            not self.config.require_verification_for_changes
+            or not verification_applies
+            or self.ledger.latest_verification_passed
+        )
+        phantom: tuple[str, ...] = ()
+        if has_file_change or self.profile.requires_workspace_mutation:
+            # Paths outside the workspace never enter the ledger's hash map, so
+            # honestly claiming an external target must not read as fabrication.
+            claimed = {
+                path
+                for path in claim.changed_paths
+                if not self._path_is_outside_workspace(path)
+            }
+            phantom = tuple(sorted(claimed - set(changed_paths)))
+        pending_declared: tuple[str, ...] = ()
+        incomplete_skeleton: tuple[str, ...] = ()
+        if self.agent_plan is not None:
+            # The model's own checklist is the source of truth once submitted;
+            # the skeleton is only the fallback narrative.
+            pending_declared = tuple(
+                step.title
+                for step in self.agent_plan.steps
+                if step.status == PlanStepStatus.PENDING
+            )
+        elif self.plan is not None:
+            incomplete_skeleton = tuple(
+                step.title
+                for step in self.plan.steps
+                if step.kind != PlanStepKind.COMPLETE
+                and step.status
+                not in {PlanStepStatus.COMPLETED, PlanStepStatus.SKIPPED}
+            )
+        return CompletionContext(
+            claim=claim,
+            profile=self.profile,
+            changed_paths=changed_paths,
+            has_file_change=has_file_change,
+            write_attempted=self.ledger.mutation_was_attempted(),
+            has_analysis_evidence=self.ledger.has_success(
+                EvidenceType.FILE_READ,
+                EvidenceType.WORKSPACE_LISTED,
+                EvidenceType.LOCAL_SEARCH_MATCH,
+                EvidenceType.LOCAL_SEARCH_COMPLETED,
+                EvidenceType.DISCOVERY_COMPLETED,
+                EvidenceType.WEB_RESULT,
+            ),
+            verified=verified,
+            verification_failed_this_turn=self.ledger.has_record(
+                EvidenceType.VERIFICATION_FAILED
+            ),
+            external_targets=self.external_targets,
+            has_external_action_evidence=self._has_external_action_evidence(),
+            phantom_claimed_paths=phantom,
+            pending_declared_steps=pending_declared,
+            incomplete_skeleton_steps=incomplete_skeleton,
+            double_check_enabled=self.config.double_check_completion,
+            double_check_pending=self.double_check_pending,
         )
 
     def progress_signature(self) -> tuple[object, ...]:
@@ -1127,7 +1229,7 @@ class PlannerService:
     def _completion_verification_note(self, changed_paths: list[str]) -> str:
         if self.ledger.latest_verification_evidence_id:
             return f"Verified by evidence {self.ledger.latest_verification_evidence_id}."
-        code_changed = _changes_require_verification(changed_paths)
+        code_changed = changes_require_verification(changed_paths)
         if code_changed and not self.project_verification().has_any:
             return (
                 "Warning: no automated test/build system was detected in this "
@@ -1135,7 +1237,9 @@ class PlannerService:
             )
         return "No verification evidence was required."
 
-    async def _accept_success_completion(self, claim: CompletionClaim) -> None:
+    async def _accept_success_completion(
+        self, claim: CompletionClaim, *, acceptance_note: str = ""
+    ) -> None:
         if self.plan and self.current_step and self.current_step.kind == PlanStepKind.COMPLETE:
             self.current_step.status = PlanStepStatus.COMPLETED
             self.plan.status = PlanStatus.COMPLETED
@@ -1164,6 +1268,7 @@ class PlannerService:
                     claim.summary,
                     changed_line,
                     verification,
+                    acceptance_note,
                 )
                 if item
             ),
@@ -1234,184 +1339,8 @@ class PlannerService:
         )
         return CompletionDecision(True, claim.outcome, final_text=claim.summary)
 
-    def _successful_completion_missing_requirements(
-        self, claim: CompletionClaim
-    ) -> list[str]:
-        missing: list[str] = []
-        if not (self.profile and self.plan):
-            return ["No active plan exists."]
-        if claim.summary.strip() == "":
-            missing.append("summary is required.")
-        if self.plan.objective != self.profile.objective:
-            missing.append("plan objective no longer matches the original objective.")
-        has_file_change = self.ledger.has_success(
-            EvidenceType.FILE_CREATED, EvidenceType.FILE_CHANGED
-        )
-        # Verification only applies when (a) the change is not documentation-only
-        # and (b) the project actually exposes a way to verify it. With no
-        # detectable test/build system we degrade gracefully and complete with a
-        # warning rather than trapping the agent demanding evidence it cannot get.
-        verification_applies = (
-            _changes_require_verification(self.ledger.current_changed_paths())
-            and self.project_verification().has_any
-        )
-        verified = (
-            not self.config.require_verification_for_changes
-            or not verification_applies
-            or self.ledger.latest_verification_passed
-        )
-        # A task the surface classifier labelled a mutation must show file-change
-        # evidence before completing. Independently, *any* task that actually
-        # changed files must be verified before completing — that catches mutations
-        # the keyword classifier missed (e.g. "faça um jogo de pong", read as
-        # conversation), so the gate keys off real evidence, not the label.
-        # Exception: a mutation whose target lives *outside* the workspace cannot
-        # produce workspace file-change evidence (file tools are workspace-bound),
-        # so demanding it only pushes the model to fabricate pointless workspace
-        # files. Command/terminal evidence is the honest currency there.
-        if self.profile.requires_workspace_mutation and not has_file_change:
-            if not self.external_targets:
-                missing.append("no successful file-change evidence exists.")
-            elif not self._has_external_action_evidence():
-                missing.append(
-                    "the requested change targets paths outside the workspace "
-                    f"({sorted(self.external_targets)}); apply it with "
-                    "execute_command (file tools are workspace-only) instead of "
-                    "creating workspace files to produce evidence."
-                )
-        if has_file_change and not verified:
-            missing.append("no current successful verification evidence exists.")
-        if has_file_change or self.profile.requires_workspace_mutation:
-            actual_paths = set(self.ledger.current_changed_paths())
-            # Paths outside the workspace never enter the ledger's hash map, so
-            # honestly claiming an external target must not read as a mismatch.
-            claimed_paths = {
-                path
-                for path in claim.changed_paths
-                if not self._path_is_outside_workspace(path)
-            }
-            # Only the fabrication direction is rejected: claiming a path with no
-            # recorded change evidence. Claiming a subset of the real changes is
-            # harmless (the accepted summary lists the full set anyway) and must
-            # not cost a round-trip.
-            phantom = claimed_paths - actual_paths
-            if phantom:
-                missing.append(
-                    f"claimed changed paths {sorted(phantom)} have no recorded "
-                    f"change evidence (recorded paths: {sorted(actual_paths)})."
-                )
-        # Checklist reconciliation is guidance, not evidence: pending steps are
-        # listed only alongside a genuine evidence gap, to point the model back at
-        # its own plan. When every evidence requirement is satisfied, a lagging
-        # cursor must not cost a round-trip - acceptance settles the checklist via
-        # complete_all() anyway.
-        if missing:
-            missing.extend(
-                self._incomplete_plan_steps(
-                    has_file_change=has_file_change, verified=verified
-                )
-            )
-        return missing
-
-    def _incomplete_plan_steps(self, *, has_file_change: bool, verified: bool) -> list[str]:
-        """Steps still owed before a clean completion.
-
-        Reconcile against the model's *own* checklist (``AgentPlan``) when it
-        submitted one, so completion judges what the model said it would do rather
-        than the generic internal skeleton. The model drives its own cursor (via
-        complete_plan_step) and may forget to advance it, so once a mutation's
-        change is verified we trust the evidence and stop blocking on a lagging
-        cursor (fail-soft). With no submitted plan we fall back to the
-        deterministic skeleton.
-        """
-        # Once a mutation's change is settled (file changed and verification either
-        # passed or does not apply, e.g. a documentation-only edit) we trust the
-        # evidence and stop blocking on a lagging checklist cursor — for both the
-        # model's plan and the internal skeleton. An outside-workspace mutation
-        # settles on command evidence, the only channel that can touch it.
-        mutation_settled = bool(
-            self.profile
-            and self.profile.requires_workspace_mutation
-            and has_file_change
-            and verified
-        )
-        external_settled = bool(
-            self.profile
-            and self.profile.requires_workspace_mutation
-            and not has_file_change
-            and self.external_targets
-            and self._has_external_action_evidence()
-        )
-        if mutation_settled or external_settled:
-            return []
-        if self.agent_plan is not None:
-            pending = [
-                step.title
-                for step in self.agent_plan.steps
-                if step.status == PlanStepStatus.PENDING
-            ]
-            return [f"declared plan steps not yet done: {pending}."] if pending else []
-        if not self.plan:
-            return []
-        incomplete = [
-            step.title
-            for step in self.plan.steps
-            if step.kind != PlanStepKind.COMPLETE
-            and step.status not in {PlanStepStatus.COMPLETED, PlanStepStatus.SKIPPED}
-        ]
-        return [f"required plan steps are incomplete: {incomplete}."] if incomplete else []
-
     def current_step_index_is_last(self) -> bool:
         return bool(self.plan and self.plan.current_step_index >= len(self.plan.steps) - 1)
-
-
-# Reconciliation checklist appended to a completion rejection when the
-# double-check applies. Always folded into the same rejection as any missing
-# evidence so it never costs a second round-trip on its own.
-_DOUBLE_CHECK_CHECKLIST = (
-    "Double-check required before successful completion.",
-    "Reconcile every acceptance criterion with actual evidence.",
-    "Confirm verification still reflects the current workspace state.",
-    "Call complete_task again with double_check_acknowledged=true after "
-    "reconciling the evidence.",
-)
-
-
-# File suffixes whose changes carry no executable behaviour, so there is nothing
-# meaningful to verify (no test/command applies). Completion of a change that
-# touches only these must not be blocked on verification evidence.
-_DOC_ONLY_SUFFIXES = frozenset(
-    {
-        ".md",
-        ".markdown",
-        ".mdx",
-        ".rst",
-        ".adoc",
-        ".txt",
-        ".text",
-    }
-)
-
-
-def _changes_require_verification(paths: list[str]) -> bool:
-    """Whether a set of changed paths warrants verification evidence.
-
-    Pure documentation/prose edits (e.g. a ``.md`` progress tracker) have nothing
-    to run or assert against, so they do not require verification. Any path that
-    is not clearly documentation keeps the gate strict — a mixed change still
-    needs verification.
-    """
-    if not paths:
-        return False
-    return any(not _is_doc_only_path(path) for path in paths)
-
-
-def _is_doc_only_path(path: str) -> bool:
-    dot = path.rfind(".")
-    slash = max(path.rfind("/"), path.rfind("\\"))
-    if dot <= slash:  # no suffix (or a dotfile with no extension)
-        return False
-    return path[dot:].lower() in _DOC_ONLY_SUFFIXES
 
 
 _GENERIC_EXTERNAL_GAP_PHRASES = {
