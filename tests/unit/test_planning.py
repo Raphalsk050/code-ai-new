@@ -489,6 +489,56 @@ async def test_acknowledged_double_check_completes_in_one_call() -> None:
     assert decision.accepted is True
 
 
+async def test_claiming_a_subset_of_changed_paths_is_not_rejected() -> None:
+    # Forgetting to list one of the real changes is harmless (the accepted
+    # summary reports the full recorded set anyway); only claiming a path with
+    # no change evidence is the dangerous, fabrication-shaped direction.
+    service = PlannerService(
+        config=PlannerConfig(double_check_completion=False),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+    for index, path in enumerate(("src/example.py", "src/helper.py")):
+        await service.record_tool_result(
+            tool_call_id=f"w{index}",
+            tool_name="write_file",
+            payload={"path": path, "old_sha256": None, "new_sha256": f"h{index}"},
+            success=True,
+        )
+
+    decision = await service.evaluate_completion(
+        {"summary": "created the modules", "changed_paths": ["src/example.py"]}
+    )
+
+    assert decision.accepted is True
+
+
+async def test_claiming_an_unchanged_path_is_rejected() -> None:
+    service = PlannerService(
+        config=PlannerConfig(double_check_completion=False),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+    await service.record_tool_result(
+        tool_call_id="w1",
+        tool_name="write_file",
+        payload={"path": "src/example.py", "old_sha256": None, "new_sha256": "h1"},
+        success=True,
+    )
+
+    decision = await service.evaluate_completion(
+        {
+            "summary": "created the modules",
+            "changed_paths": ["src/example.py", "src/ghost.py"],
+        }
+    )
+
+    assert decision.accepted is False
+    assert any("src/ghost.py" in item for item in decision.missing_requirements)
+
+
 async def test_documentation_only_change_completes_without_verification() -> None:
     # A pure documentation change (a Markdown tracker) has nothing executable to
     # verify, so completion must not be blocked on verification evidence.

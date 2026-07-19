@@ -1290,10 +1290,15 @@ class PlannerService:
                 for path in claim.changed_paths
                 if not self._path_is_outside_workspace(path)
             }
-            if claimed_paths and claimed_paths != actual_paths:
+            # Only the fabrication direction is rejected: claiming a path with no
+            # recorded change evidence. Claiming a subset of the real changes is
+            # harmless (the accepted summary lists the full set anyway) and must
+            # not cost a round-trip.
+            phantom = claimed_paths - actual_paths
+            if phantom:
                 missing.append(
-                    f"claimed changed paths {sorted(claimed_paths)} do not match "
-                    f"recorded paths {sorted(actual_paths)}."
+                    f"claimed changed paths {sorted(phantom)} have no recorded "
+                    f"change evidence (recorded paths: {sorted(actual_paths)})."
                 )
         missing.extend(
             self._incomplete_plan_steps(has_file_change=has_file_change, verified=verified)
