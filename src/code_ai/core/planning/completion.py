@@ -111,11 +111,14 @@ class GateVerdict:
     missing_requirements: tuple[str, ...] = ()
     policy_name: str = "standard"
     double_check_requested: bool = False
+    # The gate gave up rejecting: the claim is accepted, but the still-missing
+    # requirements must be surfaced to the user as limitations, not hidden.
+    fail_open: bool = False
     acceptance_note: str = ""
 
     @property
     def accepted(self) -> bool:
-        return not self.missing_requirements
+        return not self.missing_requirements or self.fail_open
 
 
 class CompletionEvidencePolicy(Protocol):
@@ -298,7 +301,8 @@ class CompletionGate:
     release built on top of it never lets a wrong heuristic trap a turn.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, max_rejections_without_progress: int = 2) -> None:
+        self.max_rejections_without_progress = max(1, max_rejections_without_progress)
         self._rejections_without_progress = 0
         self._fingerprint_at_last_rejection: object | None = None
 
@@ -325,6 +329,22 @@ class CompletionGate:
                 acceptance_note=policy.acceptance_note(context),
             )
         self._note_rejection(progress_fingerprint)
+        if self._rejections_without_progress > self.max_rejections_without_progress:
+            # No heuristic may trap a turn: after repeated rejections with a
+            # frozen progress fingerprint, rejecting again would only feed the
+            # loop until the stall guard kills the turn and discards the model's
+            # summary. Accept, but surface what is still owed.
+            self.reset()
+            return GateVerdict(
+                missing_requirements=tuple(missing),
+                policy_name=policy.name,
+                fail_open=True,
+                acceptance_note=(
+                    "Note: completion was accepted after repeated attempts "
+                    "without new evidence; the unresolved requirements are "
+                    "listed as limitations."
+                ),
+            )
         return GateVerdict(
             missing_requirements=tuple(missing),
             policy_name=policy.name,

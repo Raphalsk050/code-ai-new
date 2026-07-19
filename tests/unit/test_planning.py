@@ -736,6 +736,39 @@ async def test_model_plan_does_not_block_completion_once_change_is_verified() ->
     assert decision.accepted is True
 
 
+async def test_completion_fails_open_after_repeated_stalled_rejections() -> None:
+    # A claim the gate keeps rejecting while the progress fingerprint stays
+    # frozen must eventually be accepted with the unresolved requirements
+    # surfaced as limitations, instead of spinning until the stall guard kills
+    # the turn and discards the model's summary.
+    service = PlannerService(
+        config=PlannerConfig(
+            double_check_completion=False, max_completion_rejections=2
+        ),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+    await service.record_tool_result(
+        tool_call_id="w1",
+        tool_name="write_file",
+        payload={"path": "src/example.py", "old_sha256": None, "new_sha256": "h1"},
+        success=True,
+    )
+
+    # The model insists on a phantom path three times without new evidence.
+    claim = {"summary": "done", "changed_paths": ["src/example.py", "src/ghost.py"]}
+    first = await service.evaluate_completion(claim)
+    second = await service.evaluate_completion(claim)
+    third = await service.evaluate_completion(claim)
+
+    assert first.accepted is False
+    assert second.accepted is False
+    assert third.accepted is True
+    assert "Unresolved completion requirements" in third.final_text
+    assert "src/ghost.py" in third.final_text
+
+
 async def test_pending_checklist_alone_does_not_block_completion() -> None:
     # A doc-only change satisfies every evidence requirement (verification does
     # not apply), so a lagging model-authored checklist cursor must not be the

@@ -106,6 +106,7 @@ class PlannerConfig:
     max_replans: int = int(DEFAULT_PLANNER["max_replans"])
     max_step_attempts: int = int(DEFAULT_PLANNER["max_step_attempts"])
     max_no_progress_rounds: int = int(DEFAULT_PLANNER["max_no_progress_rounds"])
+    max_completion_rejections: int = int(DEFAULT_PLANNER["max_completion_rejections"])
     persist_plan: bool = bool(DEFAULT_PLANNER["persist_plan"])
 
     @classmethod
@@ -128,6 +129,7 @@ class PlannerConfig:
             max_replans=int(values["max_replans"]),
             max_step_attempts=int(values["max_step_attempts"]),
             max_no_progress_rounds=int(values["max_no_progress_rounds"]),
+            max_completion_rejections=int(values["max_completion_rejections"]),
             persist_plan=bool(values["persist_plan"]),
         )
 
