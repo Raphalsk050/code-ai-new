@@ -77,6 +77,7 @@ class PlannerService:
         workspace: Path | None = None,
         verification_detector: Callable[[Path], ProjectVerification] = detect_project_verification,
         write_agent_types: frozenset[str] = frozenset(),
+        review_tools_available: Callable[[], bool] | None = None,
     ) -> None:
         self.config = config
         self.event_bus = event_bus
@@ -116,6 +117,11 @@ class PlannerService:
         # one of these before any reconnaissance is gated. Empty (the default
         # for directly-constructed services) disables the delegation gate.
         self._write_agent_types = write_agent_types
+        # Whether a review channel (review tools or a reviewer sub-agent)
+        # actually exists in this session. ``None`` (the default for
+        # directly-constructed services) means no review can be demanded, so
+        # the high-risk review requirement never fires without a way to comply.
+        self._review_tools_available = review_tools_available
         # Workspace-relative paths whose current content the agent has observed
         # (read, written, or reported by a sub-agent). Deliberately survives
         # begin_turn's per-turn ledger reset: a file read two turns ago is still
@@ -831,7 +837,26 @@ class PlannerService:
             incomplete_skeleton_steps=incomplete_skeleton,
             double_check_enabled=self.config.double_check_completion,
             double_check_pending=self.double_check_pending,
+            severe_review_findings=self.ledger.open_severe_review_findings,
+            has_current_review=self.ledger.review_ran_after_last_change,
+            review_required_for_risk=self._review_required_for_risk(),
         )
+
+    def _review_required_for_risk(self) -> bool:
+        """Whether a high-risk claim may be asked to carry review evidence.
+
+        Requires both the config switch and an actual review channel; demanding
+        a review the session cannot run would only trap the turn until the
+        gate's fail-open released it.
+        """
+        if not self.config.require_review_for_risky_changes:
+            return False
+        if self._review_tools_available is None:
+            return False
+        try:
+            return bool(self._review_tools_available())
+        except Exception:
+            return False
 
     def _verification_status(self, verification_applies: bool) -> tuple[bool, str]:
         """Whether the current change set counts as verified, and why not.

@@ -54,15 +54,27 @@ async def test_collector_captures_workspace_actions_in_order() -> None:
             "result": {"argv": ["pytest", "-q"], "exit_code": 0},
         },
     )
+    await bus.emit(
+        "tool.call.completed",
+        {
+            "name": "code_review",
+            "result": {
+                "summary": "issues",
+                "findings": [{"severity": "Critical"}, {"severity": "low"}],
+            },
+        },
+    )
     # Non-completion events and unknown tools are ignored.
     await bus.emit("tool.call.started", {"name": "write_file"})
     await bus.emit("tool.call.completed", {"name": "web_search", "result": {"results": []}})
 
     kinds = [item.kind for item in collector.items()]
-    assert kinds == ["file_read", "file_changed", "file_created", "command"]
-    command = collector.items()[-1]
+    assert kinds == ["file_read", "file_changed", "file_created", "command", "review"]
+    command = collector.items()[-2]
     assert command.argv == ["pytest", "-q"]
     assert command.exit_code == 0
+    review = collector.items()[-1]
+    assert review.severities == {"critical": 1, "low": 1}
 
 
 async def test_collector_ignores_no_op_edits() -> None:
@@ -156,6 +168,36 @@ def test_ledger_converts_subagent_digest_into_records() -> None:
     # The verification ran after the change, so it covers the current state.
     assert ledger.latest_verification_passed is True
     assert all("Turing" in record.summary for record in records)
+
+
+def test_ledger_replays_subagent_review_findings() -> None:
+    ledger = EvidenceLedger(session_id="session")
+    payload = {
+        "reports": [
+            {
+                "name": "Lovelace",
+                "status": "completed",
+                "evidence": [
+                    {"kind": "file_changed", "path": "a.py", "new_sha256": "h2"},
+                    {"kind": "review", "severities": {"critical": 1, "low": 2}},
+                ],
+            }
+        ]
+    }
+    records = ledger.record_tool_result(
+        plan=None,
+        step_id=None,
+        tool_call_id="d1",
+        tool_name="dispatch_agent",
+        payload=payload,
+        success=True,
+        classify_verification=lambda argv: None,
+    )
+
+    assert records[-1].evidence_type == EvidenceType.REVIEW_COMPLETED
+    # The reviewer's serious finding gates the parent completion too.
+    assert ledger.review_ran_after_last_change is True
+    assert ledger.open_severe_review_findings == 1
 
 
 def test_ledger_records_failed_subagent_command_as_failure() -> None:

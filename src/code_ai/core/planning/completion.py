@@ -108,6 +108,16 @@ class CompletionContext:
     # "only lint ran; run the project's test command"). Empty means the generic
     # missing-verification message applies.
     verification_gap: str = ""
+    # Serious (critical/high) findings reported by review tools run after the
+    # last file change and not yet addressed by a further change.
+    severe_review_findings: int = 0
+    # A review ran against the current change set (directly or via a reviewer
+    # sub-agent).
+    has_current_review: bool = False
+    # High-risk claims must carry review evidence. Set by the service only when
+    # the config enables it AND a review channel actually exists, so the strict
+    # policy never demands evidence the agent cannot produce.
+    review_required_for_risk: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,6 +209,21 @@ class StandardCompletionPolicy:
                 "have no recorded change evidence (recorded paths: "
                 f"{sorted(context.changed_paths)})."
             )
+        # Severe findings raised by the agent's own review tools against the
+        # current change set cannot be silently ignored: fix them (and re-verify)
+        # or disclose them honestly so the user sees what is still open. The
+        # disclosure escape hatch keeps this from trapping a turn when a finding
+        # is a false positive or out of scope.
+        if context.severe_review_findings and not (
+            context.claim.remaining_issues or context.claim.limitations
+        ):
+            missing.append(
+                f"a review of the current changes reported "
+                f"{context.severe_review_findings} serious finding(s) that no "
+                "later change addressed. Fix them and re-run verification, or "
+                "list them explicitly in remaining_issues/limitations so the "
+                "user knows what is still open."
+            )
         # Checklist reconciliation is guidance, not evidence: pending steps are
         # listed only alongside a genuine evidence gap, to point the model back
         # at its own plan. A lagging cursor must never cost a round-trip on its
@@ -215,13 +240,34 @@ class StandardCompletionPolicy:
 
 
 class StrictCompletionPolicy(StandardCompletionPolicy):
-    """Standard requirements plus the reconciliation double-check.
+    """Standard requirements plus an independent review and the double-check.
 
-    Selected only when a real risk signal exists, so the double-check's extra
-    round-trip is spent where reconciliation can actually catch something.
+    Selected only when a real risk signal exists (many files touched, a failed
+    verification this turn, a complex task), so the extra cost is spent where
+    it can actually catch something. The review requirement is the substantive
+    half: tests prove the change runs, an independent review is what judges
+    whether the code is actually sound. The acknowledgment double-check alone
+    is a ritual a hurried model can wave through; review evidence cannot be
+    faked without actually running a review.
     """
 
     name = "strict"
+
+    def missing_requirements(self, context: CompletionContext) -> list[str]:
+        missing = super().missing_requirements(context)
+        if (
+            context.review_required_for_risk
+            and context.has_file_change
+            and not context.has_current_review
+        ):
+            missing.append(
+                "this change is high-risk (several files, a failed verification "
+                "this turn, or a complex task) and has no independent review of "
+                "its current state. Run code_review on the changed paths (or "
+                "dispatch a reviewer sub-agent), address serious findings, then "
+                "complete."
+            )
+        return missing
 
     def requires_double_check(self, context: CompletionContext) -> bool:
         return bool(

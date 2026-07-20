@@ -155,6 +155,39 @@ def test_strict_keeps_standard_evidence_requirements() -> None:
     assert any("verification" in item for item in missing)
 
 
+def test_strict_requires_independent_review_for_risky_changes() -> None:
+    context = make_context(review_required_for_risk=True, has_current_review=False)
+
+    missing = StrictCompletionPolicy().missing_requirements(context)
+
+    assert any("review" in item for item in missing)
+    # A review of the current change set satisfies the requirement.
+    reviewed = make_context(review_required_for_risk=True, has_current_review=True)
+    assert StrictCompletionPolicy().missing_requirements(reviewed) == []
+    # Without a review channel the requirement never fires.
+    unavailable = make_context(review_required_for_risk=False)
+    assert StrictCompletionPolicy().missing_requirements(unavailable) == []
+
+
+def test_standard_blocks_undisclosed_severe_review_findings() -> None:
+    context = make_context(severe_review_findings=2)
+
+    missing = StandardCompletionPolicy().missing_requirements(context)
+
+    assert any("finding" in item for item in missing)
+
+
+def test_standard_releases_severe_findings_when_disclosed() -> None:
+    context = make_context(
+        severe_review_findings=2,
+        claim=CompletionClaim(
+            summary="done", remaining_issues=["reviewer flagged input validation"]
+        ),
+    )
+
+    assert StandardCompletionPolicy().missing_requirements(context) == []
+
+
 # --------------------------------------------------------------------------- #
 # MinimalCompletionPolicy
 # --------------------------------------------------------------------------- #

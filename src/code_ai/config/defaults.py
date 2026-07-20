@@ -158,6 +158,10 @@ DEFAULT_PLANNER: dict[str, object] = {
     "require_plan_for_mutations": True,
     "require_verification_for_changes": True,
     "double_check_completion": True,
+    # High-risk changes (many files, a failed verification this turn, complex
+    # tasks) must be backed by an independent review (code_review or a reviewer
+    # sub-agent) run after the last change, when review tools are available.
+    "require_review_for_risky_changes": True,
     "max_plan_steps": 20,
     "max_discovery_rounds": 8,
     "max_replans": 3,

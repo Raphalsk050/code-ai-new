@@ -102,6 +102,9 @@ class PlannerConfig:
         DEFAULT_PLANNER["require_verification_for_changes"]
     )
     double_check_completion: bool = bool(DEFAULT_PLANNER["double_check_completion"])
+    require_review_for_risky_changes: bool = bool(
+        DEFAULT_PLANNER["require_review_for_risky_changes"]
+    )
     max_plan_steps: int = int(DEFAULT_PLANNER["max_plan_steps"])
     max_discovery_rounds: int = int(DEFAULT_PLANNER["max_discovery_rounds"])
     max_replans: int = int(DEFAULT_PLANNER["max_replans"])
@@ -125,6 +128,9 @@ class PlannerConfig:
                 values["require_verification_for_changes"]
             ),
             double_check_completion=bool(values["double_check_completion"]),
+            require_review_for_risky_changes=bool(
+                values["require_review_for_risky_changes"]
+            ),
             max_plan_steps=int(values["max_plan_steps"]),
             max_discovery_rounds=int(values["max_discovery_rounds"]),
             max_replans=int(values["max_replans"]),
