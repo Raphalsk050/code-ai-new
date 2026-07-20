@@ -31,9 +31,11 @@ from code_ai.core.planning.models import (
 from code_ai.core.planning.policy import PlannerToolPolicy, PolicyDecision
 from code_ai.core.planning.preconditions import PreconditionGate
 from code_ai.core.verification import (
+    KIND_PRIORITY,
+    CommandKind,
     ProjectVerification,
     detect_project_verification,
-    is_genuine_verification,
+    verification_kind,
 )
 from code_ai.events.bus import AsyncEventBus
 from code_ai.events.models import utc_now_iso
@@ -141,8 +143,8 @@ class PlannerService:
                     self._project_verification = ProjectVerification()
         return self._project_verification
 
-    def _is_verification_command(self, argv: list[str]) -> bool:
-        return is_genuine_verification(argv, self.project_verification())
+    def _classify_verification(self, argv: list[str] | str | None) -> CommandKind | None:
+        return verification_kind(argv, self.project_verification())
 
     def _verification_context_line(self) -> str:
         """Tell the model the project's real verification command, when relevant.
@@ -321,7 +323,7 @@ class PlannerService:
             tool_name=tool_name,
             payload=payload,
             success=success,
-            is_verification_command=self._is_verification_command,
+            classify_verification=self._classify_verification,
         )
         for record in records:
             if record.success and record.evidence_type in {
@@ -774,11 +776,7 @@ class PlannerService:
             changes_require_verification(list(changed_paths))
             and self.project_verification().has_any
         )
-        verified = (
-            not self.config.require_verification_for_changes
-            or not verification_applies
-            or self.ledger.latest_verification_passed
-        )
+        verified, verification_gap = self._verification_status(verification_applies)
         phantom: tuple[str, ...] = ()
         if has_file_change or self.profile.requires_workspace_mutation:
             # Paths outside the workspace never enter the ledger's hash map, so
@@ -822,6 +820,7 @@ class PlannerService:
                 EvidenceType.WEB_RESULT,
             ),
             verified=verified,
+            verification_gap=verification_gap,
             verification_failed_this_turn=self.ledger.has_record(
                 EvidenceType.VERIFICATION_FAILED
             ),
@@ -832,6 +831,40 @@ class PlannerService:
             incomplete_skeleton_steps=incomplete_skeleton,
             double_check_enabled=self.config.double_check_completion,
             double_check_pending=self.double_check_pending,
+        )
+
+    def _verification_status(self, verification_applies: bool) -> tuple[bool, str]:
+        """Whether the current change set counts as verified, and why not.
+
+        Verified means a verification passed against the current changes *and*
+        it was at least as strong as the strongest check the project exposes
+        (test > build > typecheck > lint). A lint-only pass on a project with a
+        test suite is the classic way to game the gate with a cheap exit-0 run,
+        so it does not count; the returned gap message tells the model exactly
+        which command it still owes. Projects that only expose weaker checks
+        degrade gracefully - their strongest available check is enough.
+        """
+        if not self.config.require_verification_for_changes or not verification_applies:
+            return True, ""
+        project = self.project_verification()
+        if not self.ledger.latest_verification_passed:
+            return False, (
+                "no current successful verification evidence exists. "
+                + project.prompt_hint()
+            )
+        required = project.required_kind
+        passed = self.ledger.strongest_verification_kind_passed()
+        if required is None or (
+            passed is not None and KIND_PRIORITY[passed] <= KIND_PRIORITY[required]
+        ):
+            return True, ""
+        primary = project.primary()
+        ran = passed.value if passed else "an unclassified check"
+        return False, (
+            f"verification for the current changes only ran at the '{ran}' level, "
+            f"but this project exposes a {required.value} command "
+            f"(`{primary.display if primary else required.value}`). Run it against "
+            "the current changes; a weaker check cannot prove the change works."
         )
 
     def progress_signature(self) -> tuple[object, ...]:

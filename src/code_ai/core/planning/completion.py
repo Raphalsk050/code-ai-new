@@ -89,8 +89,8 @@ class CompletionContext:
     write_attempted: bool
     # Successful knowledge-gathering evidence (reads, listings, searches, web).
     has_analysis_evidence: bool
-    # Verification settled for the current change set (passed, not required, or
-    # not applicable to the changed paths).
+    # Verification settled for the current change set (passed at the required
+    # strength, not required, or not applicable to the changed paths).
     verified: bool
     verification_failed_this_turn: bool
     external_targets: tuple[str, ...]
@@ -104,6 +104,10 @@ class CompletionContext:
     incomplete_skeleton_steps: tuple[str, ...]
     double_check_enabled: bool
     double_check_pending: bool
+    # When not verified: the precise instruction on what is still owed (e.g.
+    # "only lint ran; run the project's test command"). Empty means the generic
+    # missing-verification message applies.
+    verification_gap: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,7 +189,10 @@ class StandardCompletionPolicy:
         # before completing — that catches mutations the keyword classifier
         # missed, so the gate keys off real evidence, not the label.
         if context.has_file_change and not context.verified:
-            missing.append("no current successful verification evidence exists.")
+            missing.append(
+                context.verification_gap
+                or "no current successful verification evidence exists."
+            )
         if context.phantom_claimed_paths:
             missing.append(
                 f"claimed changed paths {sorted(context.phantom_claimed_paths)} "
