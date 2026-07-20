@@ -6,6 +6,12 @@ from pathlib import Path
 # current state to be known before they run.
 _MUTATION_TOOLS = frozenset({"write_file", "edit_code"})
 
+# A single write_file above either bound is a monolith, not an increment. The
+# thresholds are deliberately generous: a focused module or class skeleton fits
+# comfortably, while "the whole project file in one shot" does not.
+_INCREMENTAL_WRITE_MAX_LINES = 100
+_INCREMENTAL_WRITE_MAX_CHARS = 5000
+
 
 class PreconditionGate:
     """Advisory evidence checks that run before an action-taking tool call.
@@ -22,6 +28,7 @@ class PreconditionGate:
         self._nudged_paths: set[str] = set()
         self._delegation_nudged = False
         self._artifact_nudged = False
+        self._oversized_nudged_paths: set[str] = set()
 
     def note_turn_started(self) -> None:
         """Reset the per-turn nudges when a fresh user request begins.
@@ -109,6 +116,43 @@ class PreconditionGate:
             "your change in what is actually there, then retry the mutation. "
             "If you genuinely already know its content, simply retry and the "
             "call will proceed."
+        )
+
+    def oversized_write_gap(
+        self, tool_name: str, arguments: dict[str, object]
+    ) -> str | None:
+        """Reason to defer a single write that dumps a whole file at once.
+
+        The classic failure on greenfield work: asked for a project, the model
+        emits the complete class or module in one giant ``write_file``. That
+        monolith skips the incremental loop that produces quality - write a
+        skeleton, extend one behavior at a time, verify as you go - and it is
+        also where truncated output and unreviewable changes come from. Nudges
+        once per path, then fails open, so a file that genuinely must be
+        written in one piece (fixtures, generated data) costs one retry at most.
+        """
+        if tool_name != "write_file":
+            return None
+        content = arguments.get("content")
+        if not isinstance(content, str):
+            return None
+        lines = content.count("\n") + 1
+        if lines <= _INCREMENTAL_WRITE_MAX_LINES and len(content) <= _INCREMENTAL_WRITE_MAX_CHARS:
+            return None
+        path = str(arguments.get("path") or "").strip()
+        if path in self._oversized_nudged_paths:
+            return None
+        self._oversized_nudged_paths.add(path)
+        target = f" to '{path}'" if path else ""
+        return (
+            f"Precondition check: this single write_file{target} carries "
+            f"{lines} lines ({len(content)} characters) at once. Work "
+            "incrementally instead: write a minimal skeleton first (imports, "
+            "signatures, docstrings), then add one focused piece at a time with "
+            "edit_code, verifying as you go. Small steps keep each change "
+            "reviewable and thought through, and avoid truncated output. If "
+            "this file genuinely must be written in one piece, retry the call "
+            "and it will proceed."
         )
 
     def blind_delegation_gap(
