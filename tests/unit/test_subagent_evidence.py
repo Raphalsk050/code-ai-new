@@ -9,6 +9,7 @@ from code_ai.core.subagents.evidence import (
     SubagentEvidenceItem,
     compact_evidence_items,
 )
+from code_ai.core.verification import CommandKind
 from code_ai.events.bus import AsyncEventBus
 
 
@@ -140,7 +141,9 @@ def test_ledger_converts_subagent_digest_into_records() -> None:
         tool_name="dispatch_agent",
         payload=_dispatch_payload(),
         success=True,
-        is_verification_command=lambda argv: argv[:1] == ["pytest"],
+        classify_verification=lambda argv: (
+            CommandKind.TEST if list(argv or [])[:1] == ["pytest"] else None
+        ),
     )
 
     types = [record.evidence_type for record in records]
@@ -176,7 +179,7 @@ def test_ledger_records_failed_subagent_command_as_failure() -> None:
         tool_name="dispatch_agent",
         payload=payload,
         success=True,
-        is_verification_command=lambda argv: True,
+        classify_verification=lambda argv: CommandKind.TEST,
     )
 
     # The change is real even though the sub-agent failed, and the failed
