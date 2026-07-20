@@ -8,8 +8,15 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from code_ai.core.planning.models import EvidenceType, ExecutionPlan
+from code_ai.core.verification import CommandKind, strongest_kind
 from code_ai.events.models import utc_now_iso
 from code_ai.tools.output import bound_text
+
+# What a command's verification classifier looks like: argv in (list | str |
+# None), returning the kind of check it performs or ``None`` for a command that
+# verifies nothing. ``None`` as the callable itself means "treat every command
+# as a test run" (the permissive legacy default used by direct ledger tests).
+VerificationClassifier = Callable[[list[str] | str | None], CommandKind | None]
 
 
 class EvidenceRecord(BaseModel):
@@ -60,6 +67,11 @@ class EvidenceLedger:
         self.latest_verification_passed = False
         self.latest_verification_evidence_id: str | None = None
         self.verification_hashes: dict[str, str] = {}
+        # Kinds of verification (test/build/typecheck/lint) that passed against
+        # the *current* change set. Reset whenever a file changes, so the
+        # completion gate can demand the project's strongest check and a stale
+        # or weaker pass (e.g. lint-only) cannot stand in for it.
+        self._verification_kinds_passed: set[CommandKind] = set()
         # Distinct knowledge accumulated this session. Each set grows only when the
         # agent observes something genuinely new, so repeating an identical
         # observation does not register as progress. See ``progress_fingerprint``.
@@ -78,7 +90,7 @@ class EvidenceLedger:
         tool_name: str,
         payload: dict[str, Any],
         success: bool,
-        is_verification_command: Callable[[list[str]], bool] | None = None,
+        classify_verification: VerificationClassifier | None = None,
     ) -> list[EvidenceRecord]:
         records = _records_from_payload(
             session_id=self.session_id,
@@ -89,7 +101,7 @@ class EvidenceLedger:
             payload=payload,
             success=success,
             max_summary_chars=self.max_summary_chars,
-            is_verification_command=is_verification_command,
+            classify_verification=classify_verification,
         )
         for record in records:
             self._append(record)
@@ -152,6 +164,10 @@ class EvidenceLedger:
     def current_changed_paths(self) -> list[str]:
         return sorted(self.changed_hashes)
 
+    def strongest_verification_kind_passed(self) -> CommandKind | None:
+        """The most trusted kind of check that passed for the current change set."""
+        return strongest_kind(self._verification_kinds_passed)
+
     def compact_recent(self, *, limit: int = 12) -> list[dict[str, Any]]:
         return [record.compact() for record in self.records[-limit:]]
 
@@ -184,10 +200,14 @@ class EvidenceLedger:
             self.latest_verification_passed = False
             self.latest_verification_evidence_id = None
             self.verification_hashes = {}
+            self._verification_kinds_passed = set()
         elif record.evidence_type == EvidenceType.VERIFICATION_PASSED and record.success:
             self.latest_verification_passed = True
             self.latest_verification_evidence_id = record.evidence_id
             self.verification_hashes = dict(self.changed_hashes)
+            kind = record.metadata.get("verification_kind")
+            if kind is not None:
+                self._verification_kinds_passed.add(CommandKind(kind))
         elif record.evidence_type == EvidenceType.VERIFICATION_FAILED:
             self.latest_verification_passed = False
             self.latest_verification_evidence_id = None
@@ -226,7 +246,7 @@ def _records_from_payload(
     payload: dict[str, Any],
     success: bool,
     max_summary_chars: int,
-    is_verification_command: Callable[[list[str]], bool] | None = None,
+    classify_verification: VerificationClassifier | None = None,
 ) -> list[EvidenceRecord]:
     common = {
         "session_id": session_id,
@@ -329,10 +349,12 @@ def _records_from_payload(
         # A command only counts as verification when it actually exercises the
         # code (a test/build/typecheck/lint runner). A trivial exit-0 command
         # (echo, ls, cat ...) is recorded as a neutral command run, so it can
-        # never satisfy the completion gate's verification requirement.
+        # never satisfy the completion gate's verification requirement. The
+        # classified kind travels in the record's metadata so the ledger can
+        # judge whether the *strongest* applicable check has passed.
         argv = payload.get("argv") or []
-        is_verification = is_verification_command(argv) if is_verification_command else True
-        if is_verification:
+        kind = classify_verification(argv) if classify_verification else CommandKind.TEST
+        if kind is not None:
             evidence_type = (
                 EvidenceType.VERIFICATION_PASSED
                 if command_success
@@ -353,7 +375,10 @@ def _records_from_payload(
                 command_exit_code=exit_code if isinstance(exit_code, int) else None,
                 timed_out=bool(payload.get("timed_out")),
                 cancelled=bool(payload.get("cancelled")),
-                metadata={"cwd": payload.get("cwd")},
+                metadata={
+                    "cwd": payload.get("cwd"),
+                    "verification_kind": kind.value if kind else None,
+                },
             )
         ]
     if tool_name in {"architecture_review", "code_review", "build_review"}:
@@ -424,7 +449,7 @@ def _records_from_payload(
         return _records_from_subagent_reports(
             common=common,
             payload=payload,
-            is_verification_command=is_verification_command,
+            classify_verification=classify_verification,
         )
     return []
 
@@ -433,7 +458,7 @@ def _records_from_subagent_reports(
     *,
     common: dict[str, Any],
     payload: dict[str, Any],
-    is_verification_command: Callable[[list[str]], bool] | None,
+    classify_verification: VerificationClassifier | None,
 ) -> list[EvidenceRecord]:
     """Convert delegated sub-agents' evidence digests into parent ledger records.
 
@@ -459,7 +484,7 @@ def _records_from_subagent_reports(
                 common=common,
                 agent=agent,
                 item=raw_item,
-                is_verification_command=is_verification_command,
+                classify_verification=classify_verification,
             )
             if record is not None:
                 records.append(record)
@@ -471,7 +496,7 @@ def _record_from_subagent_item(
     common: dict[str, Any],
     agent: str,
     item: dict[str, Any],
-    is_verification_command: Callable[[list[str]], bool] | None,
+    classify_verification: VerificationClassifier | None,
 ) -> EvidenceRecord | None:
     # The digest reflects tool calls that actually completed inside the child,
     # so every item except a failed command is a successful observation - the
@@ -505,10 +530,10 @@ def _record_from_subagent_item(
         argv = item.get("argv") or []
         exit_code = item.get("exit_code")
         succeeded = exit_code == 0
-        is_verification = (
-            is_verification_command(argv) if is_verification_command else True
+        verification = (
+            classify_verification(argv) if classify_verification else CommandKind.TEST
         )
-        if is_verification:
+        if verification is not None:
             evidence_type = (
                 EvidenceType.VERIFICATION_PASSED
                 if succeeded
@@ -527,6 +552,9 @@ def _record_from_subagent_item(
             summary=f"Sub-agent {agent} ran {argv!r} (exit {exit_code}).",
             command_argv=argv,
             command_exit_code=exit_code if isinstance(exit_code, int) else None,
+            metadata={
+                "verification_kind": verification.value if verification else None
+            },
         )
     return None
 
