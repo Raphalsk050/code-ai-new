@@ -156,6 +156,41 @@ def _coder_dispatch() -> dict:
     return {"tasks": [{"agent_type": "coder", "prompt": "add the endpoint"}]}
 
 
+def test_oversized_write_is_deferred_once_per_path(tmp_path) -> None:
+    gate = PreconditionGate(workspace=tmp_path)
+    monolith = "\n".join(f"line_{i} = {i}" for i in range(200))
+
+    first = gate.oversized_write_gap("write_file", {"path": "big.py", "content": monolith})
+    assert first is not None and "incrementally" in first and "skeleton" in first
+
+    # Fail-open: retrying the same path proceeds.
+    second = gate.oversized_write_gap("write_file", {"path": "big.py", "content": monolith})
+    assert second is None
+
+
+def test_small_writes_are_never_size_gated(tmp_path) -> None:
+    gate = PreconditionGate(workspace=tmp_path)
+    skeleton = "class App:\n    \"\"\"Skeleton.\"\"\"\n"
+
+    assert gate.oversized_write_gap("write_file", {"path": "app.py", "content": skeleton}) is None
+    # edit_code is inherently incremental and is not size-gated.
+    huge = "x = 1\n" * 300
+    assert gate.oversized_write_gap("edit_code", {"path": "app.py", "new_text": huge}) is None
+
+
+async def test_planner_defers_monolithic_write_then_allows_retry(tmp_path) -> None:
+    service = _service(tmp_path)
+    await service.begin_turn("Create the game project", provider_supports_tools=True)
+    monolith = "\n".join(f"line_{i} = {i}" for i in range(300))
+
+    gap = service.precondition_gap("write_file", {"path": "game.py", "content": monolith})
+    assert gap is not None and "incrementally" in gap
+
+    assert service.precondition_gap(
+        "write_file", {"path": "game.py", "content": monolith}
+    ) is None
+
+
 def test_blind_coder_delegation_is_deferred_once(tmp_path) -> None:
     gate = PreconditionGate(workspace=tmp_path)
 

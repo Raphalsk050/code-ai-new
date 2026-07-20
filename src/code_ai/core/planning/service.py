@@ -380,9 +380,14 @@ class PlannerService:
         )
         if artifact_gap:
             return artifact_gap
-        return self._precondition_gate.unread_mutation_gap(
+        unread_gap = self._precondition_gate.unread_mutation_gap(
             tool_name, arguments, known_content_paths=self._known_content_paths
         )
+        if unread_gap:
+            return unread_gap
+        # Last, because grounding beats sizing: a blind overwrite should hear
+        # "read it first" before it hears "write it in smaller steps".
+        return self._precondition_gate.oversized_write_gap(tool_name, arguments)
 
     def _has_delegation_grounding(self) -> bool:
         """Whether the orchestrator has observed enough to brief a coder.
