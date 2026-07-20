@@ -1373,6 +1373,18 @@ class PlannerService:
             if unresolved
             else ""
         )
+        # The claim's own disclosures reach the user too. They are the honest
+        # currency the completion gate accepts in place of a fix (e.g. an open
+        # review finding), so hiding them from the final message would turn the
+        # disclosure escape hatch into a silent bypass.
+        remaining_line = (
+            "Remaining issues: " + "; ".join(claim.remaining_issues)
+            if claim.remaining_issues
+            else ""
+        )
+        limitations_line = (
+            "Limitations: " + "; ".join(claim.limitations) if claim.limitations else ""
+        )
         self.accepted_final_text = bound_text(
             "\n".join(
                 item
@@ -1381,6 +1393,8 @@ class PlannerService:
                     changed_line,
                     verification,
                     acceptance_note,
+                    remaining_line,
+                    limitations_line,
                     unresolved_line,
                 )
                 if item

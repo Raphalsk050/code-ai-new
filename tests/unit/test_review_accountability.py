@@ -59,11 +59,13 @@ async def test_severe_findings_block_completion_until_disclosed(tmp_path) -> Non
     assert decision.accepted is False
     assert any("finding" in item for item in decision.missing_requirements)
 
-    # Disclosing the open finding honestly releases the claim.
+    # Disclosing the open finding honestly releases the claim, and the
+    # disclosure reaches the user in the final message instead of vanishing.
     decision = await service.evaluate_completion(
         {"summary": "done", "remaining_issues": ["reviewer flagged unvalidated input"]}
     )
     assert decision.accepted is True
+    assert "reviewer flagged unvalidated input" in (service.accepted_final_text or "")
 
 
 async def test_findings_reset_when_a_later_change_lands(tmp_path) -> None:
