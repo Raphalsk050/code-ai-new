@@ -18,6 +18,26 @@ from code_ai.tools.output import bound_text
 # as a test run" (the permissive legacy default used by direct ledger tests).
 VerificationClassifier = Callable[[list[str] | str | None], CommandKind | None]
 
+# The review tools whose results become REVIEW_COMPLETED evidence.
+_REVIEW_TOOLS = frozenset(
+    {"architecture_review", "code_review", "build_review", "test_review"}
+)
+
+# Finding severities serious enough that completing without addressing (or at
+# least honestly disclosing) them would hand the user known-broken work.
+_SEVERE_FINDING_SEVERITIES = frozenset(
+    {"critical", "high", "blocker", "severe", "major", "error"}
+)
+
+
+def count_severe_findings(severity_summary: dict[str, int]) -> int:
+    """How many findings in a review's severity summary are serious."""
+    return sum(
+        count
+        for severity, count in severity_summary.items()
+        if severity.lower() in _SEVERE_FINDING_SEVERITIES and count > 0
+    )
+
 
 class EvidenceRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -72,6 +92,12 @@ class EvidenceLedger:
         # completion gate can demand the project's strongest check and a stale
         # or weaker pass (e.g. lint-only) cannot stand in for it.
         self._verification_kinds_passed: set[CommandKind] = set()
+        # Review state for the *current* change set, reset whenever a file
+        # changes (a fix may have addressed the findings, and a review of the
+        # old state says nothing about the new one). Severe findings that are
+        # still open must be fixed or honestly disclosed before completion.
+        self.review_ran_after_last_change = False
+        self.open_severe_review_findings = 0
         # Distinct knowledge accumulated this session. Each set grows only when the
         # agent observes something genuinely new, so repeating an identical
         # observation does not register as progress. See ``progress_fingerprint``.
@@ -80,6 +106,7 @@ class EvidenceLedger:
         self._search_keys: set[str] = set()
         self._web_keys: set[str] = set()
         self._command_keys: set[str] = set()
+        self._review_keys: set[str] = set()
 
     def record_tool_result(
         self,
@@ -185,6 +212,7 @@ class EvidenceLedger:
             len(self._search_keys),
             len(self._web_keys),
             len(self._command_keys),
+            len(self._review_keys),
             tuple(sorted(self.changed_hashes.items())),
             self.latest_verification_passed,
             tuple(sorted(self.verification_hashes.items())),
@@ -201,6 +229,13 @@ class EvidenceLedger:
             self.latest_verification_evidence_id = None
             self.verification_hashes = {}
             self._verification_kinds_passed = set()
+            self.review_ran_after_last_change = False
+            self.open_severe_review_findings = 0
+        elif record.evidence_type == EvidenceType.REVIEW_COMPLETED and record.success:
+            self.review_ran_after_last_change = True
+            self.open_severe_review_findings += count_severe_findings(
+                record.review_severity_summary
+            )
         elif record.evidence_type == EvidenceType.VERIFICATION_PASSED and record.success:
             self.latest_verification_passed = True
             self.latest_verification_evidence_id = record.evidence_id
@@ -234,6 +269,12 @@ class EvidenceLedger:
             # new observation, so distinct runs count as progress while a repeated
             # identical command does not.
             self._command_keys.add(record.summary)
+        elif record.evidence_type == EvidenceType.REVIEW_COMPLETED:
+            # A fresh review is genuine progress: without this, a completion
+            # rejection that asked for a review would keep counting toward the
+            # gate's fail-open pacing even after the model complied. Keyed by
+            # summary so repeating an identical review is not progress.
+            self._review_keys.add(record.summary)
 
 
 def _records_from_payload(
@@ -381,7 +422,7 @@ def _records_from_payload(
                 },
             )
         ]
-    if tool_name in {"architecture_review", "code_review", "build_review"}:
+    if tool_name in _REVIEW_TOOLS:
         return [
             EvidenceRecord(
                 **common,
@@ -525,6 +566,21 @@ def _record_from_subagent_item(
             affected_paths=[path],
             old_hashes={path: item.get("old_sha256")},
             new_hashes={path: new_hash} if new_hash else {},
+        )
+    if kind == "review":
+        severities = item.get("severities")
+        summary_counts = (
+            {str(k): int(v) for k, v in severities.items()}
+            if isinstance(severities, dict)
+            else {}
+        )
+        total = sum(summary_counts.values())
+        return EvidenceRecord(
+            **fields,
+            success=True,
+            evidence_type=EvidenceType.REVIEW_COMPLETED,
+            summary=f"Sub-agent {agent} completed a review ({total} finding(s)).",
+            review_severity_summary=summary_counts,
         )
     if kind == "command":
         argv = item.get("argv") or []

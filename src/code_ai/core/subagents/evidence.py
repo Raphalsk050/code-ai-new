@@ -11,6 +11,13 @@ KIND_FILE_READ = "file_read"
 KIND_FILE_CREATED = "file_created"
 KIND_FILE_CHANGED = "file_changed"
 KIND_COMMAND = "command"
+KIND_REVIEW = "review"
+
+# Review tools a reviewer sub-agent may run; their findings must reach the
+# parent ledger so severe findings gate the parent's completion too.
+_REVIEW_TOOLS = frozenset(
+    {"architecture_review", "code_review", "build_review", "test_review"}
+)
 
 # When a digest must be truncated, plain reads are dropped before mutations and
 # commands: the parent needs the workspace-state items to gate completion, while
@@ -33,6 +40,8 @@ class SubagentEvidenceItem:
     new_sha256: str = ""
     argv: list[str] | str | None = None
     exit_code: int | None = None
+    # For review items: finding counts per severity, e.g. {"critical": 1}.
+    severities: dict[str, int] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {"kind": self.kind}
@@ -46,14 +55,23 @@ class SubagentEvidenceItem:
             data["argv"] = self.argv
         if self.exit_code is not None:
             data["exit_code"] = self.exit_code
+        if self.severities is not None:
+            data["severities"] = self.severities
         return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SubagentEvidenceItem | None:
         kind = str(data.get("kind") or "")
-        if kind not in {KIND_FILE_READ, KIND_FILE_CREATED, KIND_FILE_CHANGED, KIND_COMMAND}:
+        if kind not in {
+            KIND_FILE_READ,
+            KIND_FILE_CREATED,
+            KIND_FILE_CHANGED,
+            KIND_COMMAND,
+            KIND_REVIEW,
+        }:
             return None
         exit_code = data.get("exit_code")
+        severities = data.get("severities")
         return cls(
             kind=kind,
             path=str(data.get("path") or ""),
@@ -61,6 +79,7 @@ class SubagentEvidenceItem:
             new_sha256=str(data.get("new_sha256") or ""),
             argv=data.get("argv"),
             exit_code=exit_code if isinstance(exit_code, int) else None,
+            severities=dict(severities) if isinstance(severities, dict) else None,
         )
 
 
@@ -147,4 +166,14 @@ def _item_from_tool_result(
             argv=result.get("argv"),
             exit_code=exit_code if isinstance(exit_code, int) else None,
         )
+    if name in _REVIEW_TOOLS:
+        severities: dict[str, int] = {}
+        findings = result.get("findings")
+        if isinstance(findings, list):
+            for finding in findings:
+                if not isinstance(finding, dict):
+                    continue
+                severity = str(finding.get("severity") or "unknown").lower()
+                severities[severity] = severities.get(severity, 0) + 1
+        return SubagentEvidenceItem(kind=KIND_REVIEW, severities=severities)
     return None

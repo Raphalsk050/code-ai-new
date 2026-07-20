@@ -36,7 +36,7 @@ from code_ai.providers.base import ModelProvider
 from code_ai.providers.factory import create_provider
 from code_ai.providers.models import Message, ModelRequest
 from code_ai.tools.agents import DispatchAgentTool
-from code_ai.tools.base import ToolContext
+from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.computer import (
     ActivateApplicationTool,
     ClickMouseTool,
@@ -235,6 +235,12 @@ def build_application(
         # evidence, so the planner must know which profiles those are.
         write_agent_types=frozenset(
             profile.name for profile in profile_registry.all() if profile.writes
+        ),
+        # High-risk completions may be asked for review evidence, but only when
+        # a review channel really exists in this session's registry.
+        review_tools_available=lambda: any(
+            ToolCapability.REVIEW in registry.capabilities(name)
+            for name in registry.names()
         ),
     )
     subagent_runtime = SubagentRuntime(
