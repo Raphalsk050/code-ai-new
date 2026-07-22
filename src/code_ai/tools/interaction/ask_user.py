@@ -9,7 +9,10 @@ from code_ai.tools.schema import tool_schema
 
 class AskUserTool:
     name = "ask_user"
-    description = "Ask the user only for a blocking decision that cannot be inferred safely."
+    description = (
+        "Ask the user only for a blocking decision that cannot be inferred safely. "
+        "Calling this ends the current turn; the user's next message is their answer."
+    )
     capabilities = frozenset({ToolCapability.INTERACTION})
     input_schema = tool_schema(
         {
@@ -39,12 +42,18 @@ class AskUserTool:
             },
             source="tool.ask_user",
         )
+        # The orchestrator ends the turn when it sees this result, so the model
+        # never reads this message mid-turn; it reads it on the *next* turn as
+        # history, where it must explain that the question already went out.
         return {
             "status": "blocked",
             "question": question,
             "why_required": why_required,
             "choices": choices,
-            "message": "Interactive answer handling is pending; the turn is blocked.",
+            "message": (
+                "Question delivered to the user; this turn ends now. "
+                "The user's next message is their reply."
+            ),
         }
 
 

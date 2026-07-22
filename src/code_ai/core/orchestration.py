@@ -1091,6 +1091,46 @@ class AgentOrchestrator:
                 )
             if self.planner and self.planner.accepted_final_text is not None:
                 return await self._finish_turn(self.planner.accepted_final_text, response, state)
+
+        # A successful ask_user call blocks on the user by contract, so the turn
+        # ends here with the question as the final answer. Feeding the "blocked"
+        # tool result back into the model instead only burned extra steps on
+        # "I'm waiting" prose that rendered as dim working trace, while the
+        # question itself never reached the user as a real message.
+        question = self._blocking_question(calls, outcomes)
+        if question is not None:
+            return await self._finish_turn(question, response, state, announce_final=True)
+        return None
+
+    @staticmethod
+    def _blocking_question(
+        calls: list[ToolCall], outcomes: dict[str, _ToolOutcome]
+    ) -> str | None:
+        """User-facing text of a successful ask_user call in the batch, or None.
+
+        Choices are folded into the message as a numbered list so the user can
+        answer by number in their next message.
+        """
+        for call in calls:
+            outcome = outcomes.get(call.id)
+            if call.name != "ask_user" or outcome is None or outcome.result.is_error:
+                continue
+            payload = outcome.payload or {}
+            question = str(payload.get("question") or "").strip()
+            if not question:
+                continue
+            raw_choices = payload.get("choices")
+            choices = [
+                choice.strip()
+                for choice in (raw_choices if isinstance(raw_choices, list) else [])
+                if isinstance(choice, str) and choice.strip()
+            ]
+            if choices:
+                numbered = "\n".join(
+                    f"{index}. {choice}" for index, choice in enumerate(choices, start=1)
+                )
+                question = f"{question}\n\n{numbered}"
+            return question
         return None
 
     @staticmethod
@@ -1429,7 +1469,18 @@ class AgentOrchestrator:
         *,
         error: str | None = None,
         wind_down_reason: str | None = None,
+        announce_final: bool = False,
     ) -> TurnResult:
+        # ``assistant.final`` is what UIs render as the agent's answer message.
+        # The planner emits it when it accepts a completion claim, but turns can
+        # also end with user-facing text that never streamed on the answer
+        # channel (a blocking question, prose finishing a tool-required task, a
+        # wind-down summary). Those callers pass ``announce_final`` so the text
+        # reaches the user as a real message instead of dying in the dim trace.
+        if announce_final and text.strip():
+            await self.event_bus.emit(
+                "assistant.final", {"text": text}, source="core.orchestrator"
+            )
         await self._suspend_plan_sidebar()
         await self.set_state(AgentState.READY, phase="waiting_user")
         await self.event_bus.emit(
