@@ -1190,6 +1190,7 @@ class AgentOrchestrator:
                 tool_name=name,
                 payload=outcome.payload,
                 success=True,
+                host_initiated=True,
             )
 
     async def _execute_call(
