@@ -67,6 +67,25 @@ class ProjectVerification:
         first = self.primary()
         return first.kind if first else None
 
+    def memory_summary(self) -> str:
+        """One deterministic sentence for the project memory store.
+
+        Stable wording matters: the memory store dedups by exact content, so a
+        re-detection in a later session refreshes the same entry instead of
+        accumulating near-identical variants. Empty when nothing was detected —
+        "no verification found" is not worth remembering (it may appear later).
+        """
+
+        if not self.commands:
+            return ""
+        listed = "; ".join(
+            f"{cmd.kind.value}: `{cmd.display}`" for cmd in self.commands[:4]
+        )
+        ecosystems = ", ".join(self.ecosystems) if self.ecosystems else "unknown"
+        return (
+            f"Project verification commands - {listed} (ecosystems: {ecosystems})."
+        )
+
     def prompt_hint(self) -> str:
         """A short, human-readable description for the runtime task context."""
         if not self.commands:

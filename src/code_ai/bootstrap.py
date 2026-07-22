@@ -23,6 +23,7 @@ from code_ai.context.token_counting import TokenCounter
 from code_ai.context.usage import UsageLedger
 from code_ai.core.memory import FailureMemoryStore, MemoryService, MemoryStore
 from code_ai.core.reflection import ReflectionService
+from code_ai.core.verification import ProjectVerification
 from code_ai.core.orchestration import AgentOrchestrator
 from code_ai.core.planning import PlannerService
 from code_ai.core.rules import RulesService
@@ -249,12 +250,21 @@ def build_application(
     # coordinator owns their lifecycle, concurrency, and resilience. The dispatch
     # tool is the model's entry point and is excluded from sub-agent registries
     # by capability, so delegation cannot recurse.
+    def _verification_memo(verification: ProjectVerification) -> None:
+        # Persist the detected test/build commands as a project memory, so
+        # future sessions start knowing how to verify instead of re-detecting
+        # from scratch. Deterministic wording keeps re-detections deduplicated.
+        summary = verification.memory_summary()
+        if summary:
+            memory.add(kind="project", content=summary, source="detection")
+
     profile_registry = default_profile_registry()
     planner = PlannerService(
         config=config.planner,
         event_bus=event_bus,
         session_id=event_bus.session_id,
         workspace=config.workspace,
+        verification_memo=_verification_memo if config.learn else None,
         # Delegating to a profile that can write is gated behind reconnaissance
         # evidence, so the planner must know which profiles those are.
         write_agent_types=frozenset(

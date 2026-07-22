@@ -76,6 +76,7 @@ class PlannerService:
         session_id: str,
         workspace: Path | None = None,
         verification_detector: Callable[[Path], ProjectVerification] = detect_project_verification,
+        verification_memo: Callable[[ProjectVerification], None] | None = None,
         write_agent_types: frozenset[str] = frozenset(),
         review_tools_available: Callable[[], bool] | None = None,
     ) -> None:
@@ -84,6 +85,9 @@ class PlannerService:
         self.session_id = session_id
         self._workspace = workspace
         self._verification_detector = verification_detector
+        # Optional sink for a successful detection (e.g. persist the project's
+        # test/build commands as a durable memory). Best-effort by contract.
+        self._verification_memo = verification_memo
         self._project_verification: ProjectVerification | None = None
         self.policy = PlannerToolPolicy()
         self.advisory = config.advisory_tool_policy
@@ -147,7 +151,24 @@ class PlannerService:
                     self._project_verification = self._verification_detector(self._workspace)
                 except Exception:
                     self._project_verification = ProjectVerification()
+                else:
+                    self._memo_verification(self._project_verification)
         return self._project_verification
+
+    def _memo_verification(self, verification: ProjectVerification) -> None:
+        """Hand a successful detection to the configured memo sink, best-effort.
+
+        Persisting what was detected means future sessions know the project's
+        test/build commands without re-discovering them; a failing sink must
+        never taint the detection result itself.
+        """
+
+        if self._verification_memo is None or not verification.has_any:
+            return
+        try:
+            self._verification_memo(verification)
+        except Exception:  # noqa: BLE001 - the memo is an optional side channel
+            pass
 
     def _classify_verification(self, argv: list[str] | str | None) -> CommandKind | None:
         return verification_kind(argv, self.project_verification())
