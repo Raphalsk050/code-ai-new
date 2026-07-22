@@ -145,6 +145,95 @@ async def test_question_records_no_user_answer_evidence_until_the_user_replies(
     assert QUESTION in str(answers[0].metadata.get("question"))
 
 
+class PlansAsksThenAcknowledgesProvider(_BaseProvider):
+    """submit_plan, then ask_user, then prose acknowledgments on later calls."""
+
+    PLAN_STEPS = ["Levantar requisitos com o usuário", "Implementar o módulo de estoque"]
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        if self.calls == 1:
+            response = ModelResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="p1",
+                        name="submit_plan",
+                        arguments={"steps": list(self.PLAN_STEPS)},
+                    )
+                ],
+                finish_reason=FinishReason.TOOL_CALLS,
+            )
+        elif self.calls == 2:
+            response = ModelResponse(
+                tool_calls=[
+                    ToolCall(id="q1", name="ask_user", arguments={"question": QUESTION})
+                ],
+                finish_reason=FinishReason.TOOL_CALLS,
+            )
+        else:
+            response = ModelResponse(
+                text="Perfeito, vou seguir com a sua escolha.",
+                finish_reason=FinishReason.STOP,
+            )
+        yield ProviderEvent(kind="completed", response=response)
+
+
+async def test_plain_reply_to_a_question_resumes_the_paused_plan(tmp_path) -> None:
+    provider = PlansAsksThenAcknowledgesProvider()
+    app = build_application(config=_config(tmp_path), provider=provider)
+
+    await app.start()
+    await app.submit_user_message("implemente o módulo de estoque do projeto")
+    planner = app.orchestrator.planner
+    assert planner is not None
+    assert provider.calls == 2
+    assert planner.has_pending_question()
+    plan = planner.agent_plan
+    assert plan is not None
+    assert [step.title for step in plan.steps] == provider.PLAN_STEPS
+
+    # A plain message - no resume flag anywhere - is the user's answer. It used
+    # to be reclassified as a brand-new task, wiping the paused plan and ledger.
+    await app.submit_user_message("Use Postgres.")
+    await app.close()
+
+    assert planner.agent_plan is plan
+    assert [step.title for step in plan.steps] == provider.PLAN_STEPS
+    assert not planner.has_pending_question()
+    answers = planner.ledger.success_records(EvidenceType.USER_ANSWER)
+    assert len(answers) == 1
+    assert "Postgres" in answers[0].summary
+
+
+async def test_submit_question_answer_reaches_the_model(tmp_path) -> None:
+    provider = AsksThenKeepsTalkingProvider()
+    app = build_application(config=_config(tmp_path), provider=provider)
+    events: list[EventEnvelope] = []
+    app.subscribe(events.append)
+
+    await app.start()
+    await app.submit_user_message("implemente um sistema de estoque no projeto")
+    result = await app.submit_question_answer("Use SQLite.")
+    await app.close()
+
+    # The answered event still fires for observing clients, and the answer now
+    # actually runs a turn instead of dying as an orphan event.
+    assert result is not None
+    assert [e.event_type for e in events].count("interaction.question.answered") == 1
+    assert any(
+        e.event_type == "user.message" and e.payload.get("text") == "Use SQLite."
+        for e in events
+    )
+    planner = app.orchestrator.planner
+    assert planner is not None
+    answers = planner.ledger.success_records(EvidenceType.USER_ANSWER)
+    assert len(answers) == 1
+    assert "SQLite" in answers[0].summary
+
+
 async def test_ask_user_choices_render_as_numbered_options(tmp_path) -> None:
     provider = AsksThenKeepsTalkingProvider(choices=["SQLite", "Postgres"])
     app = build_application(config=_config(tmp_path), provider=provider)

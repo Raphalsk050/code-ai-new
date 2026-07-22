@@ -133,6 +133,14 @@ class CodeAIApplication:
     ) -> TurnResult:
         if self._current_task and not self._current_task.done():
             raise RuntimeError("A turn is already running.")
+        planner = self.orchestrator.planner
+        if not resume_plan and planner is not None and planner.has_pending_question():
+            # The previous turn ended on a blocking ask_user question and paused
+            # its plan. This message is the user's reply: continue that plan
+            # instead of reclassifying the reply as a brand-new task, which
+            # wiped the plan and evidence ledger and made the question a dead
+            # end in the terminal UI.
+            resume_plan = True
         self._current_cancel = asyncio.Event()
         self._current_task = asyncio.create_task(
             self.orchestrator.run_turn(
@@ -810,12 +818,23 @@ class CodeAIApplication:
             )
         ]
 
-    async def submit_question_answer(self, answer: str) -> None:
+    async def submit_question_answer(self, answer: str) -> TurnResult | None:
+        """Deliver the user's reply to a blocking ask_user question.
+
+        Emits the answered event for observing clients (e.g. so a question UI
+        can close) and then runs the reply as a normal turn, which resumes the
+        paused plan via the pending-question check in submit_user_message.
+        Previously the event was emitted into the void - no consumer existed -
+        so an answer sent through this API never reached the model.
+        """
         await self.event_bus.emit(
             "interaction.question.answered",
             {"answer": answer},
             source="app",
         )
+        if not answer.strip():
+            return None
+        return await self.submit_user_message(answer)
 
     def subscribe(self, handler_or_sink: EventSubscriber) -> EventSubscriber:
         return self.event_bus.subscribe(handler_or_sink)

@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import Coroutine
 from typing import Any, TextIO
 
 from code_ai.app.service import CodeAIApplication
@@ -136,12 +137,15 @@ class BridgeServer:
 
     # -- handlers ----------------------------------------------------------
 
-    async def _h_submit(self, params: dict[str, Any]) -> dict[str, Any]:
-        text = str(params.get("text") or "")
-        context = str(params.get("context") or "")
-        # Turns stream their progress as events; accept and run in the
-        # background so the read loop stays responsive (e.g. to cancel/approve).
-        task = asyncio.create_task(self._app.submit_user_message(text, context=context))
+    def _start_background_turn(self, coro: Coroutine[Any, Any, Any]) -> None:
+        """Run a turn-producing coroutine off the read loop.
+
+        Turns stream their progress as events; acknowledging the RPC right away
+        keeps the read loop responsive (e.g. to cancel/approve) while the turn
+        runs. A turn awaited inline could even deadlock: an approval prompt
+        inside it blocks on the very RPC the frozen loop would never read.
+        """
+        task = asyncio.create_task(coro)
         self._turn_tasks.add(task)
         task.add_done_callback(self._turn_tasks.discard)
         # Heartbeat: a reasoning model can go silent for tens of seconds with no
@@ -151,6 +155,11 @@ class BridgeServer:
         # _turn_tasks so it never blocks shutdown or the turn's own completion.
         hb = asyncio.create_task(self._heartbeat(task))
         task.add_done_callback(lambda _: hb.cancel())
+
+    async def _h_submit(self, params: dict[str, Any]) -> dict[str, Any]:
+        text = str(params.get("text") or "")
+        context = str(params.get("context") or "")
+        self._start_background_turn(self._app.submit_user_message(text, context=context))
         return {"status": "accepted"}
 
     async def _heartbeat(self, turn_task: asyncio.Task[Any]) -> None:
@@ -267,8 +276,12 @@ class BridgeServer:
         return {"resolved": resolved}
 
     async def _h_answer_question(self, params: dict[str, Any]) -> dict[str, Any]:
-        await self._app.submit_question_answer(str(params.get("answer") or ""))
-        return {"status": "ok"}
+        # The answer resumes the paused turn, so it runs in the background
+        # exactly like a submitted message.
+        self._start_background_turn(
+            self._app.submit_question_answer(str(params.get("answer") or ""))
+        )
+        return {"status": "accepted"}
 
     async def _h_shutdown(self, params: dict[str, Any]) -> dict[str, Any]:
         self._stop.set()
