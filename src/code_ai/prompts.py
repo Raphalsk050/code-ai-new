@@ -316,6 +316,33 @@ def build_reflection_prompt(*, digest: str, existing_memories: str) -> str:
     )
 
 
+def build_consolidation_prompt(*, scope: str, listing: str) -> str:
+    """Instruction for the maintenance meta-call that curates a memory store.
+
+    Runs rarely (once enough new memories accumulated) and is deliberately
+    conservative: its job is deduplication and contradiction cleanup, never
+    invention.
+    """
+
+    return (
+        "You are curating the long-term memory store of an autonomous coding "
+        f"agent (scope: {scope}). Every stored memory is listed below, numbered, "
+        "newest first. Reply with ONLY a JSON object, no prose and no code "
+        "fences, shaped as:\n"
+        '{"drop": [<numbers>], "rewrite": [{"n": <number>, "content": "..."}]}\n\n'
+        '"drop": numbers of memories that duplicate another kept memory, that a '
+        "newer memory contradicts (keep the newer fact), or that clearly no "
+        "longer matter.\n"
+        '"rewrite": to merge near-duplicates, rewrite the one you keep into a '
+        "single concise sentence covering both, and drop the redundant "
+        "number(s).\n"
+        "Be conservative: when unsure whether a fact still matters, keep it "
+        "unchanged. Never invent facts that are not in the list. A clean store "
+        'needs no changes: {"drop": [], "rewrite": []}.\n\n'
+        f"Memories:\n{listing}"
+    )
+
+
 SYSTEM_PROMPT = """You are Code-AI, a terminal-based coding agent.
 
 Follow the user's instructions, use tools when they are needed, keep all file and

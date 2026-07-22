@@ -751,7 +751,10 @@ class AgentOrchestrator:
     async def _run_learning(self, digest: TurnDigest) -> None:
         try:
             report = await self.reflection.reflect_on_turn(digest)
-            if report.changed:
+            # Same background lane, strictly after reflection: curate any store
+            # that grew past its threshold, so cost stays one pass at a time.
+            consolidated = await self.reflection.maybe_consolidate()
+            if report.changed or consolidated:
                 # Make what was just learned visible on the very next turn.
                 self._refresh_system_prompt()
         except asyncio.CancelledError:  # shutdown drained us; nothing to salvage
