@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -32,6 +33,16 @@ from pathlib import Path
 LessonGenerator = Callable[[str], Awaitable[str]]
 
 _MAX_LESSON_CHARS = 400
+
+# Reinforcement weighting for lesson ranking: each doubling of a lesson's
+# recurrence count buys it one day of recency. A failure class hit 40 times
+# stays ahead of a week of one-off lessons, while pure recency still breaks
+# ties between equally-reinforced entries.
+_COUNT_RECENCY_BONUS_S = 86400.0
+
+
+def _lesson_score(entry: FailureMemory) -> float:
+    return entry.last_seen + _COUNT_RECENCY_BONUS_S * math.log2(entry.count + 1)
 
 
 @dataclass(slots=True)
@@ -76,15 +87,24 @@ class FailureMemoryStore:
         *,
         lesson_generator: LessonGenerator | None = None,
         max_entries: int = 200,
+        pin_count: int = 5,
     ) -> None:
         self._dir = Path(directory)
         self._lesson_generator = lesson_generator
         self._max_entries = max_entries
+        # A lesson reinforced at least this many times is chronic: it renders
+        # even when newer one-off lessons fill the top slots.
+        self._pin_count = pin_count
 
     # -- reads ---------------------------------------------------------------
 
     def lessons(self, *, limit: int | None = None) -> list[FailureMemory]:
-        """Return stored lessons, most-recently-seen first."""
+        """Return stored lessons, strongest first.
+
+        Ordering is recency weighted by reinforcement (see ``_lesson_score``),
+        so a chronic failure class outranks a string of one-off lessons, and
+        pruning evicts the weakest entries instead of merely the oldest.
+        """
 
         entries: list[FailureMemory] = []
         if not self._dir.exists():
@@ -100,18 +120,30 @@ class FailureMemoryStore:
             entry = FailureMemory.from_dict(data)
             if entry.lesson:
                 entries.append(entry)
-        entries.sort(key=lambda e: e.last_seen, reverse=True)
+        entries.sort(key=_lesson_score, reverse=True)
         if limit is not None:
             return entries[:limit]
         return entries
 
     def render_for_prompt(self, *, limit: int = 8) -> str:
-        """Render recent lessons as a prompt section, or ``""`` if none."""
+        """Render the strongest lessons as a prompt section, or ``""`` if none.
 
-        entries = self.lessons(limit=limit)
+        The top ``limit`` by score always render; chronic lessons (count at or
+        above ``pin_count``) are appended even when they fall outside the top
+        slots, so a mistake the agent kept making cannot be crowded out of the
+        prompt by a burst of newer one-off lessons.
+        """
+
+        entries = self.lessons()
         if not entries:
             return ""
-        lines = [f"- {entry.lesson.strip()}" for entry in entries if entry.lesson.strip()]
+        selected = entries[:limit]
+        pinned = [e for e in entries[limit:] if e.count >= self._pin_count]
+        lines = [
+            f"- {entry.lesson.strip()}"
+            for entry in [*selected, *pinned]
+            if entry.lesson.strip()
+        ]
         if not lines:
             return ""
         return (
@@ -188,7 +220,7 @@ class FailureMemoryStore:
         )
 
     def _prune(self) -> None:
-        """Cap the store, evicting the least-recently-seen entries."""
+        """Cap the store, evicting the weakest (lowest-scored) entries."""
 
         entries = self.lessons()
         if len(entries) <= self._max_entries:
