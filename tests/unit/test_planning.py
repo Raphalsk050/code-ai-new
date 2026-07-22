@@ -155,6 +155,41 @@ def test_explanation_requests_are_never_mutations() -> None:
         assert profile.requires_verification is False, text
 
 
+def test_questions_about_implementing_are_not_mutations() -> None:
+    # Regression: "pelo que voce comecaria a implementar hoje?" was classified
+    # as an implementation task; the runtime then demanded file changes and the
+    # model created folders nobody asked for, through three user denials.
+    questions = [
+        "pelo que voce comecaria a implementar hoje?",
+        "por onde eu começo a implementar esse módulo?",
+        "sera que vale a pena refatorar o parser?",
+        "seria melhor implementar isso em rust ou em go?",
+        "should I implement caching here?",
+        "devo criar um arquivo de config separado?",
+        "que tal implementarmos isso depois do MVP?",
+        "would it be safer to remove the fallback?",
+    ]
+    for text in questions:
+        profile = TaskProfile.from_user_text(text)
+        assert profile.requires_workspace_mutation is False, text
+
+
+def test_requests_phrased_as_questions_stay_mutations() -> None:
+    # The question veto must not swallow polite or explicit requests: phrasing
+    # that addresses the agent with the action still means "do it".
+    requests = [
+        "pode criar o arquivo config.json?",
+        "você pode adicionar um teste pra isso?",
+        "can you add a test for this?",
+        "could you update the README?",
+        "crie um jogo pong, pode ser?",
+        "implemente a tela de login, ok?",
+    ]
+    for text in requests:
+        profile = TaskProfile.from_user_text(text)
+        assert profile.requires_workspace_mutation is True, text
+
+
 def test_mutation_requests_keep_their_evidence_gate() -> None:
     # The explanation veto must not weaken real mutations, including inflected
     # forms the old substring markers missed ("adicione", "remova").
