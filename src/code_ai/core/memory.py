@@ -56,6 +56,11 @@ class FailureMemory:
     first_seen: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
 
+    @property
+    def id(self) -> str:
+        """Stable short id (the on-disk filename stem), for display/curation."""
+        return hashlib.sha256(self.signature.encode("utf-8")).hexdigest()[:16]
+
     def to_dict(self) -> dict[str, object]:
         return {
             "signature": self.signature,
@@ -182,6 +187,15 @@ class FailureMemoryStore:
         self._save(entry)
         self._prune()
         return entry
+
+    def remove(self, signature: str) -> bool:
+        """Delete a lesson by signature. True when one was actually removed."""
+
+        try:
+            self._path_for(signature).unlink()
+        except OSError:
+            return False
+        return True
 
     async def _distill_lesson(self, context: str, fallback_lesson: str) -> str:
         if self._lesson_generator is None:
