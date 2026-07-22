@@ -90,6 +90,8 @@ class FailureMemoryStore:
         if not self._dir.exists():
             return entries
         for path in self._dir.glob("*.json"):
+            if path.name.startswith("_"):
+                continue  # bookkeeping files (e.g. the maintenance marker)
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
@@ -213,6 +215,10 @@ def _clip(text: str) -> str:
 
 _MAX_MEMORY_CHARS = 600
 
+# Bookkeeping file for maintenance passes (consolidation). Prefixed with "_" so
+# the entry loaders skip it; see the ``startswith("_")`` guards above.
+_MAINTENANCE_FILENAME = "_maintenance.json"
+
 # Durable facts about the user / how to work — kept globally, valid everywhere.
 GLOBAL_KINDS = frozenset({"user", "feedback"})
 # Facts about the current project / external references — kept per-workspace.
@@ -276,6 +282,8 @@ class MemoryStore:
         if not self._dir.exists():
             return entries
         for path in self._dir.glob("*.json"):
+            if path.name.startswith("_"):
+                continue  # bookkeeping files (e.g. the maintenance marker)
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
@@ -305,6 +313,81 @@ class MemoryStore:
         self._save(entry)
         self._prune()
         return entry
+
+    def find_by_content(self, content: str) -> Memory | None:
+        """Look up the stored memory whose content matches ``content`` exactly.
+
+        Ids are content-addressed, so an exact-text match is a direct hash
+        lookup — the affordance retire/replace flows use to reference a fact
+        the way the model sees it (its text) instead of an internal id.
+        """
+
+        probe = Memory(kind="project", content=_clip_memory(content))
+        return self._load(probe.id)
+
+    def remove(self, memory_id: str) -> bool:
+        """Delete a memory by id. True when an entry was actually removed."""
+
+        try:
+            self._path_for(memory_id).unlink()
+        except OSError:
+            return False
+        return True
+
+    def rewrite(
+        self, memory_id: str, content: str, *, source: str | None = None
+    ) -> Memory | None:
+        """Replace a memory's text, keeping its kind and creation time.
+
+        Ids are content-addressed, so a rewrite is remove-then-add under the
+        hood; ``created`` is carried over so provenance survives the new id.
+        Returns the new entry, or ``None`` when ``memory_id`` does not exist.
+        """
+
+        existing = self._load(memory_id)
+        if existing is None:
+            return None
+        entry = Memory(
+            kind=existing.kind,
+            content=_clip_memory(content),
+            source=source or existing.source,
+            created=existing.created,
+        )
+        self.remove(memory_id)
+        self._save(entry)
+        return entry
+
+    # -- maintenance bookkeeping ---------------------------------------------
+
+    def new_entries_since_maintenance(self) -> int:
+        """Net store growth since the last :meth:`mark_maintained` call.
+
+        Drives the consolidation trigger: a store that never ran maintenance
+        counts every entry as new, so the first pass fires once the store is
+        big enough to be worth curating.
+        """
+
+        state = self._maintenance_state()
+        baseline = int(state.get("entries_at_last_run", 0) or 0)
+        return max(0, len(self.all()) - baseline)
+
+    def mark_maintained(self) -> None:
+        """Record the current store size as the new maintenance baseline."""
+
+        self._dir.mkdir(parents=True, exist_ok=True)
+        state = {"entries_at_last_run": len(self.all()), "last_run": time.time()}
+        (self._dir / _MAINTENANCE_FILENAME).write_text(
+            json.dumps(state), encoding="utf-8"
+        )
+
+    def _maintenance_state(self) -> dict[str, object]:
+        try:
+            data = json.loads(
+                (self._dir / _MAINTENANCE_FILENAME).read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
 
     # -- persistence ---------------------------------------------------------
 
@@ -373,6 +456,26 @@ class MemoryService:
         if kind not in VALID_KINDS:
             raise ValueError(f"unknown memory kind: {kind!r}")
         return self._store_for(kind).add(kind=kind, content=content, source=source)
+
+    def remove_by_content(self, content: str) -> bool:
+        """Delete the memory matching ``content`` exactly, wherever it lives.
+
+        The caller (reflection, the ``remember`` tool's ``replaces`` field)
+        knows facts by their text, not by scope, so both stores are probed.
+        Returns True when something was actually removed.
+        """
+
+        removed = False
+        for _scope, store in self.scoped_stores():
+            entry = store.find_by_content(content)
+            if entry is not None:
+                removed = store.remove(entry.id) or removed
+        return removed
+
+    def scoped_stores(self) -> tuple[tuple[str, MemoryStore], ...]:
+        """(scope label, store) pairs, for maintenance passes and inspection."""
+
+        return (("global", self._global), ("project", self._project))
 
     def render_for_prompt(self, *, limit_per_kind: int | None = None) -> str:
         """Render stored memories grouped by kind, most-recently-updated first.

@@ -222,7 +222,10 @@ act on them in future turns and sessions. Save proactively, not only when asked:
   with kind "project", or "reference" for external pointers like URLs or tickets.
 Be selective: do not save trivia, secrets, or anything already evident from the
 code or git history. Prefer one concise self-contained sentence per fact, and
-resolve relative dates to absolute ones. Treat your saved memories and the
+resolve relative dates to absolute ones. When new information contradicts a
+memory shown below, save the corrected fact and pass the outdated memory's exact
+text as the tool's "replaces" argument so stale facts are retired instead of
+accumulating. Treat your saved memories and the
 "Lessons learned from past failures" below as binding: act on them and do not
 repeat a mistake you have already recorded.
 {memories_section}{lessons_section}"""
