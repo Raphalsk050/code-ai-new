@@ -22,16 +22,16 @@ from code_ai.context.conversation import ConversationState
 from code_ai.context.token_counting import TokenCounter
 from code_ai.context.usage import UsageLedger
 from code_ai.core.memory import FailureMemoryStore, MemoryService, MemoryStore
-from code_ai.core.reflection import ReflectionService
-from code_ai.core.verification import ProjectVerification
 from code_ai.core.orchestration import AgentOrchestrator
 from code_ai.core.planning import PlannerService
+from code_ai.core.reflection import ReflectionService
 from code_ai.core.rules import RulesService
 from code_ai.core.subagents import (
     SubagentCoordinator,
     SubagentRuntime,
     default_profile_registry,
 )
+from code_ai.core.verification import ProjectVerification
 from code_ai.events.bus import AsyncEventBus
 from code_ai.prompts import build_failure_lesson_prompt, build_system_prompt
 from code_ai.providers.base import ModelProvider
