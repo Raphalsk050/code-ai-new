@@ -35,6 +35,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Serve the agent over stdio JSON-RPC for an embedding client (e.g. the VSCode ext).",
     )
 
+    memories_parser = subparsers.add_parser(
+        "memories", help="Inspect and curate what the agent has learned."
+    )
+    memories_sub = memories_parser.add_subparsers(dest="memories_command")
+    memories_sub.add_parser("list", help="List stored memories and failure lessons.")
+    forget_parser = memories_sub.add_parser(
+        "forget", help="Delete one memory or lesson by its id prefix."
+    )
+    forget_parser.add_argument(
+        "memory_id", help="Id prefix as shown by 'code-ai memories list'."
+    )
+
     config_parser = subparsers.add_parser("config", help="Manage configuration.")
     config_sub = config_parser.add_subparsers(dest="config_command", required=True)
     init_parser = config_sub.add_parser("init", help="Create a safe example configuration.")
@@ -96,6 +108,12 @@ def main(argv: list[str] | None = None) -> int:
                 config = load_config(explicit_path=args.config, cli_overrides=_overrides(args))
                 print(redacted_config_json(config))
                 return 0
+
+        if args.command == "memories":
+            from code_ai.cli.memories import run_memories_command
+
+            config = load_config(explicit_path=args.config, cli_overrides=_overrides(args))
+            return run_memories_command(config, args)
 
         if args.command == "run":
             task = " ".join(args.task).strip() if args.task else sys.stdin.read().strip()
