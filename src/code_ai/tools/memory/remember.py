@@ -27,7 +27,9 @@ class RememberTool:
         "Choose 'user' for who the user is, 'feedback' for how you should work, "
         "'project' for facts about this codebase, 'reference' for external pointers "
         "(URLs, tickets). 'user' and 'feedback' are remembered everywhere; 'project' "
-        "and 'reference' are scoped to this workspace."
+        "and 'reference' are scoped to this workspace. When a fact supersedes a "
+        "memory you can see in your Memory section, pass that memory's exact text "
+        "as 'replaces' so the outdated version is retired."
     )
     capabilities = frozenset({ToolCapability.MEMORY})
     input_schema = tool_schema(
@@ -47,6 +49,14 @@ class RememberTool:
                     "project = facts about this codebase; reference = external pointer."
                 ),
             },
+            "replaces": {
+                "type": "string",
+                "description": (
+                    "Optional: the exact text of an existing memory this fact "
+                    "supersedes (as shown in your Memory section). The outdated "
+                    "memory is deleted so contradictory facts never coexist."
+                ),
+            },
         },
         required=("content", "kind"),
     )
@@ -64,9 +74,18 @@ class RememberTool:
             raise ToolArgumentError("Memory is not available in this session.")
 
         entry = context.memory.add(kind=kind, content=content, source="remember_tool")
+        # Save first, then retire what it supersedes, so an exact re-statement
+        # (replaces == content) can never delete the fact it just saved.
+        replaces = str(arguments.get("replaces", "")).strip()
+        replaced = False
+        if replaces and replaces != entry.content:
+            replaced = context.memory.remove_by_content(replaces)
         await context.event_bus.emit(
             "memory.saved",
-            {"kind": entry.kind, "content": entry.content},
+            {"kind": entry.kind, "content": entry.content, "replaced": replaced},
             source="tools.remember",
         )
-        return {"remembered": entry.content, "kind": entry.kind}
+        result: dict[str, Any] = {"remembered": entry.content, "kind": entry.kind}
+        if replaces:
+            result["replaced_previous"] = replaced
+        return result

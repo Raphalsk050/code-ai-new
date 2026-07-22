@@ -175,6 +175,33 @@ DEFAULT_PLANNER: dict[str, object] = {
 }
 
 
+DEFAULT_MEMORY: dict[str, object] = {
+    # Post-turn reflection: one bounded meta-call after a substantive turn that
+    # distills durable memories (user corrections, project facts, references)
+    # without the model having to remember to call the ``remember`` tool.
+    "reflection_enabled": True,
+    # A turn is worth reflecting on once it executed at least this many tool
+    # calls; 0 reflects on every completed turn.
+    "reflection_min_tool_calls": 3,
+    # Output cap for the reflection meta-call. Generous because reasoning
+    # models spend output budget on hidden thinking before the JSON answer.
+    "reflection_max_output_tokens": 4096,
+    # Automatic consolidation: merge near-duplicate memories and retire
+    # contradicted facts once enough new entries accumulated since the last
+    # pass, so the store stays small and coherent without manual curation.
+    "consolidation_enabled": True,
+    "consolidation_min_new": 20,
+    # Prompt rendering bounds. Identity ("user" kind) is always rendered in
+    # full; other kinds are capped per kind so an ever-growing store cannot
+    # silently bloat every request.
+    "render_limit_per_kind": 25,
+    "lessons_render_limit": 8,
+    # A failure lesson reinforced this many times is pinned: it stays in the
+    # prompt even when newer one-off lessons would otherwise crowd it out.
+    "lesson_pin_count": 5,
+}
+
+
 DEFAULT_GOAL: dict[str, object] = {
     # Hard ceilings for the /goal loop: the runner never spins past these, so a
     # goal that cannot converge ends in EXHAUSTED with an honest report instead
@@ -200,6 +227,7 @@ DEFAULT_CONFIG: dict[str, object] = {
     "permission_mode": "ask",
     "budgets": DEFAULT_BUDGETS,
     "goal": DEFAULT_GOAL,
+    "memory": DEFAULT_MEMORY,
     "planner": DEFAULT_PLANNER,
     "sampling": DEFAULT_SAMPLING,
     "language": "en",

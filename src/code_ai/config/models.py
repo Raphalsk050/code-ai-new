@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 from code_ai.config.defaults import (
     DEFAULT_BUDGETS,
     DEFAULT_GOAL,
+    DEFAULT_MEMORY,
     DEFAULT_PLANNER,
     DEFAULT_SAMPLING,
     PLACEHOLDER_API_KEY,
@@ -167,6 +168,57 @@ class PlannerConfig:
             raise ConfigurationError("max_plan_steps must be 100 or lower.")
         if self.max_no_progress_rounds > 20:
             raise ConfigurationError("max_no_progress_rounds must be 20 or lower.")
+
+
+@dataclass(slots=True)
+class MemoryConfig:
+    """Learning-loop knobs: post-turn reflection, consolidation, rendering.
+
+    All passes are best-effort and bounded — disabling any of them degrades to
+    the previous behavior (model-initiated ``remember`` calls plus failure
+    lessons) without breaking a session.
+    """
+
+    reflection_enabled: bool = bool(DEFAULT_MEMORY["reflection_enabled"])
+    reflection_min_tool_calls: int = int(DEFAULT_MEMORY["reflection_min_tool_calls"])
+    reflection_max_output_tokens: int = int(DEFAULT_MEMORY["reflection_max_output_tokens"])
+    consolidation_enabled: bool = bool(DEFAULT_MEMORY["consolidation_enabled"])
+    consolidation_min_new: int = int(DEFAULT_MEMORY["consolidation_min_new"])
+    render_limit_per_kind: int = int(DEFAULT_MEMORY["render_limit_per_kind"])
+    lessons_render_limit: int = int(DEFAULT_MEMORY["lessons_render_limit"])
+    lesson_pin_count: int = int(DEFAULT_MEMORY["lesson_pin_count"])
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any] | None) -> MemoryConfig:
+        values = dict(DEFAULT_MEMORY)
+        if data:
+            values.update(data)
+        return cls(
+            reflection_enabled=bool(values["reflection_enabled"]),
+            reflection_min_tool_calls=int(values["reflection_min_tool_calls"]),
+            reflection_max_output_tokens=int(values["reflection_max_output_tokens"]),
+            consolidation_enabled=bool(values["consolidation_enabled"]),
+            consolidation_min_new=int(values["consolidation_min_new"]),
+            render_limit_per_kind=int(values["render_limit_per_kind"]),
+            lessons_render_limit=int(values["lessons_render_limit"]),
+            lesson_pin_count=int(values["lesson_pin_count"]),
+        )
+
+    def validate(self) -> None:
+        positives = {
+            "reflection_max_output_tokens": self.reflection_max_output_tokens,
+            "consolidation_min_new": self.consolidation_min_new,
+            "render_limit_per_kind": self.render_limit_per_kind,
+            "lessons_render_limit": self.lessons_render_limit,
+            "lesson_pin_count": self.lesson_pin_count,
+        }
+        for key, value in positives.items():
+            if value <= 0:
+                raise ConfigurationError(f"Memory value {key} must be positive.")
+        if self.reflection_min_tool_calls < 0:
+            raise ConfigurationError(
+                "reflection_min_tool_calls must be zero or positive."
+            )
 
 
 @dataclass(slots=True)
@@ -375,6 +427,7 @@ class AppConfig:
     permission_mode: str = "ask"
     budgets: BudgetConfig = field(default_factory=BudgetConfig)
     goal: GoalConfig = field(default_factory=GoalConfig)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
     planner: PlannerConfig = field(default_factory=PlannerConfig)
     sampling: SamplingConfig = field(default_factory=SamplingConfig)
     language: str = "en"
@@ -418,6 +471,9 @@ class AppConfig:
         goal = GoalConfig.from_mapping(
             data.get("goal") if isinstance(data.get("goal"), dict) else None
         )
+        memory_config = MemoryConfig.from_mapping(
+            data.get("memory") if isinstance(data.get("memory"), dict) else None
+        )
         planner = PlannerConfig.from_mapping(
             data.get("planner") if isinstance(data.get("planner"), dict) else None
         )
@@ -432,6 +488,7 @@ class AppConfig:
             permission_mode=str(data.get("permission_mode", "ask")).strip().lower(),
             budgets=budgets,
             goal=goal,
+            memory=memory_config,
             planner=planner,
             sampling=sampling,
             language=str(data.get("language", "en")),
@@ -478,6 +535,7 @@ class AppConfig:
         self.workspace = self.workspace.resolve()
         self.budgets.validate()
         self.goal.validate()
+        self.memory.validate()
         self.planner.validate()
         self.sampling.validate()
         parsed = urlparse(self.base_url)
