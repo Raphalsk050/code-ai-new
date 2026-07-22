@@ -1294,6 +1294,26 @@ class AgentOrchestrator:
             },
             source="core.orchestrator",
         )
+        # A rejection for real evidence gaps is a recurring failure class worth
+        # a lesson: the model claimed done without proof. The double-check
+        # round-trip is pacing, not failure, so it never records one.
+        if not self.planner.double_check_pending:
+            await self._record_failure(
+                trigger="completion_rejected",
+                context=(
+                    "The model called complete_task but the evidence gate "
+                    "rejected the claim. Missing requirements: "
+                    + bound_text(
+                        "; ".join(decision.missing_requirements) or "(unspecified)",
+                        600,
+                    )
+                ),
+                fallback_lesson=(
+                    "Do not claim completion before the evidence exists: run the "
+                    "project's verification command and read back the changed "
+                    "files, then call complete_task."
+                ),
+            )
         return _ToolOutcome(
             result=ToolResult(
                 tool_call_id=call.id, name=call.name, content=content, is_error=True
