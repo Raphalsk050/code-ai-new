@@ -60,6 +60,7 @@ class _StubApp:
         self.closed = False
         self.submitted: list[str] = []
         self.submitted_context: list[str] = []
+        self.answered: list[str] = []
         self.reset_count = 0
         self.reset_ids: list[str | None] = []
         self.conversation_id: str | None = None
@@ -84,6 +85,9 @@ class _StubApp:
     async def submit_user_message(self, text: str, *, context: str = "") -> None:
         self.submitted.append(text)
         self.submitted_context.append(context)
+
+    async def submit_question_answer(self, answer: str) -> None:
+        self.answered.append(answer)
 
     async def reset_conversation(self, conversation_id: str | None = None) -> None:
         self.reset_count += 1
@@ -202,6 +206,23 @@ async def test_submit_forwards_editor_context() -> None:
 
     assert app.submitted == ["explain"]
     assert app.submitted_context == ["[Editor context] foo.py"]
+
+
+async def test_answer_question_runs_as_background_turn_and_acks() -> None:
+    app = _StubApp()
+    server, out = _server(app)
+    await server._handle_line(
+        json.dumps({"jsonrpc": "2.0", "id": 9, "method": "answerQuestion",
+                    "params": {"answer": "Postgres"}})
+    )
+    # The resumed turn runs as a background task, like a submitted message;
+    # awaiting it inline would freeze the read loop (and deadlock approvals).
+    await asyncio.gather(*server._turn_tasks)
+
+    assert app.answered == ["Postgres"]
+    (response,) = _messages(out)
+    assert response["id"] == 9
+    assert response["result"] == {"status": "accepted"}
 
 
 async def test_new_conversation_resets_facade() -> None:
