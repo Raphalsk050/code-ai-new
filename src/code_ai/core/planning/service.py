@@ -15,6 +15,8 @@ from code_ai.core.planning.completion import (
 )
 from code_ai.core.planning.evidence import EvidenceLedger, EvidenceRecord
 from code_ai.core.planning.models import (
+    CRITERION_APPLY_VIA_TOOLS,
+    CRITERION_VERIFY_AFTER_MUTATION,
     AgentPlan,
     CompletionClaim,
     EvidenceType,
@@ -116,6 +118,13 @@ class PlannerService:
         # plan instead of reclassifying the reply as a brand-new task, and the
         # reply is recorded as USER_ANSWER evidence at that point.
         self.pending_question: str | None = None
+        # Set when the user denies a workspace/command action this turn - the
+        # strongest available signal that the surface classifier's mutation
+        # label is wrong (e.g. a question that merely mentions "implement").
+        # While set, every consumer sees the task as a prose deliverable: no
+        # corrective nudges toward write tools, no file-change completion
+        # demands, prose streams as the answer. See note_user_denial.
+        self.user_declined_mutation = False
         # Risk-proportional evidence gate for success completion claims.
         self.completion_gate = CompletionGate(
             max_rejections_without_progress=config.max_completion_rejections
@@ -231,6 +240,7 @@ class PlannerService:
         self.double_check_pending = False
         self.accepted_final_text = None
         self.pending_question = None
+        self.user_declined_mutation = False
         self.completion_gate.reset()
         self._precondition_gate.note_turn_started()
         if self.profile.requires_workspace_mutation and not provider_supports_tools:
@@ -317,7 +327,7 @@ class PlannerService:
     def allowed_tool_names(self, registry: ToolRegistry) -> set[str]:
         return self.policy.allowed_tool_names(
             registry=registry,
-            profile=self.profile,
+            profile=self._effective_profile(),
             mode=self.mode,
             phase=self.phase,
             current_step=self.current_step,
@@ -333,7 +343,7 @@ class PlannerService:
         """
         return self.policy.allowed_tool_names(
             registry=registry,
-            profile=self.profile,
+            profile=self._effective_profile(),
             mode=self.mode,
             phase=self.phase,
             current_step=self.current_step,
@@ -345,7 +355,7 @@ class PlannerService:
         return self.policy.evaluate(
             tool_name=tool_name,
             registry=registry,
-            profile=self.profile,
+            profile=self._effective_profile(),
             mode=self.mode,
             phase=self.phase,
             current_step=self.current_step,
@@ -493,6 +503,33 @@ class PlannerService:
             source="core.planner",
         )
 
+    async def note_user_denial(self, tool_name: str, reason: str) -> None:
+        """The user refused a workspace/command action this turn.
+
+        An explicit denial is the strongest signal available that the surface
+        classifier's mutation label is wrong - the observed failure was a plain
+        question ("pelo que voce comecaria a implementar hoje?") classified as
+        an implementation task, where the runtime kept demanding file changes
+        through three denials and even nudged the model back into mutating
+        after it had correctly fallen back to prose.
+
+        Downgrade the demand, not the tools: the task is treated as a prose
+        deliverable from here on (read-only context rules, no corrective nudge,
+        no file-change completion requirement, prose streams as the answer),
+        but the model may still mutate later in the turn if the user asks -
+        the advisory gates keep working.
+        """
+        if not self.enabled or self.user_declined_mutation:
+            return
+        if not (self.profile and self._task_produces_workspace_effects()):
+            return
+        self.user_declined_mutation = True
+        await self.event_bus.emit(
+            "planning.mutation_demand.dropped",
+            {"tool_name": tool_name, "reason": reason},
+            source="core.planner",
+        )
+
     def _path_is_outside_workspace(self, path_value: str) -> bool:
         """Best-effort: does this path resolve outside the workspace root?
 
@@ -559,6 +596,8 @@ class PlannerService:
     def requires_tool_for_progress(self) -> bool:
         if not (self.enabled and self.profile and self.profile.requires_workspace_mutation):
             return False
+        if self.user_declined_mutation:
+            return False
         if self.mode == PlannerMode.PLAN:
             return False
         return self.phase in {
@@ -573,11 +612,18 @@ class PlannerService:
             return ""
         if self.profile.intent == TaskIntent.CONVERSATION:
             return ""
+        profile = self._effective_profile()
+        assert profile is not None  # guarded above
         current = self.current_step
         snapshot = self.plan.snapshot()
-        required_evidence = [
-            item.value for item in current.required_evidence
-        ] if current else []
+        # After a user denial the skeleton's file-evidence demands no longer
+        # apply; showing them would keep steering the model toward the very
+        # changes the user refused.
+        required_evidence = (
+            [item.value for item in current.required_evidence]
+            if current and not self.user_declined_mutation
+            else []
+        )
         # The model-authored plan is the source of truth for the step narrative the
         # model sees: it should work its *own* checklist, not the generic internal
         # skeleton. The skeleton's kind/required-evidence still tell the model what
@@ -612,8 +658,8 @@ class PlannerService:
             )
         header = (
             "Runtime task state. Treat this as authoritative host state, not a user request.\n"
-            f"Original objective: {self.profile.objective}\n"
-            f"Acceptance criteria: {self.profile.acceptance_criteria}\n"
+            f"Original objective: {profile.objective}\n"
+            f"Acceptance criteria: {profile.acceptance_criteria}\n"
             f"Planner mode: {self.mode.value}\n"
             f"Semantic phase: {self.phase.value}\n"
             f"Plan revision: {self.plan.revision}\n"
@@ -700,9 +746,36 @@ class PlannerService:
         """
         if self.profile is None:
             return True  # fail toward the stricter, action-oriented rules
+        if self.user_declined_mutation:
+            return False
         return (
             self.profile.requires_workspace_mutation
             or self.profile.intent == TaskIntent.COMMAND_EXECUTION
+        )
+
+    def _effective_profile(self) -> TaskProfile | None:
+        """The task profile with runtime downgrades applied.
+
+        A user denial mid-turn overrides the surface classifier's mutation
+        label (see :meth:`note_user_denial`). Every consumer that steers or
+        gates on that label - the task context block, the tool policy, the
+        completion gate - must see the downgraded view, or it would keep
+        demanding the changes the user just refused.
+        """
+        if not (self.user_declined_mutation and self.profile):
+            return self.profile
+        criteria = [
+            criterion
+            for criterion in self.profile.acceptance_criteria
+            if criterion
+            not in {CRITERION_APPLY_VIA_TOOLS, CRITERION_VERIFY_AFTER_MUTATION}
+        ]
+        return self.profile.model_copy(
+            update={
+                "requires_workspace_mutation": False,
+                "requires_verification": False,
+                "acceptance_criteria": criteria,
+            }
         )
 
     def _known_paths_preview(self, *, limit: int = 15) -> str:
@@ -834,7 +907,8 @@ class PlannerService:
 
     def _completion_context(self, claim: CompletionClaim) -> CompletionContext:
         """Snapshot the evidence the completion policies are allowed to judge."""
-        assert self.profile is not None  # guarded by _claim_validity_gaps
+        profile = self._effective_profile()
+        assert profile is not None  # guarded by _claim_validity_gaps
         has_file_change = self.ledger.has_success(
             EvidenceType.FILE_CREATED, EvidenceType.FILE_CHANGED
         )
@@ -849,7 +923,7 @@ class PlannerService:
         )
         verified, verification_gap = self._verification_status(verification_applies)
         phantom: tuple[str, ...] = ()
-        if has_file_change or self.profile.requires_workspace_mutation:
+        if has_file_change or profile.requires_workspace_mutation:
             # Paths outside the workspace never enter the ledger's hash map, so
             # honestly claiming an external target must not read as fabrication.
             claimed = {
@@ -878,7 +952,7 @@ class PlannerService:
             )
         return CompletionContext(
             claim=claim,
-            profile=self.profile,
+            profile=profile,
             changed_paths=changed_paths,
             has_file_change=has_file_change,
             write_attempted=self.ledger.mutation_was_attempted(),
@@ -1008,7 +1082,7 @@ class PlannerService:
         parts: list[str] = []
         if changed:
             parts.append(f"Changed paths: {', '.join(changed)}.")
-        if self.profile.requires_workspace_mutation:
+        if self.profile.requires_workspace_mutation and not self.user_declined_mutation:
             parts.append(
                 "Verification passed."
                 if self.ledger.latest_verification_passed

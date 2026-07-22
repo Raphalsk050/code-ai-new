@@ -533,6 +533,15 @@ def _steps_for_profile(profile: TaskProfile) -> list[PlanStep]:
     ]
 
 
+# Criteria appended only for mutation-classified tasks. Named so the planner
+# can drop exactly these when a user denial downgrades the task mid-turn (see
+# PlannerService.note_user_denial).
+CRITERION_APPLY_VIA_TOOLS = "Apply changes through file tools rather than chat text."
+CRITERION_VERIFY_AFTER_MUTATION = (
+    "Run an applicable verification command after the last mutation."
+)
+
+
 def _acceptance_criteria(
     *, objective: str, mutation: bool, local: bool, external: bool
 ) -> list[str]:
@@ -540,12 +549,7 @@ def _acceptance_criteria(
     if local:
         criteria.append("Use actual local workspace evidence.")
     if mutation:
-        criteria.extend(
-            [
-                "Apply changes through file tools rather than chat text.",
-                "Run an applicable verification command after the last mutation.",
-            ]
-        )
+        criteria.extend([CRITERION_APPLY_VIA_TOOLS, CRITERION_VERIFY_AFTER_MUTATION])
     if external:
         criteria.append("Use current external evidence before answering.")
     return criteria
