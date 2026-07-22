@@ -118,7 +118,18 @@ class TerminalViewModel:
         elif event.event_type.startswith("goal."):
             self._apply_goal_event(event)
         elif event.event_type == "assistant.final":
-            self.conversation.append(f"ai> {event.payload.get('text', '')}")
+            text = str(event.payload.get("text", ""))
+            # On tool-required tasks the answer prose streams on the "working"
+            # channel first, then arrives here as the announced final. Replace
+            # the trailing dim duplicate so the answer renders once, as the
+            # chipped message - mirroring the tool.calls.recovered rewrite.
+            if (
+                self.conversation
+                and self.conversation[-1].startswith("working> ")
+                and self.conversation[-1][len("working> ") :].strip() == text.strip()
+            ):
+                self.conversation.pop()
+            self.conversation.append(f"ai> {text}")
         elif event.event_type == "user.message":
             # A new turn starts: drop the previous turn's artifacts so the PLAN and
             # AGENTS panels only ever show this turn's work. Both are turn-scoped and
