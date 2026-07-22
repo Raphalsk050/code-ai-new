@@ -129,6 +129,11 @@ class _TurnState:
     budget_overflow_retries: int = 0
     no_tool_nudged: bool = False
     seen_call_fingerprints: set[str] = field(default_factory=set)
+    # Whether the current model step streamed any visible text on the "answer"
+    # channel. Reset per step. When a turn ends in prose that only ever streamed
+    # on the "working" channel (tool-required phases), the finish path must
+    # announce that prose as the final answer or the user never sees a message.
+    step_streamed_answer: bool = False
     # Inputs for the post-turn reflection digest: what the user asked and one
     # compact line per executed tool call.
     user_text: str = ""
@@ -460,6 +465,7 @@ class AgentOrchestrator:
                 source="core.orchestrator",
             )
 
+            state.step_streamed_answer = False
             response = await self._run_model_step(request, state)
             state.last_response = response
             self.usage.add(response.usage)
@@ -522,7 +528,12 @@ class AgentOrchestrator:
                 # the model already declared that step done; settle the sidebar
                 # instead of leaving its last step spinning after the turn.
                 await self.planner.settle_agent_plan_on_final_answer()
-        return await self._finish_turn(response.text, response, state)
+        # Prose that streamed on the "working" channel (tool-required phases)
+        # was rendered as dim trace only; announce it so the turn's actual
+        # answer reaches the user as a message.
+        return await self._finish_turn(
+            response.text, response, state, announce_final=not state.step_streamed_answer
+        )
 
     async def _recover_text_tool_calls(
         self, response: ModelResponse, tool_definitions: list
@@ -924,7 +935,7 @@ class AgentOrchestrator:
             streamed: list[str] = []
             try:
                 return await asyncio.wait_for(
-                    self._collect_model_response(request, state.cancel_event, streamed),
+                    self._collect_model_response(request, state, streamed),
                     timeout=model_timeout,
                 )
             except CancellationError:
@@ -956,9 +967,10 @@ class AgentOrchestrator:
     async def _collect_model_response(
         self,
         request: ModelRequest,
-        cancel_event: asyncio.Event | None,
+        state: _TurnState,
         streamed_sink: list[str],
     ) -> ModelResponse:
+        cancel_event = state.cancel_event
         reasoning_parts: list[str] = []
         completed: ModelResponse | None = None
         # Two streaming guards on the visible text: peel inline <think> reasoning
@@ -971,7 +983,7 @@ class AgentOrchestrator:
             streamed_sink.append(answer)
             visible = text_filter.feed(answer)
             if visible:
-                await self._emit_text_delta(visible)
+                await self._emit_text_delta(visible, state)
 
         # Per-index high-water mark of already-announced argument length, so a
         # streaming tool call reports progress periodically instead of on every
@@ -1008,7 +1020,7 @@ class AgentOrchestrator:
             await _emit_visible_answer(answer_tail)
         tail = text_filter.flush()
         if tail:
-            await self._emit_text_delta(tail)
+            await self._emit_text_delta(tail, state)
 
         if completed is None:
             return ModelResponse(
@@ -1442,7 +1454,11 @@ class AgentOrchestrator:
             "request. The work so far is preserved; re-run or narrow the request to continue."
         )
         return await self._finish_turn(
-            text, state.last_response, state, wind_down_reason=reason
+            text,
+            state.last_response,
+            state,
+            wind_down_reason=reason,
+            announce_final=not state.step_streamed_answer,
         )
 
     async def _suspend_plan_sidebar(self) -> None:
@@ -1542,8 +1558,10 @@ class AgentOrchestrator:
             source="context",
         )
 
-    async def _emit_text_delta(self, text: str) -> None:
+    async def _emit_text_delta(self, text: str, state: _TurnState | None = None) -> None:
         channel = "working" if self._requires_tool_for_progress() else "answer"
+        if state is not None and text and channel == "answer":
+            state.step_streamed_answer = True
         await self.event_bus.emit(
             "model.stream.delta",
             {"text": text, "channel": channel},
