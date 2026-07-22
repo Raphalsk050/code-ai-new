@@ -247,8 +247,20 @@ class AgentOrchestrator:
                 role="system", content=self._system_prompt_builder()
             )
             return
-        lessons = self.failure_memory.render_for_prompt() if self.failure_memory else ""
-        memories = self.memory.render_for_prompt() if self.memory else ""
+        lessons = (
+            self.failure_memory.render_for_prompt(
+                limit=self.config.memory.lessons_render_limit
+            )
+            if self.failure_memory
+            else ""
+        )
+        memories = (
+            self.memory.render_for_prompt(
+                limit_per_kind=self.config.memory.render_limit_per_kind
+            )
+            if self.memory
+            else ""
+        )
         rules = self.rules.render_for_prompt() if self.rules else ""
         skills = self._skills_catalog() if self._skills_catalog else ""
         self.conversation.messages[0] = Message(
