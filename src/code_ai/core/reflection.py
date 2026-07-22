@@ -28,9 +28,9 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 from code_ai.config.models import MemoryConfig
-from code_ai.core.memory import VALID_KINDS, MemoryService
+from code_ai.core.memory import VALID_KINDS, MemoryService, MemoryStore
 from code_ai.events.bus import AsyncEventBus
-from code_ai.prompts import build_reflection_prompt
+from code_ai.prompts import build_consolidation_prompt, build_reflection_prompt
 from code_ai.tools.output import bound_text
 
 logger = logging.getLogger(__name__)
@@ -42,6 +42,9 @@ ReflectionGenerator = Callable[[str], Awaitable[str]]
 # meta-call can never flood or gut the store.
 _MAX_SAVES_PER_TURN = 3
 _MAX_RETIRES_PER_TURN = 3
+
+# Hard cap on what one consolidation pass may change, for the same reason.
+_MAX_CONSOLIDATION_OPS = 10
 
 # Bounds for the digest sections, keeping the meta-call prompt small.
 _MAX_DIGEST_TEXT_CHARS = 1200
@@ -183,6 +186,78 @@ class ReflectionService:
             )
         return report
 
+    # -- consolidation --------------------------------------------------------
+
+    async def maybe_consolidate(self) -> bool:
+        """Curate any store that accumulated enough new memories.
+
+        One conservative meta-call per due store: merge near-duplicates, drop
+        contradicted facts, keep everything else. Returns True when anything
+        actually changed, so the caller knows to refresh the prompt.
+        """
+
+        if not self._config.consolidation_enabled:
+            return False
+        changed = False
+        for scope, store in self._memory.scoped_stores():
+            if (
+                store.new_entries_since_maintenance()
+                < self._config.consolidation_min_new
+            ):
+                continue
+            changed = await self._consolidate_store(scope, store) or changed
+        return changed
+
+    async def _consolidate_store(self, scope: str, store: MemoryStore) -> bool:
+        entries = store.all()
+        if not entries:
+            store.mark_maintained()
+            return False
+        listing = "\n".join(
+            f"{index}. [{entry.kind}] {entry.content}"
+            for index, entry in enumerate(entries, start=1)
+        )
+        try:
+            raw = await self._generator(
+                build_consolidation_prompt(scope=scope, listing=listing)
+            )
+        except Exception:
+            # Meta-call unavailable: leave the store untouched and *unmarked*,
+            # so the pass retries on a later learning run.
+            logger.debug("Consolidation meta-call failed for %s.", scope, exc_info=True)
+            return False
+
+        ops = _parse_consolidation_ops(raw or "", max_index=len(entries))
+        rewritten = 0
+        for index, content in ops.rewrites[:_MAX_CONSOLIDATION_OPS]:
+            if store.rewrite(entries[index - 1].id, content, source="consolidation"):
+                rewritten += 1
+        drop_budget = max(0, _MAX_CONSOLIDATION_OPS - rewritten)
+        rewrite_targets = {index for index, _content in ops.rewrites}
+        dropped = 0
+        for index in ops.drops:
+            if dropped >= drop_budget:
+                break
+            if index in rewrite_targets:
+                continue  # the kept-and-rewritten copy must survive
+            entry = entries[index - 1]
+            if entry.kind == "user":
+                continue  # identity is never bulk-dropped by maintenance
+            if store.remove(entry.id):
+                dropped += 1
+
+        # A successful meta-call resets the trigger baseline even with zero ops
+        # ("store already clean" is a valid outcome); only generator failures
+        # leave the marker untouched for a retry.
+        store.mark_maintained()
+        if not (dropped or rewritten):
+            return False
+        await self._emit(
+            "memory.consolidated",
+            {"scope": scope, "dropped": dropped, "rewritten": rewritten},
+        )
+        return True
+
     async def _emit(self, name: str, payload: dict[str, object]) -> None:
         if self._event_bus is None:
             return
@@ -227,4 +302,53 @@ def _parse_reflection_ops(raw: str) -> _ReflectionOps:
         ops.retires.extend(
             str(item).strip() for item in retires if str(item).strip()
         )
+    return ops
+
+
+@dataclass(slots=True)
+class _ConsolidationOps:
+    drops: list[int] = field(default_factory=list)
+    rewrites: list[tuple[int, str]] = field(default_factory=list)  # (index, content)
+
+
+def _parse_consolidation_ops(raw: str, *, max_index: int) -> _ConsolidationOps:
+    """Extract validated 1-based consolidation ops from a model reply."""
+
+    ops = _ConsolidationOps()
+    text = raw.strip()
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        return ops
+    try:
+        data = json.loads(text[start : end + 1])
+    except json.JSONDecodeError:
+        return ops
+    if not isinstance(data, dict):
+        return ops
+
+    def _valid_index(value: object) -> int | None:
+        try:
+            index = int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+        return index if 1 <= index <= max_index else None
+
+    drops = data.get("drop")
+    if isinstance(drops, list):
+        seen: set[int] = set()
+        for item in drops:
+            index = _valid_index(item)
+            if index is not None and index not in seen:
+                seen.add(index)
+                ops.drops.append(index)
+
+    rewrites = data.get("rewrite")
+    if isinstance(rewrites, list):
+        for item in rewrites:
+            if not isinstance(item, dict):
+                continue
+            index = _valid_index(item.get("n"))
+            content = str(item.get("content") or "").strip()
+            if index is not None and content:
+                ops.rewrites.append((index, content))
     return ops
