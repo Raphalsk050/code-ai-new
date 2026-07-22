@@ -282,6 +282,40 @@ def build_failure_lesson_prompt(context: str) -> str:
     )
 
 
+def build_reflection_prompt(*, digest: str, existing_memories: str) -> str:
+    """Instruction for the post-turn meta-call that distills durable memories.
+
+    The model sees what just happened next to what is already stored, so it can
+    save only genuinely new facts and retire ones the turn proved wrong.
+    """
+
+    memories_block = existing_memories.strip() or "(none stored yet)"
+    return (
+        "You are the memory curator of an autonomous coding agent. A turn just "
+        "finished; decide what, if anything, deserves to be remembered across "
+        "future sessions.\n\n"
+        "Reply with ONLY a JSON object, no prose and no code fences, shaped as:\n"
+        '{"save": [{"kind": "...", "content": "..."}], "retire": ["..."]}\n\n'
+        '"save": at most 3 durable facts. "kind" is one of: "user" (who the '
+        'user is), "feedback" (how the user wants the agent to work — a '
+        "correction the user made this turn is the strongest possible signal), "
+        '"project" (a non-obvious fact about this codebase: build/test '
+        'commands, architectural constraints, where things live), "reference" '
+        "(an external pointer like a URL or ticket). Each content is one "
+        "concise self-contained sentence, with relative dates resolved to "
+        "absolute ones. Save ONLY what will still matter in future sessions: "
+        "no task-specific trivia, no secrets or credentials, nothing already "
+        "evident from the code itself, and nothing already covered by a stored "
+        "memory listed below.\n"
+        '"retire": the exact text of stored memories that this turn proved '
+        "wrong or obsolete, copied verbatim from the list below. Retire a "
+        "memory when you also save its corrected replacement.\n"
+        "Most turns teach nothing durable — then both lists are empty.\n\n"
+        f"Stored memories:\n{memories_block}\n\n"
+        f"What happened this turn:\n{digest}"
+    )
+
+
 SYSTEM_PROMPT = """You are Code-AI, a terminal-based coding agent.
 
 Follow the user's instructions, use tools when they are needed, keep all file and

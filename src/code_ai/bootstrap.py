@@ -22,6 +22,7 @@ from code_ai.context.conversation import ConversationState
 from code_ai.context.token_counting import TokenCounter
 from code_ai.context.usage import UsageLedger
 from code_ai.core.memory import FailureMemoryStore, MemoryService, MemoryStore
+from code_ai.core.reflection import ReflectionService
 from code_ai.core.orchestration import AgentOrchestrator
 from code_ai.core.planning import PlannerService
 from code_ai.core.rules import RulesService
@@ -183,6 +184,29 @@ def build_application(
         project_store=MemoryStore(project_memories_dir(config.workspace)),
     )
 
+    async def _generate_learning(prompt: str) -> str:
+        # Backs the post-turn reflection meta-call. Generous output cap because
+        # reasoning models spend budget on hidden thinking before the JSON.
+        request = ModelRequest(
+            model=config.model,
+            messages=[Message(role="user", content=prompt)],
+            max_output_tokens=config.memory.reflection_max_output_tokens,
+        )
+        response = await active_provider.complete(request)
+        return response.text
+
+    # Post-turn reflection: distills durable memories automatically after
+    # substantive turns. Gated behind the same switch as the other learning
+    # affordances so /config learn off silences all of it.
+    reflection: ReflectionService | None = None
+    if config.learn and config.memory.reflection_enabled:
+        reflection = ReflectionService(
+            memory=memory,
+            generator=_generate_learning,
+            config=config.memory,
+            event_bus=event_bus,
+        )
+
     # Mandatory rules, always injected: global (install-wide) + project (committed
     # with the workspace). See code_ai.core.rules.
     rules = RulesService(
@@ -290,6 +314,7 @@ def build_application(
         memory=memory,
         rules=rules,
         skills_catalog=render_skills_catalog,
+        reflection=reflection,
     )
     session = ApplicationSession(session_id=event_bus.session_id, config=config)
     conversation_store = ConversationStore(project_conversations_dir(config.workspace))

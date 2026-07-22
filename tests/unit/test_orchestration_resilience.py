@@ -31,6 +31,9 @@ def _config(tmp_path, **overrides) -> AppConfig:
         "permission_mode": "bypass",
         # Keep learned failure memories out of the user's real config dir.
         "memories_dir": str(tmp_path / "memories"),
+        # These tests script exact provider call sequences; the post-turn
+        # reflection meta-call would add calls the scripts do not expect.
+        "memory": {"reflection_enabled": False},
     }
     data.update(overrides)
     return AppConfig.from_mapping(data)
