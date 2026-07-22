@@ -174,7 +174,9 @@ def build_application(
 
     memories_dir = Path(config.memories_dir) if config.memories_dir else default_memories_dir()
     failure_memory = failure_memory or FailureMemoryStore(
-        memories_dir, lesson_generator=_generate_lesson
+        memories_dir,
+        lesson_generator=_generate_lesson,
+        pin_count=config.memory.lesson_pin_count,
     )
 
     # Durable memory of user-stated and proactively-saved facts. ``user``/
@@ -222,8 +224,12 @@ def build_application(
                 content=build_system_prompt(
                     workspace=config.workspace,
                     language=config.language,
-                    lessons=failure_memory.render_for_prompt(),
-                    memories=memory.render_for_prompt(),
+                    lessons=failure_memory.render_for_prompt(
+                        limit=config.memory.lessons_render_limit
+                    ),
+                    memories=memory.render_for_prompt(
+                        limit_per_kind=config.memory.render_limit_per_kind
+                    ),
                     rules=rules.render_for_prompt(),
                     skills=render_skills_catalog(),
                 ),

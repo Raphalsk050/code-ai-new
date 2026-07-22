@@ -85,3 +85,28 @@ async def test_saved_memory_is_injected_on_refresh(tmp_path) -> None:
     system_prompt = orchestrator.conversation.messages[0].content
     assert "How the user wants you to work" in system_prompt
     assert "Always run pytest -q." in system_prompt
+
+
+async def test_configured_render_caps_bound_the_prompt(tmp_path) -> None:
+    config = AppConfig.from_mapping(
+        {
+            "api_mode": "ollama",
+            "workspace": str(tmp_path),
+            "model": "fake",
+            "permission_mode": "bypass",
+            "memories_dir": str(tmp_path / "memories"),
+            "memory": {"render_limit_per_kind": 2},
+        }
+    )
+    app = build_application(config=config, provider=_StaticProvider())
+    orchestrator = app.orchestrator
+
+    orchestrator.memory.add(kind="user", content="The user is named Rafael.")
+    for i in range(5):
+        orchestrator.memory.add(kind="feedback", content=f"Work directive {i}.")
+    orchestrator._refresh_system_prompt()
+
+    system_prompt = orchestrator.conversation.messages[0].content
+    # Non-identity kinds are capped by config; identity always renders in full.
+    assert system_prompt.count("Work directive") == 2
+    assert "Rafael" in system_prompt
