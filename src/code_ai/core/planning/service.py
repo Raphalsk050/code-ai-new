@@ -125,6 +125,11 @@ class PlannerService:
         # corrective nudges toward write tools, no file-change completion
         # demands, prose streams as the answer. See note_user_denial.
         self.user_declined_mutation = False
+        # Whether the model's own tool calls produced successful evidence this
+        # task (the host's automatic workspace listing does not count). A prose
+        # ending on a prose-deliverable task settles the checklist only when
+        # real work backs it; see settle_agent_plan_on_final_answer.
+        self._gathered_non_host_evidence = False
         # Risk-proportional evidence gate for success completion claims.
         self.completion_gate = CompletionGate(
             max_rejections_without_progress=config.max_completion_rejections
@@ -241,6 +246,7 @@ class PlannerService:
         self.accepted_final_text = None
         self.pending_question = None
         self.user_declined_mutation = False
+        self._gathered_non_host_evidence = False
         self.completion_gate.reset()
         self._precondition_gate.note_turn_started()
         if self.profile.requires_workspace_mutation and not provider_supports_tools:
@@ -290,6 +296,8 @@ class PlannerService:
                     question=question,
                     answer=answer,
                 )
+                # The user's reply is real task input, not host bookkeeping.
+                self._gathered_non_host_evidence = True
                 await self.event_bus.emit(
                     "planning.evidence.recorded",
                     record.compact(),
@@ -370,6 +378,7 @@ class PlannerService:
         tool_name: str,
         payload: dict[str, Any],
         success: bool,
+        host_initiated: bool = False,
     ) -> list[EvidenceRecord]:
         if tool_name == "submit_plan":
             await self.submit_agent_plan(payload.get("steps"))
@@ -401,6 +410,12 @@ class PlannerService:
             success=success,
             classify_verification=self._classify_verification,
         )
+        if not host_initiated and any(record.success for record in records):
+            # Work the model itself did (the host's automatic workspace listing
+            # does not count); lets a prose ending settle the checklist even
+            # when the model never declared steps done. See
+            # settle_agent_plan_on_final_answer.
+            self._gathered_non_host_evidence = True
         for record in records:
             if record.success and record.evidence_type in {
                 EvidenceType.FILE_READ,
@@ -1249,13 +1264,19 @@ class PlannerService:
           closing step (the observed failure: a checklist frozen at 1/N after a
           full answer was already delivered).
 
-        The "completed at least one step" guard keeps the pure pause case apart:
-        a turn that submits a plan and then immediately asks the user a
-        clarifying question in prose - without finishing any step - is genuinely
-        unfinished, so its plan is left ACTIVE for :meth:`suspend_agent_plan` to
-        pause and the sidebar to show where it stopped. It is an imperfect
-        signal (a model could finish one step and then ask about the next), but
-        it is the honest state-only separator available at turn end.
+        "Completed at least one step" used to be the only progress signal, but
+        models routinely do the work without ever calling complete_plan_step:
+        the observed failure was a research turn that submitted a plan, ran a
+        web search, delivered the full synthesized answer - and left the
+        sidebar at "0/4, waiting for you" with nothing actually pending. Real
+        gathered evidence (any successful model-initiated tool result, or a
+        recorded user answer; the host's automatic workspace listing does not
+        count) is just as much proof the prose is a worked deliverable, so
+        either signal settles the plan. The pure pause case stays apart: a turn
+        that submits a plan and immediately asks a clarifying question in
+        prose - no declared step, no gathered evidence - is genuinely
+        unfinished, so its plan is left ACTIVE for :meth:`suspend_agent_plan`
+        to pause and the sidebar to show where it stopped.
 
         Mutation/command tasks stay conservative regardless of progress: their
         real completion runs through the evidence gate (``complete_task`` ->
@@ -1272,8 +1293,8 @@ class PlannerService:
         completed_steps = sum(
             1 for step in plan.steps if step.status == PlanStepStatus.COMPLETED
         )
-        prose_deliverable_done = (
-            not self._task_produces_workspace_effects() and completed_steps > 0
+        prose_deliverable_done = not self._task_produces_workspace_effects() and (
+            completed_steps > 0 or self._gathered_non_host_evidence
         )
         if not (plan.final_step_declared or prose_deliverable_done):
             return

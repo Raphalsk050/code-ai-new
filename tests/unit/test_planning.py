@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from code_ai.config.models import PlannerConfig
 from code_ai.core.planning import PlannerService, PlanningPhase, TaskProfile
+from code_ai.core.planning.models import PlanStatus
 from code_ai.events.bus import AsyncEventBus
 from code_ai.tools.filesystem import EditCodeTool, ListFilesTool, ReadFileTool, WriteFileTool
 from code_ai.tools.internal import CompleteTaskTool, FinishDiscoveryTool, RequestExternalGapTool
@@ -275,6 +276,65 @@ async def test_genuine_research_is_not_skipped_when_web_evidence_exists() -> Non
 
     assert "SKIPPED" not in research_after
     assert research_before  # sanity: the plan had a research step
+
+
+async def test_final_answer_settles_prose_plan_backed_by_gathered_evidence() -> None:
+    # Regression: a research turn submitted a plan, ran a web search and
+    # delivered the full synthesized answer - but never called
+    # complete_plan_step, so the sidebar froze at "0/4, waiting for you" with
+    # nothing actually pending. Real gathered evidence settles the plan.
+    service = PlannerService(
+        config=PlannerConfig(),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    await service.begin_turn(
+        "verifique na internet qual a melhor arquitetura para isso",
+        provider_supports_tools=True,
+    )
+    await service.submit_agent_plan(
+        ["Pesquisar padrões atuais", "Sintetizar a recomendação"]
+    )
+    await service.record_tool_result(
+        tool_call_id="s1",
+        tool_name="web_search",
+        payload={"query": "best architecture", "results": [{"title": "t", "url": "u"}]},
+        success=True,
+    )
+
+    await service.settle_agent_plan_on_final_answer()
+
+    assert service.agent_plan is not None
+    assert service.agent_plan.status == PlanStatus.COMPLETED
+
+
+async def test_final_answer_without_any_work_leaves_the_plan_paused() -> None:
+    # The pure pause case stays apart: plan submitted, no model-initiated
+    # evidence (the host's automatic listing does not count), prose ending -
+    # the plan is genuinely unfinished and must pause, not complete.
+    service = PlannerService(
+        config=PlannerConfig(),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    await service.begin_turn(
+        "leia o projeto e proponha uma arquitetura", provider_supports_tools=True
+    )
+    await service.record_tool_result(
+        tool_call_id="host_list_files_initial",
+        tool_name="list_files",
+        payload={"path": ".", "entries": []},
+        success=True,
+        host_initiated=True,
+    )
+    await service.submit_agent_plan(["Levantar requisitos", "Propor arquitetura"])
+
+    await service.settle_agent_plan_on_final_answer()
+    assert service.agent_plan is not None
+    assert service.agent_plan.status == PlanStatus.ACTIVE
+
+    await service.suspend_agent_plan()
+    assert service.agent_plan.status == PlanStatus.WAITING
 
 
 async def test_plan_mode_denies_mutating_and_process_tools() -> None:
