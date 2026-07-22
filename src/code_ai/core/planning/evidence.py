@@ -134,6 +134,34 @@ class EvidenceLedger:
             self._append(record)
         return records
 
+    def record_user_answer(
+        self,
+        *,
+        plan: ExecutionPlan | None,
+        step_id: str | None,
+        question: str,
+        answer: str,
+    ) -> EvidenceRecord:
+        """The user's actual reply to a blocking ask_user question.
+
+        Recorded at resume time, when the reply exists - never at ask time,
+        when the only payload available is the tool's own "blocked" sentinel.
+        """
+        record = EvidenceRecord(
+            session_id=self.session_id,
+            plan_id=plan.plan_id if plan else None,
+            plan_revision=plan.revision if plan else None,
+            step_id=step_id,
+            tool_call_id=f"user-answer-{uuid4()}",
+            tool_name="ask_user",
+            evidence_type=EvidenceType.USER_ANSWER,
+            success=True,
+            summary=bound_text(answer, self.max_summary_chars),
+            metadata={"question": bound_text(question, self.max_summary_chars)},
+        )
+        self._append(record)
+        return record
+
     def record_policy_denial(
         self,
         *,
@@ -476,14 +504,6 @@ def _records_from_payload(
                 evidence_type=EvidenceType.COMPLETION_REQUESTED,
                 summary=str(payload.get("summary") or summary),
                 affected_paths=[str(path) for path in payload.get("changed_paths", [])],
-            )
-        ]
-    if tool_name == "ask_user":
-        return [
-            EvidenceRecord(
-                **common,
-                evidence_type=EvidenceType.USER_ANSWER,
-                summary=summary,
             )
         ]
     if tool_name == "dispatch_agent":

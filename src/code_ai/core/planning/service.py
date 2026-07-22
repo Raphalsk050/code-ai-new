@@ -111,6 +111,11 @@ class PlannerService:
         self.no_progress_rounds = 0
         self.double_check_pending = False
         self.accepted_final_text: str | None = None
+        # The blocking ask_user question the previous turn ended on, if any.
+        # The user's next message answers it: the app layer resumes the paused
+        # plan instead of reclassifying the reply as a brand-new task, and the
+        # reply is recorded as USER_ANSWER evidence at that point.
+        self.pending_question: str | None = None
         # Risk-proportional evidence gate for success completion claims.
         self.completion_gate = CompletionGate(
             max_rejections_without_progress=config.max_completion_rejections
@@ -211,7 +216,7 @@ class PlannerService:
         # so switching to act executes that checklist instead of reclassifying the
         # continuation text and wiping the model-authored steps.
         if resume and self.profile is not None:
-            await self._resume_turn()
+            await self._resume_turn(text)
             return
         self.profile = TaskProfile.from_user_text(text)
         self.plan = ExecutionPlan.for_profile(
@@ -225,6 +230,7 @@ class PlannerService:
         self.no_progress_rounds = 0
         self.double_check_pending = False
         self.accepted_final_text = None
+        self.pending_question = None
         self.completion_gate.reset()
         self._precondition_gate.note_turn_started()
         if self.profile.requires_workspace_mutation and not provider_supports_tools:
@@ -248,16 +254,37 @@ class PlannerService:
         # steps submitted via submit_plan. Advance the internal cursor silently.
         await self._mark_current_step_started()
 
-    async def _resume_turn(self) -> None:
+    async def _resume_turn(self, text: str = "") -> None:
         """Continue the current plan into an execution turn without rebuilding it.
 
-        Used when the user approves the plan and switches to act mode: the
-        profile, deterministic skeleton, model-authored checklist and evidence
-        ledger are all kept, so execution picks up where planning left off. Only
+        Used when the user approves the plan and switches to act mode, and when
+        their message answers a blocking ask_user question: the profile,
+        deterministic skeleton, model-authored checklist and evidence ledger are
+        all kept, so execution picks up where the previous turn left off. Only
         the per-turn bookkeeping resets, and the existing plan snapshot is
-        re-emitted so the task sidebar (collapsed when the plan-mode turn ended)
+        re-emitted so the task sidebar (collapsed when the previous turn ended)
         reappears with live progress.
+
+        With a question pending, ``text`` is the user's reply and becomes the
+        USER_ANSWER evidence the ask recorded nothing for (at ask time no answer
+        exists yet). Whatever the text was, the question stops being pending:
+        the resumed turn continues from what the user actually said.
         """
+        if self.pending_question:
+            question, self.pending_question = self.pending_question, None
+            answer = text.strip()
+            if answer:
+                record = self.ledger.record_user_answer(
+                    plan=self.plan,
+                    step_id=self.current_step.step_id if self.current_step else None,
+                    question=question,
+                    answer=answer,
+                )
+                await self.event_bus.emit(
+                    "planning.evidence.recorded",
+                    record.compact(),
+                    source="core.planner",
+                )
         self.no_progress_rounds = 0
         self.double_check_pending = False
         self.accepted_final_text = None
@@ -273,6 +300,10 @@ class PlannerService:
                 self.plan_snapshot(),
                 source="core.planner",
             )
+
+    def has_pending_question(self) -> bool:
+        """Whether the previous turn ended on a blocking ask_user question."""
+        return bool(self.enabled and self.pending_question)
 
     def should_auto_list_workspace(self) -> bool:
         return bool(
@@ -340,6 +371,14 @@ class PlannerService:
             await self._advance_agent_plan(
                 completed_step=str(payload.get("completed_step") or "")
             )
+            return []
+        if tool_name == "ask_user":
+            # The question is not evidence of an answer. Remember it as pending
+            # so the user's actual reply - the next message, which resumes the
+            # paused plan - is what gets recorded as USER_ANSWER.
+            question = str(payload.get("question") or "").strip()
+            if question:
+                self.pending_question = question
             return []
         before = self.progress_signature()
         step_id = self.current_step.step_id if self.current_step else None
