@@ -714,6 +714,47 @@ def test_view_model_drops_pure_tool_call_text_on_recovery() -> None:
     assert view_model.conversation == ["you> read it"]
 
 
+def test_view_model_collapses_streamed_working_trace_into_final_answer() -> None:
+    from code_ai.ui.terminal.view_models import TerminalViewModel
+
+    view_model = TerminalViewModel()
+    # The answer prose streamed on the "working" channel (tool-required task),
+    # then the runtime announced the same text as the turn's final answer.
+    view_model.conversation.append("working> Preciso de mais detalhes.")
+    event = EventEnvelope.create(
+        event_type="assistant.final",
+        session_id="fake-session",
+        sequence=1,
+        payload={"text": "Preciso de mais detalhes."},
+        source="core.orchestrator",
+    )
+
+    view_model.apply(event)
+
+    assert view_model.conversation == ["ai> Preciso de mais detalhes."]
+
+
+def test_view_model_keeps_working_trace_that_differs_from_final_answer() -> None:
+    from code_ai.ui.terminal.view_models import TerminalViewModel
+
+    view_model = TerminalViewModel()
+    view_model.conversation.append("working> Analisando o projeto...")
+    event = EventEnvelope.create(
+        event_type="assistant.final",
+        session_id="fake-session",
+        sequence=1,
+        payload={"text": "Qual banco de dados devo usar?"},
+        source="core.orchestrator",
+    )
+
+    view_model.apply(event)
+
+    assert view_model.conversation == [
+        "working> Analisando o projeto...",
+        "ai> Qual banco de dados devo usar?",
+    ]
+
+
 def test_terminal_view_model_shows_command_output() -> None:
     from code_ai.ui.terminal.view_models import TerminalViewModel
 
