@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 
 from code_ai.bootstrap import build_application
 from code_ai.config.models import AppConfig
+from code_ai.core.planning.models import EvidenceType
 from code_ai.events.models import EventEnvelope
 from code_ai.providers.models import (
     FinishReason,
@@ -114,6 +115,34 @@ async def test_ask_user_ends_the_turn_with_the_question_as_final_answer(tmp_path
     # The question reaches the user as a real answer message, not dim trace.
     finals = [e for e in events if e.event_type == "assistant.final"]
     assert [str(e.payload.get("text")) for e in finals] == [QUESTION]
+
+
+async def test_question_records_no_user_answer_evidence_until_the_user_replies(
+    tmp_path,
+) -> None:
+    provider = AsksThenKeepsTalkingProvider()
+    app = build_application(config=_config(tmp_path), provider=provider)
+
+    await app.start()
+    await app.submit_user_message("implemente um sistema de estoque no projeto")
+    planner = app.orchestrator.planner
+    assert planner is not None
+
+    # At ask time there is no answer: the old behavior recorded USER_ANSWER
+    # from the tool's own "blocked" sentinel, faking evidence in the ledger.
+    assert planner.has_pending_question()
+    assert not planner.ledger.has_record(EvidenceType.USER_ANSWER)
+
+    await app.submit_user_message(
+        "Use Postgres e leitor de código de barras.", resume_plan=True
+    )
+    await app.close()
+
+    assert not planner.has_pending_question()
+    answers = planner.ledger.success_records(EvidenceType.USER_ANSWER)
+    assert len(answers) == 1
+    assert "Postgres" in answers[0].summary
+    assert QUESTION in str(answers[0].metadata.get("question"))
 
 
 async def test_ask_user_choices_render_as_numbered_options(tmp_path) -> None:
