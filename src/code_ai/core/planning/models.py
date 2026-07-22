@@ -579,18 +579,24 @@ _MUTATION_RE = re.compile(
 
 # A message that *opens* as a question or an explanation request is asking to
 # understand something, not to change it - even when a mutation verb appears as
-# the subject ("explique a função update_user", "como adicionar um endpoint?").
-# Misreading these as mutations traps the turn behind a file-change evidence
-# gate no explanation can ever satisfy. The veto is deliberately biased: a real
-# mutation phrased as a question degrades gracefully (tools stay available and
-# any actual file change still demands verification through the evidence-keyed
-# gate), while a trapped explanation has no way out.
+# the subject ("explique a função update_user", "como adicionar um endpoint?",
+# "pelo que voce comecaria a implementar hoje?"). Misreading these as mutations
+# traps the turn behind a file-change evidence gate no explanation can ever
+# satisfy - and actively steers the model into changes nobody asked for. The
+# veto is deliberately biased: a real mutation phrased as a question degrades
+# gracefully (tools stay available and any actual file change still demands
+# verification through the evidence-keyed gate), while a trapped explanation
+# has no way out.
 _EXPLANATION_START_RE = re.compile(
     r"^(?:"
     r"explique|explica|me explique|me explica|explain|"
     r"descreva|descreve|describe|"
     r"o que|oque|what|por que|porque|why|como|how|"
     r"qual|quais|which|quando|when|onde|where|quem|who|"
+    r"pelo que|pelo qual|pela qual|por onde|por qual|"
+    r"sera que|será que|que tal|devo|deveria|deveriamos|deveríamos|"
+    r"vale a pena|faz sentido|"
+    r"should i|should we|would it|is it|"
     r"me diga|diga|tell me|"
     r"resuma|resumo|summarize|summarise|"
     r"analise|análise|analyze|analyse|"
@@ -598,11 +604,53 @@ _EXPLANATION_START_RE = re.compile(
     r")\b"
 )
 
+# Second-person request markers: a question that asks the *agent* to do the
+# change ("pode criar o arquivo?", "can you add a test?") is still a mutation
+# request. "pode ser"/"poderia ser" are excluded - those open a hypothesis
+# ("could it be..."), not a request.
+_REQUEST_MARKER_RE = re.compile(
+    r"\b(?:"
+    r"por favor|please|"
+    r"pode(?:s|ria|riam)?(?!\s+ser\b)|voc[eê] pode|consegue(?:ria)?|"
+    r"can you|could you|would you|will you"
+    r")\b"
+)
+
+# Unambiguous "do it" shapes that survive the question veto: PT imperative /
+# subjunctive forms ("implemente", "crie", "atualize") anywhere, or an English
+# base verb opening the message ("update the README ...").
+_IMPERATIVE_MUTATION_RE = re.compile(
+    r"\b(?:"
+    r"implemente(?:m)?|crie(?:m)?|adicione(?:m)?|corrija(?:m)?|conserte(?:m)?|"
+    r"atualize(?:m)?|edite(?:m)?|escreva(?:m)?|remova(?:m)?|renomeie(?:m)?|"
+    r"refatore(?:m)?|modifique(?:m)?|aplique(?:m)?|mude(?:m)?|troque(?:m)?|"
+    r"ajuste(?:m)?|arrume(?:m)?|fa[çc]a(?:m)?"
+    r")\b"
+)
+_EN_LEADING_MUTATION_RE = re.compile(
+    r"^(?:implement|create|add|fix|update|write|edit|remove|rename|refactor|"
+    r"modify|apply|change|make)\b"
+)
+
 
 def _is_mutation_request(text: str) -> bool:
-    if _EXPLANATION_START_RE.match(text.strip()):
+    stripped = text.strip()
+    if _EXPLANATION_START_RE.match(stripped):
         return False
-    return bool(_MUTATION_RE.search(text))
+    if not _MUTATION_RE.search(stripped):
+        return False
+    # Question-shaped text asks *about* changing, it does not ask to change:
+    # "seria melhor implementar isso em rust?" wants an opinion, not files. It
+    # only stays a mutation when the phrasing addresses the agent with the
+    # action ("pode criar...?", "crie X, pode ser?", "can you add...?").
+    if (
+        stripped.endswith("?")
+        and not _REQUEST_MARKER_RE.search(stripped)
+        and not _IMPERATIVE_MUTATION_RE.search(stripped)
+        and not _EN_LEADING_MUTATION_RE.match(stripped)
+    ):
+        return False
+    return True
 
 
 def _is_command_request(text: str) -> bool:
