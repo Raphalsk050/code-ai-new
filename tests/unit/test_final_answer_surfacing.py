@@ -19,6 +19,7 @@ from code_ai.providers.models import (
     ModelResponse,
     ProviderCapabilities,
     ProviderEvent,
+    ToolCall,
 )
 
 FIRST_PROSE = "Ainda estou analisando o que fazer."
@@ -98,6 +99,67 @@ async def test_working_channel_prose_is_announced_as_final_answer(tmp_path) -> N
     # ...so the finish path must announce it as the turn's actual answer.
     finals = [e for e in events if e.event_type == "assistant.final"]
     assert [str(e.payload.get("text")) for e in finals] == [FINAL_PROSE]
+
+
+class InspectsThenAnswersProvider(_BaseProvider):
+    """submit_plan, read a file, then answer in prose - never declares steps."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        if self.calls == 1:
+            response = ModelResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="p1",
+                        name="submit_plan",
+                        arguments={"steps": ["Ler o arquivo", "Responder ao usuário"]},
+                    )
+                ],
+                finish_reason=FinishReason.TOOL_CALLS,
+            )
+            yield ProviderEvent(kind="completed", response=response)
+            return
+        if self.calls == 2:
+            response = ModelResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="r1", name="read_file", arguments={"path": "note.txt"}
+                    )
+                ],
+                finish_reason=FinishReason.TOOL_CALLS,
+            )
+            yield ProviderEvent(kind="completed", response=response)
+            return
+        text = "O arquivo define a configuração padrão do serviço."
+        yield ProviderEvent(kind="text_delta", text_delta=text)
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text=text, finish_reason=FinishReason.STOP),
+        )
+
+
+async def test_prose_answer_backed_by_evidence_completes_the_plan(tmp_path) -> None:
+    # Regression: the delivered answer left the sidebar at "0/N, waiting for
+    # you" because the model never called complete_plan_step. With gathered
+    # evidence the plan must settle as completed, not pause on the user.
+    (tmp_path / "note.txt").write_text("config: default\n", encoding="utf-8")
+    provider = InspectsThenAnswersProvider()
+    app = build_application(config=_config(tmp_path), provider=provider)
+    events: list[EventEnvelope] = []
+    app.subscribe(events.append)
+
+    await app.start()
+    result = await app.submit_user_message("leia o note.txt e me diga o que ele faz")
+    await app.close()
+
+    assert result.error is None
+    assert "configuração" in result.text
+    event_types = [e.event_type for e in events]
+    assert "planning.plan.completed" in event_types
+    assert "planning.plan.waiting" not in event_types
 
 
 async def test_answer_channel_prose_is_not_announced_twice(tmp_path) -> None:
