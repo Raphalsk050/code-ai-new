@@ -835,6 +835,9 @@ class CodeAIApplication:
         if self._current_task and not self._current_task.done():
             await self.cancel_current_turn()
             await self._current_task
+        # Let a pending post-turn learning pass finish (bounded) while the
+        # provider is still alive; after provider.close() it could not run.
+        await self.orchestrator.drain_learning()
         if self._terminal_poll_task is not None:
             self._terminal_poll_task.cancel()
             try:

@@ -32,6 +32,7 @@ from code_ai.core.errors import (
 from code_ai.core.memory import FailureMemoryStore, MemoryService
 from code_ai.core.planning import PlannerService
 from code_ai.core.planning.policy import PolicyDecision
+from code_ai.core.reflection import ReflectionService, TurnDigest
 from code_ai.core.rules import RulesService
 from code_ai.core.state import AgentState
 from code_ai.events.bus import AsyncEventBus
@@ -128,6 +129,10 @@ class _TurnState:
     budget_overflow_retries: int = 0
     no_tool_nudged: bool = False
     seen_call_fingerprints: set[str] = field(default_factory=set)
+    # Inputs for the post-turn reflection digest: what the user asked and one
+    # compact line per executed tool call.
+    user_text: str = ""
+    actions: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -170,6 +175,7 @@ class AgentOrchestrator:
         rules: RulesService | None = None,
         skills_catalog: Callable[[], str] | None = None,
         system_prompt_builder: Callable[[], str] | None = None,
+        reflection: ReflectionService | None = None,
     ) -> None:
         self.config = config
         # Optional override for how the leading system message is (re)built. The
@@ -204,6 +210,10 @@ class AgentOrchestrator:
         self.approval_gateway: ApprovalGateway = approval_gateway or DenyAllGateway()
         # Signatures the user chose to "always allow" for this session.
         self._session_allowlist: set[str] = set()
+        # Post-turn learning. ``None`` disables reflection; the background task
+        # is tracked so shutdown can give it a bounded chance to finish.
+        self.reflection = reflection
+        self._learning_task: asyncio.Task[None] | None = None
         self.state = AgentState.STARTING
 
     @property
@@ -289,13 +299,16 @@ class AgentOrchestrator:
         state = _TurnState(
             cancel_event=cancel_event,
             deadline=time.monotonic() + self.config.budgets.turn_timeout(),
+            user_text=text,
         )
         try:
             early = await self._begin_planner(text, state, resume=resume_plan)
             if early is not None:
                 return early
             state.progress_signature = self._progress_signature()
-            return await self._run_model_loop(state)
+            result = await self._run_model_loop(state)
+            self._maybe_schedule_reflection(state, result)
+            return result
         except CancellationError:
             await self._suspend_plan_sidebar()
             await self.set_state(AgentState.READY, phase="waiting_user")
@@ -708,6 +721,71 @@ class AgentOrchestrator:
             "step fits the budget."
         )
 
+    # ------------------------------------------------------------------ #
+    # Post-turn reflection: distill durable memories in the background
+    # ------------------------------------------------------------------ #
+    def _maybe_schedule_reflection(self, state: _TurnState, result: TurnResult) -> None:
+        """Kick off the background learning pass for a finished turn.
+
+        Runs after the reply is already on its way to the user, so it costs the
+        turn nothing. Skipped for cancelled/failed turns (nothing trustworthy
+        to learn), for trivial turns (below the tool-call threshold), and while
+        a previous pass is still running (learning must never queue up).
+        """
+
+        if self.reflection is None or result.cancelled or result.error is not None:
+            return
+        if not self.reflection.should_reflect(tool_calls_executed=state.tool_calls_executed):
+            return
+        if self._learning_task is not None and not self._learning_task.done():
+            return
+        digest = TurnDigest(
+            user_text=state.user_text,
+            final_text=result.text,
+            actions=tuple(state.actions),
+            evidence=self._turn_evidence_summary(),
+            outcome=result.wind_down_reason or "success",
+        )
+        self._learning_task = asyncio.create_task(self._run_learning(digest))
+
+    async def _run_learning(self, digest: TurnDigest) -> None:
+        try:
+            report = await self.reflection.reflect_on_turn(digest)
+            if report.changed:
+                # Make what was just learned visible on the very next turn.
+                self._refresh_system_prompt()
+        except asyncio.CancelledError:  # shutdown drained us; nothing to salvage
+            raise
+        except Exception:  # noqa: BLE001 - learning must never surface as an error
+            logger.debug("Post-turn learning pass failed.", exc_info=True)
+
+    async def drain_learning(self, *, timeout: float = 30.0) -> None:
+        """Give a pending background learning pass a bounded chance to finish.
+
+        Called on shutdown before the provider closes; without it a headless
+        run would exit before its only reflection completes. On timeout the
+        pass is cancelled — learning is best-effort, shutdown is not.
+        """
+
+        task = self._learning_task
+        if task is None or task.done():
+            return
+        done, _pending = await asyncio.wait({task}, timeout=timeout)
+        if task not in done:
+            task.cancel()
+            with contextlib.suppress(BaseException):
+                await task
+
+    def _turn_evidence_summary(self) -> str:
+        """The planner's recent evidence ledger, serialized for the digest."""
+
+        if not (self.planner and self.planner.enabled):
+            return ""
+        try:
+            return json.dumps(self.planner.ledger.compact_recent(limit=12), default=str)
+        except Exception:  # noqa: BLE001 - the digest is best-effort input
+            return ""
+
     async def _record_failure(
         self, *, trigger: str, context: str, fallback_lesson: str, signature: str | None = None
     ) -> None:
@@ -980,6 +1058,9 @@ class AgentOrchestrator:
         # the evidence ledger deterministic even when reads ran concurrently.
         for call in calls:
             outcome = outcomes[call.id]
+            state.actions.append(
+                self._action_line(call.name, call.arguments, outcome.result.is_error)
+            )
             self.conversation.add_tool_result(outcome.result)
             if (
                 self.planner
@@ -997,6 +1078,16 @@ class AgentOrchestrator:
                 return await self._finish_turn(self.planner.accepted_final_text, response, state)
         return None
 
+    @staticmethod
+    def _action_line(name: str, arguments: dict[str, object], failed: bool) -> str:
+        """One compact ``tool(args) -> ok|error`` line for the reflection digest."""
+
+        try:
+            args = json.dumps(arguments, default=str, ensure_ascii=False)
+        except Exception:  # noqa: BLE001 - digest input only
+            args = "{}"
+        return f"{name}({bound_text(args, 160)}) -> {'error' if failed else 'ok'}"
+
     async def _execute_host_tool(
         self,
         call_id: str,
@@ -1007,6 +1098,7 @@ class AgentOrchestrator:
         await self.set_state(AgentState.EXECUTING_TOOL, phase="executing_tools")
         call = ToolCall(id=call_id, name=name, arguments=arguments)
         outcome = await self._execute_call(call, None, state)
+        state.actions.append(self._action_line(name, arguments, outcome.result.is_error))
         if (
             self.planner
             and self.planner.enabled
