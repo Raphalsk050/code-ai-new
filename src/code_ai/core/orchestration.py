@@ -96,6 +96,19 @@ _APPROVAL_SENSITIVE_CAPABILITIES = frozenset(
     }
 )
 
+# Capabilities whose user denial signals "I did not ask you to change anything":
+# the planner drops its mutation demand for the rest of the turn. DELEGATE is
+# deliberately excluded - denying a delegation means "do it yourself", not
+# "stop changing things".
+_MUTATION_DENIAL_CAPABILITIES = frozenset(
+    {
+        ToolCapability.LOCAL_WRITE,
+        ToolCapability.PROCESS,
+        ToolCapability.INTERACTIVE_TERMINAL,
+        ToolCapability.COMPUTER_CONTROL,
+    }
+)
+
 
 @dataclass(slots=True)
 class TurnResult:
@@ -1232,6 +1245,21 @@ class AgentOrchestrator:
                     reason=decision.reason,
                     allowed_tool_names=decision.allowed_tool_names,
                 )
+            # A real person refusing a mutating/process action overrides the
+            # surface classifier: the planner stops demanding workspace changes
+            # for the rest of the turn. The DenyAllGateway is not a person -
+            # its denial only means no approver is attached (headless run), so
+            # it must not silently downgrade every gated task to prose.
+            user_refused = not policy_denied and not isinstance(
+                self.approval_gateway, DenyAllGateway
+            )
+            if (
+                user_refused
+                and self.planner
+                and self.planner.enabled
+                and self._capabilities_for(call.name) & _MUTATION_DENIAL_CAPABILITIES
+            ):
+                await self.planner.note_user_denial(call.name, authorization.reason)
             await self.event_bus.emit(
                 "tool.call.failed",
                 {
