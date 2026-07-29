@@ -11,6 +11,7 @@ from rich.text import Text
 
 from code_ai.bootstrap import build_application
 from code_ai.config.loader import persist_config_updates
+from code_ai.core.workflows import render_workflow_invocation
 from code_ai.providers.model_listing import list_available_models
 from code_ai.providers.models import ImageContent
 from code_ai.ui.terminal.clipboard import (
@@ -21,11 +22,13 @@ from code_ai.ui.terminal.clipboard import (
 )
 from code_ai.ui.terminal.controller import TerminalController
 from code_ai.ui.terminal.slash_commands import (
+    SlashCommand,
     command_completion,
     config_commands,
     handle_config_command,
     handle_debug_command,
     render_suggestions,
+    workflow_commands,
 )
 from code_ai.ui.terminal.view_models import TerminalViewModel
 from code_ai.ui.terminal.widgets import (
@@ -117,6 +120,26 @@ def create_terminal_app(application, *, config_path: Path | None = None):
 
     from code_ai.ui.terminal.approval import TerminalApprovalGateway
     from code_ai.ui.terminal.doctor import DoctorModal
+
+    # Saved workflows become slash commands. The list is authored by the user (on
+    # disk, possibly in another agent's directory), so it is read from disk rather
+    # than declared - and cached for a few seconds because the completion popup
+    # asks for it on every keystroke.
+    workflow_service = getattr(application, "workflows", None)
+    workflow_cache: dict[str, Any] = {"at": 0.0, "records": []}
+    WORKFLOW_CACHE_TTL = 5.0
+
+    def workflow_records(*, refresh: bool = False) -> list[Any]:
+        if workflow_service is None:
+            return []
+        now = monotonic()
+        if refresh or not workflow_cache["at"] or now - workflow_cache["at"] > WORKFLOW_CACHE_TTL:
+            workflow_cache["records"] = workflow_service.load()
+            workflow_cache["at"] = now
+        return workflow_cache["records"]
+
+    def workflow_suggestions(*, refresh: bool = False) -> list[SlashCommand]:
+        return workflow_commands(workflow_records(refresh=refresh))
 
     class MultilineInput(TextArea):
         """Multi-line prompt with shell-style history recall.
@@ -278,7 +301,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             if key == "tab" and "\n" not in self.text:
                 # Accept a slash-command completion in-place, like the old
                 # single-line prompt did on cursor movement.
-                completion = command_completion(self.text)
+                completion = command_completion(self.text, extra=workflow_suggestions())
                 if completion:
                     event.stop()
                     event.prevent_default()
@@ -834,12 +857,65 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 )
                 return
             if text.strip() == "/help":
-                self._append_conversation_line(render_suggestions("/"))
+                self._append_conversation_line(
+                    render_suggestions("/", extra=workflow_suggestions())
+                )
+                return
+            if text.strip() == "/workflows":
+                self._append_conversation_line(self._workflows_text())
                 return
             if text.strip().startswith("/config"):
                 await self._dispatch_config(text.strip())
                 return
+            # Last: a saved workflow invoked by name (Cline-style "/deploy"), so a
+            # workflow can never shadow a command the app owns.
+            if self._run_workflow_command(text.strip(), images=event.images):
+                return
             asyncio.create_task(self.controller.submit(text, images=event.images))
+
+        def _workflows_text(self) -> str:
+            """Render the saved workflows, freshly re-read from disk."""
+
+            if workflow_service is None:
+                return "command> Workflows are not available in this session."
+            records = workflow_records(refresh=True)
+            if not records:
+                dirs = "\n".join(f"  {source.root}" for source in workflow_service.sources)
+                return (
+                    "command> No workflows found. Add a markdown file to one of "
+                    f"these directories and run it as /<name>:\n{dirs}"
+                )
+            lines = [f"command> {len(records)} workflow(s) available:"]
+            for record in records:
+                description = " ".join(record.description.split())
+                suffix = f" ({record.origin})" if record.origin != "code-ai" else ""
+                lines.append(f"  {record.command:<28} {description}{suffix}")
+            return "\n".join(lines)
+
+        def _run_workflow_command(self, stripped: str, *, images) -> bool:
+            """Run ``/<workflow> [extra input]`` when it names a saved workflow.
+
+            The workflow's own steps become the turn's prompt, so the agent
+            executes the procedure the user wrote instead of improvising one.
+            Returns False when the text does not name a workflow, leaving it to
+            be submitted as an ordinary message.
+            """
+
+            if workflow_service is None or not stripped.startswith("/"):
+                return False
+            token, _, argument = stripped.partition(" ")
+            record = workflow_service.find(token)
+            if record is None:
+                return False
+            self._append_conversation_line(
+                f"command> Running workflow {record.name} ({record.path})"
+            )
+            asyncio.create_task(
+                self.controller.submit(
+                    render_workflow_invocation(record, argument), images=images
+                )
+            )
+            return True
 
         async def _start_act_mode(self) -> None:
             """Switch to act mode and, when a plan is ready, run it right away.
@@ -1099,7 +1175,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
 
         def _set_command_suggestions(self, text: str) -> None:
             suggestions = self.query_one("#command-suggestions", Static)
-            rendered = render_suggestions(text)
+            rendered = render_suggestions(text, extra=workflow_suggestions())
             suggestions.update(rendered)
             suggestions.display = bool(rendered)
 

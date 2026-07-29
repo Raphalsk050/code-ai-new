@@ -40,6 +40,9 @@ class FakeTerminalApplication:
         # /term drives the shared PTY through the application's manager and
         # event bus; tests plug a fake manager in when they exercise it.
         self.terminal_manager = None
+        # Saved workflows the TUI turns into slash commands; tests that exercise
+        # them assign a real WorkflowService before creating the app.
+        self.workflows = None
         self.event_bus = SimpleNamespace(emit=self._emit_bus)
 
     async def _emit_bus(self, event_type: str, payload: dict[str, object], source=None) -> None:
@@ -1533,3 +1536,105 @@ def test_markdown_fenced_code_still_renders_normally() -> None:
     body = 'Veja:\n\n```xml\n<a b="c"/>\n```\n'
     plain = markdown_to_content(body, 78).plain
     assert '<a b="c"/>' in plain
+
+
+def _workflow_app(tmp_path, files: dict[str, str]):
+    """A fake app whose workflows come from a real directory on disk."""
+
+    from code_ai.core.workflows import WorkflowService, WorkflowSource
+
+    root = tmp_path / "workflows"
+    root.mkdir(parents=True, exist_ok=True)
+    for name, text in files.items():
+        (root / name).write_text(text, encoding="utf-8")
+    fake_app = FakeTerminalApplication(tmp_path)
+    fake_app.workflows = WorkflowService(
+        sources=[WorkflowSource(root=root, scope="project", origin="cline")]
+    )
+    return fake_app
+
+
+async def test_slash_workflow_submits_its_saved_steps(tmp_path) -> None:
+    fake_app = _workflow_app(tmp_path, {"deploy.md": "# Deploy\n\n1. Build\n2. Ship"})
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "/deploy 1.4.0"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+
+        assert len(fake_app.submitted) == 1
+        submitted = fake_app.submitted[0]
+        assert 'Run the "deploy" workflow' in submitted
+        assert "1. Build" in submitted
+        assert "Additional input for this run: 1.4.0" in submitted
+        assert any("Running workflow deploy" in line for line in terminal_app.vm.conversation)
+
+
+async def test_unknown_slash_text_is_submitted_as_a_message(tmp_path) -> None:
+    fake_app = _workflow_app(tmp_path, {"deploy.md": "1. Build"})
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "/not-a-workflow"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+
+        assert fake_app.submitted == ["/not-a-workflow"]
+
+
+async def test_a_workflow_cannot_shadow_a_builtin_command(tmp_path) -> None:
+    fake_app = _workflow_app(tmp_path, {"status.md": "Never run this."})
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "/status"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+
+        assert fake_app.submitted == []
+        assert not any("Never run this" in line for line in terminal_app.vm.conversation)
+
+
+async def test_workflows_command_lists_them_with_origin(tmp_path) -> None:
+    fake_app = _workflow_app(
+        tmp_path, {"deploy.md": "Ship a release.", "triage.md": "Triage a bug."}
+    )
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)):
+        terminal_app._append_conversation_line(terminal_app._workflows_text())
+        rendered = "\n".join(terminal_app.vm.conversation)
+
+        assert "/deploy" in rendered
+        assert "Ship a release." in rendered
+        assert "(cline)" in rendered
+
+
+async def test_workflow_appears_in_command_suggestions(tmp_path) -> None:
+    fake_app = _workflow_app(tmp_path, {"deploy.md": "Ship a release."})
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)):
+        terminal_app._set_command_suggestions("/dep")
+        suggestions = terminal_app.query_one("#command-suggestions", Static)
+        assert suggestions.display is True
+        rendered = str(suggestions.render())
+        assert "/deploy" in rendered
+        assert "Ship a release." in rendered
+
+
+async def test_tab_completes_a_workflow_name(tmp_path) -> None:
+    fake_app = _workflow_app(tmp_path, {"deploy.md": "Ship a release."})
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "/depl"
+        await pilot.press("tab")
+        await pilot.pause(0.2)
+
+        assert input_widget.value == "/deploy "
