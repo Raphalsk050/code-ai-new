@@ -32,7 +32,9 @@ from code_ai.core.subagents import (
     default_profile_registry,
 )
 from code_ai.core.verification import ProjectVerification
+from code_ai.core.workflows import WorkflowService
 from code_ai.events.bus import AsyncEventBus
+from code_ai.interop import external_rule_sources, skill_sources, workflow_sources
 from code_ai.prompts import build_failure_lesson_prompt, build_system_prompt
 from code_ai.providers.base import ModelProvider
 from code_ai.providers.factory import create_provider
@@ -90,6 +92,7 @@ from code_ai.tools.terminal import (
     TerminateTerminalTool,
 )
 from code_ai.tools.web import WebSearchTool
+from code_ai.tools.workflows import UseWorkflowTool
 from code_ai.util.paths import WorkspacePolicy
 
 
@@ -123,6 +126,7 @@ def build_tool_registry() -> ToolRegistry:
         WebSearchTool(),
         UseSkillTool(),
         CreateSkillTool(),
+        UseWorkflowTool(),
         CreateRuleTool(),
         ArchitectureReviewTool(),
         CodeReviewTool(),
@@ -210,12 +214,26 @@ def build_application(
             event_bus=event_bus,
         )
 
+    # Reusable assets are read from Code-AI's own directories *and* from the
+    # layouts other coding agents use (see code_ai.interop), so a workspace that
+    # already carries rules, skills, or workflows written for one of them works
+    # here untouched. Every foreign location is optional: absent ones are skipped.
+    session_skill_sources = skill_sources(config.workspace)
+    session_workflow_sources = workflow_sources(config.workspace)
+
     # Mandatory rules, always injected: global (install-wide) + project (committed
-    # with the workspace). See code_ai.core.rules.
+    # with the workspace) + any third-party rule files found. See code_ai.core.rules.
     rules = RulesService(
         global_dir=global_rules_dir(),
         project_dir=project_rules_dir(config.workspace),
+        extra_sources=external_rule_sources(config.workspace),
     )
+    # Named procedures the user runs on demand. Re-read on each prompt rebuild,
+    # so authoring one mid-session makes it invocable right away.
+    workflows = WorkflowService(sources=session_workflow_sources)
+
+    def _skills_catalog() -> str:
+        return render_skills_catalog(session_skill_sources)
 
     conversation = ConversationState(
         messages=[
@@ -231,7 +249,8 @@ def build_application(
                         limit_per_kind=config.memory.render_limit_per_kind
                     ),
                     rules=rules.render_for_prompt(),
-                    skills=render_skills_catalog(),
+                    skills=_skills_catalog(),
+                    workflows=workflows.render_for_prompt(),
                 ),
             )
         ]
@@ -289,7 +308,9 @@ def build_application(
         workspace=workspace,
         base_registry=registry,
         rules_text=rules.render_for_prompt(),
-        skills_text=render_skills_catalog(),
+        skills_text=_skills_catalog(),
+        skill_sources=session_skill_sources,
+        workflows=workflows,
         review_service_factory=lambda bus: ReviewService(
             provider=provider, config=config, event_bus=bus
         ),
@@ -314,6 +335,8 @@ def build_application(
             memory=memory,
             subagent_coordinator=subagent_coordinator,
             subagent_depth=0,
+            skill_sources=session_skill_sources,
+            workflows=workflows,
         )
 
     orchestrator = AgentOrchestrator(
@@ -329,7 +352,8 @@ def build_application(
         failure_memory=failure_memory,
         memory=memory,
         rules=rules,
-        skills_catalog=render_skills_catalog,
+        skills_catalog=_skills_catalog,
+        workflows_catalog=workflows.render_for_prompt,
         reflection=reflection,
     )
     session = ApplicationSession(session_id=event_bus.session_id, config=config)
@@ -342,4 +366,5 @@ def build_application(
         compressor=compressor,
         terminal_manager=terminal_manager,
         conversation_store=conversation_store,
+        workflows=workflows,
     )
