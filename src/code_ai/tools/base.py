@@ -42,6 +42,11 @@ class ToolContext:
     # tree (0 for the main agent), forwarded so depth limits are enforced.
     subagent_coordinator: Any = None
     subagent_depth: int = 0
+    # Where reusable assets are read from this session. Injected so third-party
+    # locations (see code_ai.interop) are honoured by the tools that load them;
+    # ``None`` degrades to Code-AI's own directories.
+    skill_sources: Any = None
+    workflows: Any = None
 
 
 class BaseTool(Protocol):
