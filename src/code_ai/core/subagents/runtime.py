@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 from code_ai.config.models import AppConfig
 from code_ai.context.compression import ContextCompressor
@@ -54,6 +54,8 @@ class SubagentRuntime:
         base_registry: ToolRegistry,
         rules_text: str = "",
         skills_text: str = "",
+        skill_sources: Sequence[object] = (),
+        workflows: object | None = None,
         review_service_factory: ReviewServiceFactory | None = None,
     ) -> None:
         self._config = config
@@ -62,6 +64,12 @@ class SubagentRuntime:
         self._base_registry = base_registry
         self._rules_text = rules_text
         self._skills_text = skills_text
+        # The same skill directories the parent searches, so a sub-agent that acts
+        # on the injected catalog can actually load what it lists.
+        self._skill_sources = tuple(skill_sources)
+        # Read-only service, safe to share: a sub-agent asked to follow a named
+        # procedure resolves it from the same directories as the parent.
+        self._workflows = workflows
         self._review_service_factory = review_service_factory
 
     def build(self, profile: SubagentProfile) -> BuiltSubagent:
@@ -107,6 +115,8 @@ class SubagentRuntime:
                 event_bus=event_bus,
                 cancel_event=cancel_event,
                 review_service=review_service,
+                skill_sources=self._skill_sources or None,
+                workflows=self._workflows,
             )
 
         orchestrator = AgentOrchestrator(
