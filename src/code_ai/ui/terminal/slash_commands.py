@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shlex
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ from code_ai.config.models import (
     SUPPORTED_REASONING_EFFORTS,
     normalize_api_mode,
 )
+from code_ai.core.workflows import WorkflowRecord
 from code_ai.ui.terminal.widgets import (
     CODE_AI_BANNER_FONT_OPTIONS,
     CODE_AI_SPINNER_OPTIONS,
@@ -78,6 +80,7 @@ SLASH_COMMANDS = [
         "Log raw model requests/responses for parser debugging.",
         "/debug ",
     ),
+    SlashCommand("/workflows", "List the saved workflows you can run by name."),
     SlashCommand("/clear", "Clear the conversation view."),
     SlashCommand("/quit", "Close Code-AI."),
     SlashCommand("/config help", "Browse and pick a /config command to run."),
@@ -192,7 +195,28 @@ def config_commands(*, include_help: bool = False) -> list[SlashCommand]:
     ]
 
 
-def command_suggestions(prefix: str, *, limit: int = 8) -> list[SlashCommand]:
+def workflow_commands(records: Sequence[WorkflowRecord]) -> list[SlashCommand]:
+    """Expose each saved workflow as its own slash command.
+
+    Workflows are user-authored, so they cannot be declared statically: they are
+    discovered on disk (including in another agent's directory) and appear in the
+    picker exactly like a built-in command, which is how the user expects to run
+    them by name.
+    """
+
+    commands: list[SlashCommand] = []
+    for record in records:
+        description = " ".join(record.description.split())
+        summary = description or f"Run the {record.name} workflow."
+        if len(summary) > 80:
+            summary = summary[:77].rstrip() + "..."
+        commands.append(SlashCommand(record.command, summary, f"{record.command} "))
+    return commands
+
+
+def command_suggestions(
+    prefix: str, *, limit: int = 8, extra: Sequence[SlashCommand] = ()
+) -> list[SlashCommand]:
     text = prefix.lstrip()
     if not text.startswith("/"):
         return []
@@ -201,22 +225,24 @@ def command_suggestions(prefix: str, *, limit: int = 8) -> list[SlashCommand]:
     if value_matches:
         return value_matches[:limit]
 
+    # Built-ins first: a workflow can never shadow a command the app owns.
+    available = [*SLASH_COMMANDS, *extra]
     command_prefix = text.rstrip()
-    matches = [item for item in SLASH_COMMANDS if item.command.startswith(command_prefix)]
+    matches = [item for item in available if item.command.startswith(command_prefix)]
     if matches:
         return matches[:limit]
     return [item for item in SLASH_COMMANDS if item.command.startswith("/config")][:limit]
 
 
-def render_suggestions(prefix: str) -> str:
-    suggestions = command_suggestions(prefix)
+def render_suggestions(prefix: str, *, extra: Sequence[SlashCommand] = ()) -> str:
+    suggestions = command_suggestions(prefix, extra=extra)
     if not suggestions:
         return ""
     return "\n".join(f"{item.command:<42} {item.description}" for item in suggestions)
 
 
-def command_completion(prefix: str) -> str | None:
-    suggestions = command_suggestions(prefix, limit=1)
+def command_completion(prefix: str, *, extra: Sequence[SlashCommand] = ()) -> str | None:
+    suggestions = command_suggestions(prefix, limit=1, extra=extra)
     if not suggestions:
         return None
     completion = suggestions[0].completion_text
