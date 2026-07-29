@@ -33,6 +33,7 @@ def build_system_prompt(
     memories: str = "",
     rules: str = "",
     skills: str = "",
+    workflows: str = "",
 ) -> str:
     current_date = datetime.now().astimezone().date().isoformat()
     memories_section = f"\n\n{memories.strip()}\n" if memories.strip() else ""
@@ -40,6 +41,9 @@ def build_system_prompt(
     # The skill catalog is injected (like rules) so the model always sees which
     # skills exist and loads the fitting one on its own, without a discovery call.
     skills_section = f"{skills.strip()}\n\n" if skills.strip() else ""
+    # Same reasoning for workflows: the user invokes them by name, so the model
+    # must know the names exist to load the real procedure instead of inventing one.
+    workflows_section = f"{workflows.strip()}\n\n" if workflows.strip() else ""
     # Rules are mandatory and placed up front so they are never treated as
     # optional context. They come from ~/.code-ai/rules (global) and the
     # workspace's .code-ai/rules (project), and always apply.
@@ -202,15 +206,22 @@ sub-agent really did (files read/changed, commands run and their exit codes) -
 trust the digest over the summary, and if a claim that matters is not supported
 by it, verify yourself before building on it.
 
-{skills_section}Skills live in ~/.code-ai/skills. If the catalog above lists a
-skill that fits the current task, load it with use_skill and follow it on your
-own, even when the user did not mention it. If no catalog is shown above and the
-task is non-trivial, you may call use_skill with no name to discover skills on
-disk first. When the user asks you to capture, save, or reuse a workflow ("create
-a skill", "remember how to do this"), or when you have just worked out a
-repeatable procedure worth keeping, call create_skill with a concise name, a
-one-line description, and the full instructions. Skip all of this for trivial
-one-shot answers.
+{skills_section}Skills live in ~/.code-ai/skills, plus any skill directory another
+agent keeps in this workspace. If the catalog above lists a skill that fits the
+current task, load it with use_skill and follow it on your own, even when the user
+did not mention it. If no catalog is shown above and the task is non-trivial, you
+may call use_skill with no name to discover skills on disk first. When the user
+asks you to capture, save, or reuse a procedure ("create a skill", "remember how
+to do this"), or when you have just worked out a repeatable procedure worth
+keeping, call create_skill with a concise name, a one-line description, and the
+full instructions. Skip all of this for trivial one-shot answers.
+
+{workflows_section}A workflow is a saved procedure the user runs by name. When a
+message invokes one ("/deploy", "run the release workflow", "siga o workflow de
+release"), load it with use_workflow and execute its steps in order - the saved
+steps are the specification, so do not substitute your own plan for them. If the
+name does not match a workflow, call use_workflow with no name to see what exists
+before asking the user.
 
 You have a persistent memory. Call the remember tool to save durable facts so you
 act on them in future turns and sessions. Save proactively, not only when asked:

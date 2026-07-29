@@ -192,6 +192,7 @@ class AgentOrchestrator:
         memory: MemoryService | None = None,
         rules: RulesService | None = None,
         skills_catalog: Callable[[], str] | None = None,
+        workflows_catalog: Callable[[], str] | None = None,
         system_prompt_builder: Callable[[], str] | None = None,
         reflection: ReflectionService | None = None,
     ) -> None:
@@ -223,6 +224,10 @@ class AgentOrchestrator:
         # a skill created mid-session becomes visible next turn; ``None`` injects
         # nothing (kept optional so directly-constructed agents/tests stay clean).
         self._skills_catalog = skills_catalog
+        # Renders the available-workflows catalog on each prompt rebuild, so a
+        # workflow the user just authored (here or in another agent's directory)
+        # is invocable by name without a restart.
+        self._workflows_catalog = workflows_catalog
         # Interactive approver. Defaults to deny-all so non-interactive runs keep
         # the prior behaviour; the terminal UI swaps in a modal-backed gateway.
         self.approval_gateway: ApprovalGateway = approval_gateway or DenyAllGateway()
@@ -281,6 +286,7 @@ class AgentOrchestrator:
         )
         rules = self.rules.render_for_prompt() if self.rules else ""
         skills = self._skills_catalog() if self._skills_catalog else ""
+        workflows = self._workflows_catalog() if self._workflows_catalog else ""
         self.conversation.messages[0] = Message(
             role="system",
             content=build_system_prompt(
@@ -290,6 +296,7 @@ class AgentOrchestrator:
                 memories=memories,
                 rules=rules,
                 skills=skills,
+                workflows=workflows,
             ),
         )
 
