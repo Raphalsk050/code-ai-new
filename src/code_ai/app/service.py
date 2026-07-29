@@ -26,6 +26,7 @@ from code_ai.core.goal import (
 from code_ai.core.orchestration import AgentOrchestrator, TurnResult
 from code_ai.core.planning import PlannerMode
 from code_ai.core.state import AgentState
+from code_ai.core.workflows import WorkflowService
 from code_ai.events.bus import AsyncEventBus, EventSubscriber
 from code_ai.events.models import EventEnvelope
 from code_ai.providers.base import ModelProvider
@@ -59,6 +60,7 @@ class CodeAIApplication:
         compressor: ContextCompressor,
         terminal_manager: PersistentTerminalManager | None = None,
         conversation_store: ConversationStore | None = None,
+        workflows: WorkflowService | None = None,
     ) -> None:
         self.session = session
         self.event_bus = event_bus
@@ -67,6 +69,10 @@ class CodeAIApplication:
         self.compressor = compressor
         self.terminal_manager = terminal_manager
         self.conversation_store = conversation_store
+        # Saved procedures discoverable this session. Exposed on the facade
+        # because clients run them by name: the TUI turns each one into a slash
+        # command, and the model reaches the same records through use_workflow.
+        self.workflows = workflows
         # Id of the conversation currently loaded in the live session. Assigned
         # by the client via reset_conversation/load_conversation; a turn persists
         # under it so the user can resume the thread later.

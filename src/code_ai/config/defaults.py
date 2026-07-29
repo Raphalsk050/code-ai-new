@@ -14,6 +14,12 @@ DEFAULT_CONFIG_FILENAME = "config.json"
 RULES_DIRNAME = "rules"
 RULES_DIR_ENV = "CODE_AI_RULES_DIR"
 
+# Workflows - named procedures invoked on demand (unlike rules, which are always
+# injected). Same two scopes and the same override story as rules: global ones
+# live install-wide, project ones live in the workspace so they can be committed.
+WORKFLOWS_DIRNAME = "workflows"
+WORKFLOWS_DIR_ENV = "CODE_AI_WORKFLOWS_DIR"
+
 # Written into a saved config.json when no real api_key is set, so the field is
 # never left blank. Treated as "unset" at runtime (see config.models), so it
 # never reaches a provider and never satisfies the non-local key requirement.
@@ -69,6 +75,30 @@ def project_rules_dir(workspace: Path | str) -> Path:
 
     resolved = Path(workspace).expanduser().resolve()
     return resolved / DEFAULT_CONFIG_DIRNAME / RULES_DIRNAME
+
+
+def global_workflows_dir() -> Path:
+    """Directory holding install-wide workflows.
+
+    Sits beside the global rules so personal procedures are available in every
+    workspace. Overridable via ``CODE_AI_WORKFLOWS_DIR``.
+    """
+
+    override = os.environ.get(WORKFLOWS_DIR_ENV)
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / DEFAULT_CONFIG_DIRNAME / WORKFLOWS_DIRNAME
+
+
+def project_workflows_dir(workspace: Path | str) -> Path:
+    """Directory holding workflows scoped to a single workspace.
+
+    Lives inside the workspace (``<workspace>/.code-ai/workflows``), like project
+    rules, so a team's procedures are committed with the repository.
+    """
+
+    resolved = Path(workspace).expanduser().resolve()
+    return resolved / DEFAULT_CONFIG_DIRNAME / WORKFLOWS_DIRNAME
 
 
 def project_conversations_dir(workspace: Path | str) -> Path:
