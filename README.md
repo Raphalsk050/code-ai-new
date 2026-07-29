@@ -12,6 +12,7 @@ Code-AI is a terminal-based coding agent with a small application facade, typed 
 - `context`: conversation state, token accounting, and compression.
 - `events`: event contracts, event bus, and JSON Lines sinks.
 - `tools`: schemas and implementations for files, commands, terminals, review, system info, and web search.
+- `interop`: adapters that map other agents' on-disk conventions (rules, skills, workflows) onto Code-AI sources.
 - `config`: defaults, loading, validation, and redacted display.
 
 The CLI and UI do not parse provider SDK objects or execute tools directly. Provider adapters convert SDK-specific responses into normalized internal models at the boundary.
@@ -111,6 +112,45 @@ Every delegation resolves to a structured report - unknown types, limits, timeou
 
 Because `dispatch_agent` carries the `delegate` capability, `ask` mode prompts once at the delegation boundary; the sub-agents then run without further prompts (so a parallel fan-out never blocks on approval).
 Relevant limits live under `budgets`: `max_subagent_depth` (default 1, no recursion), `max_concurrent_subagents`, `max_subagents_per_turn`, `subagent_explorer_timeout_s`, `subagent_worker_timeout_s`, and the `subagent_retry_max_attempts` / `subagent_circuit_*` resilience knobs.
+
+## Rules, skills, and workflows
+
+Three kinds of reusable instruction live on disk, and they differ only in when they apply.
+
+- **Rules** are mandatory and always injected into the system prompt.
+Global rules live in `~/.code-ai/rules`, project rules in `<workspace>/.code-ai/rules` so they can be committed with the repository.
+Author one with the `create_rule` tool.
+- **Skills** load on demand when the task matches.
+They live in `~/.code-ai/skills`, either as `<name>/SKILL.md` or as a flat `<name>.md`.
+The agent sees a catalog of names and descriptions every session and loads the fitting one with `use_skill`; `create_skill` writes new ones.
+- **Workflows** are named procedures the user runs on demand.
+Global workflows live in `~/.code-ai/workflows`, project workflows in `<workspace>/.code-ai/workflows`.
+Each one is a markdown file whose body is the procedure.
+
+In the terminal UI every workflow is also a slash command: `/deploy` runs `deploy.md`, anything typed after the name travels with it (`/release 1.4.0`), and `/workflows` lists what is available.
+Built-in commands always win, so a workflow can never shadow `/status`.
+The agent reaches the same files through `use_workflow` when a request names one in prose.
+
+### Assets written for other agents
+
+Rules, skills, and workflows authored for [Cline](https://cline.bot) are picked up as they are, with no migration, copying, or configuration.
+Open a workspace that already has them and they are simply in effect.
+
+| Kind | Cline location |
+| --- | --- |
+| Project rules | `<workspace>/.clinerules` (a single file, or a directory of rule files) |
+| Global rules | `~/Documents/Cline/Rules/` |
+| Project workflows | `<workspace>/.clinerules/workflows/` |
+| Global workflows | `~/Documents/Cline/Workflows/` |
+| Skills | `<workspace>/.clinerules/skills/`, `<workspace>/.cline/skills/`, `~/Documents/Cline/Skills/` |
+
+Discovery is additive and every location is optional: absent or unreadable directories are skipped, so an install with none of them behaves exactly as before.
+Code-AI's own directories take precedence, so a same-named skill or workflow of yours shadows the imported one; a rule from either place is always applied, and the prompt labels which agent it came from.
+`.clinerules/workflows` and `.clinerules/skills` are read as workflows and skills, never as always-on rules.
+Cline's own enable/disable toggles are stored inside the extension's state and cannot be read from disk, so a rule file present in the folder is treated as active here.
+
+Set `CODE_AI_CLINE_HOME` if Cline's documents folder lives somewhere other than `~/Documents/Cline`.
+`CODE_AI_RULES_DIR`, `CODE_AI_SKILLS_DIR`, and `CODE_AI_WORKFLOWS_DIR` relocate Code-AI's own global directories.
 
 ## Sampling and reasoning
 
@@ -258,6 +298,10 @@ If the vision call fails, the raw images are attached as before.
 - `architecture_review`
 - `code_review`
 - `build_review`
+- `use_skill`
+- `create_skill`
+- `use_workflow`
+- `create_rule`
 - `dispatch_agent`
 
 File and process tools resolve symlinks and enforce that all operations remain inside the configured workspace.
