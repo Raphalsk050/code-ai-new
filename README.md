@@ -127,9 +127,11 @@ The agent sees a catalog of names and descriptions every session and loads the f
 Global workflows live in `~/.code-ai/workflows`, project workflows in `<workspace>/.code-ai/workflows`.
 Each one is a markdown file whose body is the procedure.
 
-In the terminal UI every workflow is also a slash command: `/deploy` runs `deploy.md`, anything typed after the name travels with it (`/release 1.4.0`), and `/workflows` lists what is available.
-Built-in commands always win, so a workflow can never shadow `/status`.
-The agent reaches the same files through `use_workflow` when a request names one in prose.
+In the terminal UI every workflow and every skill is also a slash command, with `/` autocomplete and Tab to accept.
+`/deploy` runs `deploy.md`, `/pdf-magic` forces that skill for the next turn instead of waiting for the model to match it, and anything typed after the name travels with it (`/release 1.4.0`, `/pdf-magic extract the table from report.pdf`).
+`/workflows` and `/skills` list what is available, with the origin of each.
+Resolution order is built-in commands, then workflows, then skills - so neither can shadow `/status`, and a name that exists as both runs the workflow.
+The agent reaches the same files through `use_workflow` and `use_skill` when a request names one in prose or a task simply matches a skill's description.
 
 ### Assets written for other agents
 
@@ -140,12 +142,14 @@ Cline reads two workspace layouts - the current `.cline/` one and the older `.cl
 
 | Kind | Cline location |
 | --- | --- |
-| Project rules | `<workspace>/.cline/rules/`, `<workspace>/.clinerules` (a single file, or a directory of rule files) |
-| Global rules | `~/Documents/Cline/Rules/` |
-| Project workflows | `<workspace>/.cline/workflows/`, `<workspace>/.clinerules/workflows/` |
-| Global workflows | `~/Documents/Cline/Workflows/` |
-| Project skills | `<workspace>/.cline/skills/`, `<workspace>/.clinerules/skills/`, `<workspace>/.agents/skills/` |
+| Global rules | `~/.cline/rules/`, `~/Documents/Cline/Rules/` (legacy) |
+| Global workflows | `~/.cline/workflows/`, `~/Documents/Cline/Workflows/` (legacy) |
 | Global skills | `~/.cline/skills/` |
+| Project rules | `<workspace>/.cline/rules/`, `<workspace>/.clinerules` (a single file, or a directory of rule files) |
+| Project workflows | `<workspace>/.cline/workflows/`, `<workspace>/.clinerules/workflows/` |
+| Project skills | `<workspace>/.cline/skills/`, `<workspace>/.clinerules/skills/`, `<workspace>/.agents/skills/` |
+
+The install-wide scope is `~/.cline/` in the current layout; the documents folder is the older one and is still read, so both generations of a setup work.
 
 Discovery is additive and every location is optional: absent or unreadable directories are skipped, so an install with none of them behaves exactly as before.
 Code-AI's own directories take precedence, so a same-named skill or workflow of yours shadows the imported one; a rule from either place is always applied, and the prompt labels which agent it came from.
@@ -153,7 +157,7 @@ Code-AI's own directories take precedence, so a same-named skill or workflow of 
 A skill switched off with `disabled: true` in its `SKILL.md` frontmatter is left out of the catalog and refuses to load, here as in Cline.
 Cline's rule and workflow toggles, by contrast, live in the extension's own state and cannot be read from disk, so a rule file present in the folder is treated as active.
 
-Set `CODE_AI_CLINE_HOME` if Cline's documents folder lives somewhere other than `~/Documents/Cline` (on some Linux and WSL setups it is `~/Cline`, which is detected automatically).
+Set `CODE_AI_CLINE_HOME` if Cline's legacy documents folder lives somewhere other than `~/Documents/Cline` (on some Linux and WSL setups it is `~/Cline`, which is detected automatically).
 `CODE_AI_RULES_DIR`, `CODE_AI_SKILLS_DIR`, and `CODE_AI_WORKFLOWS_DIR` relocate Code-AI's own global directories.
 
 ## Sampling and reasoning
