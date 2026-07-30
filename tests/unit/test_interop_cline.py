@@ -276,3 +276,62 @@ def test_native_workflow_shadows_a_cline_one(tmp_path, cline_home, monkeypatch) 
     records = service.load()
 
     assert [(record.body, record.origin) for record in records] == [("Mine.", "code-ai")]
+
+
+# --------------------------------------------------------------------------- #
+# The modern global scope (~/.cline)
+# --------------------------------------------------------------------------- #
+
+
+def test_modern_global_scope_is_read(tmp_path, cline_home, monkeypatch) -> None:
+    """Cline's current layout keeps install-wide assets under ``~/.cline``."""
+
+    workspace = tmp_path / "ws"
+    monkeypatch.setenv("CODE_AI_WORKFLOWS_DIR", str(tmp_path / "own-workflows"))
+    global_dir = Path.home() / ".cline"
+    _write(global_dir / "rules" / "language.md", "Responda em pt-BR.")
+    _write(global_dir / "workflows" / "release.md", "Cut a release.")
+    _write(
+        global_dir / "skills" / "pdf-magic" / "SKILL.md",
+        "---\nname: pdf-magic\ndescription: Extract tables from PDFs.\n---\n\nUse pdfplumber.",
+    )
+
+    rules = RulesService(
+        global_dir=tmp_path / "g",
+        project_dir=tmp_path / "p",
+        extra_sources=external_rule_sources(workspace),
+    ).load()
+    workflows = WorkflowService(sources=workflow_sources(workspace)).load()
+    skills = discover_skills_from(skill_sources(workspace))
+
+    assert [(record.body, record.scope, record.origin) for record in rules] == [
+        ("Responda em pt-BR.", "global", "cline")
+    ]
+    assert [(record.name, record.scope, record.origin) for record in workflows] == [
+        ("release", "global", "cline")
+    ]
+    assert [(record.name, record.origin) for record in skills] == [("pdf-magic", "cline")]
+
+
+def test_both_global_layouts_are_read_together(tmp_path, cline_home, monkeypatch) -> None:
+    """The legacy documents folder still counts alongside ``~/.cline``."""
+
+    workspace = tmp_path / "ws"
+    monkeypatch.setenv("CODE_AI_WORKFLOWS_DIR", str(tmp_path / "own-workflows"))
+    _write(Path.home() / ".cline" / "rules" / "modern.md", "Regra nova.")
+    _write(cline_home / "Rules" / "legacy.md", "Regra antiga.")
+    _write(Path.home() / ".cline" / "workflows" / "modern.md", "Modern steps.")
+    _write(cline_home / "Workflows" / "legacy.md", "Legacy steps.")
+
+    bodies = [
+        record.body
+        for record in RulesService(
+            global_dir=tmp_path / "g",
+            project_dir=tmp_path / "p",
+            extra_sources=external_rule_sources(workspace),
+        ).load()
+    ]
+    names = [record.name for record in WorkflowService(sources=workflow_sources(workspace)).load()]
+
+    assert bodies == ["Regra nova.", "Regra antiga."]
+    assert names == ["legacy", "modern"]
