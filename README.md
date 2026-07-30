@@ -136,20 +136,24 @@ The agent reaches the same files through `use_workflow` when a request names one
 Rules, skills, and workflows authored for [Cline](https://cline.bot) are picked up as they are, with no migration, copying, or configuration.
 Open a workspace that already has them and they are simply in effect.
 
+Cline reads two workspace layouts - the current `.cline/` one and the older `.clinerules` one - and so does Code-AI:
+
 | Kind | Cline location |
 | --- | --- |
-| Project rules | `<workspace>/.clinerules` (a single file, or a directory of rule files) |
+| Project rules | `<workspace>/.cline/rules/`, `<workspace>/.clinerules` (a single file, or a directory of rule files) |
 | Global rules | `~/Documents/Cline/Rules/` |
-| Project workflows | `<workspace>/.clinerules/workflows/` |
+| Project workflows | `<workspace>/.cline/workflows/`, `<workspace>/.clinerules/workflows/` |
 | Global workflows | `~/Documents/Cline/Workflows/` |
-| Skills | `<workspace>/.clinerules/skills/`, `<workspace>/.cline/skills/`, `~/Documents/Cline/Skills/` |
+| Project skills | `<workspace>/.cline/skills/`, `<workspace>/.clinerules/skills/`, `<workspace>/.agents/skills/` |
+| Global skills | `~/.cline/skills/` |
 
 Discovery is additive and every location is optional: absent or unreadable directories are skipped, so an install with none of them behaves exactly as before.
 Code-AI's own directories take precedence, so a same-named skill or workflow of yours shadows the imported one; a rule from either place is always applied, and the prompt labels which agent it came from.
 `.clinerules/workflows` and `.clinerules/skills` are read as workflows and skills, never as always-on rules.
-Cline's own enable/disable toggles are stored inside the extension's state and cannot be read from disk, so a rule file present in the folder is treated as active here.
+A skill switched off with `disabled: true` in its `SKILL.md` frontmatter is left out of the catalog and refuses to load, here as in Cline.
+Cline's rule and workflow toggles, by contrast, live in the extension's own state and cannot be read from disk, so a rule file present in the folder is treated as active.
 
-Set `CODE_AI_CLINE_HOME` if Cline's documents folder lives somewhere other than `~/Documents/Cline`.
+Set `CODE_AI_CLINE_HOME` if Cline's documents folder lives somewhere other than `~/Documents/Cline` (on some Linux and WSL setups it is `~/Cline`, which is detected automatically).
 `CODE_AI_RULES_DIR`, `CODE_AI_SKILLS_DIR`, and `CODE_AI_WORKFLOWS_DIR` relocate Code-AI's own global directories.
 
 ## Sampling and reasoning
