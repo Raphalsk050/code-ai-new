@@ -121,6 +121,11 @@ class PartialObjectDecoder:
 
     # -- reading ---------------------------------------------------------- #
 
+    @property
+    def consumed(self) -> int:
+        """How many raw characters have been scanned so far."""
+        return self._consumed
+
     def value(self, key: str) -> PartialValue | None:
         """The accumulator for ``key``, or None if it has not started yet."""
         return self._values.get(key)
