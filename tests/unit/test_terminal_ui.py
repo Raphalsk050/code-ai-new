@@ -1203,6 +1203,40 @@ def test_config_learn_completes_and_suggests_values() -> None:
     assert "/config learn off" in rendered
 
 
+def test_config_live_code_command_persists_and_updates_active_config(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    config_path = tmp_path / "config.json"
+    result = handle_config_command(
+        fake_app,
+        "/config live-code off",
+        config_path=config_path,
+    )
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert "Live code off" in result
+    assert fake_app.session.config.terminal_live_code is False
+    assert saved["terminal_live_code"] is False
+
+
+def test_config_live_code_command_rejects_invalid_value(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    config_path = tmp_path / "config.json"
+    result = handle_config_command(
+        fake_app,
+        "/config live-code sometimes",
+        config_path=config_path,
+    )
+    assert "Usage: /config live-code" in result
+    assert not config_path.exists()
+
+
+def test_config_live_code_completes_and_suggests_values() -> None:
+    assert command_completion("/config live-c") == "/config live-code "
+    assert command_completion("/config live-code of") == "/config live-code off"
+    rendered = render_suggestions("/config live-code ")
+    assert "/config live-code on" in rendered
+    assert "/config live-code off" in rendered
+
+
 async def test_up_arrow_recalls_previous_submitted_entries(tmp_path) -> None:
     fake_app = FakeTerminalApplication(tmp_path)
     terminal_app = create_terminal_app(fake_app)
