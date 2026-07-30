@@ -176,7 +176,20 @@ class NativeOllamaProvider:
                     if reasoning:
                         reasoning_parts.append(reasoning)
                         yield ProviderEvent(kind="reasoning_delta", reasoning_delta=reasoning)
-                    tool_calls.extend(_ollama_tool_calls(message))
+                    for call in _ollama_tool_calls(message):
+                        index = len(tool_calls)
+                        tool_calls.append(call)
+                        # Ollama's native API delivers a tool call whole rather
+                        # than fragment by fragment, so this is the only chance
+                        # to announce it. The UI still gets the file it is about
+                        # to write - it just arrives in one piece instead of
+                        # typing itself out.
+                        yield ProviderEvent(
+                            kind="tool_call_delta",
+                            tool_call_name=call.name,
+                            tool_call_arguments=json.dumps(call.arguments, ensure_ascii=False),
+                            tool_call_index=index,
+                        )
                     usage = _ollama_usage(data) or usage
         except UnsupportedProviderCapability:
             raise
