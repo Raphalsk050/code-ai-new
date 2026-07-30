@@ -24,6 +24,8 @@ SKILL_ENTRYPOINT = "SKILL.md"
 # the catalog stays honest about where an instruction set came from.
 NATIVE_ORIGIN = "code-ai"
 
+_TRUTHY = frozenset({"true", "yes", "1", "on"})
+
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
 
@@ -45,6 +47,10 @@ class SkillRecord:
     body: str
     path: Path
     origin: str = NATIVE_ORIGIN
+    # ``disabled: true`` in the frontmatter switches a skill off without deleting
+    # it. A disabled skill is left out of the catalog and refuses to load, so the
+    # user's own on/off decision is respected instead of silently overridden.
+    disabled: bool = False
 
     def to_summary(self) -> dict[str, str]:
         return {"name": self.name, "description": self.description, "origin": self.origin}
@@ -130,7 +136,12 @@ def _record_from_file(
     name = front.get("name") or fallback_name
     description = front.get("description") or ""
     return SkillRecord(
-        name=name, description=description, body=body, path=path, origin=origin
+        name=name,
+        description=description,
+        body=body,
+        path=path,
+        origin=origin,
+        disabled=front.get("disabled", "").strip().casefold() in _TRUTHY,
     )
 
 
@@ -158,6 +169,8 @@ def discover_skills_from(sources: Sequence[SkillSource]) -> list[SkillRecord]:
     records: dict[str, SkillRecord] = {}
     for source in sources:
         for name, record in _discover_in_root(source).items():
+            if record.disabled:
+                continue
             records.setdefault(name.casefold(), record)
     return [records[key] for key in sorted(records)]
 
@@ -239,10 +252,10 @@ def load_skill_from(name: str, *, sources: Sequence[SkillSource]) -> SkillRecord
     for source in sources:
         entry = source.root / slug / SKILL_ENTRYPOINT
         if entry.is_file():
-            return _record_from_file(entry, fallback_name=slug, origin=source.origin)
+            return _enabled(_record_from_file(entry, fallback_name=slug, origin=source.origin))
         flat = source.root / f"{slug}.md"
         if flat.is_file():
-            return _record_from_file(flat, fallback_name=slug, origin=source.origin)
+            return _enabled(_record_from_file(flat, fallback_name=slug, origin=source.origin))
 
     # Fall back to the declared names in the catalog: a skill authored elsewhere
     # can declare a frontmatter name that does not match its filename, and the
@@ -255,3 +268,14 @@ def load_skill_from(name: str, *, sources: Sequence[SkillSource]) -> SkillRecord
 
     available = ", ".join(record.name for record in discovered) or "(none)"
     raise ToolExecutionError(f"Skill not found: {slug}. Available skills: {available}.")
+
+
+def _enabled(record: SkillRecord) -> SkillRecord:
+    """Return the record, or refuse when its author switched it off."""
+
+    if record.disabled:
+        raise ToolExecutionError(
+            f"Skill '{record.name}' is disabled in its frontmatter ({record.path}). "
+            "Remove 'disabled: true' there to use it again."
+        )
+    return record
