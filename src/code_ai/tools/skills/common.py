@@ -125,6 +125,46 @@ def render_skill_markdown(*, name: str, description: str, instructions: str) -> 
     )
 
 
+def render_skill_invocation(
+    record: SkillRecord, argument: str = "", *, max_chars: int | None = None
+) -> str:
+    """Turn a skill into the message that forces it for the next turn.
+
+    Naming a skill explicitly means "use this one now", so its instructions are
+    handed over directly instead of relying on the model to match the catalog and
+    call ``use_skill``. Long bodies are bounded and the file path travels along,
+    so the model can read the rest (and any bundled files) itself.
+    """
+
+    body = record.body.strip()
+    truncated = max_chars is not None and len(body) > max_chars
+    if truncated:
+        body = body[:max_chars].rstrip()
+    lines = [
+        f'Use the "{record.name}" skill for this task. Its instructions, loaded from '
+        f"{record.path}, follow.",
+        "",
+        "Apply them for this request: they describe how the user wants this kind of "
+        "work done, so they take precedence over your default approach.",
+        "",
+        body,
+    ]
+    if truncated:
+        lines.extend(["", f"(Instructions truncated - read {record.path} for the rest.)"])
+    extra = argument.strip()
+    if extra:
+        lines.extend(["", f"Task: {extra}"])
+    else:
+        lines.extend(
+            [
+                "",
+                "Apply the skill to the task at hand. If no task is clear yet, ask what "
+                "to apply it to instead of guessing.",
+            ]
+        )
+    return "\n".join(lines)
+
+
 def _record_from_file(
     path: Path, *, fallback_name: str, origin: str = NATIVE_ORIGIN
 ) -> SkillRecord:
