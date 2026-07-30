@@ -156,6 +156,11 @@ SLASH_COMMANDS = [
         "Show/hide the model's explanation of why it's making each change.",
         "/config learn ",
     ),
+    SlashCommand(
+        "/config live-code <on|off>",
+        "Show/hide the file being written, live, as the model streams it.",
+        "/config live-code ",
+    ),
 ]
 
 API_MODE_SUGGESTIONS = ("responses", "completions", "ollama")
@@ -477,6 +482,28 @@ def handle_config_command(application: Any, command_text: str, *, config_path: P
                 "explanation of why each change is needed."
             )
         return "command> Learn mode off. Approval prompts will no longer show explanations."
+    if action == "live-code":
+        if len(parts) != 3 or parts[2].strip().lower() not in {"on", "off"}:
+            return "command> Usage: /config live-code <on|off>"
+        enabled = parts[2].strip().lower() == "on"
+        result = _apply_config_change(
+            application,
+            config_path=config_path,
+            changes={"terminal_live_code": enabled},
+            live_fields={"terminal_live_code"},
+            restart_required=False,
+        )
+        if result.startswith("command> Config not changed"):
+            return result
+        if enabled:
+            return (
+                "command> Live code on. Files show up in a code window as the "
+                "model writes them."
+            )
+        return (
+            "command> Live code off. Writes report progress on one line only, "
+            "and the finished code still shows in the approval dialog."
+        )
     return f"command> Unknown config action: {action}"
 
 
@@ -622,6 +649,18 @@ def _value_suggestions(prefix: str) -> list[SlashCommand]:
             SlashCommand(
                 f"/config learn {value}",
                 "Show/hide the model's explanation of why it's making each change.",
+            )
+            for value in ("on", "off")
+            if value.startswith(value_prefix)
+        ]
+
+    live_code_prefix = "/config live-code "
+    if prefix.startswith(live_code_prefix):
+        value_prefix = prefix[len(live_code_prefix) :].strip().lower()
+        return [
+            SlashCommand(
+                f"/config live-code {value}",
+                "Show/hide the file being written, live, as the model streams it.",
             )
             for value in ("on", "off")
             if value.startswith(value_prefix)
