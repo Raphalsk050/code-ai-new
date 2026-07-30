@@ -9,20 +9,21 @@ from code_ai.tools.skills.common import SkillSource
 
 # Cline's on-disk conventions, expressed as Code-AI sources.
 #
-# Cline is mid-migration between two workspace layouts and reads both, so both
-# are read here as well:
+# Cline is mid-migration between two layouts and reads both, so both are read
+# here as well - in each scope the modern ``.cline`` directory comes first:
 #
-#   modern:  <ws>/.cline/{rules,workflows,skills}/
-#   legacy:  <ws>/.clinerules            (a single rules file)
-#            <ws>/.clinerules/           (a directory of rules)
+#   modern:  ~/.cline/{rules,workflows,skills}/          (global)
+#            <ws>/.cline/{rules,workflows,skills}/       (project)
+#   legacy:  ~/Documents/Cline/{Rules,Workflows}/        (global)
+#            <ws>/.clinerules                            (a single rules file)
+#            <ws>/.clinerules/                           (a directory of rules)
 #            <ws>/.clinerules/workflows/
 #            <ws>/.clinerules/skills/
 #            <ws>/.agents/skills/
 #
-# Global rules and workflows live under a documents folder; global skills live
-# under a dotfile directory instead (``~/.cline/skills``). The documents folder
-# is a Cline setting, and on some Linux setups it lands in ``~/Cline``, so both
-# the alternate default and an explicit override are honoured.
+# The legacy documents folder is a Cline setting, and on some Linux setups it
+# lands in ``~/Cline``, so both the alternate default and an explicit override
+# are honoured.
 
 ORIGIN = "cline"
 
@@ -50,8 +51,14 @@ RULE_EXTENSIONS = frozenset({".md", ".markdown", ".mdc", ".txt"})
 _NON_RULE_DIRS = frozenset({WORKFLOWS_DIRNAME, SKILLS_DIRNAME})
 
 
+def cline_global_dir() -> Path:
+    """Cline's install-wide directory in the current layout (``~/.cline``)."""
+
+    return Path.home() / MODERN_DIRNAME
+
+
 def cline_home() -> Path:
-    """Directory holding Cline's install-wide rules and workflows.
+    """Legacy documents folder holding install-wide rules and workflows.
 
     ``~/Documents/Cline`` is the documented default; ``~/Cline`` is where it
     lands on some Linux/WSL setups, so it is used when the default is absent.
@@ -67,10 +74,10 @@ def cline_home() -> Path:
     return alternate if alternate.is_dir() else documents
 
 
-def _rules_dir(root: Path) -> RuleSource:
+def _rules_dir(root: Path, *, scope: str = "project") -> RuleSource:
     return RuleSource(
         path=root,
-        scope="project",
+        scope=scope,
         origin=ORIGIN,
         recursive=True,
         exclude_dirs=_NON_RULE_DIRS,
@@ -87,14 +94,8 @@ def rule_sources(workspace: Path | str) -> list[RuleSource]:
 
     resolved = Path(workspace).expanduser().resolve()
     return [
-        RuleSource(
-            path=cline_home() / GLOBAL_RULES_DIRNAME,
-            scope="global",
-            origin=ORIGIN,
-            recursive=True,
-            exclude_dirs=_NON_RULE_DIRS,
-            extensions=RULE_EXTENSIONS,
-        ),
+        _rules_dir(cline_global_dir() / RULES_DIRNAME, scope="global"),
+        _rules_dir(cline_home() / GLOBAL_RULES_DIRNAME, scope="global"),
         _rules_dir(resolved / MODERN_DIRNAME / RULES_DIRNAME),
         _rules_dir(resolved / LEGACY_RULES_NAME),
     ]
@@ -120,6 +121,11 @@ def workflow_sources(workspace: Path | str) -> list[WorkflowSource]:
             origin=ORIGIN,
         ),
         WorkflowSource(
+            root=cline_global_dir() / WORKFLOWS_DIRNAME,
+            scope="global",
+            origin=ORIGIN,
+        ),
+        WorkflowSource(
             root=cline_home() / GLOBAL_WORKFLOWS_DIRNAME,
             scope="global",
             origin=ORIGIN,
@@ -138,7 +144,7 @@ def skill_sources(workspace: Path | str) -> list[SkillSource]:
 
     resolved = Path(workspace).expanduser().resolve()
     return [
-        SkillSource(root=Path.home() / MODERN_DIRNAME / SKILLS_DIRNAME, origin=ORIGIN),
+        SkillSource(root=cline_global_dir() / SKILLS_DIRNAME, origin=ORIGIN),
         SkillSource(root=resolved / MODERN_DIRNAME / SKILLS_DIRNAME, origin=ORIGIN),
         SkillSource(root=resolved / LEGACY_RULES_NAME / SKILLS_DIRNAME, origin=ORIGIN),
         SkillSource(root=resolved / LEGACY_AGENTS_DIRNAME / SKILLS_DIRNAME, origin=ORIGIN),
