@@ -284,6 +284,8 @@ The complete code still goes through the approval dialog before anything is writ
 
 It covers every tool that writes to the workspace - `write_file`, `edit_code` (previewing the replacement text), `create_rule`, `create_skill`.
 Tools that merely pass code around, such as `code_review`, are deliberately left out: nothing of theirs is being written.
+Writes made by delegated sub-agents are not shown either - several agents write concurrently, and interleaving their files in one window would show a file that never existed.
+The AGENTS panel reports what each of them is doing instead.
 
 Two costs are bounded by design, so a long file is no more expensive than a short one:
 
