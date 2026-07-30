@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from code_ai.config.models import AppConfig
@@ -11,6 +13,7 @@ from code_ai.providers.models import (
     ToolCall,
 )
 from code_ai.providers.ollama import (
+    NativeOllamaProvider,
     _ollama_reasoning_delta,
     _ollama_usage,
     messages_to_ollama,
@@ -299,6 +302,83 @@ def test_provider_tool_payloads_set_strict_when_requested() -> None:
 
     chat_payload = tools_to_chat([definition], strict=True)[0]
     assert chat_payload["function"]["strict"] is True
+
+
+class _FakeStreamResponse:
+    def __init__(self, lines: list[str]) -> None:
+        self._lines = lines
+
+    def raise_for_status(self) -> None:
+        return None
+
+    async def aiter_lines(self):
+        for line in self._lines:
+            yield line
+
+
+class _FakeStreamContext:
+    def __init__(self, lines: list[str]) -> None:
+        self._lines = lines
+
+    async def __aenter__(self) -> _FakeStreamResponse:
+        return _FakeStreamResponse(self._lines)
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+
+class _FakeHttpxClient:
+    def __init__(self, lines: list[str]) -> None:
+        self._lines = lines
+
+    def stream(self, *args: object, **kwargs: object) -> _FakeStreamContext:
+        return _FakeStreamContext(self._lines)
+
+
+def _ollama_provider(lines: list[str]) -> NativeOllamaProvider:
+    provider = object.__new__(NativeOllamaProvider)
+    provider._client = _FakeHttpxClient(lines)
+    provider._config = AppConfig()
+    provider._base_url = "http://localhost:11434/"
+    provider._capabilities = ProviderCapabilities(streaming=True, tool_calling=True)
+    return provider
+
+
+async def test_ollama_announces_each_whole_tool_call() -> None:
+    # The native API hands a tool call over in one piece, so the live code view
+    # has this single chance to learn what is about to be written.
+    lines = [
+        json.dumps({"message": {"content": "writing it now"}}),
+        json.dumps(
+            {
+                "message": {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "write_file",
+                                "arguments": {"path": "a.py", "content": "x = 1\n"},
+                            }
+                        }
+                    ]
+                },
+                "done": True,
+            }
+        ),
+    ]
+    provider = _ollama_provider(lines)
+
+    events = [
+        event
+        async for event in provider.stream(
+            ModelRequest(model="fake", messages=[Message(role="user", content="go")])
+        )
+    ]
+
+    deltas = [event for event in events if event.kind == "tool_call_delta"]
+    assert len(deltas) == 1
+    assert deltas[0].tool_call_name == "write_file"
+    assert json.loads(deltas[0].tool_call_arguments) == {"path": "a.py", "content": "x = 1\n"}
+    assert events[-1].response.tool_calls[0].name == "write_file"
 
 
 def test_ollama_base_url_and_usage_normalization() -> None:
