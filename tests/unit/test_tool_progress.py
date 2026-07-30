@@ -40,6 +40,88 @@ def test_view_model_progress_without_path_shows_chars() -> None:
     assert vm.conversation[-1] == "tool~ execute_command: building call (25 chars)"
 
 
+# --- live code window state --------------------------------------------------
+
+
+def _code_event(offset: int, delta: str, **extra: object) -> EventEnvelope:
+    payload: dict[str, object] = {
+        "name": "write_file",
+        "path": "src/foo.py",
+        "code_key": "content",
+        "code_offset": offset,
+        "code_delta": delta,
+        "code_complete": False,
+    }
+    payload.update(extra)
+    return _event(payload)
+
+
+def test_code_window_grows_from_append_only_deltas() -> None:
+    vm = TerminalViewModel()
+    vm.apply(_code_event(0, "def f():\n"))
+    vm.apply(_code_event(9, "    return 1\n", code_complete=True))
+
+    assert vm.code_stream_visible is True
+    assert vm.code_stream_code == "def f():\n    return 1\n"
+    assert vm.code_stream_path == "src/foo.py"
+    assert vm.code_stream_key == "content"
+    assert vm.code_stream_complete is True
+
+
+def test_a_second_call_opens_a_fresh_window() -> None:
+    vm = TerminalViewModel()
+    vm.apply(_code_event(0, "old file\n", code_complete=True))
+    vm.apply(_code_event(0, "new file\n", path="src/bar.py"))
+
+    assert vm.code_stream_code == "new file\n"
+    assert vm.code_stream_path == "src/bar.py"
+    assert vm.code_stream_complete is False
+
+
+def test_out_of_order_delta_is_ignored_rather_than_spliced() -> None:
+    vm = TerminalViewModel()
+    vm.apply(_code_event(0, "a = 1\n"))
+    vm.apply(_code_event(999, "c = 3\n"))
+
+    assert vm.code_stream_code == "a = 1\n"
+
+
+def test_progress_without_source_leaves_the_window_closed() -> None:
+    vm = TerminalViewModel()
+    vm.apply(_event({"name": "execute_command", "chars": 25}))
+
+    assert vm.code_stream_visible is False
+
+
+def test_a_completed_write_settles_the_window() -> None:
+    vm = TerminalViewModel()
+    vm.apply(_code_event(0, "a = 1\n"))
+    vm.apply(
+        EventEnvelope.create(
+            event_type="tool.call.completed",
+            session_id="test",
+            sequence=1,
+            payload={"name": "write_file", "result": {"path": "src/foo.py"}},
+        )
+    )
+
+    assert vm.code_stream_complete is True
+    assert vm.code_stream_visible is True
+
+
+def test_a_new_user_turn_clears_the_window() -> None:
+    vm = TerminalViewModel()
+    vm.apply(_code_event(0, "a = 1\n", code_complete=True))
+    vm.apply(
+        EventEnvelope.create(
+            event_type="user.message", session_id="test", sequence=1, payload={"text": "next"}
+        )
+    )
+
+    assert vm.code_stream_visible is False
+    assert vm.code_stream_code == ""
+
+
 # --- end-to-end throttled emission through the orchestrator ------------------
 
 
