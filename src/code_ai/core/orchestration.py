@@ -5,7 +5,6 @@ import contextlib
 import json
 import logging
 import random
-import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -57,6 +56,7 @@ from code_ai.providers.tool_recovery import (
 from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.output import bound_text
 from code_ai.tools.registry import ToolRegistry
+from code_ai.util.partial_json import PartialObjectDecoder
 
 ToolContextFactory = Callable[[asyncio.Event | None], ToolContext]
 
@@ -76,9 +76,17 @@ logger = logging.getLogger(__name__)
 # Minimum growth in a streaming tool call's arguments before we emit another
 # progress update, so a large write reports periodically rather than per-token.
 _TOOL_PROGRESS_STEP_CHARS = 160
-# Best-effort extraction of a "path" argument from partial (not-yet-valid) JSON,
-# so progress feedback can name the file being written before the call closes.
-_PARTIAL_PATH_RE = re.compile(r'"path"\s*:\s*"((?:[^"\\]|\\.)*)"')
+# The same idea for the decoded source being written, but finer: this is what
+# drives the live code view, and updating it only every 160 raw characters makes
+# the file appear in visible jumps instead of flowing in.
+_CODE_PROGRESS_STEP_CHARS = 48
+# Arguments carrying the source a writing tool is about to commit, in the order
+# they are preferred: write_file/create_rule use "content", edit_code the
+# replacement text, create_skill the skill body. Only ever read from tools that
+# declare LOCAL_WRITE, so a review tool passing code around is not mistaken for
+# one writing it.
+_CODE_ARGUMENT_KEYS = ("content", "new_text", "instructions")
+_PATH_ARGUMENT_KEY = "path"
 _ALLOWED_POLICY = PolicyDecision(True, "allowed", set())
 
 # Capabilities that mutate the workspace or run external processes. In "ask"
@@ -151,6 +159,31 @@ class _TurnState:
     # compact line per executed tool call.
     user_text: str = ""
     actions: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class _ToolCallStream:
+    """Live decoding state for one tool call whose arguments are streaming in.
+
+    Kept per call index for the duration of a model step so the arguments are
+    decoded once, incrementally, instead of being re-parsed on every fragment.
+    """
+
+    name: str
+    decoder: PartialObjectDecoder
+    # Raw argument characters already reported, for throttling the progress line.
+    announced_chars: int = 0
+    # Decoded source characters already reported, so updates carry only the new
+    # tail and the consumer can append instead of re-rendering.
+    announced_code: int = 0
+    # Which argument holds the source, once the model starts streaming it.
+    code_key: str = ""
+    # Whether this call may carry source at all (declared LOCAL_WRITE).
+    writes: bool = False
+    announced: bool = False
+    # Whether the consumer has been told the source is final, so the live view
+    # is never left showing a write that is still in progress.
+    announced_complete: bool = False
 
 
 @dataclass(slots=True)
@@ -1005,10 +1038,10 @@ class AgentOrchestrator:
             if visible:
                 await self._emit_text_delta(visible, state)
 
-        # Per-index high-water mark of already-announced argument length, so a
-        # streaming tool call reports progress periodically instead of on every
-        # tiny chunk (which would flood the UI).
-        tool_progress_seen: dict[int, int] = {}
+        # Per-index decoding/throttling state, so a streaming tool call reports
+        # progress periodically instead of on every tiny chunk (which would
+        # flood the UI) and its source is decoded once as it arrives.
+        tool_streams: dict[int, _ToolCallStream] = {}
 
         async for event in self.provider.stream(request):
             self._raise_if_cancelled(cancel_event)
@@ -1021,13 +1054,15 @@ class AgentOrchestrator:
                     await _emit_visible_answer(answer)
                 continue
             if event.kind == "tool_call_delta":
-                await self._emit_tool_progress(event, tool_progress_seen)
+                await self._emit_tool_progress(event, tool_streams)
                 continue
             await self._emit_provider_event(event)
             if event.kind == "reasoning_delta":
                 reasoning_parts.append(event.reasoning_delta)
             elif event.kind == "completed" and event.response:
                 completed = event.response
+
+        await self._flush_tool_progress(tool_streams)
 
         answer_tail, reasoning_tail = reasoning_filter.flush()
         if reasoning_tail:
@@ -1612,39 +1647,107 @@ class AgentOrchestrator:
         )
 
     async def _emit_tool_progress(
-        self, event: ProviderEvent, seen: dict[int, int]
+        self, event: ProviderEvent, streams: dict[int, _ToolCallStream]
     ) -> None:
         """Announce that a tool call's arguments are still streaming in.
 
         Emits a throttled ``tool.call.progress`` event so the UI can show live
-        feedback (e.g. a file being written) while a large call accumulates,
-        instead of appearing frozen until the whole call has arrived. The name
-        may still be empty on the very first fragments; we wait until it is known
-        so the feedback is meaningful.
+        feedback while a large call accumulates, instead of appearing frozen
+        until the whole call has arrived. For a tool that writes to the
+        workspace the event also carries the *decoded* source produced since the
+        last update, which is what lets the UI render the file as it is typed
+        rather than only once it lands. The name may still be empty on the very
+        first fragments; we wait until it is known so the feedback is meaningful.
         """
 
         name = event.tool_call_name
         if not name:
             return
-        arguments = event.tool_call_arguments
-        length = len(arguments)
-        last = seen.get(event.tool_call_index)
-        if last is not None and length - last < _TOOL_PROGRESS_STEP_CHARS:
-            return
-        seen[event.tool_call_index] = length
+        stream = self._tool_stream(name, event.tool_call_index, streams)
+        stream.decoder.feed(event.tool_call_arguments)
+        await self._publish_tool_progress(name, event.tool_call_index, stream, final=False)
+
+    async def _flush_tool_progress(self, streams: dict[int, _ToolCallStream]) -> None:
+        """Release the tail of every streamed call once the response ends.
+
+        Throttling means the last fragments of a call are usually still
+        unreported when the stream closes, which would leave the live view
+        showing a file that stops a few lines short of what was actually
+        written. This final, unthrottled update closes that gap and marks the
+        source complete.
+        """
+
+        for index, stream in sorted(streams.items()):
+            await self._publish_tool_progress(stream.name, index, stream, final=True)
+
+    def _tool_stream(
+        self, name: str, index: int, streams: dict[int, _ToolCallStream]
+    ) -> _ToolCallStream:
+        stream = streams.get(index)
+        if stream is not None:
+            return stream
+        stream = _ToolCallStream(
+            name=name,
+            decoder=PartialObjectDecoder((_PATH_ARGUMENT_KEY, *_CODE_ARGUMENT_KEYS)),
+            writes=self._writes_to_workspace(name),
+        )
+        streams[index] = stream
+        return stream
+
+    def _writes_to_workspace(self, name: str) -> bool:
+        """Whether ``name`` commits its arguments to disk, so they are source."""
+        try:
+            return ToolCapability.LOCAL_WRITE in self.tool_registry.capabilities(name)
+        except CodeAIError:
+            # A hallucinated tool name: no preview, and the call fails later on
+            # its own terms. Progress feedback must never be the thing that
+            # breaks the turn.
+            return False
+
+    async def _publish_tool_progress(
+        self, name: str, index: int, stream: _ToolCallStream, *, final: bool
+    ) -> None:
+        decoder = stream.decoder
+        code_key = stream.code_key or (
+            decoder.first_started(_CODE_ARGUMENT_KEYS) if stream.writes else ""
+        )
+        stream.code_key = code_key
+        code = decoder.value(code_key) if code_key else None
+        pending = (len(code) - stream.announced_code) if code is not None else 0
+        length = decoder.consumed
+
+        if stream.announced:
+            if final:
+                # Throttling usually leaves a tail unreported, and the closing
+                # quote itself adds no characters - so a call can be fully
+                # streamed yet still look unfinished. Release either.
+                if not pending and (code is None or stream.announced_complete):
+                    return
+            else:
+                grew_raw = length - stream.announced_chars >= _TOOL_PROGRESS_STEP_CHARS
+                grew_code = pending >= _CODE_PROGRESS_STEP_CHARS
+                if not grew_raw and not grew_code:
+                    return
 
         payload: dict[str, object] = {
             "name": name,
-            "index": event.tool_call_index,
+            "index": index,
             "chars": length,
         }
-        path = _extract_partial_path(arguments)
-        if path:
-            payload["path"] = path
-        if name in {"write_file", "edit_code"}:
-            # Content newlines are JSON-escaped as the two characters "\n", so
-            # counting them approximates how many lines have been written so far.
-            payload["lines"] = arguments.count("\\n") + 1
+        path = decoder.value(_PATH_ARGUMENT_KEY)
+        if path is not None and path.closed and path.text:
+            payload["path"] = path.text
+        if code is not None:
+            text = code.text
+            payload["code_key"] = code_key
+            payload["code_offset"] = stream.announced_code
+            payload["code_delta"] = text[stream.announced_code :]
+            payload["code_complete"] = code.closed or final
+            payload["lines"] = text.count("\n") + 1 if text else 0
+            stream.announced_code = len(text)
+            stream.announced_complete = bool(payload["code_complete"])
+        stream.announced_chars = length
+        stream.announced = True
         await self.event_bus.emit("tool.call.progress", payload, source="provider")
 
     async def _emit_provider_event(self, event: ProviderEvent) -> None:
@@ -1811,18 +1914,3 @@ class AgentOrchestrator:
             raise CancellationError("Turn cancelled.")
 
 
-def _extract_partial_path(arguments: str) -> str | None:
-    """Pull the ``path`` value out of a partial tool-call arguments string.
-
-    The arguments are still streaming, so the JSON is usually incomplete; but
-    ``path`` normally appears near the front, so a lenient regex recovers it well
-    before the call closes. Returns ``None`` when no complete path is present yet.
-    """
-
-    match = _PARTIAL_PATH_RE.search(arguments)
-    if match is None:
-        return None
-    try:
-        return json.loads(f'"{match.group(1)}"')
-    except json.JSONDecodeError:
-        return match.group(1)
