@@ -14,6 +14,7 @@ from code_ai.config.loader import persist_config_updates
 from code_ai.core.workflows import render_workflow_invocation
 from code_ai.providers.model_listing import list_available_models
 from code_ai.providers.models import ImageContent
+from code_ai.tools.skills.common import discover_skills_from, render_skill_invocation
 from code_ai.ui.terminal.clipboard import (
     copy_to_system_clipboard,
     linux_clipboard_packages,
@@ -28,6 +29,7 @@ from code_ai.ui.terminal.slash_commands import (
     handle_config_command,
     handle_debug_command,
     render_suggestions,
+    skill_commands,
     workflow_commands,
 )
 from code_ai.ui.terminal.view_models import TerminalViewModel
@@ -121,25 +123,44 @@ def create_terminal_app(application, *, config_path: Path | None = None):
     from code_ai.ui.terminal.approval import TerminalApprovalGateway
     from code_ai.ui.terminal.doctor import DoctorModal
 
-    # Saved workflows become slash commands. The list is authored by the user (on
-    # disk, possibly in another agent's directory), so it is read from disk rather
-    # than declared - and cached for a few seconds because the completion popup
-    # asks for it on every keystroke.
+    # Saved workflows and skills become slash commands. Both lists are authored by
+    # the user (on disk, possibly in another agent's directory), so they are read
+    # from disk rather than declared - and cached for a few seconds because the
+    # completion popup asks for them on every keystroke.
     workflow_service = getattr(application, "workflows", None)
-    workflow_cache: dict[str, Any] = {"at": 0.0, "records": []}
-    WORKFLOW_CACHE_TTL = 5.0
+    session_skill_sources = tuple(getattr(application, "skill_sources", ()) or ())
+    asset_cache: dict[str, tuple[float, list[Any]]] = {}
+    ASSET_CACHE_TTL = 5.0
+
+    def _cached(key: str, loader, *, refresh: bool) -> list[Any]:
+        stamp, records = asset_cache.get(key, (0.0, []))
+        now = monotonic()
+        if refresh or not stamp or now - stamp > ASSET_CACHE_TTL:
+            records = loader()
+            asset_cache[key] = (now, records)
+        return records
 
     def workflow_records(*, refresh: bool = False) -> list[Any]:
         if workflow_service is None:
             return []
-        now = monotonic()
-        if refresh or not workflow_cache["at"] or now - workflow_cache["at"] > WORKFLOW_CACHE_TTL:
-            workflow_cache["records"] = workflow_service.load()
-            workflow_cache["at"] = now
-        return workflow_cache["records"]
+        return _cached("workflows", workflow_service.load, refresh=refresh)
 
-    def workflow_suggestions(*, refresh: bool = False) -> list[SlashCommand]:
-        return workflow_commands(workflow_records(refresh=refresh))
+    def skill_records(*, refresh: bool = False) -> list[Any]:
+        if not session_skill_sources:
+            return []
+        return _cached(
+            "skills",
+            lambda: discover_skills_from(session_skill_sources),
+            refresh=refresh,
+        )
+
+    def asset_suggestions(*, refresh: bool = False) -> list[SlashCommand]:
+        # Workflows before skills: running a saved procedure is the more specific
+        # intent when a name exists as both.
+        return [
+            *workflow_commands(workflow_records(refresh=refresh)),
+            *skill_commands(skill_records(refresh=refresh)),
+        ]
 
     class MultilineInput(TextArea):
         """Multi-line prompt with shell-style history recall.
@@ -301,7 +322,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             if key == "tab" and "\n" not in self.text:
                 # Accept a slash-command completion in-place, like the old
                 # single-line prompt did on cursor movement.
-                completion = command_completion(self.text, extra=workflow_suggestions())
+                completion = command_completion(self.text, extra=asset_suggestions())
                 if completion:
                     event.stop()
                     event.prevent_default()
@@ -858,18 +879,21 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 return
             if text.strip() == "/help":
                 self._append_conversation_line(
-                    render_suggestions("/", extra=workflow_suggestions())
+                    render_suggestions("/", extra=asset_suggestions())
                 )
                 return
             if text.strip() == "/workflows":
                 self._append_conversation_line(self._workflows_text())
                 return
+            if text.strip() == "/skills":
+                self._append_conversation_line(self._skills_text())
+                return
             if text.strip().startswith("/config"):
                 await self._dispatch_config(text.strip())
                 return
-            # Last: a saved workflow invoked by name (Cline-style "/deploy"), so a
-            # workflow can never shadow a command the app owns.
-            if self._run_workflow_command(text.strip(), images=event.images):
+            # Last: a workflow or skill invoked by name (Cline-style "/deploy"), so
+            # neither can ever shadow a command the app owns.
+            if self._run_asset_command(text.strip(), images=event.images):
                 return
             asyncio.create_task(self.controller.submit(text, images=event.images))
 
@@ -892,30 +916,79 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 lines.append(f"  {record.command:<28} {description}{suffix}")
             return "\n".join(lines)
 
-        def _run_workflow_command(self, stripped: str, *, images) -> bool:
-            """Run ``/<workflow> [extra input]`` when it names a saved workflow.
+        def _skills_text(self) -> str:
+            """Render the available skills, freshly re-read from disk."""
 
-            The workflow's own steps become the turn's prompt, so the agent
-            executes the procedure the user wrote instead of improvising one.
-            Returns False when the text does not name a workflow, leaving it to
-            be submitted as an ordinary message.
+            if not session_skill_sources:
+                return "command> Skills are not available in this session."
+            records = skill_records(refresh=True)
+            if not records:
+                dirs = "\n".join(f"  {source.root}" for source in session_skill_sources)
+                return (
+                    "command> No skills found. Add a <name>/SKILL.md to one of these "
+                    f"directories and force it with /<name>:\n{dirs}"
+                )
+            lines = [f"command> {len(records)} skill(s) available:"]
+            for record in records:
+                description = " ".join(record.description.split())
+                suffix = f" ({record.origin})" if record.origin != "code-ai" else ""
+                lines.append(f"  /{record.name:<27} {description}{suffix}")
+            return "\n".join(lines)
+
+        def _run_asset_command(self, stripped: str, *, images) -> bool:
+            """Run ``/<name> [extra input]`` when it names a workflow or a skill.
+
+            The saved steps (workflow) or instructions (skill) become the turn's
+            prompt, so naming one is a guarantee it gets applied rather than a
+            hint the model may ignore. Workflows are matched first: running a
+            saved procedure is the more specific intent. Returns False when the
+            text names neither, leaving it to be submitted as an ordinary message.
             """
 
-            if workflow_service is None or not stripped.startswith("/"):
+            if not stripped.startswith("/"):
                 return False
             token, _, argument = stripped.partition(" ")
-            record = workflow_service.find(token)
-            if record is None:
-                return False
-            self._append_conversation_line(
-                f"command> Running workflow {record.name} ({record.path})"
-            )
-            asyncio.create_task(
-                self.controller.submit(
-                    render_workflow_invocation(record, argument), images=images
+
+            workflow = workflow_service.find(token) if workflow_service is not None else None
+            if workflow is not None:
+                self._append_conversation_line(
+                    f"command> Running workflow {workflow.name} ({workflow.path})"
                 )
-            )
-            return True
+                asyncio.create_task(
+                    self.controller.submit(
+                        render_workflow_invocation(workflow, argument), images=images
+                    )
+                )
+                return True
+
+            skill = self._find_skill(token)
+            if skill is not None:
+                self._append_conversation_line(
+                    f"command> Using skill {skill.name} ({skill.path})"
+                )
+                asyncio.create_task(
+                    self.controller.submit(
+                        render_skill_invocation(
+                            skill,
+                            argument,
+                            max_chars=application.session.config.budgets.max_tool_output_chars,
+                        ),
+                        images=images,
+                    )
+                )
+                return True
+            return False
+
+        def _find_skill(self, token: str):
+            """Resolve ``/<name>`` against the skills on disk, or None."""
+
+            wanted = token.lstrip("/").strip().casefold()
+            if not wanted:
+                return None
+            for record in skill_records(refresh=True):
+                if record.name.casefold() == wanted:
+                    return record
+            return None
 
         async def _start_act_mode(self) -> None:
             """Switch to act mode and, when a plan is ready, run it right away.
@@ -1175,7 +1248,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
 
         def _set_command_suggestions(self, text: str) -> None:
             suggestions = self.query_one("#command-suggestions", Static)
-            rendered = render_suggestions(text, extra=workflow_suggestions())
+            rendered = render_suggestions(text, extra=asset_suggestions())
             suggestions.update(rendered)
             suggestions.display = bool(rendered)
 
