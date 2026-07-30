@@ -21,6 +21,7 @@ from code_ai.ui.terminal.clipboard import (
     paste_from_system_clipboard,
     paste_image_from_system_clipboard,
 )
+from code_ai.ui.terminal.code_view import guess_lexer, render_live_code
 from code_ai.ui.terminal.controller import TerminalController
 from code_ai.ui.terminal.slash_commands import (
     SlashCommand,
@@ -76,6 +77,11 @@ _STREAM_TAIL_MAX_ROWS = 14
 # than covers that on a wide pane, and it caps the per-delta word-wrap cost so a
 # long single-paragraph reasoning block can no longer freeze the terminal.
 _STREAM_TAIL_MAX_CHARS = 4000
+
+# How much source has to arrive before the live code window guesses a language
+# from the content itself. Only reached when the call carries no path (a skill
+# or a rule); with a path the extension settles it on the first fragment.
+_LEXER_GUESS_MIN_CHARS = 400
 
 # Cap on how many committed lines are kept mounted in the scrollback. Each line
 # is a selectable widget, so this bounds widget count the way RichLog.max_lines
@@ -415,6 +421,94 @@ def create_terminal_app(application, *, config_path: Path | None = None):
         def _render_idle(self) -> None:
             self.update(Text(self._style.frames[0], style=WORKING_IDLE_STYLE))
 
+    class LiveCodePanel(Static):
+        """The file the model is writing, repainted as the source streams in.
+
+        Two things keep this cheap enough to run on every fragment. The paint is
+        rate-limited by a timer instead of following the event rate, so a fast
+        local model cannot drive the terminal past ~16 repaints a second. And
+        the lexer is resolved once per file rather than re-guessed from a
+        growing fragment, which would otherwise make the colours shift under the
+        user as the file takes shape.
+
+        The window is replaced whole on each paint, never appended to, so it
+        never tears: what the user sees is always one consistent snapshot.
+        """
+
+        TICK = 0.06
+
+        def __init__(self, style: SpinnerStyle, **kwargs: Any) -> None:
+            super().__init__("", **kwargs)
+            self._style = style
+            self._signature: tuple[object, ...] | None = None
+            self._pending: tuple[str, str, str, str, bool] | None = None
+            self._lexer_key: tuple[str, str] | None = None
+            self._lexer = ""
+            self._frame = 0
+            self._timer = None
+
+        def on_mount(self) -> None:
+            self._timer = self.set_interval(self.TICK, self._tick, pause=True)
+
+        def set_style(self, style: SpinnerStyle) -> None:
+            self._style = style
+
+        def update_code(
+            self, tool: str, path: str, code_key: str, code: str, complete: bool
+        ) -> None:
+            # Length is enough to detect growth: the buffer is append-only.
+            signature = (tool, path, code_key, len(code), complete)
+            if signature == self._signature:
+                return
+            self._signature = signature
+            self._pending = (tool, path, code_key, code, complete)
+            if self._timer is not None:
+                self._timer.resume()
+
+        def _tick(self) -> None:
+            if self._pending is None:
+                # Caught up: stop ticking until the next fragment arrives.
+                if self._timer is not None:
+                    self._timer.pause()
+                return
+            tool, path, code_key, code, complete = self._pending
+            self._pending = None
+            self._frame += 1
+            self.update(
+                render_live_code(
+                    tool=tool,
+                    path=path,
+                    code=code,
+                    code_key=code_key,
+                    complete=complete,
+                    lexer=self._resolve_lexer(tool, path, code, complete),
+                    glyph=self._glyph(),
+                )
+            )
+
+        def _glyph(self) -> str:
+            frames = self._style.frames
+            return frames[self._frame % len(frames)]
+
+        def _resolve_lexer(self, tool: str, path: str, code: str, complete: bool) -> str:
+            """Pick the language once per file, not once per fragment.
+
+            A path settles it immediately. Without one the guess has to come
+            from the source itself, which is worthless on the first few
+            characters and would repaint the whole window in a new palette as
+            soon as it changed its mind — so it stays plain until enough has
+            arrived to be worth freezing.
+            """
+            key = (tool, path)
+            if key != self._lexer_key:
+                self._lexer_key = key
+                self._lexer = guess_lexer(path, code) if path else ""
+            if not self._lexer:
+                if not complete and len(code) < _LEXER_GUESS_MIN_CHARS:
+                    return "text"
+                self._lexer = guess_lexer("", code)
+            return self._lexer
+
     class PlanPanel(Static):
         """Checklist of planned steps shown beside the conversation.
 
@@ -649,6 +743,15 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                         # it. Content widgets do, so the transcript is now
                         # drag-selectable like a terminal scrollback.
                         yield VerticalScroll(id="conversation")
+                        # The file being written right now, between the
+                        # transcript and the live text tail: it belongs to the
+                        # turn in progress, not to the scrollback behind it.
+                        code_window = LiveCodePanel(
+                            resolve_spinner(application.session.config.terminal_spinner),
+                            id="code-window",
+                        )
+                        code_window.display = False
+                        yield code_window
                         yield Static("", id="stream-tail")
                     with Vertical(id="sidebar"):
                         # Two stacked panels, each scrolls internally when its
@@ -1312,6 +1415,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self.query_one("#working-indicator", WorkingIndicator).set_style(style)
             self.query_one("#plan-body", PlanPanel).set_style(style)
             self.query_one("#subagents-body", SubagentPanel).set_style(style)
+            self.query_one("#code-window", LiveCodePanel).set_style(style)
 
         def _persist_spinner(self, spinner: str) -> None:
             config = application.session.config
@@ -1448,6 +1552,9 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self.vm.conversation.clear()
             await self.query_one("#conversation", VerticalScroll).remove_children()
             self.query_one("#stream-tail", Static).update("")
+            # The code window belongs to the transcript being wiped: a file
+            # written before the clear is no longer on screen to explain it.
+            self.vm.clear_code_stream()
             self._committed = 0
             # /clear wipes the transcript, not the live task: a checklist that
             # is still running (or paused waiting for the user) is runtime
@@ -1547,10 +1654,28 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                         self.vm.terminal_closed,
                     )
                 )
+            self._refresh_code_window()
             self.query_one("#plan-body", PlanPanel).update_plan(
                 self.vm.plan_steps, self.vm.plan_progress, self.vm.plan_status
             )
             self.query_one("#subagents-body", SubagentPanel).update_agents(self.vm.subagents_list())
+
+        def _refresh_code_window(self) -> None:
+            """Show (or hide) the file the model is writing right now."""
+            window = self.query_one("#code-window", LiveCodePanel)
+            visible = (
+                self.vm.code_stream_visible
+                and application.session.config.terminal_live_code
+            )
+            window.display = visible
+            if visible:
+                window.update_code(
+                    self.vm.code_stream_tool,
+                    self.vm.code_stream_path,
+                    self.vm.code_stream_key,
+                    self.vm.code_stream_code,
+                    self.vm.code_stream_complete,
+                )
 
         def _session_text(self) -> str:
             config = application.session.config

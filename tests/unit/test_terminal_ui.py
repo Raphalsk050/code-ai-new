@@ -214,6 +214,88 @@ async def test_subagent_events_populate_agents_panel(tmp_path) -> None:
         assert panel_types == {"explorer", "coder"}
 
 
+def _widget_text(widget) -> str:
+    """Everything a mounted widget is currently painting, as plain text."""
+    from textual.geometry import Region
+
+    # outer_size, not size: the box includes the border and padding rows.
+    region = Region(0, 0, widget.outer_size.width, widget.outer_size.height)
+    return "\n".join(strip.text for strip in widget.render_lines(region))
+
+
+def _code_progress(offset: int, delta: str, **extra: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "name": "write_file",
+        "path": "src/app.py",
+        "code_key": "content",
+        "code_offset": offset,
+        "code_delta": delta,
+        "code_complete": False,
+        "chars": 100 + offset,
+    }
+    payload.update(extra)
+    return payload
+
+
+async def test_streamed_code_appears_in_the_live_window(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        window = terminal_app.query_one("#code-window")
+        # Idle: no write in flight, so the window stays out of the way.
+        assert window.display is False
+
+        await fake_app.emit("tool.call.progress", _code_progress(0, "def main():\n"))
+        await pilot.pause(0.2)
+        assert window.display is True
+        assert terminal_app.vm.code_stream_code == "def main():\n"
+
+        await fake_app.emit(
+            "tool.call.progress",
+            _code_progress(12, "    return 0\n", code_complete=True),
+        )
+        await pilot.pause(0.2)
+        assert terminal_app.vm.code_stream_code == "def main():\n    return 0\n"
+        assert terminal_app.vm.code_stream_complete is True
+        # A second settle: the window is height:auto, so it grows a row on the
+        # layout pass that follows the repaint.
+        await pilot.pause(0.2)
+        # The window renders the source itself, not just a progress count.
+        painted = _widget_text(window)
+        assert "def main():" in painted
+        assert "return 0" in painted
+        assert "wrote src/app.py" in painted
+
+
+async def test_live_window_can_be_turned_off(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    fake_app.session.config.terminal_live_code = False
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        await fake_app.emit("tool.call.progress", _code_progress(0, "x = 1\n"))
+        await pilot.pause(0.2)
+
+        assert terminal_app.query_one("#code-window").display is False
+        # The one-line progress trace still reports the write.
+        assert any(line.startswith("tool~ write_file:") for line in terminal_app.vm.conversation)
+
+
+async def test_clear_closes_the_live_code_window(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        await fake_app.emit("tool.call.progress", _code_progress(0, "x = 1\n"))
+        await pilot.pause(0.2)
+        assert terminal_app.query_one("#code-window").display is True
+
+        await terminal_app.action_clear()
+        await pilot.pause(0.2)
+        assert terminal_app.query_one("#code-window").display is False
+
+
 def _plan_snapshot(status: str = "ACTIVE") -> dict[str, object]:
     return {
         "status": status,

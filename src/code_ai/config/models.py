@@ -458,6 +458,10 @@ class AppConfig:
     terminal_banner_font: str = "tarty2"
     terminal_spinner: str = "ascii"
     terminal_session_collapsed: bool = False
+    # Show the file being written as the model streams it. Off leaves only the
+    # one-line progress trace, for terminals where repainting a code window on
+    # every fragment is too expensive (a slow SSH link, a heavy multiplexer).
+    terminal_live_code: bool = True
     learn: bool = True
     # Directory for persistent cross-session failure memories. ``None`` resolves
     # to ``<config dir>/memories`` at startup; tests point it at a temp dir.
@@ -510,6 +514,7 @@ class AppConfig:
             terminal_banner_font=str(data.get("terminal_banner_font", "tarty2")),
             terminal_spinner=str(data.get("terminal_spinner", "ascii")),
             terminal_session_collapsed=bool(data.get("terminal_session_collapsed", False)),
+            terminal_live_code=bool(data.get("terminal_live_code", True)),
             learn=bool(data.get("learn", True)),
             memories_dir=(
                 str(data["memories_dir"]) if data.get("memories_dir") is not None else None
