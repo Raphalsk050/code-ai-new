@@ -45,6 +45,16 @@ class TerminalViewModel:
     terminal_rows: int = 24
     terminal_cols: int = 80
     terminal_closed: bool = False
+    # The file the model is writing right now, decoded from its streaming
+    # tool-call arguments (see ``tool.call.progress``). Turn-scoped like the
+    # plan and sub-agent panels: it stays up after the write lands so the user
+    # can still read what was written, and is cleared at the next user message.
+    code_stream_visible: bool = False
+    code_stream_tool: str = ""
+    code_stream_path: str = ""
+    code_stream_key: str = ""
+    code_stream_code: str = ""
+    code_stream_complete: bool = False
 
     def subagents_list(self) -> list[dict[str, str]]:
         return list(self.subagents.values())
@@ -140,6 +150,7 @@ class TerminalViewModel:
             self.subagents_visible = False
             self.plan_visible = False
             self.plan_steps = []
+            self.clear_code_stream()
             self.conversation.append(f"you> {event.payload.get('text', '')}")
         elif event.event_type == "model.request.started":
             step = event.payload.get("step")
@@ -206,10 +217,16 @@ class TerminalViewModel:
                     detail = f": {stdout[:180]}"
                 elif cwd:
                     detail = f": cwd {cwd}"
+            if name == self.code_stream_tool:
+                # The write landed: stop the live window claiming it is still
+                # being typed, even if the stream never marked it complete.
+                self.code_stream_complete = True
             self.conversation.append(f"tool> {name} completed{detail}")
         elif event.event_type == "tool.call.failed":
             name = event.payload.get("name")
             message = event.payload.get("message", "")
+            if name == self.code_stream_tool:
+                self.code_stream_complete = True
             self.conversation.append(f"tool> {name} failed: {message}")
         elif event.event_type.startswith("subagent."):
             self._apply_subagent_event(event)
@@ -304,6 +321,49 @@ class TerminalViewModel:
             self.conversation[-1] = line
         else:
             self.conversation.append(line)
+        self._apply_code_stream(name, path, payload)
+
+    def _apply_code_stream(
+        self, name: str, path: str, payload: dict[object, object]
+    ) -> None:
+        """Grow the live code window from one streamed source fragment.
+
+        The event carries an append-only slice (``code_offset`` + ``code_delta``)
+        rather than the whole file, so a large write costs the same per update
+        as a small one. ``code_offset == 0`` opens a fresh window - that is the
+        signal a new call started, which the tool name alone cannot give (two
+        successive writes to different files share it).
+        """
+
+        delta = payload.get("code_delta")
+        if not isinstance(delta, str):
+            return
+        offset = payload.get("code_offset")
+        offset = offset if isinstance(offset, int) else 0
+        if offset == 0:
+            self.code_stream_tool = name
+            self.code_stream_key = str(payload.get("code_key") or "")
+            self.code_stream_path = ""
+            self.code_stream_code = ""
+            self.code_stream_complete = False
+        elif offset != len(self.code_stream_code):
+            # An update went missing, so appending here would splice the file
+            # together wrongly. Leave the window on the last coherent state
+            # rather than showing code that was never written.
+            return
+        if path:
+            self.code_stream_path = path
+        self.code_stream_code += delta
+        self.code_stream_complete = bool(payload.get("code_complete"))
+        self.code_stream_visible = True
+
+    def clear_code_stream(self) -> None:
+        self.code_stream_visible = False
+        self.code_stream_tool = ""
+        self.code_stream_path = ""
+        self.code_stream_key = ""
+        self.code_stream_code = ""
+        self.code_stream_complete = False
 
     def _apply_command_output(self, payload: dict[object, object]) -> None:
         """Stream one execute_command output chunk into a live ``cmd~`` line.
