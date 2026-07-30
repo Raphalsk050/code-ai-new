@@ -274,4 +274,5 @@ DEFAULT_CONFIG: dict[str, object] = {
     "terminal_banner_font": "tarty2",
     "terminal_spinner": "ascii",
     "terminal_session_collapsed": False,
+    "terminal_live_code": True,
 }

@@ -273,6 +273,28 @@ Stream JSON Lines events:
 code-ai --headless --events-jsonl run "Build the project"
 ```
 
+### Watching the code being written
+
+A tool call's arguments arrive one fragment at a time, so the file a model is writing exists as a partial, unparseable JSON string long before it exists on disk.
+Code-AI decodes that string as it grows and shows the result in a code window under the conversation: syntax highlighted, line numbered, filling in as the model types.
+The caption settles from `writing src/app.py` to `✓ wrote src/app.py` once the call lands.
+
+The window is a tail, like the TERMINAL panel: it shows the newest rows rather than the whole file.
+The complete code still goes through the approval dialog before anything is written (in `ask` mode), and the file itself is on disk afterwards.
+
+It covers every tool that writes to the workspace - `write_file`, `edit_code` (previewing the replacement text), `create_rule`, `create_skill`.
+Tools that merely pass code around, such as `code_review`, are deliberately left out: nothing of theirs is being written.
+
+Two costs are bounded by design, so a long file is no more expensive than a short one:
+
+- the paint is rate-limited by its own timer rather than by the event rate, capping repaints at ~16/s no matter how fast the model streams;
+- only the visible rows are highlighted, which measures at under a millisecond per repaint on a 6000-line file.
+
+Turn it off with `/config live-code off` (or `"terminal_live_code": false`) on a terminal where any repainting is costly - a slow SSH link, a heavy multiplexer.
+Writes then report progress on one line, as before.
+
+The live source is also on the event bus, as `code_offset` / `code_delta` / `code_complete` on `tool.call.progress`, so the VS Code bridge and any other consumer can render the same stream.
+
 ### Pasting images
 
 Ctrl+V in the prompt reads the OS clipboard directly, so an image (a screenshot, a copied picture) becomes an `[Image #N]` attachment that travels with the prompt to vision-capable models.
