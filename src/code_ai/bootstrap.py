@@ -367,4 +367,5 @@ def build_application(
         terminal_manager=terminal_manager,
         conversation_store=conversation_store,
         workflows=workflows,
+        skill_sources=session_skill_sources,
     )

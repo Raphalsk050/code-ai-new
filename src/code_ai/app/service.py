@@ -6,7 +6,7 @@ import logging
 import os
 import re
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -31,6 +31,7 @@ from code_ai.events.bus import AsyncEventBus, EventSubscriber
 from code_ai.events.models import EventEnvelope
 from code_ai.providers.base import ModelProvider
 from code_ai.providers.models import ImageContent
+from code_ai.tools.skills.common import SkillSource
 from code_ai.tools.terminal.manager import PersistentTerminalManager
 from code_ai.util.redaction import sanitized_environment
 
@@ -61,6 +62,7 @@ class CodeAIApplication:
         terminal_manager: PersistentTerminalManager | None = None,
         conversation_store: ConversationStore | None = None,
         workflows: WorkflowService | None = None,
+        skill_sources: Sequence[SkillSource] = (),
     ) -> None:
         self.session = session
         self.event_bus = event_bus
@@ -73,6 +75,9 @@ class CodeAIApplication:
         # because clients run them by name: the TUI turns each one into a slash
         # command, and the model reaches the same records through use_workflow.
         self.workflows = workflows
+        # Skill directories searched this session, for clients that let the user
+        # invoke a skill by name instead of waiting for the model to match it.
+        self.skill_sources = tuple(skill_sources)
         # Id of the conversation currently loaded in the live session. Assigned
         # by the client via reset_conversation/load_conversation; a turn persists
         # under it so the user can resume the thread later.

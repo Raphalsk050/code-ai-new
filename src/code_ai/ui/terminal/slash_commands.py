@@ -13,6 +13,7 @@ from code_ai.config.models import (
     normalize_api_mode,
 )
 from code_ai.core.workflows import WorkflowRecord
+from code_ai.tools.skills.common import SkillRecord
 from code_ai.ui.terminal.widgets import (
     CODE_AI_BANNER_FONT_OPTIONS,
     CODE_AI_SPINNER_OPTIONS,
@@ -81,6 +82,7 @@ SLASH_COMMANDS = [
         "/debug ",
     ),
     SlashCommand("/workflows", "List the saved workflows you can run by name."),
+    SlashCommand("/skills", "List the skills you can force by name."),
     SlashCommand("/clear", "Clear the conversation view."),
     SlashCommand("/quit", "Close Code-AI."),
     SlashCommand("/config help", "Browse and pick a /config command to run."),
@@ -195,6 +197,13 @@ def config_commands(*, include_help: bool = False) -> list[SlashCommand]:
     ]
 
 
+def _asset_command(name: str, description: str, fallback: str) -> SlashCommand:
+    summary = " ".join(description.split()) or fallback
+    if len(summary) > 80:
+        summary = summary[:77].rstrip() + "..."
+    return SlashCommand(f"/{name}", summary, f"/{name} ")
+
+
 def workflow_commands(records: Sequence[WorkflowRecord]) -> list[SlashCommand]:
     """Expose each saved workflow as its own slash command.
 
@@ -204,14 +213,24 @@ def workflow_commands(records: Sequence[WorkflowRecord]) -> list[SlashCommand]:
     them by name.
     """
 
-    commands: list[SlashCommand] = []
-    for record in records:
-        description = " ".join(record.description.split())
-        summary = description or f"Run the {record.name} workflow."
-        if len(summary) > 80:
-            summary = summary[:77].rstrip() + "..."
-        commands.append(SlashCommand(record.command, summary, f"{record.command} "))
-    return commands
+    return [
+        _asset_command(record.name, record.description, f"Run the {record.name} workflow.")
+        for record in records
+    ]
+
+
+def skill_commands(records: Sequence[SkillRecord]) -> list[SlashCommand]:
+    """Expose each skill as its own slash command.
+
+    A skill normally loads on its own when the task matches its description.
+    Naming it explicitly is the override: it forces that skill for the next turn
+    instead of leaving the choice to the model.
+    """
+
+    return [
+        _asset_command(record.name, record.description, f"Use the {record.name} skill.")
+        for record in records
+    ]
 
 
 def command_suggestions(

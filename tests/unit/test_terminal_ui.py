@@ -43,6 +43,9 @@ class FakeTerminalApplication:
         # Saved workflows the TUI turns into slash commands; tests that exercise
         # them assign a real WorkflowService before creating the app.
         self.workflows = None
+        # Skill directories the TUI turns into slash commands; tests that
+        # exercise them assign real sources before creating the app.
+        self.skill_sources = ()
         self.event_bus = SimpleNamespace(emit=self._emit_bus)
 
     async def _emit_bus(self, event_type: str, payload: dict[str, object], source=None) -> None:
@@ -1638,3 +1641,123 @@ async def test_tab_completes_a_workflow_name(tmp_path) -> None:
         await pilot.pause(0.2)
 
         assert input_widget.value == "/deploy "
+
+
+def _skill_app(tmp_path, files: dict[str, str]):
+    """A fake app whose skills come from a real directory on disk."""
+
+    from code_ai.tools.skills.common import SkillSource
+
+    root = tmp_path / "skills"
+    root.mkdir(parents=True, exist_ok=True)
+    for name, text in files.items():
+        target = root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    fake_app = FakeTerminalApplication(tmp_path)
+    fake_app.skill_sources = (SkillSource(root=root, origin="cline"),)
+    return fake_app
+
+
+async def test_slash_skill_forces_its_instructions(tmp_path) -> None:
+    fake_app = _skill_app(
+        tmp_path,
+        {
+            "pdf-magic/SKILL.md": (
+                "---\nname: pdf-magic\ndescription: Extract tables from PDFs.\n---\n\n"
+                "Use pdfplumber, never regex."
+            )
+        },
+    )
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "/pdf-magic extrair a tabela do relatorio.pdf"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+
+        assert len(fake_app.submitted) == 1
+        submitted = fake_app.submitted[0]
+        assert 'Use the "pdf-magic" skill' in submitted
+        assert "Use pdfplumber, never regex." in submitted
+        assert "Task: extrair a tabela do relatorio.pdf" in submitted
+        assert any("Using skill pdf-magic" in line for line in terminal_app.vm.conversation)
+
+
+async def test_tab_completes_a_skill_name(tmp_path) -> None:
+    fake_app = _skill_app(
+        tmp_path,
+        {"pdf-magic/SKILL.md": "---\nname: pdf-magic\ndescription: Extract tables.\n---\n\nSteps."},
+    )
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "/pdf-m"
+        await pilot.press("tab")
+        await pilot.pause(0.2)
+
+        assert input_widget.value == "/pdf-magic "
+
+
+async def test_skills_command_lists_them_with_origin(tmp_path) -> None:
+    fake_app = _skill_app(
+        tmp_path,
+        {"pdf-magic/SKILL.md": "---\nname: pdf-magic\ndescription: Extract tables.\n---\n\nSteps."},
+    )
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)):
+        terminal_app._append_conversation_line(terminal_app._skills_text())
+        rendered = "\n".join(terminal_app.vm.conversation)
+
+        assert "/pdf-magic" in rendered
+        assert "Extract tables." in rendered
+        assert "(cline)" in rendered
+
+
+async def test_a_workflow_wins_over_a_same_named_skill(tmp_path) -> None:
+    from code_ai.core.workflows import WorkflowService, WorkflowSource
+
+    fake_app = _skill_app(
+        tmp_path,
+        {"release/SKILL.md": "---\nname: release\ndescription: The skill.\n---\n\nSkill body."},
+    )
+    workflows_root = tmp_path / "workflows"
+    workflows_root.mkdir()
+    (workflows_root / "release.md").write_text("Workflow steps.", encoding="utf-8")
+    fake_app.workflows = WorkflowService(
+        sources=[WorkflowSource(root=workflows_root, scope="project", origin="code-ai")]
+    )
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "/release"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+
+        assert "Workflow steps." in fake_app.submitted[0]
+        assert "Skill body." not in fake_app.submitted[0]
+
+
+async def test_disabled_skill_is_not_a_slash_command(tmp_path) -> None:
+    fake_app = _skill_app(
+        tmp_path,
+        {
+            "legacy/SKILL.md": (
+                "---\nname: legacy\ndescription: Old.\ndisabled: true\n---\n\nDo not use."
+            )
+        },
+    )
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "/legacy"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+
+        # Not a command and not an instruction dump: it travels as plain text.
+        assert fake_app.submitted == ["/legacy"]
