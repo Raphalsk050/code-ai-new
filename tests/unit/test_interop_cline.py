@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from code_ai.core.errors import ToolExecutionError
 from code_ai.core.rules import RulesService
 from code_ai.core.workflows import WorkflowService
 from code_ai.interop import cline, external_rule_sources, skill_sources, workflow_sources
@@ -21,6 +22,10 @@ def cline_home(tmp_path, monkeypatch) -> Path:
 
     home = tmp_path / "ClineDocs"
     monkeypatch.setenv(cline.CLINE_HOME_ENV, str(home))
+    # Global skills live under the user's home (~/.cline/skills), not in the
+    # documents folder, so the home directory is redirected as well.
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
     return home
 
 
@@ -83,6 +88,23 @@ def test_clinerules_directory_is_loaded_without_workflows_or_skills(tmp_path, cl
     assert not any("body" == body for body in bodies)
 
 
+def test_modern_cline_rules_directory_is_loaded(tmp_path, cline_home) -> None:
+    """Cline's newer workspace layout keeps rules in ``.cline/rules``."""
+
+    workspace = tmp_path / "ws"
+    _write(workspace / ".cline" / "rules" / "style.md", "Prefira funcoes pequenas.")
+
+    service = RulesService(
+        global_dir=tmp_path / "g",
+        project_dir=tmp_path / "p",
+        extra_sources=external_rule_sources(workspace),
+    )
+    records = service.load()
+
+    assert [(record.scope, record.origin) for record in records] == [("project", "cline")]
+    assert records[0].body == "Prefira funcoes pequenas."
+
+
 def test_global_cline_rules_come_before_project_rules(tmp_path, cline_home) -> None:
     workspace = tmp_path / "ws"
     _write(cline_home / "Rules" / "global.md", "Regra global.")
@@ -127,10 +149,12 @@ def test_missing_cline_locations_add_nothing(tmp_path, cline_home) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_cline_skills_are_discovered_and_labelled(tmp_path, cline_home, native_skills) -> None:
+def test_global_cline_skills_are_discovered_and_labelled(
+    tmp_path, cline_home, native_skills
+) -> None:
     workspace = tmp_path / "ws"
     _write(
-        cline_home / "Skills" / "pdf-magic" / "SKILL.md",
+        Path.home() / ".cline" / "skills" / "pdf-magic" / "SKILL.md",
         "---\nname: pdf-magic\ndescription: Extract tables from PDFs.\n---\n\nDo it.",
     )
     _write(
@@ -150,10 +174,20 @@ def test_cline_skills_are_discovered_and_labelled(tmp_path, cline_home, native_s
     assert "- release-notes: Draft release notes." in catalog
 
 
-def test_workspace_cline_skill_directory_is_discovered(tmp_path, cline_home, native_skills) -> None:
+@pytest.mark.parametrize(
+    "relative",
+    [
+        ".cline/skills",  # modern workspace layout
+        ".clinerules/skills",  # legacy
+        ".agents/skills",  # legacy agents layout
+    ],
+)
+def test_every_workspace_skill_layout_is_discovered(
+    tmp_path, cline_home, native_skills, relative
+) -> None:
     workspace = tmp_path / "ws"
     _write(
-        workspace / ".clinerules" / "skills" / "triage" / "SKILL.md",
+        workspace / relative / "triage" / "SKILL.md",
         "---\nname: triage\ndescription: Triage a bug report.\n---\n\nAsk for repro steps.",
     )
 
@@ -163,6 +197,21 @@ def test_workspace_cline_skill_directory_is_discovered(tmp_path, cline_home, nat
     assert "repro steps" in record.body
 
 
+def test_disabled_skill_is_hidden_and_refuses_to_load(tmp_path, cline_home, native_skills) -> None:
+    workspace = tmp_path / "ws"
+    _write(
+        workspace / ".cline" / "skills" / "legacy" / "SKILL.md",
+        "---\nname: legacy\ndescription: Old approach.\ndisabled: true\n---\n\nDo not use.",
+    )
+
+    sources = skill_sources(workspace)
+
+    assert discover_skills_from(sources) == []
+    assert render_skills_catalog(sources) == ""
+    with pytest.raises(ToolExecutionError):
+        load_skill_from("legacy", sources=sources)
+
+
 def test_native_skill_shadows_a_same_named_cline_skill(tmp_path, cline_home, native_skills) -> None:
     workspace = tmp_path / "ws"
     _write(
@@ -170,7 +219,7 @@ def test_native_skill_shadows_a_same_named_cline_skill(tmp_path, cline_home, nat
         "---\nname: review\ndescription: Mine.\n---\n\nMine wins.",
     )
     _write(
-        cline_home / "Skills" / "review" / "SKILL.md",
+        Path.home() / ".cline" / "skills" / "review" / "SKILL.md",
         "---\nname: review\ndescription: Theirs.\n---\n\nTheirs loses.",
     )
 
@@ -190,6 +239,7 @@ def test_cline_workflows_are_discovered_from_both_scopes(tmp_path, cline_home, m
     workspace = tmp_path / "ws"
     monkeypatch.setenv("CODE_AI_WORKFLOWS_DIR", str(tmp_path / "own-workflows"))
     _write(workspace / ".clinerules" / "workflows" / "deploy.md", "# Deploy\n\n1. Build\n2. Ship")
+    _write(workspace / ".cline" / "workflows" / "smoke.md", "Run the smoke test.")
     _write(cline_home / "Workflows" / "triage.md", "Ask for repro steps first.")
 
     service = WorkflowService(sources=workflow_sources(workspace))
@@ -197,11 +247,12 @@ def test_cline_workflows_are_discovered_from_both_scopes(tmp_path, cline_home, m
 
     assert [(record.name, record.scope, record.origin) for record in records] == [
         ("deploy", "project", "cline"),
+        ("smoke", "project", "cline"),
         ("triage", "global", "cline"),
     ]
     # No frontmatter: the description falls back to the file's own first lines.
     assert records[0].description == "Deploy"
-    assert records[1].description == "Ask for repro steps first."
+    assert records[2].description == "Ask for repro steps first."
 
 
 def test_project_workflow_shadows_the_global_one(tmp_path, cline_home, monkeypatch) -> None:
