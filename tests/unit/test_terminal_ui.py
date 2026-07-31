@@ -223,9 +223,22 @@ def _widget_text(widget) -> str:
     return "\n".join(strip.text for strip in widget.render_lines(region))
 
 
+def _write_opened(**extra: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "name": "write_file",
+        "call_started": True,
+        "writes": True,
+        "path": "src/app.py",
+        "chars": 30,
+    }
+    payload.update(extra)
+    return payload
+
+
 def _code_progress(offset: int, delta: str, **extra: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "name": "write_file",
+        "writes": True,
         "path": "src/app.py",
         "code_key": "content",
         "code_offset": offset,
@@ -237,7 +250,7 @@ def _code_progress(offset: int, delta: str, **extra: object) -> dict[str, object
     return payload
 
 
-async def test_streamed_code_appears_in_the_live_window(tmp_path) -> None:
+async def test_the_window_opens_with_its_context_before_the_code(tmp_path) -> None:
     fake_app = FakeTerminalApplication(tmp_path)
     terminal_app = create_terminal_app(fake_app)
 
@@ -246,9 +259,30 @@ async def test_streamed_code_appears_in_the_live_window(tmp_path) -> None:
         # Idle: no write in flight, so the window stays out of the way.
         assert window.display is False
 
+        await fake_app.emit(
+            "tool.call.progress", _write_opened(reason="bound the cache")
+        )
+        await pilot.pause(0.3)
+
+        # Open, framed and explained - with no source in it yet.
+        assert window.display is True
+        assert window.border_title == "write_file"
+        assert window.border_subtitle == "src/app.py"
+        painted = _widget_text(window)
+        assert "Create / overwrite:  src/app.py" in painted
+        assert "Why: bound the cache" in painted
+        assert "receiving" in painted
+
+
+async def test_streamed_code_fills_the_open_window(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        window = terminal_app.query_one("#code-window")
+        await fake_app.emit("tool.call.progress", _write_opened())
         await fake_app.emit("tool.call.progress", _code_progress(0, "def main():\n"))
         await pilot.pause(0.2)
-        assert window.display is True
         assert terminal_app.vm.code_stream_code == "def main():\n"
 
         await fake_app.emit(
@@ -265,7 +299,21 @@ async def test_streamed_code_appears_in_the_live_window(tmp_path) -> None:
         painted = _widget_text(window)
         assert "def main():" in painted
         assert "return 0" in painted
-        assert "wrote src/app.py" in painted
+        assert "✓" in painted
+
+
+async def test_the_reason_follows_the_learn_setting(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    fake_app.session.config.learn = False
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        await fake_app.emit("tool.call.progress", _write_opened(reason="bound the cache"))
+        await pilot.pause(0.3)
+
+        painted = _widget_text(terminal_app.query_one("#code-window"))
+        assert "Create / overwrite" in painted
+        assert "Why:" not in painted
 
 
 async def test_live_window_can_be_turned_off(tmp_path) -> None:
@@ -274,6 +322,7 @@ async def test_live_window_can_be_turned_off(tmp_path) -> None:
     terminal_app = create_terminal_app(fake_app)
 
     async with terminal_app.run_test(size=(100, 40)) as pilot:
+        await fake_app.emit("tool.call.progress", _write_opened())
         await fake_app.emit("tool.call.progress", _code_progress(0, "x = 1\n"))
         await pilot.pause(0.2)
 
@@ -287,7 +336,7 @@ async def test_clear_closes_the_live_code_window(tmp_path) -> None:
     terminal_app = create_terminal_app(fake_app)
 
     async with terminal_app.run_test(size=(100, 40)) as pilot:
-        await fake_app.emit("tool.call.progress", _code_progress(0, "x = 1\n"))
+        await fake_app.emit("tool.call.progress", _write_opened())
         await pilot.pause(0.2)
         assert terminal_app.query_one("#code-window").display is True
 

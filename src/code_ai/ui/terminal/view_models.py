@@ -53,6 +53,7 @@ class TerminalViewModel:
     code_stream_tool: str = ""
     code_stream_path: str = ""
     code_stream_key: str = ""
+    code_stream_reason: str = ""
     code_stream_code: str = ""
     code_stream_complete: bool = False
 
@@ -326,42 +327,54 @@ class TerminalViewModel:
     def _apply_code_stream(
         self, name: str, path: str, payload: dict[object, object]
     ) -> None:
-        """Grow the live code window from one streamed source fragment.
+        """Drive the live code window from one streamed tool-call fragment.
 
-        The event carries an append-only slice (``code_offset`` + ``code_delta``)
-        rather than the whole file, so a large write costs the same per update
-        as a small one. ``code_offset == 0`` opens a fresh window - that is the
-        signal a new call started, which the tool name alone cannot give (two
-        successive writes to different files share it).
+        The window opens on ``call_started`` - the first word about a writing
+        call, before any source exists - so the user gets the frame, the target
+        and the model's reason first and watches the code fill in underneath.
+        Waiting for the first line of code instead would put the window up only
+        once there was already something to hide behind it.
+
+        Source then arrives as an append-only slice (``code_offset`` +
+        ``code_delta``) rather than the whole file, so a large write costs the
+        same per update as a small one.
         """
+
+        writes = bool(payload.get("writes"))
+        if payload.get("call_started") and writes:
+            self.clear_code_stream()
+            self.code_stream_tool = name
+            self.code_stream_visible = True
+        elif not self.code_stream_visible:
+            return
+        if path:
+            self.code_stream_path = path
+        reason = payload.get("reason")
+        if isinstance(reason, str) and reason.strip():
+            self.code_stream_reason = reason.strip()
 
         delta = payload.get("code_delta")
         if not isinstance(delta, str):
             return
+        self.code_stream_key = str(payload.get("code_key") or self.code_stream_key)
         offset = payload.get("code_offset")
         offset = offset if isinstance(offset, int) else 0
         if offset == 0:
-            self.code_stream_tool = name
-            self.code_stream_key = str(payload.get("code_key") or "")
-            self.code_stream_path = ""
             self.code_stream_code = ""
-            self.code_stream_complete = False
         elif offset != len(self.code_stream_code):
             # An update went missing, so appending here would splice the file
             # together wrongly. Leave the window on the last coherent state
             # rather than showing code that was never written.
             return
-        if path:
-            self.code_stream_path = path
         self.code_stream_code += delta
         self.code_stream_complete = bool(payload.get("code_complete"))
-        self.code_stream_visible = True
 
     def clear_code_stream(self) -> None:
         self.code_stream_visible = False
         self.code_stream_tool = ""
         self.code_stream_path = ""
         self.code_stream_key = ""
+        self.code_stream_reason = ""
         self.code_stream_code = ""
         self.code_stream_complete = False
 
