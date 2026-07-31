@@ -3,11 +3,12 @@ from __future__ import annotations
 import asyncio
 import random
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 from typing import Any
 
 from code_ai.config.models import AppConfig
 from code_ai.core.errors import ProviderError, TransientProviderError
-from code_ai.providers.base import build_openai_http_client
+from code_ai.providers.base import build_openai_http_client, closing_stream
 from code_ai.providers.debug import ModelDebugLogger
 from code_ai.providers.models import (
     FinishReason,
@@ -126,8 +127,13 @@ class OpenAIChatCompletionsProvider:
         return self._capabilities
 
     async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
-        async for event in self._stream_with_retry(request):
-            yield event
+        # Every layer needs closing, not just the innermost one: leaving an
+        # `async for` early suspends the generator under it rather than closing
+        # it, so without aclosing() at each hop the HTTP response at the bottom
+        # stays open and the server keeps generating.
+        async with aclosing(self._stream_with_retry(request)) as events:
+            async for event in events:
+                yield event
 
     async def complete(self, request: ModelRequest) -> ModelResponse:
         text_parts: list[str] = []
@@ -149,8 +155,9 @@ class OpenAIChatCompletionsProvider:
         attempts = 0
         while True:
             try:
-                async for event in self._stream_once(request):
-                    yield event
+                async with aclosing(self._stream_once(request)) as events:
+                    async for event in events:
+                        yield event
                 return
             except Exception as exc:
                 if not _is_transient_exception(exc) or attempts >= 2:
@@ -187,8 +194,9 @@ class OpenAIChatCompletionsProvider:
                     kind="warning",
                     warning="Endpoint rejected streaming usage options; retrying without them.",
                 )
-                async for event in self._stream_once(request):
-                    yield event
+                async with aclosing(self._stream_once(request)) as events:
+                    async for event in events:
+                        yield event
                 return
             if self._sampling_supported and _looks_like_sampling_error(exc):
                 self._sampling_supported = False
@@ -196,8 +204,9 @@ class OpenAIChatCompletionsProvider:
                     kind="warning",
                     warning="Endpoint rejected sampling parameters; retrying without them.",
                 )
-                async for event in self._stream_once(request):
-                    yield event
+                async with aclosing(self._stream_once(request)) as events:
+                    async for event in events:
+                        yield event
                 return
             if _is_transient_exception(exc):
                 raise TransientProviderError(str(exc)) from exc
@@ -208,40 +217,48 @@ class OpenAIChatCompletionsProvider:
         reasoning_parts: list[str] = []
         usage: TokenUsage | None = None
         finish = FinishReason.UNKNOWN
-        async for chunk in stream:
-            if debug:
-                debug.log_raw_chunk(chunk)
-            usage = _usage_from_object(object_get(chunk, "usage")) or usage
-            choices = object_get(chunk, "choices", []) or []
-            if not choices:
-                continue
-            choice = choices[0]
-            finish = _finish_reason(object_get(choice, "finish_reason")) or finish
-            delta = object_get(choice, "delta", {})
-            reasoning = _reasoning_delta(delta)
-            if reasoning:
-                reasoning_parts.append(reasoning)
-                yield ProviderEvent(kind="reasoning_delta", reasoning_delta=reasoning)
-            content = object_get(delta, "content", "")
-            if content:
-                text_parts.append(content)
-                yield ProviderEvent(kind="text_delta", text_delta=content)
+        # Held open in a context manager so cancellation actually reaches the
+        # server. An inference server keeps generating until the client
+        # disconnects, so abandoning the iterator without closing the HTTP
+        # response leaves the model running - the user cancels, the UI stops,
+        # and the GPU carries on producing tokens nobody will read.
+        async with closing_stream(stream):
+            async for chunk in stream:
+                if debug:
+                    debug.log_raw_chunk(chunk)
+                usage = _usage_from_object(object_get(chunk, "usage")) or usage
+                choices = object_get(chunk, "choices", []) or []
+                if not choices:
+                    continue
+                choice = choices[0]
+                finish = _finish_reason(object_get(choice, "finish_reason")) or finish
+                delta = object_get(choice, "delta", {})
+                reasoning = _reasoning_delta(delta)
+                if reasoning:
+                    reasoning_parts.append(reasoning)
+                    yield ProviderEvent(kind="reasoning_delta", reasoning_delta=reasoning)
+                content = object_get(delta, "content", "")
+                if content:
+                    text_parts.append(content)
+                    yield ProviderEvent(kind="text_delta", text_delta=content)
 
-            for tool_delta in object_get(delta, "tool_calls", []) or []:
-                index = int(object_get(tool_delta, "index", 0) or 0)
-                fragment = tool_fragments.setdefault(index, {"id": "", "name": "", "arguments": ""})
-                fragment["id"] += str(object_get(tool_delta, "id", "") or "")
-                function = object_get(tool_delta, "function", {}) or {}
-                fragment["name"] += str(object_get(function, "name", "") or "")
-                fragment["arguments"] += str(object_get(function, "arguments", "") or "")
-                # Surface streaming progress so the UI isn't frozen while a large
-                # tool call (e.g. write_file's content) accumulates.
-                yield ProviderEvent(
-                    kind="tool_call_delta",
-                    tool_call_name=fragment["name"],
-                    tool_call_arguments=fragment["arguments"],
-                    tool_call_index=index,
-                )
+                for tool_delta in object_get(delta, "tool_calls", []) or []:
+                    index = int(object_get(tool_delta, "index", 0) or 0)
+                    fragment = tool_fragments.setdefault(
+                        index, {"id": "", "name": "", "arguments": ""}
+                    )
+                    fragment["id"] += str(object_get(tool_delta, "id", "") or "")
+                    function = object_get(tool_delta, "function", {}) or {}
+                    fragment["name"] += str(object_get(function, "name", "") or "")
+                    fragment["arguments"] += str(object_get(function, "arguments", "") or "")
+                    # Surface streaming progress so the UI isn't frozen while a large
+                    # tool call (e.g. write_file's content) accumulates.
+                    yield ProviderEvent(
+                        kind="tool_call_delta",
+                        tool_call_name=fragment["name"],
+                        tool_call_arguments=fragment["arguments"],
+                        tool_call_index=index,
+                    )
 
         tool_calls: list[ToolCall] = []
         for index, fragment in sorted(tool_fragments.items()):

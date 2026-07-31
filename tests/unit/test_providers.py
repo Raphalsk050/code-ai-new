@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 
 import pytest
@@ -777,3 +778,96 @@ async def test_ollama_payload_never_carries_a_misplaced_system_message() -> None
     roles = [message["role"] for message in messages]
     assert roles.count("system") == 1
     assert roles[0] == "system"
+
+
+class _RecordingStream:
+    """Async iterator that records being closed, like the SDK's AsyncStream."""
+
+    def __init__(self, chunks: list[dict[str, object]]) -> None:
+        self._chunks = list(chunks)
+        self.closed = False
+
+    def __aiter__(self) -> _RecordingStream:
+        return self
+
+    async def __anext__(self) -> dict[str, object]:
+        if not self._chunks:
+            raise StopAsyncIteration
+        return self._chunks.pop(0)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+async def test_chat_completions_closes_the_stream_when_abandoned() -> None:
+    # Regression: a cancelled turn stopped reading the stream but never closed
+    # the HTTP response, and an inference server only stops generating when the
+    # client disconnects - so Ctrl+C froze the UI while the model kept running.
+    provider = _chat_provider([])
+    recording = _RecordingStream(
+        [_tool_call_chunk_fragment("write_file", '{"path": "a.py",') for _ in range(50)]
+    )
+
+    async def _create(**kwargs: object) -> _RecordingStream:
+        return recording
+
+    provider._client.chat.completions.create = _create
+
+    events = provider.stream(_chat_request())
+    await events.__anext__()  # consume one event, then walk away as a cancel does
+    await events.aclose()
+
+    assert recording.closed is True
+
+
+async def test_orchestrator_closes_the_provider_stream_on_cancel(tmp_path) -> None:
+    import asyncio
+
+    from code_ai.bootstrap import build_application
+    from code_ai.providers.models import ModelResponse, ProviderEvent
+
+    closed = asyncio.Event()
+
+    class _EndlessProvider:
+        @property
+        def capabilities(self) -> ProviderCapabilities:
+            return ProviderCapabilities(streaming=True, tool_calling=True)
+
+        async def stream(self, request: ModelRequest):
+            try:
+                while True:
+                    yield ProviderEvent(kind="text_delta", text_delta="thinking...")
+                    await asyncio.sleep(0.01)
+            except GeneratorExit:
+                # The generator being closed is what disconnects the HTTP
+                # response underneath it, which is what stops the server.
+                closed.set()
+                raise
+
+        async def complete(self, request: ModelRequest) -> ModelResponse:
+            return ModelResponse()
+
+        async def close(self) -> None:
+            return None
+
+    config = AppConfig.from_mapping(
+        {
+            "api_mode": "ollama",
+            "workspace": str(tmp_path),
+            "model": "fake",
+            "permission_mode": "bypass",
+            "memories_dir": str(tmp_path / "memories"),
+        }
+    )
+    app = build_application(config=config, provider=_EndlessProvider())
+    await app.start()
+    turn = asyncio.create_task(app.submit_user_message("go"))
+    await asyncio.sleep(0.15)
+    await app.cancel_current_turn()
+    with contextlib.suppress(Exception):
+        await turn
+
+    # Checked before close(): the stream must be released by the cancellation
+    # itself, not swept up later when the app tears down its generators.
+    assert closed.is_set(), "cancelling must close the provider stream"
+    await app.close()
