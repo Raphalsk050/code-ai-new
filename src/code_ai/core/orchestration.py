@@ -1845,7 +1845,16 @@ class AgentOrchestrator:
                 # Throttling usually leaves a tail unreported, and the closing
                 # quote itself adds no characters - so a call can be fully
                 # streamed yet still look unfinished. Release either.
-                if not pending and (code is None or stream.announced_complete):
+                #
+                # Raw growth counts too, and for a call that writes nothing it is
+                # the only thing that does. Backends differ in how they stream a
+                # call: LM Studio sends the name in one chunk and the whole
+                # arguments object in the next, so a small call never crosses the
+                # throttle and its only ever published update is the opening one,
+                # reporting zero characters. Every read tool then sat at
+                # "building call (0 chars)" for the life of the call.
+                grew_raw = length > stream.announced_chars
+                if not pending and not grew_raw and (code is None or stream.announced_complete):
                     return
             else:
                 grew_raw = length - stream.announced_chars >= _TOOL_PROGRESS_STEP_CHARS

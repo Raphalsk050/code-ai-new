@@ -351,8 +351,15 @@ class TerminalViewModel:
         """
 
         writes = bool(payload.get("writes"))
-        if payload.get("call_started") and writes:
+        if payload.get("call_started"):
+            # A new call is starting. Whatever the window is showing belongs to
+            # the previous one, which has already finished - so it closes here
+            # unless this call is itself a write that will refill it. Leaving it
+            # up stranded the last written file on screen while an unrelated
+            # tool ran underneath it.
             self.clear_code_stream()
+            if not writes:
+                return
             self.code_stream_tool = name
             self.code_stream_visible = True
         elif not self.code_stream_visible:
