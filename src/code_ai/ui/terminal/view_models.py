@@ -164,6 +164,21 @@ class TerminalViewModel:
             self.plan_steps = []
             self.clear_code_stream()
             self.conversation.append(f"you> {event.payload.get('text', '')}")
+        elif event.event_type == "user.message.queued":
+            # Typed while the agent was working. Shown as the user's line right
+            # away - it is what they said - with a note that it has not reached
+            # the model yet. Deliberately does NOT reset the plan, sub-agent and
+            # code panels the way user.message does: this joins the running turn
+            # instead of starting a new one.
+            self.conversation.append(f"you> {event.payload.get('text', '')}")
+            self.conversation.append("queued> waiting for the current step to finish...")
+        elif event.event_type == "user.message.delivered":
+            # It reached the model. Replace the waiting note rather than adding
+            # a line, so steering costs one line in the transcript, not two.
+            if self.conversation and self.conversation[-1].startswith("queued> "):
+                self.conversation[-1] = "queued> delivered to the model"
+            else:
+                self.conversation.append("queued> delivered to the model")
         elif event.event_type == "model.request.started":
             step = event.payload.get("step")
             suffix = f" step {step}" if step is not None else ""

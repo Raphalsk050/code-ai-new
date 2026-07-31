@@ -133,6 +133,10 @@ class TurnResult:
     response: ModelResponse | None
     cancelled: bool = False
     error: str | None = None
+    # Set when the message was queued into a turn already running rather than
+    # starting one of its own, so no answer belongs to this call - the running
+    # turn will pick the message up at its next model step.
+    queued: bool = False
     # Set when the turn was wound down by a runtime safety budget instead of the
     # model finishing on its own (see WIND_DOWN_* constants). ``text`` then holds
     # a best-effort answer, so callers must not treat the turn as a clean success.
@@ -286,11 +290,45 @@ class AgentOrchestrator:
         # is tracked so shutdown can give it a bounded chance to finish.
         self.reflection = reflection
         self._learning_task: asyncio.Task[None] | None = None
+        # Messages typed while a turn is running, waiting to join the
+        # conversation at the next model step. See queue_user_message.
+        self._queued_user_messages: list[str] = []
         self.state = AgentState.STARTING
 
     @property
     def permission_mode(self) -> str:
         return self.config.permission_mode
+
+    # ------------------------------------------------------------------ #
+    # Steering: messages that arrive mid-turn
+    # ------------------------------------------------------------------ #
+    def queue_user_message(self, text: str) -> None:
+        """Hold a message typed mid-turn until the next model step reads it.
+
+        Steering, not re-tasking: the message joins the conversation as an
+        ordinary user turn and the model decides what to do with it. The plan,
+        its checklist and the evidence ledger are left alone, because reopening
+        those mid-turn would discard the work already done to satisfy them.
+        """
+        message = text.strip()
+        if message:
+            self._queued_user_messages.append(message)
+
+    def has_queued_messages(self) -> bool:
+        return bool(self._queued_user_messages)
+
+    def take_queued_messages(self) -> list[str]:
+        """Remove and return everything still queued."""
+        queued, self._queued_user_messages = self._queued_user_messages, []
+        return queued
+
+    async def _deliver_queued_user_messages(self) -> None:
+        """Move queued messages into the conversation, in the order they came."""
+        for message in self.take_queued_messages():
+            self.conversation.add_user(message)
+            await self.event_bus.emit(
+                "user.message.delivered", {"text": message}, source="core.orchestrator"
+            )
 
     async def set_state(self, state: AgentState, *, phase: str | None = None) -> None:
         self.state = state
@@ -528,6 +566,13 @@ class AgentOrchestrator:
             self._raise_if_cancelled(state.cancel_event)
             if time.monotonic() > state.deadline:
                 return await self._wind_down(state, reason=WIND_DOWN_TIME_BUDGET)
+            # Steering: anything the user typed while the previous step ran joins
+            # the conversation here, so it reaches the model on the very next
+            # request instead of waiting for the turn to end. The step that was
+            # already in flight finishes first - a call cannot be edited halfway
+            # through - which is why this sits at the top of the loop rather than
+            # inside the step.
+            await self._deliver_queued_user_messages()
 
             allowed = self._allowed_tool_names()
             tool_definitions = self.tool_registry.definitions(allowed)
