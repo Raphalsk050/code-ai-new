@@ -1142,31 +1142,37 @@ class AgentOrchestrator:
         # attempt was half-way through says nothing about what this one loses.
         state.tool_call_streaming = False
 
-        async for event in self.provider.stream(request):
-            self._raise_if_cancelled(cancel_event)
-            if event.kind == "text_delta":
-                answer, thought = reasoning_filter.feed(event.text_delta)
-                if thought:
-                    reasoning_parts.append(thought)
-                    await self._emit_reasoning_delta(thought)
-                if answer:
-                    await _emit_visible_answer(answer)
-                continue
-            if event.kind == "tool_call_delta":
-                if event.tool_call_name:
-                    # A call has begun arriving. Until the assembled response
-                    # carries it, losing this stream means losing the call - not
-                    # learning that the model chose to answer in prose. A
-                    # nameless fragment proves nothing yet, and the providers
-                    # drop those themselves, so it must not arm this.
-                    state.tool_call_streaming = True
-                await self._emit_tool_progress(event, tool_streams)
-                continue
-            await self._emit_provider_event(event)
-            if event.kind == "reasoning_delta":
-                reasoning_parts.append(event.reasoning_delta)
-            elif event.kind == "completed" and event.response:
-                completed = event.response
+        # aclosing() so cancelling really disconnects. Raising out of the
+        # loop leaves the generator suspended at its yield, and the HTTP
+        # response under it open until the garbage collector gets to it -
+        # meanwhile the server, which only stops when the client goes away,
+        # keeps generating tokens nobody will ever read.
+        async with contextlib.aclosing(self.provider.stream(request)) as provider_stream:
+            async for event in provider_stream:
+                self._raise_if_cancelled(cancel_event)
+                if event.kind == "text_delta":
+                    answer, thought = reasoning_filter.feed(event.text_delta)
+                    if thought:
+                        reasoning_parts.append(thought)
+                        await self._emit_reasoning_delta(thought)
+                    if answer:
+                        await _emit_visible_answer(answer)
+                    continue
+                if event.kind == "tool_call_delta":
+                    if event.tool_call_name:
+                        # A call has begun arriving. Until the assembled response
+                        # carries it, losing this stream means losing the call - not
+                        # learning that the model chose to answer in prose. A
+                        # nameless fragment proves nothing yet, and the providers
+                        # drop those themselves, so it must not arm this.
+                        state.tool_call_streaming = True
+                    await self._emit_tool_progress(event, tool_streams)
+                    continue
+                await self._emit_provider_event(event)
+                if event.kind == "reasoning_delta":
+                    reasoning_parts.append(event.reasoning_delta)
+                elif event.kind == "completed" and event.response:
+                    completed = event.response
 
         await self._flush_tool_progress(tool_streams)
 
