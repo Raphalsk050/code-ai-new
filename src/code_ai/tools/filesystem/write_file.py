@@ -22,17 +22,22 @@ class WriteFileTool:
                 "type": "string",
                 "description": "Workspace-relative path of the file to write.",
             },
-            "content": {
-                "type": "string",
-                "description": "Full UTF-8 contents to write to the file.",
-            },
+            # Declared before the contents on purpose: arguments stream in the
+            # order they are declared, so putting the justification first means
+            # the user reads why the file is being written while it is still
+            # being written, instead of after the fact.
             "reason": {
                 "type": "string",
                 "description": (
                     "One or two plain-language sentences explaining why this file is being "
-                    "created/overwritten and what it accomplishes. Shown to the user in the "
-                    "approval prompt before they decide whether to allow it."
+                    "created/overwritten and what it accomplishes. Shown to the user while "
+                    "the file streams in, and in the approval prompt before they decide "
+                    "whether to allow it."
                 ),
+            },
+            "content": {
+                "type": "string",
+                "description": "Full UTF-8 contents to write to the file.",
             },
         },
         required=("path", "content"),

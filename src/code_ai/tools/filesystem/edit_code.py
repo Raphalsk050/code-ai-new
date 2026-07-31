@@ -33,6 +33,18 @@ class EditCodeTool:
                 "type": "string",
                 "description": "Workspace-relative path of the file to edit. Must already exist.",
             },
+            # Declared before the two halves of the edit on purpose: arguments
+            # stream in the order they are declared, so putting the
+            # justification first means the user reads why the edit is being
+            # made while it is still being made, instead of after the fact.
+            "reason": {
+                "type": "string",
+                "description": (
+                    "One or two plain-language sentences explaining why this edit is needed and "
+                    "what it accomplishes. Shown to the user while the edit streams in, and in "
+                    "the approval prompt before they decide whether to allow it."
+                ),
+            },
             "old_text": {
                 "type": "string",
                 "description": "Exact literal text to replace. Must match the file verbatim.",
@@ -40,14 +52,6 @@ class EditCodeTool:
             "new_text": {
                 "type": "string",
                 "description": "Replacement text inserted in place of old_text.",
-            },
-            "reason": {
-                "type": "string",
-                "description": (
-                    "One or two plain-language sentences explaining why this edit is needed and "
-                    "what it accomplishes. Shown to the user in the approval prompt before they "
-                    "decide whether to allow it."
-                ),
             },
         },
         required=("path", "old_text", "new_text"),
