@@ -315,9 +315,7 @@ class AgentOrchestrator:
         if not self.conversation.messages:
             return
         if self._system_prompt_builder is not None:
-            self.conversation.messages[0] = Message(
-                role="system", content=self._system_prompt_builder()
-            )
+            self._install_system_prompt(self._system_prompt_builder())
             return
         lessons = (
             self.failure_memory.render_for_prompt(
@@ -336,9 +334,8 @@ class AgentOrchestrator:
         rules = self.rules.render_for_prompt() if self.rules else ""
         skills = self._skills_catalog() if self._skills_catalog else ""
         workflows = self._workflows_catalog() if self._workflows_catalog else ""
-        self.conversation.messages[0] = Message(
-            role="system",
-            content=build_system_prompt(
+        self._install_system_prompt(
+            build_system_prompt(
                 workspace=self.config.workspace,
                 language=self.config.language,
                 lessons=lessons,
@@ -346,8 +343,23 @@ class AgentOrchestrator:
                 rules=rules,
                 skills=skills,
                 workflows=workflows,
-            ),
+            )
         )
+
+    def _install_system_prompt(self, content: str) -> None:
+        """Put the rebuilt prompt at index 0, replacing a system message there.
+
+        Replacing whatever sits first would silently eat a real conversation
+        turn if the history ever starts with something else, and prepending
+        unconditionally would stack a second system message on every refresh —
+        which chat templates reject outright. Only a system message is
+        overwritten; anything else gets the prompt inserted ahead of it.
+        """
+        message = Message(role="system", content=content)
+        if self.conversation.messages and self.conversation.messages[0].role == "system":
+            self.conversation.messages[0] = message
+            return
+        self.conversation.messages.insert(0, message)
 
     # ------------------------------------------------------------------ #
     # Turn entry point
