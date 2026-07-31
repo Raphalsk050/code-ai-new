@@ -35,6 +35,14 @@ _SUMMARY_HEADER = (
 # Per-message cap when rendering the older excerpt for the summary request, so a
 # single huge tool result cannot blow past the window before we even summarize.
 _EXCERPT_MESSAGE_CHARS = 2000
+# The user's standing request, restated when summarizing pushed every user turn
+# out of the kept window. Capped so re-stating it can never undo the compression
+# that just ran.
+_CARRIED_REQUEST_HEADER = (
+    "Standing user request (restated after context compression; work already in "
+    "progress, do not start over):\n"
+)
+_CARRIED_REQUEST_CHARS = 2000
 
 
 @dataclass(slots=True)
@@ -163,8 +171,50 @@ class ContextCompressor:
         if not summary_text:
             summary_text = self._heuristic_summary(older)
 
-        summary = Message(role="system", content=_SUMMARY_HEADER + summary_text)
-        conversation.messages = system_messages[:1] + [summary] + recent
+        # The summary re-enters as a *conversation* turn, never as a second
+        # ``system`` message. Chat templates render system content only at the
+        # top, and several — Qwen3's among them — hard-fail the request with
+        # "System message must be at the beginning." when one shows up anywhere
+        # else. Because compression rewrites the history in place, that 400 is
+        # not a one-off: every later turn re-sends the same broken shape, so the
+        # session never recovers. Carrying it as ``user`` also keeps at least one
+        # user turn in the window, which the same templates require ("No user
+        # query found in messages."), and means the summary now survives
+        # conversation persistence (which drops system messages).
+        summary = Message(role="user", content=_SUMMARY_HEADER + summary_text)
+        rebuilt = system_messages[:1] + [summary]
+        carried = self._carried_user_request(older, recent)
+        if carried is not None:
+            rebuilt.append(carried)
+        conversation.messages = rebuilt + recent
+
+    @staticmethod
+    def _carried_user_request(older: list[Message], recent: list[Message]) -> Message | None:
+        """Restate the latest user request when the kept window retains none.
+
+        A tool-heavy turn can easily fill the whole recent window with assistant
+        and tool messages, so summarizing the older portion drops every trace of
+        the user's own words. The model is then steering on a summary alone,
+        which is how an agent quietly drifts off the actual request mid-task.
+
+        Only the most recent non-empty user turn is carried, capped, and text
+        only: re-attaching an image payload here would inflate the very context
+        we just compressed. Returns ``None`` — the common case — whenever the
+        window already holds a user turn.
+        """
+        if any(message.role == "user" for message in recent):
+            return None
+        for message in reversed(older):
+            if message.role != "user":
+                continue
+            text = (message.content or "").strip()
+            if not text:
+                continue
+            return Message(
+                role="user",
+                content=_CARRIED_REQUEST_HEADER + text[:_CARRIED_REQUEST_CHARS],
+            )
+        return None
 
     async def _summarize(self, older: list[Message]) -> str | None:
         if self.provider is None:
