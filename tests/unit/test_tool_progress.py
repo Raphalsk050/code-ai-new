@@ -391,3 +391,88 @@ async def test_unknown_tool_name_does_not_break_the_turn(tmp_path) -> None:
     )
 
     assert not any("code_delta" in payload for payload in payloads)
+
+
+class _SplitNameProvider:
+    """Delivers the tool's name across two fragments, as some servers do."""
+
+    def __init__(self, arguments: str, name: str = "write_file") -> None:
+        self._arguments = arguments
+        self._name = name
+
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        return ProviderCapabilities(streaming=True, tool_calling=True)
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        # First fragment names a tool that does not exist yet ("write"), which is
+        # what the accumulated name looks like before its tail arrives.
+        head = self._name[:5]
+        yield ProviderEvent(
+            kind="tool_call_delta", tool_call_name=head, tool_call_arguments=""
+        )
+        for index in range(9, len(self._arguments) + 9, 9):
+            yield ProviderEvent(
+                kind="tool_call_delta",
+                tool_call_name=self._name,
+                tool_call_arguments=self._arguments[:index],
+            )
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text="done", finish_reason=FinishReason.STOP),
+        )
+
+    async def complete(self, request: ModelRequest) -> ModelResponse:
+        async for event in self.stream(request):
+            if event.response:
+                return event.response
+        return ModelResponse()
+
+    async def close(self) -> None:
+        return None
+
+
+async def test_a_name_arriving_in_pieces_still_opens_the_window(tmp_path) -> None:
+    # The first fragment names no known tool, so the call is initially taken for
+    # one that writes nothing. Once the name completes it must be re-read, or
+    # the window stays shut for the whole write.
+    content = "x = 1\ny = 2\nz = 3\n"
+    arguments = json.dumps({"path": "a.py", "content": content})
+    app = build_application(
+        config=_config(tmp_path), provider=_SplitNameProvider(arguments)
+    )
+    envelopes: list[EventEnvelope] = []
+    app.subscribe(envelopes.append)
+    await app.start()
+    await app.submit_user_message("go")
+    await app.close()
+
+    payloads = [e.payload for e in envelopes if e.event_type == "tool.call.progress"]
+    opening = [p for p in payloads if p.get("call_started")]
+    assert opening, "the window must be told where the call begins"
+    # Exactly one opening, and it is the one that declares the write - a second
+    # would reset the window and drop the source already shown in it.
+    assert len(opening) == 1
+    assert opening[-1].get("writes") is True
+
+    vm = TerminalViewModel()
+    for envelope in envelopes:
+        vm.apply(envelope)
+    assert vm.code_stream_visible is True
+    assert vm.code_stream_code == content
+
+
+async def test_an_invented_tool_name_is_not_announced(tmp_path) -> None:
+    # A name no tool answers to says nothing worth showing, and announcing it
+    # would decide whether the window opens from a fragment.
+    arguments = json.dumps({"path": "a.py", "content": "x = 1\n"})
+    app = build_application(
+        config=_config(tmp_path), provider=_FragmentProvider(arguments, "frobnicate")
+    )
+    envelopes: list[EventEnvelope] = []
+    app.subscribe(envelopes.append)
+    await app.start()
+    await app.submit_user_message("go")
+    await app.close()
+
+    assert not [e for e in envelopes if e.event_type == "tool.call.progress"]
