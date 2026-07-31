@@ -662,3 +662,118 @@ def test_extract_model_ids_handles_empty_and_bare_strings():
 
     assert extract_model_ids({}) == []
     assert extract_model_ids(["b", "a", "a"]) == ["a", "b"]
+
+
+def test_normalize_chat_messages_is_a_noop_for_a_wellformed_request() -> None:
+    from code_ai.providers.translation import normalize_chat_messages
+
+    messages = [
+        Message(role="system", content="system prompt"),
+        Message(role="user", content="hi"),
+        Message(role="assistant", content="hello"),
+    ]
+
+    # Same list object: the common path must not rebuild anything.
+    assert normalize_chat_messages(messages) is messages
+
+
+def test_normalize_chat_messages_folds_a_stray_system_message_into_the_leading_one() -> None:
+    from code_ai.providers.translation import normalize_chat_messages
+
+    normalized = normalize_chat_messages(
+        [
+            Message(role="system", content="system prompt"),
+            Message(role="system", content="compressed summary"),
+            Message(role="user", content="carry on"),
+        ]
+    )
+
+    # Chat templates raise "System message must be at the beginning." for a
+    # system message anywhere but index 0, and the engine turns that into a 400
+    # for the whole request.
+    assert [m.role for m in normalized] == ["system", "user"]
+    assert normalized[0].content == "system prompt\n\ncompressed summary"
+
+
+def test_normalize_chat_messages_adds_a_user_turn_when_none_survives() -> None:
+    from code_ai.providers.translation import normalize_chat_messages
+
+    normalized = normalize_chat_messages(
+        [
+            Message(role="system", content="system prompt"),
+            Message(role="assistant", content="reading a file", tool_calls=[]),
+            Message(role="tool", content="file contents", tool_call_id="c1", name="read_file"),
+        ]
+    )
+
+    # Otherwise: "No user query found in messages." — an unrecoverable 400.
+    assert normalized[-1].role == "user"
+    assert normalized[-1].content
+    assert [m.role for m in normalized[:-1]] == ["system", "assistant", "tool"]
+
+
+def test_normalize_chat_messages_counts_ollama_tool_results_as_user_turns() -> None:
+    from code_ai.providers.translation import normalize_chat_messages
+
+    messages = [
+        Message(role="system", content="system prompt"),
+        Message(role="tool", content="file contents", tool_call_id="c1", name="read_file"),
+    ]
+
+    # messages_to_ollama replays tool results as user turns, so nothing is
+    # missing and the list must be handed over untouched.
+    assert normalize_chat_messages(messages, tool_results_are_user_turns=True) is messages
+    assert normalize_chat_messages(messages)[-1].role == "user"
+
+
+def test_normalize_chat_messages_leaves_an_empty_request_alone() -> None:
+    from code_ai.providers.translation import normalize_chat_messages
+
+    assert normalize_chat_messages([]) == []
+
+
+async def test_chat_completions_payload_never_carries_a_misplaced_system_message() -> None:
+    provider = _chat_provider([])
+    sent: dict[str, object] = {}
+    original = provider._client.chat.completions.create
+
+    async def _record(**kwargs: object):
+        sent.update(kwargs)
+        return await original(**kwargs)
+
+    provider._client.chat.completions.create = _record
+    request = ModelRequest(
+        model="test-model",
+        messages=[
+            Message(role="system", content="system prompt"),
+            Message(role="system", content="Compressed context summary"),
+            Message(role="assistant", content="working"),
+            Message(role="tool", content="result", tool_call_id="c1", name="read_file"),
+        ],
+    )
+
+    [event async for event in provider.stream(request)]
+
+    roles = [message["role"] for message in sent["messages"]]
+    assert roles.count("system") == 1
+    assert roles[0] == "system"
+    assert "user" in roles
+
+
+async def test_ollama_payload_never_carries_a_misplaced_system_message() -> None:
+    from code_ai.providers.translation import normalize_chat_messages
+
+    messages = messages_to_ollama(
+        normalize_chat_messages(
+            [
+                Message(role="system", content="system prompt"),
+                Message(role="system", content="Compressed context summary"),
+                Message(role="user", content="carry on"),
+            ],
+            tool_results_are_user_turns=True,
+        )
+    )
+
+    roles = [message["role"] for message in messages]
+    assert roles.count("system") == 1
+    assert roles[0] == "system"

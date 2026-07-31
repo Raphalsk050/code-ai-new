@@ -20,6 +20,7 @@ from code_ai.providers.models import (
 )
 from code_ai.providers.translation import (
     messages_to_chat,
+    normalize_chat_messages,
     object_get,
     parse_arguments,
     tools_to_chat,
@@ -160,7 +161,7 @@ class OpenAIChatCompletionsProvider:
     async def _stream_once(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
         kwargs: dict[str, Any] = {
             "model": request.model,
-            "messages": messages_to_chat(request.messages),
+            "messages": messages_to_chat(normalize_chat_messages(request.messages)),
             "stream": True,
         }
         if request.max_output_tokens:

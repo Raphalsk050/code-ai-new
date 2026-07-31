@@ -18,7 +18,11 @@ from code_ai.providers.models import (
     TokenUsage,
     ToolCall,
 )
-from code_ai.providers.translation import parse_arguments, tools_to_chat
+from code_ai.providers.translation import (
+    normalize_chat_messages,
+    parse_arguments,
+    tools_to_chat,
+)
 
 
 def normalize_native_ollama_base_url(base_url: str) -> str:
@@ -134,7 +138,12 @@ class NativeOllamaProvider:
         url = urljoin(self._base_url, "api/chat")
         payload: dict[str, Any] = {
             "model": request.model,
-            "messages": messages_to_ollama(request.messages),
+            # Ollama renders the served model's own chat template too, so the
+            # same structural rules apply. Tool results are replayed as user
+            # turns by ``messages_to_ollama``, so they already count as one.
+            "messages": messages_to_ollama(
+                normalize_chat_messages(request.messages, tool_results_are_user_turns=True)
+            ),
             "stream": True,
         }
         if request.tools:
