@@ -476,3 +476,95 @@ async def test_an_invented_tool_name_is_not_announced(tmp_path) -> None:
     await app.close()
 
     assert not [e for e in envelopes if e.event_type == "tool.call.progress"]
+
+
+class _LMStudioStyleProvider:
+    """Streams a call the way LM Studio does: the name, then the whole object.
+
+    No incremental argument fragments at all - verified against a live LM Studio
+    endpoint, which answers with one chunk carrying only the function name and a
+    second carrying the complete arguments JSON.
+    """
+
+    def __init__(self, name: str, arguments: str) -> None:
+        self._name = name
+        self._arguments = arguments
+
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        return ProviderCapabilities(streaming=True, tool_calling=True)
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        yield ProviderEvent(
+            kind="tool_call_delta", tool_call_name=self._name, tool_call_arguments=""
+        )
+        yield ProviderEvent(
+            kind="tool_call_delta", tool_call_name=self._name, tool_call_arguments=self._arguments
+        )
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text="done", finish_reason=FinishReason.STOP),
+        )
+
+    async def complete(self, request: ModelRequest) -> ModelResponse:
+        async for event in self.stream(request):
+            if event.response:
+                return event.response
+        return ModelResponse()
+
+    async def close(self) -> None:
+        return None
+
+
+async def test_small_call_reports_its_size_instead_of_staying_at_zero(tmp_path) -> None:
+    # Regression: a call whose arguments arrive in one piece never crosses the
+    # progress throttle, so its only published update was the opening one
+    # reporting zero characters - and a read tool sat at "building call
+    # (0 chars)" for the whole call.
+    arguments = json.dumps({"path": "notes.txt"})
+    app = build_application(
+        config=_config(tmp_path), provider=_LMStudioStyleProvider("read_file", arguments)
+    )
+    envelopes: list[EventEnvelope] = []
+    app.subscribe(envelopes.append)
+
+    await app.start()
+    await app.submit_user_message("read the file")
+    await app.close()
+
+    progress = [e for e in envelopes if e.event_type == "tool.call.progress"]
+    assert progress, "the call was never announced"
+    assert progress[0].payload["chars"] == 0  # opening update, before any arguments
+    assert progress[-1].payload["chars"] == len(arguments)
+
+
+def test_code_window_closes_when_the_next_call_writes_nothing() -> None:
+    # Regression: the window only ever cleared for another *writing* call, so a
+    # finished write stayed on screen while an unrelated tool ran underneath it.
+    from code_ai.ui.terminal.view_models import TerminalViewModel
+
+    vm = TerminalViewModel()
+    vm._apply_tool_progress(
+        {"name": "write_file", "call_started": True, "writes": True, "chars": 0}
+    )
+    vm._apply_tool_progress(
+        {
+            "name": "write_file",
+            "writes": True,
+            "chars": 40,
+            "path": "a.py",
+            "code_key": "content",
+            "code_offset": 0,
+            "code_delta": "print(1)\n",
+            "code_complete": True,
+        }
+    )
+    assert vm.code_stream_visible
+    assert vm.code_stream_code == "print(1)\n"
+
+    vm._apply_tool_progress(
+        {"name": "execute_command", "call_started": True, "writes": False, "chars": 0}
+    )
+
+    assert not vm.code_stream_visible
+    assert vm.code_stream_code == ""
