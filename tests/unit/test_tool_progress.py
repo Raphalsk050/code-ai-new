@@ -147,6 +147,26 @@ def test_a_completed_write_settles_the_window() -> None:
     assert vm.code_stream_visible is True
 
 
+def test_an_interrupted_call_closes_the_window() -> None:
+    # The call never arrived, so the file it was filling in is not being
+    # written by anyone: the window must close rather than sit there spinning.
+    vm = TerminalViewModel()
+    vm.apply(_opening_event())
+    vm.apply(_code_event(0, "a = 1\n"))
+    vm.apply(
+        EventEnvelope.create(
+            event_type="tool.call.interrupted",
+            session_id="test",
+            sequence=1,
+            payload={"attempt": 1, "max_attempts": 2},
+        )
+    )
+
+    assert vm.code_stream_visible is False
+    assert vm.code_stream_code == ""
+    assert "cut off mid-stream" in vm.conversation[-1]
+
+
 def test_a_new_user_turn_clears_the_window() -> None:
     vm = TerminalViewModel()
     vm.apply(_opening_event())

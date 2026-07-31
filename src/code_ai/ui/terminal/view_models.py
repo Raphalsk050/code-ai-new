@@ -197,6 +197,16 @@ class TerminalViewModel:
             self._apply_command_output(event.payload)
         elif event.event_type == "terminal.screen.updated":
             self._apply_terminal_screen(event.payload)
+        elif event.event_type == "tool.call.interrupted":
+            # The call never arrived, so the window that was filling up with its
+            # source is showing a write that is not going to happen: close it
+            # rather than leave it spinning on a file nobody is writing.
+            self.clear_code_stream()
+            attempt = event.payload.get("attempt")
+            total = event.payload.get("max_attempts")
+            self.conversation.append(
+                f"tool> call was cut off mid-stream, asking again ({attempt}/{total})"
+            )
         elif event.event_type == "tool.call.started":
             self.conversation.append(f"tool> {event.payload.get('name')} started")
         elif event.event_type == "tool.call.completed":
