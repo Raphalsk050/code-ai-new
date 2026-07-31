@@ -1926,3 +1926,36 @@ async def test_disabled_skill_is_not_a_slash_command(tmp_path) -> None:
 
         # Not a command and not an instruction dump: it travels as plain text.
         assert fake_app.submitted == ["/legacy"]
+
+
+async def test_bracketed_trace_text_never_raises_markup_error(tmp_path) -> None:
+    # Regression: every Static that receives a runtime-built string used to parse
+    # it as console markup, so a bracket in model or tool text raised MarkupError
+    # inside the event subscriber ("Event subscriber failed while handling
+    # planning.evidence.recorded (MarkupError)"). Static.update() visualizes
+    # eagerly, so the exception surfaced synchronously on the emit.
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        # Working, so the newest line is held back in the live tail — the widget
+        # that actually blew up.
+        await fake_app.emit("status.changed", {"state": "CALLING_MODEL"})
+        await fake_app.emit(
+            "planning.evidence.recorded",
+            {"type": "FILE_READ", "summary": "read parser.py [1/3] lines [10:40]"},
+        )
+        await pilot.pause(0.05)
+
+        assert "[1/3]" in terminal_app.vm.conversation[-1]
+
+        # The same hazard reaches the plan step through the session panel and the
+        # model name through the status line.
+        await fake_app.emit(
+            "planning.step.started",
+            {"current_step": "fix [bug] in parser", "plan_progress": "1/2"},
+        )
+        await pilot.pause(0.05)
+
+        for widget_id in ("#stream-tail", "#statusline", "#session-info", "#command-suggestions"):
+            assert terminal_app.query_one(widget_id, Static)._render_markup is False
