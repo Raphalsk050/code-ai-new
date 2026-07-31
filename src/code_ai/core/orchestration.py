@@ -1763,7 +1763,17 @@ class AgentOrchestrator:
         name = event.tool_call_name
         if not name:
             return
-        stream = self._tool_stream(name, event.tool_call_index, streams)
+        stream = streams.get(event.tool_call_index)
+        if stream is None:
+            if not self.tool_registry.has(name):
+                # A name that is not a tool yet: either still arriving in pieces
+                # ("write" before "write_file") or one the model invented.
+                # Announcing it would fix the call's identity - and with it
+                # whether the code window ever opens - on a fragment, so hold
+                # off. Nothing is lost by waiting: the arguments are cumulative,
+                # so a stream opened later still sees everything before it.
+                return
+            stream = self._tool_stream(name, event.tool_call_index, streams)
         stream.decoder.feed(event.tool_call_arguments)
         await self._publish_tool_progress(name, event.tool_call_index, stream, final=False)
 
