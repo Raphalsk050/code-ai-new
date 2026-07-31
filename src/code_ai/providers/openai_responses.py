@@ -4,11 +4,12 @@ import asyncio
 import json
 import random
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 from typing import Any
 
 from code_ai.config.models import AppConfig
 from code_ai.core.errors import ProviderError, TransientProviderError
-from code_ai.providers.base import build_openai_http_client
+from code_ai.providers.base import build_openai_http_client, closing_stream
 from code_ai.providers.debug import ModelDebugLogger
 from code_ai.providers.models import (
     FinishReason,
@@ -155,8 +156,12 @@ class OpenAIResponsesProvider:
         return self._capabilities
 
     async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
-        async for event in self._stream_with_retry(request):
-            yield event
+        # Closed at every layer: leaving an `async for` early suspends the
+        # generator under it rather than closing it, so the HTTP response at the
+        # bottom would stay open and the server would keep generating.
+        async with aclosing(self._stream_with_retry(request)) as events:
+            async for event in events:
+                yield event
 
     async def complete(self, request: ModelRequest) -> ModelResponse:
         text_parts: list[str] = []
@@ -178,8 +183,9 @@ class OpenAIResponsesProvider:
         attempts = 0
         while True:
             try:
-                async for event in self._stream_once(request):
-                    yield event
+                async with aclosing(self._stream_once(request)) as events:
+                    async for event in events:
+                        yield event
                 return
             except Exception as exc:
                 text = str(exc).lower()
@@ -234,8 +240,9 @@ class OpenAIResponsesProvider:
                     kind="warning",
                     warning="Endpoint rejected sampling parameters; retrying without them.",
                 )
-                async for event in self._stream_once(request):
-                    yield event
+                async with aclosing(self._stream_once(request)) as events:
+                    async for event in events:
+                        yield event
                 return
             if _is_transient_exception(exc):
                 raise TransientProviderError(str(exc)) from exc
@@ -253,58 +260,61 @@ class OpenAIResponsesProvider:
         fc_args: dict[str, str] = {}
         fc_index: dict[str, int] = {}
 
-        async for event in stream:
-            if debug:
-                debug.log_raw_chunk(event)
-            event_type = str(object_get(event, "type", ""))
-            is_completion_event = event_type in {"response.completed", "response.done"}
-            delta = _text_delta_from_event(event_type, event)
-            reasoning_delta = _reasoning_delta_from_event(event_type, event)
-            if delta:
-                text_parts.append(delta)
-                yield ProviderEvent(kind="text_delta", text_delta=delta)
-            elif reasoning_delta:
-                reasoning_parts.append(reasoning_delta)
-                yield ProviderEvent(kind="reasoning_delta", reasoning_delta=reasoning_delta)
-            elif event_type == "response.output_item.added":
-                item = object_get(event, "item", {}) or {}
-                if str(object_get(item, "type", "")) in {"function_call", "tool_call"}:
-                    item_id = str(
-                        object_get(item, "id", "") or object_get(event, "item_id", "") or ""
+        # Closed deterministically so a cancelled turn disconnects: an
+        # inference server keeps generating until the client goes away.
+        async with closing_stream(stream):
+            async for event in stream:
+                if debug:
+                    debug.log_raw_chunk(event)
+                event_type = str(object_get(event, "type", ""))
+                is_completion_event = event_type in {"response.completed", "response.done"}
+                delta = _text_delta_from_event(event_type, event)
+                reasoning_delta = _reasoning_delta_from_event(event_type, event)
+                if delta:
+                    text_parts.append(delta)
+                    yield ProviderEvent(kind="text_delta", text_delta=delta)
+                elif reasoning_delta:
+                    reasoning_parts.append(reasoning_delta)
+                    yield ProviderEvent(kind="reasoning_delta", reasoning_delta=reasoning_delta)
+                elif event_type == "response.output_item.added":
+                    item = object_get(event, "item", {}) or {}
+                    if str(object_get(item, "type", "")) in {"function_call", "tool_call"}:
+                        item_id = str(
+                            object_get(item, "id", "") or object_get(event, "item_id", "") or ""
+                        )
+                        if item_id:
+                            fc_names[item_id] = str(object_get(item, "name", "") or "")
+                            fc_index.setdefault(item_id, len(fc_index))
+                elif event_type == "response.function_call_arguments.delta":
+                    item_id = str(object_get(event, "item_id", "") or "")
+                    fc_args[item_id] = fc_args.get(item_id, "") + str(
+                        object_get(event, "delta", "") or ""
                     )
-                    if item_id:
-                        fc_names[item_id] = str(object_get(item, "name", "") or "")
-                        fc_index.setdefault(item_id, len(fc_index))
-            elif event_type == "response.function_call_arguments.delta":
-                item_id = str(object_get(event, "item_id", "") or "")
-                fc_args[item_id] = fc_args.get(item_id, "") + str(
-                    object_get(event, "delta", "") or ""
-                )
-                fc_index.setdefault(item_id, len(fc_index))
-                yield ProviderEvent(
-                    kind="tool_call_delta",
-                    tool_call_name=fc_names.get(item_id, ""),
-                    tool_call_arguments=fc_args[item_id],
-                    tool_call_index=fc_index.get(item_id, 0),
-                )
-            elif is_completion_event:
-                response = object_get(event, "response", event)
-                response_id = (
-                    str(object_get(response, "id", response_id or "") or "") or response_id
-                )
-                usage = (
-                    _usage_from_object(object_get(response, "usage"), source="openai_responses")
-                    or usage
-                )
-                for item in object_get(response, "output", []) or []:
-                    item_reasoning = _reasoning_from_output_item(item)
-                    if item_reasoning and not reasoning_parts:
-                        reasoning_parts.append(item_reasoning)
-                    normalized = normalize_responses_output_item(item)
-                    if isinstance(normalized, ToolCall):
-                        tool_calls.append(normalized)
-                    elif isinstance(normalized, str) and normalized and not text_parts:
-                        text_parts.append(normalized)
+                    fc_index.setdefault(item_id, len(fc_index))
+                    yield ProviderEvent(
+                        kind="tool_call_delta",
+                        tool_call_name=fc_names.get(item_id, ""),
+                        tool_call_arguments=fc_args[item_id],
+                        tool_call_index=fc_index.get(item_id, 0),
+                    )
+                elif is_completion_event:
+                    response = object_get(event, "response", event)
+                    response_id = (
+                        str(object_get(response, "id", response_id or "") or "") or response_id
+                    )
+                    usage = (
+                        _usage_from_object(object_get(response, "usage"), source="openai_responses")
+                        or usage
+                    )
+                    for item in object_get(response, "output", []) or []:
+                        item_reasoning = _reasoning_from_output_item(item)
+                        if item_reasoning and not reasoning_parts:
+                            reasoning_parts.append(item_reasoning)
+                        normalized = normalize_responses_output_item(item)
+                        if isinstance(normalized, ToolCall):
+                            tool_calls.append(normalized)
+                        elif isinstance(normalized, str) and normalized and not text_parts:
+                            text_parts.append(normalized)
 
         finish = FinishReason.TOOL_CALLS if tool_calls else FinishReason.STOP
         response = ModelResponse(
