@@ -737,14 +737,22 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                         id="logo",
                     )
                     yield Static("Any model. Real tools. Local control.", id="subtitle")
-                    yield Static("READY", id="statusline")
+                    # Carries the configured model name and workspace folder,
+                    # neither of which is ours to sanitise — a single bracket in
+                    # either would otherwise raise MarkupError on every status
+                    # refresh. Nothing in this UI styles via markup strings;
+                    # colour always comes from Text/Content renderables, which
+                    # markup=False leaves untouched.
+                    yield Static("READY", id="statusline", markup=False)
                     yield Static("", id="context-meter")
                 with Horizontal(id="main"):
                     with Vertical(id="session"):
                         with Horizontal(id="session-header"):
                             yield Static("SESSION", classes="panel-title", id="session-title")
                             yield Button("‹", id="toggle-session", classes="collapse-btn")
-                        yield Static("", id="session-info")
+                        # Includes the model-authored current plan step, so the
+                        # same reasoning as the status line applies.
+                        yield Static("", id="session-info", markup=False)
                     with Vertical(id="conversation-pane"):
                         # One selectable Static per committed line (inside a
                         # scroller) instead of a RichLog: RichLog renders to
@@ -762,7 +770,13 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                         )
                         code_window.display = False
                         yield code_window
-                        yield Static("", id="stream-tail")
+                        # ``markup=False`` for the same reason the committed
+                        # lines set it: trace lines carry raw tool and model
+                        # text, and a stray bracket ("evidence> FILE_READ:
+                        # [1/3] ...") would otherwise be parsed as console
+                        # markup and raise MarkupError inside the event
+                        # subscriber. Styled Content renderables are unaffected.
+                        yield Static("", id="stream-tail", markup=False)
                     with Vertical(id="sidebar"):
                         # Two stacked panels, each scrolls internally when its
                         # content outgrows the space: the plan checklist on top,
@@ -792,7 +806,9 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                     resolve_spinner(application.session.config.terminal_spinner),
                     id="working-indicator",
                 )
-                suggestions = Static("", id="command-suggestions")
+                # Lists skill and workflow names read off disk, so the same
+                # reasoning as the status line applies.
+                suggestions = Static("", id="command-suggestions", markup=False)
                 suggestions.display = False
                 yield suggestions
                 with Horizontal(id="input-row"):
