@@ -316,7 +316,12 @@ Both costs stay flat as the file grows:
 Turn it off with `/config live-code off` (or `"terminal_live_code": false`) on a terminal where any repainting is costly - a slow SSH link, a heavy multiplexer.
 Writes then report progress on one line, as before.
 
-The stream is also on the event bus, as `call_started` / `writes` / `reason` / `code_offset` / `code_delta` / `code_complete` on `tool.call.progress`, so the VS Code bridge and any other consumer can render the same flow.
+A call can also be cut off before it ever arrives: the model stream times out, the endpoint drops it, or the provider discards arguments it could not parse.
+Nothing was written in that case, so the window closes rather than sitting on a file nobody is writing, and the runtime asks the model to make the call again.
+Without that, the prose the model streamed just before the call - normally the announcement of the change it was about to make - was all that survived the step, and it became the turn's answer: the agent settled into `waiting_user` having said it would implement something and implemented nothing.
+Bounded at two attempts, so a stream that keeps breaking still ends the turn with a best-effort reply instead of re-prompting forever.
+
+The stream is also on the event bus, as `call_started` / `writes` / `reason` / `code_offset` / `code_delta` / `code_complete` on `tool.call.progress`, plus `tool.call.interrupted` when a call is cut off, so the VS Code bridge and any other consumer can render the same flow.
 
 ### Pasting images
 
