@@ -21,7 +21,11 @@ from code_ai.ui.terminal.clipboard import (
     paste_from_system_clipboard,
     paste_image_from_system_clipboard,
 )
-from code_ai.ui.terminal.code_view import guess_lexer, render_live_code
+from code_ai.ui.terminal.code_view import (
+    live_code_lexer,
+    live_code_title,
+    render_live_code,
+)
 from code_ai.ui.terminal.controller import TerminalController
 from code_ai.ui.terminal.slash_commands import (
     SlashCommand,
@@ -77,11 +81,6 @@ _STREAM_TAIL_MAX_ROWS = 14
 # than covers that on a wide pane, and it caps the per-delta word-wrap cost so a
 # long single-paragraph reasoning block can no longer freeze the terminal.
 _STREAM_TAIL_MAX_CHARS = 4000
-
-# How much source has to arrive before the live code window guesses a language
-# from the content itself. Only reached when the call carries no path (a skill
-# or a rule); with a path the extension settles it on the first fragment.
-_LEXER_GUESS_MIN_CHARS = 400
 
 # Cap on how many committed lines are kept mounted in the scrollback. Each line
 # is a selectable widget, so this bounds widget count the way RichLog.max_lines
@@ -422,14 +421,21 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self.update(Text(self._style.frames[0], style=WORKING_IDLE_STYLE))
 
     class LiveCodePanel(Static):
-        """The file the model is writing, repainted as the source streams in.
+        """The window a write opens in, filled as the source streams into it.
 
-        Two things keep this cheap enough to run on every fragment. The paint is
-        rate-limited by a timer instead of following the event rate, so a fast
-        local model cannot drive the terminal past ~16 repaints a second. And
-        the lexer is resolved once per file rather than re-guessed from a
-        growing fragment, which would otherwise make the colours shift under the
-        user as the file takes shape.
+        It is a window, not a stretch of chat: a titled frame naming the call
+        and its target, the model's own reason for the change, and the source
+        underneath. The frame is drawn as soon as the call starts, before a
+        single character of source has arrived, so the user reads *why* first
+        and then watches the *what* fill in - the order the approval dialog
+        presents them in once the call is complete.
+
+        Two things keep repainting cheap enough to do on every fragment. The
+        paint is rate-limited by a timer instead of following the event rate, so
+        a fast local model cannot drive the terminal past ~16 repaints a second.
+        And the lexer is resolved once per file rather than re-guessed from a
+        growing fragment, which would otherwise repaint the window in a new
+        palette as the file takes shape.
 
         The window is replaced whole on each paint, never appended to, so it
         never tears: what the user sees is always one consistent snapshot.
@@ -441,9 +447,9 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             super().__init__("", **kwargs)
             self._style = style
             self._signature: tuple[object, ...] | None = None
-            self._pending: tuple[str, str, str, str, bool] | None = None
+            self._pending: tuple[str, str, str, str, str, bool] | None = None
             self._lexer_key: tuple[str, str] | None = None
-            self._lexer = ""
+            self._lexer = "text"
             self._frame = 0
             self._timer = None
 
@@ -454,14 +460,20 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self._style = style
 
         def update_code(
-            self, tool: str, path: str, code_key: str, code: str, complete: bool
+            self,
+            tool: str,
+            path: str,
+            code_key: str,
+            reason: str,
+            code: str,
+            complete: bool,
         ) -> None:
             # Length is enough to detect growth: the buffer is append-only.
-            signature = (tool, path, code_key, len(code), complete)
+            signature = (tool, path, code_key, reason, len(code), complete)
             if signature == self._signature:
                 return
             self._signature = signature
-            self._pending = (tool, path, code_key, code, complete)
+            self._pending = (tool, path, code_key, reason, code, complete)
             if self._timer is not None:
                 self._timer.resume()
 
@@ -471,15 +483,19 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 if self._timer is not None:
                     self._timer.pause()
                 return
-            tool, path, code_key, code, complete = self._pending
+            tool, path, code_key, reason, code, complete = self._pending
             self._pending = None
             self._frame += 1
+            title, subtitle = live_code_title(tool, path)
+            self.border_title = title
+            self.border_subtitle = subtitle
             self.update(
                 render_live_code(
                     tool=tool,
                     path=path,
                     code=code,
                     code_key=code_key,
+                    reason=reason,
                     complete=complete,
                     lexer=self._resolve_lexer(tool, path, code, complete),
                     glyph=self._glyph(),
@@ -491,22 +507,16 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             return frames[self._frame % len(frames)]
 
         def _resolve_lexer(self, tool: str, path: str, code: str, complete: bool) -> str:
-            """Pick the language once per file, not once per fragment.
+            """Settle the language once per file, not once per fragment.
 
-            A path settles it immediately. Without one the guess has to come
-            from the source itself, which is worthless on the first few
-            characters and would repaint the whole window in a new palette as
-            soon as it changed its mind — so it stays plain until enough has
-            arrived to be worth freezing.
+            Re-resolved only when the target changes - which includes a path
+            that arrives after the source has already started, so a file that
+            began plain gets its colours the moment its name is known.
             """
             key = (tool, path)
-            if key != self._lexer_key:
+            if key != self._lexer_key or self._lexer == "text":
                 self._lexer_key = key
-                self._lexer = guess_lexer(path, code) if path else ""
-            if not self._lexer:
-                if not complete and len(code) < _LEXER_GUESS_MIN_CHARS:
-                    return "text"
-                self._lexer = guess_lexer("", code)
+                self._lexer = live_code_lexer(tool, path, code, complete)
             return self._lexer
 
     class PlanPanel(Static):
@@ -1673,6 +1683,11 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                     self.vm.code_stream_tool,
                     self.vm.code_stream_path,
                     self.vm.code_stream_key,
+                    # The model's own "why", shown on the same terms as in the
+                    # approval dialog: only when /config learn is on.
+                    self.vm.code_stream_reason
+                    if application.session.config.learn
+                    else "",
                     self.vm.code_stream_code,
                     self.vm.code_stream_complete,
                 )
