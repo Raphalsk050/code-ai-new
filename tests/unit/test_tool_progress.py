@@ -43,9 +43,22 @@ def test_view_model_progress_without_path_shows_chars() -> None:
 # --- live code window state --------------------------------------------------
 
 
+def _opening_event(**extra: object) -> EventEnvelope:
+    """The first word about a writing call, before any source exists."""
+    payload: dict[str, object] = {
+        "name": "write_file",
+        "call_started": True,
+        "writes": True,
+        "chars": 20,
+    }
+    payload.update(extra)
+    return _event(payload)
+
+
 def _code_event(offset: int, delta: str, **extra: object) -> EventEnvelope:
     payload: dict[str, object] = {
         "name": "write_file",
+        "writes": True,
         "path": "src/foo.py",
         "code_key": "content",
         "code_offset": offset,
@@ -56,8 +69,28 @@ def _code_event(offset: int, delta: str, **extra: object) -> EventEnvelope:
     return _event(payload)
 
 
+def test_the_window_opens_before_any_source_arrives() -> None:
+    vm = TerminalViewModel()
+    vm.apply(_opening_event(path="src/foo.py", reason="bound the cache"))
+
+    assert vm.code_stream_visible is True
+    assert vm.code_stream_tool == "write_file"
+    assert vm.code_stream_path == "src/foo.py"
+    assert vm.code_stream_reason == "bound the cache"
+    assert vm.code_stream_code == ""
+
+
+def test_the_reason_can_land_after_the_window_opened() -> None:
+    vm = TerminalViewModel()
+    vm.apply(_opening_event())
+    vm.apply(_code_event(0, "a = 1\n", reason="  keep it small  "))
+
+    assert vm.code_stream_reason == "keep it small"
+
+
 def test_code_window_grows_from_append_only_deltas() -> None:
     vm = TerminalViewModel()
+    vm.apply(_opening_event())
     vm.apply(_code_event(0, "def f():\n"))
     vm.apply(_code_event(9, "    return 1\n", code_complete=True))
 
@@ -70,16 +103,20 @@ def test_code_window_grows_from_append_only_deltas() -> None:
 
 def test_a_second_call_opens_a_fresh_window() -> None:
     vm = TerminalViewModel()
+    vm.apply(_opening_event())
     vm.apply(_code_event(0, "old file\n", code_complete=True))
+    vm.apply(_opening_event(reason="a different change"))
     vm.apply(_code_event(0, "new file\n", path="src/bar.py"))
 
     assert vm.code_stream_code == "new file\n"
     assert vm.code_stream_path == "src/bar.py"
+    assert vm.code_stream_reason == "a different change"
     assert vm.code_stream_complete is False
 
 
 def test_out_of_order_delta_is_ignored_rather_than_spliced() -> None:
     vm = TerminalViewModel()
+    vm.apply(_opening_event())
     vm.apply(_code_event(0, "a = 1\n"))
     vm.apply(_code_event(999, "c = 3\n"))
 
@@ -88,13 +125,14 @@ def test_out_of_order_delta_is_ignored_rather_than_spliced() -> None:
 
 def test_progress_without_source_leaves_the_window_closed() -> None:
     vm = TerminalViewModel()
-    vm.apply(_event({"name": "execute_command", "chars": 25}))
+    vm.apply(_event({"name": "execute_command", "call_started": True, "chars": 25}))
 
     assert vm.code_stream_visible is False
 
 
 def test_a_completed_write_settles_the_window() -> None:
     vm = TerminalViewModel()
+    vm.apply(_opening_event())
     vm.apply(_code_event(0, "a = 1\n"))
     vm.apply(
         EventEnvelope.create(
@@ -111,6 +149,7 @@ def test_a_completed_write_settles_the_window() -> None:
 
 def test_a_new_user_turn_clears_the_window() -> None:
     vm = TerminalViewModel()
+    vm.apply(_opening_event())
     vm.apply(_code_event(0, "a = 1\n", code_complete=True))
     vm.apply(
         EventEnvelope.create(
@@ -281,6 +320,38 @@ async def test_edit_code_previews_the_replacement_text(tmp_path) -> None:
     coded = [p for p in payloads if "code_delta" in p]
     assert {p["code_key"] for p in coded} == {"new_text"}
     assert "".join(p["code_delta"] for p in coded) == "after\nmore\n"
+
+
+async def test_the_write_is_announced_before_its_source(tmp_path) -> None:
+    # The arguments are declared path -> reason -> content, so this is the order
+    # a model streams them in: the UI learns what is being written, and why,
+    # while the file itself is still arriving.
+    arguments = json.dumps(
+        {
+            "path": "src/app.py",
+            "reason": "bound the cache so the budget holds",
+            "content": "x = 1\n" * 40,
+        }
+    )
+
+    payloads = await _progress_for(tmp_path, arguments)
+
+    assert payloads[0]["call_started"] is True
+    assert payloads[0]["writes"] is True
+    reasoned = next(p for p in payloads if "reason" in p)
+    first_code = next(p for p in payloads if p.get("code_delta"))
+    assert reasoned["reason"] == "bound the cache so the budget holds"
+    assert payloads.index(reasoned) <= payloads.index(first_code)
+    assert not any(p.get("call_started") for p in payloads[1:])
+
+
+async def test_a_non_writing_call_is_not_announced_as_a_write(tmp_path) -> None:
+    payloads = await _progress_for(
+        tmp_path, json.dumps({"command": "ls -la"}), name="execute_command"
+    )
+
+    assert payloads[0]["call_started"] is True
+    assert not any(payload.get("writes") for payload in payloads)
 
 
 async def test_non_writing_tool_streams_no_source(tmp_path) -> None:

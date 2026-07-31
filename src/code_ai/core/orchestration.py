@@ -87,6 +87,10 @@ _CODE_PROGRESS_STEP_CHARS = 48
 # one writing it.
 _CODE_ARGUMENT_KEYS = ("content", "new_text", "instructions")
 _PATH_ARGUMENT_KEY = "path"
+# The model's plain-language justification for the change. Declared ahead of the
+# bulk arguments on the writing tools precisely so it arrives first and the UI
+# can open with the reason already on screen.
+_REASON_ARGUMENT_KEY = "reason"
 _ALLOWED_POLICY = PolicyDecision(True, "allowed", set())
 
 # Capabilities that mutate the workspace or run external processes. In "ask"
@@ -1688,7 +1692,9 @@ class AgentOrchestrator:
             return stream
         stream = _ToolCallStream(
             name=name,
-            decoder=PartialObjectDecoder((_PATH_ARGUMENT_KEY, *_CODE_ARGUMENT_KEYS)),
+            decoder=PartialObjectDecoder(
+                (_PATH_ARGUMENT_KEY, _REASON_ARGUMENT_KEY, *_CODE_ARGUMENT_KEYS)
+            ),
             writes=self._writes_to_workspace(name),
         )
         streams[index] = stream
@@ -1734,6 +1740,16 @@ class AgentOrchestrator:
             "index": index,
             "chars": length,
         }
+        if not stream.announced:
+            # The first word about this call. A consumer showing a window for
+            # the write opens it here, before any source exists, rather than
+            # waiting for the first line of code to know a write is happening.
+            payload["call_started"] = True
+        if stream.writes:
+            payload["writes"] = True
+            reason = decoder.value(_REASON_ARGUMENT_KEY)
+            if reason is not None and reason.text:
+                payload["reason"] = reason.text
         path = decoder.value(_PATH_ARGUMENT_KEY)
         if path is not None and path.closed and path.text:
             payload["path"] = path.text
