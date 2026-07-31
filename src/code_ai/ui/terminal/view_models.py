@@ -10,6 +10,10 @@ from code_ai.ui.terminal.widgets import build_plan_steps
 # the tool.call.completed summary and the tool result itself.
 _COMMAND_TAIL_MAX_CHARS = 2000
 
+# States that mean the agent is no longer working on a turn. The live code
+# window belongs to a write in progress, so it closes on any of them.
+_TURN_OVER_STATES = frozenset({"READY", "FAILED", "CLOSED"})
+
 
 @dataclass(slots=True)
 class TerminalViewModel:
@@ -63,6 +67,13 @@ class TerminalViewModel:
     def apply(self, event: EventEnvelope) -> None:
         if event.event_type == "status.changed":
             self.status = str(event.payload.get("state", self.status))
+            if self.status in _TURN_OVER_STATES:
+                # The turn is over, so nothing is being written any more. Leaving
+                # the window up parked a finished file over the conversation
+                # until the next prompt, pushing the answer the user was waiting
+                # for off screen. Covers every ending - answered, failed or
+                # cancelled - since all of them land in one of these states.
+                self.clear_code_stream()
         elif event.event_type == "phase.changed":
             self.phase = str(event.payload.get("phase", self.phase))
         elif event.event_type == "planning.mode.changed":

@@ -455,8 +455,15 @@ async def test_a_name_arriving_in_pieces_still_opens_the_window(tmp_path) -> Non
     assert len(opening) == 1
     assert opening[-1].get("writes") is True
 
+    # Replayed up to the last progress event: this is about the window opening
+    # and filling for a name that arrived in pieces, not about how long it stays
+    # up afterwards - the turn ending closes it (see
+    # test_code_window_closes_when_the_turn_ends).
+    last_progress = max(
+        index for index, e in enumerate(envelopes) if e.event_type == "tool.call.progress"
+    )
     vm = TerminalViewModel()
-    for envelope in envelopes:
+    for envelope in envelopes[: last_progress + 1]:
         vm.apply(envelope)
     assert vm.code_stream_visible is True
     assert vm.code_stream_code == content
@@ -568,3 +575,44 @@ def test_code_window_closes_when_the_next_call_writes_nothing() -> None:
 
     assert not vm.code_stream_visible
     assert vm.code_stream_code == ""
+
+
+def test_code_window_closes_when_the_turn_ends() -> None:
+    # Regression: the window only closed on the *next* user message, so a
+    # finished write sat parked over the conversation after the agent had
+    # already answered - hiding the answer the user was waiting for.
+    from code_ai.ui.terminal.view_models import TerminalViewModel
+
+    vm = TerminalViewModel()
+    vm.apply(_opening_event())
+    vm.apply(_code_event(0, "print(1)\n"))
+    assert vm.code_stream_visible
+
+    vm.apply(
+        EventEnvelope.create(
+            event_type="status.changed", session_id="test", sequence=1, payload={"state": "READY"}
+        )
+    )
+
+    assert not vm.code_stream_visible
+    assert vm.code_stream_code == ""
+
+
+def test_code_window_survives_the_states_of_a_running_turn() -> None:
+    from code_ai.ui.terminal.view_models import TerminalViewModel
+
+    vm = TerminalViewModel()
+    vm.apply(_opening_event())
+    vm.apply(_code_event(0, "print(1)\n"))
+
+    for state in ("CALLING_MODEL", "EXECUTING_TOOL", "COMPRESSING_CONTEXT"):
+        vm.apply(
+            EventEnvelope.create(
+                event_type="status.changed",
+                session_id="test",
+                sequence=2,
+                payload={"state": state},
+            )
+        )
+        assert vm.code_stream_visible, f"{state} must not close the window"
+    assert vm.code_stream_code == "print(1)\n"
