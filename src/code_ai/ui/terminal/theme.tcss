@@ -135,17 +135,26 @@ Screen {
   color: #6b7280;
 }
 
-/* The file being written right now. Grows with the source until it caps, then
-   holds still and shows only the newest rows — so the window settles into a
-   fixed size early instead of pushing the conversation around on every line.
-   Long lines clip rather than wrap: a wrapped line would change the window's
-   height as it is typed, which reads as flicker. */
+/* The window a write opens in. It carries the same accent as the approval
+   dialog it hands over to, and names the call in its border, so it reads as a
+   window onto the change rather than as code loose in the conversation.
+
+   Grows with the source until it caps, then holds still and shows only the
+   newest rows — so the window settles into a fixed size early instead of
+   pushing the conversation around on every line. Long lines clip rather than
+   wrap: a wrapped line would change the window's height as it is typed, which
+   reads as flicker. */
 #code-window {
   height: auto;
-  max-height: 17;
-  border: round #2b3440;
+  max-height: 20;
+  border: round #ff9f1c;
+  border-title-color: #ff9f1c;
+  border-title-style: bold;
+  border-title-align: left;
+  border-subtitle-color: #9fb3c8;
   background: #111820;
   padding: 0 1;
+  margin-top: 1;
   overflow-x: hidden;
 }
 
