@@ -316,6 +316,11 @@ Both costs stay flat as the file grows:
 Turn it off with `/config live-code off` (or `"terminal_live_code": false`) on a terminal where any repainting is costly - a slow SSH link, a heavy multiplexer.
 Writes then report progress on one line, as before.
 
+Whether the file visibly types itself out is the endpoint's decision, not Code-AI's.
+The arguments are only incremental if the server streams them that way, and several do not: measured against a local install, Ollama 0.32 hands the whole call over in one chunk after generation has finished, on both `/v1/chat/completions` and the native `/api/chat`, and LM Studio sends the name first and then the entire arguments in a single piece.
+On those the window still opens when the call starts, with its target and the model's reason, but the source lands in one paint rather than flowing in - there is nothing partial to show, so a typing effect would have to be invented.
+Endpoints that do stream tool-call arguments fragment by fragment, such as the OpenAI Responses and Chat Completions APIs, play the write out as it happens.
+
 A call can also be cut off before it ever arrives: the model stream times out, the endpoint drops it, or the provider discards arguments it could not parse.
 Nothing was written in that case, so the window closes rather than sitting on a file nobody is writing, and the runtime asks the model to make the call again.
 Without that, the prose the model streamed just before the call - normally the announcement of the change it was about to make - was all that survived the step, and it became the turn's answer: the agent settled into `waiting_user` having said it would implement something and implemented nothing.
