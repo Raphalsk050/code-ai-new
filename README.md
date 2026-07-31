@@ -375,6 +375,8 @@ Provider-reported token usage is exact when present. Pre-request context size ma
 
 Automatic compression runs before the configured context limit is exhausted. Compression keeps the current request, recent turns, and complete tool call/result pairs. Local compression resets remote response-state assumptions for the next provider request.
 
+The summary re-enters the conversation as a user turn, never as a second system message: local engines render the served model's own chat template, and mainstream templates reject a request carrying system content anywhere but the top, or carrying no user turn at all. Both raise inside the template, which the engine reports as a 400 for the whole request. When summarizing leaves the kept window without a user turn, the latest user request is restated — capped, text only — so the model keeps steering on what was actually asked. Chat requests are normalized once more at the provider boundary (one leading system message, at least one user turn), so a shape bug upstream degrades into a slightly reworded prompt instead of an unrecoverable session.
+
 ## Security Boundaries
 
 Code-AI does not expose complete environment dictionaries, API keys, tokens, SSH material, unrelated user files, or raw provider headers in events or logs. Command tools inherit a sanitized environment and reject workspace escapes.
