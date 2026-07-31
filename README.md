@@ -369,6 +369,12 @@ If the vision call fails, the raw images are attached as before.
 
 File and process tools resolve symlinks and enforce that all operations remain inside the configured workspace.
 
+## Steering A Running Turn
+
+A message sent while a turn is running is queued and joins the conversation at the next model step, rather than starting a turn of its own or waiting for the current one to end. The step already in flight completes first — a request in progress cannot be edited — so a message sent during a tool call is read as soon as that call returns.
+
+It steers, it does not re-task: the message becomes an ordinary user turn and the model decides what to do with it. The plan, its checklist and the evidence ledger are left untouched, since reopening them mid-turn would discard the work already done to satisfy them. A message the model saw but did not act on does not block the turn from finishing. A message queued too late for the loop to read gets a turn of its own, with the conversation still behind it. Cancelling discards the queue.
+
 ## Token Accounting And Compression
 
 Provider-reported token usage is exact when present. Pre-request context size may be estimated; estimated values are marked with `~`. Active context size and cumulative usage are separate values, so context compression is based on the active request size, not historical cumulative usage.

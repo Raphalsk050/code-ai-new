@@ -142,8 +142,47 @@ class CodeAIApplication:
         resume_plan: bool = False,
         images: list[ImageContent] | None = None,
     ) -> TurnResult:
+        """Run the message as a turn, or hand it to the turn already running.
+
+        Typing while the agent works steers it: the message is queued and the
+        running turn reads it at its next model step, rather than waiting for
+        the whole turn to finish. The step already in flight completes first,
+        since a request in progress cannot be edited.
+        """
         if self._current_task and not self._current_task.done():
-            raise RuntimeError("A turn is already running.")
+            message = text.strip()
+            if not message:
+                return TurnResult(text="", response=None, queued=True)
+            self.orchestrator.queue_user_message(message)
+            await self.event_bus.emit("user.message.queued", {"text": message}, source="app")
+            return TurnResult(text="", response=None, queued=True)
+
+        result = await self._run_turn(
+            text, context=context, resume_plan=resume_plan, images=images
+        )
+        # A message queued so late that the loop never read it would otherwise be
+        # lost with the turn that ended: give it a turn of its own, with the
+        # whole conversation still behind it. Cancelling drops the queue instead
+        # - Ctrl+C means stop, not "stop and then run this".
+        if result.cancelled:
+            self.orchestrator.take_queued_messages()
+            return result
+        while self.orchestrator.has_queued_messages():
+            follow_up = "\n\n".join(self.orchestrator.take_queued_messages())
+            result = await self._run_turn(follow_up, context="", resume_plan=False, images=None)
+            if result.cancelled:
+                self.orchestrator.take_queued_messages()
+                break
+        return result
+
+    async def _run_turn(
+        self,
+        text: str,
+        *,
+        context: str,
+        resume_plan: bool,
+        images: list[ImageContent] | None,
+    ) -> TurnResult:
         planner = self.orchestrator.planner
         if not resume_plan and planner is not None and planner.has_pending_question():
             # The previous turn ended on a blocking ask_user question and paused

@@ -634,6 +634,8 @@ _TRACE_PREFIXES = (
     "completion>",
     "permission>",
     "term>",
+    # A message typed mid-turn, waiting for the model to read it.
+    "queued>",
     # The live execute_command output line (see view_models._apply_command_output).
     "cmd~",
 )
