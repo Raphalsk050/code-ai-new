@@ -276,26 +276,47 @@ code-ai --headless --events-jsonl run "Build the project"
 ### Watching the code being written
 
 A tool call's arguments arrive one fragment at a time, so the file a model is writing exists as a partial, unparseable JSON string long before it exists on disk.
-Code-AI decodes that string as it grows and shows the result in a code window under the conversation: syntax highlighted, line numbered, filling in as the model types.
-The caption settles from `writing src/app.py` to `✓ wrote src/app.py` once the call lands.
+Code-AI decodes that string as it grows and plays the write out as it happens.
+
+A window opens the moment the call starts, before any source exists - a titled frame naming the call and its target, worded like the approval dialog it hands over to:
+
+```text
+╭─ write_file ──────────────────────────────────────────────╮
+│ ✓ Create / overwrite:  src/cache.py   ·   22 lines        │
+│ Why: bound the cache so a long session cannot grow it      │
+│                                                            │
+│   16 │   def put(self, key: str, value: str) -> None:      │
+│   17 │   │   if len(self._items) >= self.limit:            │
+│   18 │   │   │   self._items.pop(next(iter(self._items)))  │
+╰───────────────────────────────────── src/cache.py ─────────╯
+```
+
+The order is deliberate: the frame and the model's reason first, the source filling in underneath, then the approval dialog with the complete code and its diff.
+The `reason` argument is declared ahead of the file contents on the writing tools for exactly this - so the *why* streams in before the *what*.
+The reason follows `/config learn`, the same switch that shows it in the approval dialog.
 
 The window is a tail, like the TERMINAL panel: it shows the newest rows rather than the whole file.
 The complete code still goes through the approval dialog before anything is written (in `ask` mode), and the file itself is on disk afterwards.
 
-It covers every tool that writes to the workspace - `write_file`, `edit_code` (previewing the replacement text), `create_rule`, `create_skill`.
+It covers every tool that writes to the workspace - `write_file`, `edit_code` (showing the replacement going in, labelled as such, since the diff needs both halves), `create_rule`, `create_skill`.
 Tools that merely pass code around, such as `code_review`, are deliberately left out: nothing of theirs is being written.
 Writes made by delegated sub-agents are not shown either - several agents write concurrently, and interleaving their files in one window would show a file that never existed.
 The AGENTS panel reports what each of them is doing instead.
 
-Two costs are bounded by design, so a long file is no more expensive than a short one:
+Colouring a file that is still arriving is the awkward part, and the two obvious approaches are both wrong.
+Re-lexing the whole buffer on every fragment is quadratic and stalls the terminal; lexing only the visible rows is cheap but paints them wrong, because a lexer handed the middle of a docstring has no way to know that is where it is - it reads the prose as code and the closing quotes as an *opening* one, and everything after comes out the colour of a string.
+So the visible rows are lexed together with a bounded stretch of the source above them, which rebuilds the state the lexer needs without ever growing with the file.
+The language settles on the first fragment, from the path or from a known format for tools that write without one, so the code is coloured from its first line rather than after it lands.
+
+Both costs stay flat as the file grows:
 
 - the paint is rate-limited by its own timer rather than by the event rate, capping repaints at ~16/s no matter how fast the model streams;
-- only the visible rows are highlighted, which measures at under a millisecond per repaint on a 6000-line file.
+- each repaint lexes a window, never the file, measuring at ~2 ms whether the file is 200 lines or 6000.
 
 Turn it off with `/config live-code off` (or `"terminal_live_code": false`) on a terminal where any repainting is costly - a slow SSH link, a heavy multiplexer.
 Writes then report progress on one line, as before.
 
-The live source is also on the event bus, as `code_offset` / `code_delta` / `code_complete` on `tool.call.progress`, so the VS Code bridge and any other consumer can render the same stream.
+The stream is also on the event bus, as `call_started` / `writes` / `reason` / `code_offset` / `code_delta` / `code_complete` on `tool.call.progress`, so the VS Code bridge and any other consumer can render the same flow.
 
 ### Pasting images
 
