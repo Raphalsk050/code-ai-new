@@ -108,6 +108,11 @@ async def _run_rg(
         "--no-heading",
         "--color",
         "never",
+        # Terminate the file path with NUL instead of a colon. Colons are not
+        # ours to reserve: on Windows every absolute path opens with a drive
+        # letter ("C:\\ws\\app.py:2:hit"), so splitting the line on colons hands
+        # back "C" as the path and the rest of the path as the line number.
+        "--null",
     ]
     if not case_sensitive:
         argv.append("--ignore-case")
@@ -163,13 +168,25 @@ async def _run_rg(
     }
 
 
+# Fallback for rg output without the NUL separator: "path:line:snippet", where
+# the path may open with a Windows drive letter.
+_RG_COLON_LINE = re.compile(r"^(?P<path>(?:[A-Za-z]:)?[^:]*):(?P<line>\d+):(?P<snippet>.*)$")
+
+
 def _parse_rg_line(
     line: str, *, workspace_root: Path, max_output_chars: int
 ) -> dict[str, Any] | None:
-    parts = line.split(":", 2)
-    if len(parts) != 3:
-        return None
-    path_value, line_number, snippet = parts
+    path_value, separator, rest = line.partition("\0")
+    if separator:
+        line_number, _, snippet = rest.partition(":")
+    else:
+        # No NUL: either not a match line, or an rg build that ignored --null.
+        # Read it as the colon form rather than dropping every result, allowing
+        # for a leading Windows drive letter.
+        fallback = _RG_COLON_LINE.match(line)
+        if fallback is None:
+            return None
+        path_value, line_number, snippet = fallback.group("path", "line", "snippet")
     try:
         line_no = int(line_number)
         relative = Path(path_value).resolve(strict=False).relative_to(workspace_root).as_posix()
