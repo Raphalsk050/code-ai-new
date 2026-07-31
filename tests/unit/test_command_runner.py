@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shlex
 import sys
 
@@ -54,10 +55,18 @@ async def test_execute_command_separates_stdout_stderr(tmp_path) -> None:
     assert "err" in result["stderr"]
 
 
+# Prints the working directory in the platform's own notation. `pwd` cannot do
+# that portably: on Windows the one on PATH is usually Git's, which answers in
+# MSYS form ("/tmp/...") and never matches the native path under test.
+_PRINT_CWD = "import os;print(os.getcwd())"
+
+
 async def test_execute_command_defaults_to_workspace(tmp_path) -> None:
     context = make_context(tmp_path)
     tool = ExecuteCommandTool()
-    result = await tool.execute({"command": "pwd"}, context)
+    result = await tool.execute(
+        {"command": f'{shlex.quote(sys.executable)} -c "{_PRINT_CWD}"'}, context
+    )
     assert result["cwd"] == str(tmp_path)
     assert result["stdout"].strip() == str(tmp_path)
 
@@ -82,7 +91,7 @@ async def test_execute_command_keeps_legacy_argv_execution(tmp_path) -> None:
     context = make_context(tmp_path)
     tool = ExecuteCommandTool()
 
-    result = await tool.execute({"argv": ["pwd"]}, context)
+    result = await tool.execute({"argv": [sys.executable, "-c", _PRINT_CWD]}, context)
 
     assert result["exit_code"] == 0
     assert result["stdout"].strip() == str(tmp_path)
@@ -227,3 +236,33 @@ async def test_execute_command_wrapper_duration_bounds_execution(tmp_path) -> No
             {"command": f"timeout 0.1 {shlex.quote(sys.executable)} -c {shlex.quote(sleep)}"},
             context,
         )
+
+
+def test_command_split_keeps_windows_path_separators() -> None:
+    # Regression: POSIX-mode shlex reads the backslash as an escape and eats it,
+    # so a Windows path in a command silently lost its separators and the
+    # command ran - exit code 0 - against a mangled path.
+    from code_ai.tools.process.execute_command import _split_command_line
+
+    argv = _split_command_line(r'del C:\ws\build\out.txt')
+
+    if os.name == "nt":
+        assert argv == ["del", r"C:\ws\build\out.txt"]
+    else:
+        # POSIX keeps its escapes; the backslash means what it means there.
+        assert argv == ["del", "C:wsbuildout.txt"]
+
+
+def test_command_split_still_honours_quoting() -> None:
+    from code_ai.tools.process.execute_command import _split_command_line
+
+    assert _split_command_line('echo "a b"') == ["echo", "a b"]
+    assert _split_command_line("git commit -m 'x y'") == ["git", "commit", "-m", "x y"]
+    assert _split_command_line("ls   -la") == ["ls", "-la"]
+
+
+def test_command_split_rejects_an_unterminated_quote() -> None:
+    from code_ai.tools.process.execute_command import _split_command_line
+
+    with pytest.raises(ValueError):
+        _split_command_line('echo "unterminated')

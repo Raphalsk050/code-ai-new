@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import shlex
 from typing import Any
@@ -184,13 +185,33 @@ def _coerce_env(value: object) -> dict[str, str] | None:
     return env or None
 
 
+def _split_command_line(command: str) -> list[str]:
+    """Split a command line into argv, shell-like but without a shell.
+
+    On Windows the backslash is the path separator, not an escape character.
+    POSIX-mode shlex reads it as an escape and eats it, so ``del C:\\ws\\a.txt``
+    silently becomes ``del C:wsa.txt`` — a command that then runs against a
+    mangled path and reports success. Dropping the escape character leaves
+    backslashes literal while keeping quoting and whitespace splitting intact.
+
+    POSIX platforms keep the standard behaviour: there a backslash really is an
+    escape, and the convention is worth more than the paths it would protect.
+    """
+    if os.name != "nt":
+        return shlex.split(command)
+    lexer = shlex.shlex(command, posix=True)
+    lexer.whitespace_split = True
+    lexer.escape = ""
+    return list(lexer)
+
+
 def _coerce_argv(arguments: dict[str, Any]) -> list[str]:
     command = arguments.get("command")
     if isinstance(command, str):
         if not command.strip():
             raise ToolArgumentError("command is required.")
         try:
-            argv = shlex.split(command)
+            argv = _split_command_line(command)
         except ValueError as exc:
             raise ToolArgumentError(f"command could not be parsed: {exc}") from exc
         if not argv:
