@@ -783,3 +783,202 @@ async def test_prose_finish_settles_fully_declared_checklist(tmp_path) -> None:
     assert completed
     assert completed[-1].payload["status"] == "COMPLETED"
     assert completed[-1].payload["progress"] == "2/2"
+
+
+class AnnounceThenHangProvider(_BaseProvider):
+    """Announces a write, starts streaming its call, then stalls mid-call.
+
+    The shape a real model produces on a large file: prose first, then the
+    arguments dribbling in. The stall stands in for whatever cuts a stream off
+    part-way - the step budget expiring, the endpoint dropping the connection.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        arguments = '{"path": "app.py", "content": "x = 1\\n"}'
+        if self.calls == 1:
+            yield ProviderEvent(kind="text_delta", text_delta="I'll implement app.py now.")
+            yield ProviderEvent(
+                kind="tool_call_delta",
+                tool_call_name="write_file",
+                tool_call_arguments=arguments[:20],
+                tool_call_index=0,
+            )
+            await asyncio.sleep(30)
+            return
+        if self.calls == 2:
+            yield ProviderEvent(
+                kind="tool_call_delta",
+                tool_call_name="write_file",
+                tool_call_arguments=arguments,
+                tool_call_index=0,
+            )
+            yield ProviderEvent(
+                kind="completed",
+                response=ModelResponse(
+                    tool_calls=[
+                        ToolCall(
+                            id="call_1",
+                            name="write_file",
+                            arguments={"path": "app.py", "content": "x = 1\n"},
+                        )
+                    ],
+                    finish_reason=FinishReason.TOOL_CALLS,
+                ),
+            )
+            return
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text="app.py is written.", finish_reason=FinishReason.STOP),
+        )
+
+
+async def test_tool_call_cut_off_mid_stream_is_reissued(tmp_path) -> None:
+    # A step that dies mid-call leaves only the announcement behind. Surfacing
+    # that as the answer is how the agent used to end a turn in waiting_user
+    # having written nothing, so the call must be asked for again instead.
+    config = _config(
+        tmp_path,
+        planner={"enabled": False},
+        budgets={"max_model_call_s": 1, "max_model_step_seconds": 1},
+    )
+    provider = AnnounceThenHangProvider()
+    app = build_application(config=config, provider=provider)
+    events: list[str] = []
+    app.subscribe(lambda event: events.append(event.event_type))
+
+    await app.start()
+    result = await app.submit_user_message("implement app.py")
+    await app.close()
+
+    assert "tool.call.interrupted" in events
+    assert provider.calls == 3
+    # The write actually happened, and the announcement is not the answer.
+    assert (tmp_path / "app.py").read_text() == "x = 1\n"
+    assert result.text == "app.py is written."
+
+
+class LostCallThenCleanProvider(_BaseProvider):
+    """Streams a tool call, then completes without it.
+
+    This is what a provider does when it cannot parse the arguments it just
+    received: it drops the call with a warning. The response that reaches the
+    orchestrator is indistinguishable from a plain prose answer unless the
+    streamed call is accounted for.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        if self.calls == 1:
+            yield ProviderEvent(kind="text_delta", text_delta="Writing the file now.")
+            yield ProviderEvent(
+                kind="tool_call_delta",
+                tool_call_name="write_file",
+                tool_call_arguments='{"path": "app.py", "content": "x = 1',
+                tool_call_index=0,
+            )
+            yield ProviderEvent(
+                kind="completed",
+                response=ModelResponse(
+                    text="Writing the file now.", finish_reason=FinishReason.TOOL_CALLS
+                ),
+            )
+            return
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text="All done.", finish_reason=FinishReason.STOP),
+        )
+
+
+async def test_dropped_tool_call_is_reissued(tmp_path) -> None:
+    provider = LostCallThenCleanProvider()
+    app = build_application(
+        config=_config(tmp_path, planner={"enabled": False}), provider=provider
+    )
+    events: list[str] = []
+    app.subscribe(lambda event: events.append(event.event_type))
+
+    await app.start()
+    result = await app.submit_user_message("write app.py")
+    await app.close()
+
+    assert "tool.call.interrupted" in events
+    assert provider.calls == 2
+    assert result.text == "All done."
+
+
+class AlwaysLosesCallProvider(_BaseProvider):
+    """Never manages to deliver the call it keeps starting."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        yield ProviderEvent(kind="text_delta", text_delta="Writing it now.")
+        yield ProviderEvent(
+            kind="tool_call_delta",
+            tool_call_name="write_file",
+            tool_call_arguments='{"path": "app.py"',
+            tool_call_index=0,
+        )
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(
+                text="Writing it now.", finish_reason=FinishReason.TOOL_CALLS
+            ),
+        )
+
+
+async def test_repeatedly_lost_tool_call_stops_re_prompting(tmp_path) -> None:
+    # Bounded: a stream that keeps breaking must still end the turn with a
+    # best-effort reply rather than re-prompting forever.
+    provider = AlwaysLosesCallProvider()
+    app = build_application(
+        config=_config(tmp_path, planner={"enabled": False}), provider=provider
+    )
+    events: list[str] = []
+    app.subscribe(lambda event: events.append(event.event_type))
+
+    await app.start()
+    result = await app.submit_user_message("write app.py")
+    await app.close()
+
+    assert events.count("tool.call.interrupted") == 2
+    assert provider.calls == 3
+    assert result.text == "Writing it now."
+
+
+class ProseOnlyProvider(_BaseProvider):
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        yield ProviderEvent(kind="text_delta", text_delta="No tool needed here.")
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(
+                text="No tool needed here.", finish_reason=FinishReason.STOP
+            ),
+        )
+
+
+async def test_plain_prose_answer_is_not_treated_as_interrupted(tmp_path) -> None:
+    # Nothing streamed a call, so the prose is the answer and must be delivered
+    # on the first step - the guard must not re-prompt every chat reply.
+    provider = ProseOnlyProvider()
+    app = build_application(
+        config=_config(tmp_path, planner={"enabled": False}), provider=provider
+    )
+    events: list[str] = []
+    app.subscribe(lambda event: events.append(event.event_type))
+
+    await app.start()
+    result = await app.submit_user_message("hello")
+    await app.close()
+
+    assert "tool.call.interrupted" not in events
+    assert result.text == "No tool needed here."

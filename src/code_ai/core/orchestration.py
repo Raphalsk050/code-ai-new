@@ -69,6 +69,11 @@ _MAX_TOOL_FORMAT_RETRIES = 2
 # giving up. Each retry hands back its own truncated thinking plus a nudge to
 # commit to one concrete action.
 _MAX_BUDGET_RETRIES = 2
+# How many times to re-issue a step whose tool call was cut off mid-stream (a
+# model timeout, a provider failure, arguments the provider could not parse).
+# Bounded so a stream that keeps breaking still terminates the turn instead of
+# re-prompting forever.
+_MAX_INTERRUPTED_CALL_RETRIES = 2
 _TOOL_GUARD_POLL_SECONDS = 2.0
 _TOOL_GUARD_GRACE_SECONDS = 10.0
 
@@ -159,6 +164,13 @@ class _TurnState:
     # on the "working" channel (tool-required phases), the finish path must
     # announce that prose as the final answer or the user never sees a message.
     step_streamed_answer: bool = False
+    # Whether a tool call was still streaming in when the current model step
+    # ended. Reset per step (and per retry within it). When this is set and the
+    # step produced no calls, the call was *lost* rather than never made - a
+    # response that looks like a plain prose answer but is really a truncated
+    # one. See ``_retry_interrupted_tool_call``.
+    tool_call_streaming: bool = False
+    interrupted_call_retries: int = 0
     # Inputs for the post-turn reflection digest: what the user asked and one
     # compact line per executed tool call.
     user_text: str = ""
@@ -536,6 +548,8 @@ class AgentOrchestrator:
                     continue
                 if await self._retry_budget_overflow(response, request, state):
                     continue
+                if await self._retry_interrupted_tool_call(response, state):
+                    continue
                 outcome = await self._handle_no_tool_response(response, state)
                 if outcome is not None:
                     return outcome
@@ -706,6 +720,72 @@ class AgentOrchestrator:
             "parsed. Do not print the call as text. Invoke the tool through the "
             "function-calling interface, using the exact tool name and valid JSON "
             "arguments. If no tool is needed, answer the user directly instead."
+        )
+
+    async def _retry_interrupted_tool_call(
+        self, response: ModelResponse, state: _TurnState
+    ) -> bool:
+        """Re-issue a step that was cut off while a tool call was streaming in.
+
+        A step can end without the call it was in the middle of emitting: the
+        model stream times out, the provider fails part-way, or it discards
+        arguments it could not parse. What survives is whatever prose already
+        reached the user - and because a model normally says what it is about to
+        do *before* doing it, that prose is usually the announcement of the very
+        change that then never happened ("I'll implement X now.").
+
+        Nothing downstream can tell that apart from a model that simply chose to
+        answer in prose, so the turn used to end there: the announcement was
+        surfaced as the final answer and the agent settled into ``waiting_user``
+        having written nothing. Re-issuing the step is the only honest reading -
+        the model was mid-call, so let it finish the call.
+
+        The announcement is kept as the assistant message it was, the model is
+        told the call never landed, and the loop runs another step. Bounded by
+        ``_MAX_INTERRUPTED_CALL_RETRIES`` so a stream that keeps breaking still
+        terminates the turn with a best-effort reply instead of spinning.
+
+        A response that reports ``STOP`` is left alone: it claims a clean prose
+        ending, and taking the model at its word costs nothing here. Every way a
+        call is really lost contradicts that claim - a salvaged or unfinished
+        stream carries ``UNKNOWN``, a provider that discards arguments it could
+        not parse still reports the ``TOOL_CALLS`` it no longer has, and a
+        truncated one reports ``LENGTH``.
+        """
+        if response.tool_calls or not state.tool_call_streaming:
+            return False
+        if response.finish_reason == FinishReason.STOP:
+            return False
+        if state.interrupted_call_retries >= _MAX_INTERRUPTED_CALL_RETRIES:
+            return False
+        state.interrupted_call_retries += 1
+        state.tool_call_streaming = False
+        if response.text:
+            self.conversation.add_assistant(
+                bound_text(response.text, self.config.budgets.max_tool_output_chars), []
+            )
+        self.conversation.add_user(self._interrupted_call_correction_text())
+        await self.event_bus.emit(
+            "tool.call.interrupted",
+            {
+                "attempt": state.interrupted_call_retries,
+                "max_attempts": _MAX_INTERRUPTED_CALL_RETRIES,
+            },
+            source="core.orchestrator",
+        )
+        await self.set_state(
+            AgentState.CALLING_MODEL, phase="retrying_interrupted_tool_call"
+        )
+        return True
+
+    @staticmethod
+    def _interrupted_call_correction_text() -> str:
+        return (
+            "Runtime note: your previous tool call was cut off before it arrived, "
+            "so it never ran and nothing in the workspace changed - whatever you "
+            "just announced has not happened yet. Make the call again now. If it "
+            "carried a large file, write it in smaller pieces so the call "
+            "completes."
         )
 
     # ------------------------------------------------------------------ #
@@ -1046,6 +1126,9 @@ class AgentOrchestrator:
         # progress periodically instead of on every tiny chunk (which would
         # flood the UI) and its source is decoded once as it arrives.
         tool_streams: dict[int, _ToolCallStream] = {}
+        # Reset per attempt: this stream is a fresh one, so whatever a previous
+        # attempt was half-way through says nothing about what this one loses.
+        state.tool_call_streaming = False
 
         async for event in self.provider.stream(request):
             self._raise_if_cancelled(cancel_event)
@@ -1058,6 +1141,13 @@ class AgentOrchestrator:
                     await _emit_visible_answer(answer)
                 continue
             if event.kind == "tool_call_delta":
+                if event.tool_call_name:
+                    # A call has begun arriving. Until the assembled response
+                    # carries it, losing this stream means losing the call - not
+                    # learning that the model chose to answer in prose. A
+                    # nameless fragment proves nothing yet, and the providers
+                    # drop those themselves, so it must not arm this.
+                    state.tool_call_streaming = True
                 await self._emit_tool_progress(event, tool_streams)
                 continue
             await self._emit_provider_event(event)
@@ -1087,6 +1177,12 @@ class AgentOrchestrator:
                 reasoning="".join(reasoning_parts),
                 finish_reason=FinishReason.UNKNOWN,
             )
+        if completed.tool_calls:
+            # The call arrived intact, so nothing was lost with the stream. A
+            # completed response *without* calls after one streamed is left
+            # armed on purpose: the provider discards a call whose arguments it
+            # cannot parse, and that loss looks exactly like a prose answer.
+            state.tool_call_streaming = False
         # Strip any <think> block the provider left inline so reasoning never
         # pollutes the answer, conversation history, or tool-call recovery.
         answer, inline_reasoning = split_reasoning_tags(completed.text)
