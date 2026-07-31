@@ -155,6 +155,8 @@ async def test_persistent_overflow_is_bounded_not_infinite(tmp_path) -> None:
     assert result.cancelled is False
 
 
-def test_output_token_reserve_defaults_to_32k() -> None:
-    config = AppConfig.from_mapping({"workspace": "/tmp"})
+def test_output_token_reserve_defaults_to_32k(tmp_path) -> None:
+    # The workspace has to exist and be a directory, so it comes from the
+    # fixture: a hardcoded "/tmp" resolves to "\tmp" on Windows and is rejected.
+    config = AppConfig.from_mapping({"workspace": str(tmp_path)})
     assert config.output_token_reserve == 32768
