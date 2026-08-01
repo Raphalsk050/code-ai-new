@@ -151,6 +151,10 @@ class PlannerService:
         # begin_turn's per-turn ledger reset: a file read two turns ago is still
         # known content, so the read-before-write gate must not demand a re-read.
         self._known_content_paths: set[str] = set()
+        # Whether the turn already spent its one nudge about ending in prose
+        # with the workspace changed but unverified. See
+        # note_final_answer_verification_debt.
+        self._verification_debt_nudged = False
 
     @property
     def enabled(self) -> bool:
@@ -258,6 +262,7 @@ class PlannerService:
         self._gathered_non_host_evidence = False
         self.completion_gate.reset()
         self._precondition_gate.note_turn_started()
+        self._verification_debt_nudged = False
         self._require_tool_calling(provider_supports_tools)
 
         await self._emit_phase(
@@ -312,6 +317,7 @@ class PlannerService:
         self.double_check_pending = False
         self.accepted_final_text = None
         self.completion_gate.reset()
+        self._verification_debt_nudged = False
         await self._emit_phase(PlanningPhase.EXECUTE)
         # A plan paused at the previous turn's end (see suspend_agent_plan) comes
         # back to life: the current step starts running again in the sidebar.
@@ -652,7 +658,14 @@ class PlannerService:
     def task_context_block(self, *, recommended_tool_names: set[str]) -> str:
         if not (self.enabled and self.profile and self.plan):
             return ""
-        if self.profile.intent == TaskIntent.CONVERSATION:
+        # Chat needs no scaffolding - but a "conversation" that has started
+        # writing to the workspace is not chat, whatever the classifier said.
+        # Staying silent there is how a mislabelled turn ends up running with no
+        # runtime state at all.
+        if (
+            self.profile.intent == TaskIntent.CONVERSATION
+            and not self._has_workspace_change_evidence()
+        ):
             return ""
         profile = self._effective_profile()
         assert profile is not None  # guarded above
@@ -785,6 +798,10 @@ class PlannerService:
         Mutation and command tasks legitimately end in tool actions and a
         complete_task claim. Everything else (inspection, research, explanation)
         ends in a chat answer, and the task context must say so explicitly.
+
+        A task that was labelled read-only but has since *changed the workspace*
+        counts too: the classifier was wrong, and the evidence proves it. The
+        user's own denial still wins - that is a decision, not a misreading.
         """
         if self.profile is None:
             return True  # fail toward the stricter, action-oriented rules
@@ -793,32 +810,63 @@ class PlannerService:
         return (
             self.profile.requires_workspace_mutation
             or self.profile.intent == TaskIntent.COMMAND_EXECUTION
+            or self._has_workspace_change_evidence()
         )
 
     def _effective_profile(self) -> TaskProfile | None:
-        """The task profile with runtime downgrades applied.
+        """The task profile with runtime corrections applied.
 
-        A user denial mid-turn overrides the surface classifier's mutation
-        label (see :meth:`note_user_denial`). Every consumer that steers or
-        gates on that label - the task context block, the tool policy, the
-        completion gate - must see the downgraded view, or it would keep
-        demanding the changes the user just refused.
+        The surface classifier reads keywords in the first message; the ledger
+        records what the agent actually did. Where they disagree, the evidence
+        wins, in both directions:
+
+        - A user denial mid-turn *downgrades* the mutation label (see
+          :meth:`note_user_denial`) - the strongest possible signal that the
+          label was wrong.
+        - An observed workspace change *upgrades* a task the classifier read as
+          conversation or inspection. Without this, a continuation or a
+          low-level instruction that mutates files runs with none of the
+          mutation discipline the change deserves.
+
+        Every consumer that steers or gates on the label - the task context
+        block, the tool policy, the completion gate - sees this corrected view.
         """
-        if not (self.user_declined_mutation and self.profile):
-            return self.profile
-        criteria = [
-            criterion
-            for criterion in self.profile.acceptance_criteria
-            if criterion
-            not in {CRITERION_APPLY_VIA_TOOLS, CRITERION_VERIFY_AFTER_MUTATION}
-        ]
-        return self.profile.model_copy(
-            update={
-                "requires_workspace_mutation": False,
-                "requires_verification": False,
-                "acceptance_criteria": criteria,
-            }
-        )
+        if self.profile is None:
+            return None
+        if self.user_declined_mutation:
+            criteria = [
+                criterion
+                for criterion in self.profile.acceptance_criteria
+                if criterion
+                not in {CRITERION_APPLY_VIA_TOOLS, CRITERION_VERIFY_AFTER_MUTATION}
+            ]
+            return self.profile.model_copy(
+                update={
+                    "requires_workspace_mutation": False,
+                    "requires_verification": False,
+                    "acceptance_criteria": criteria,
+                }
+            )
+        if (
+            not self.profile.requires_workspace_mutation
+            and self._has_workspace_change_evidence()
+        ):
+            # Upgrading costs nothing the evidence does not already carry: the
+            # change exists, so the file-evidence requirement it switches on is
+            # satisfied by construction, and only the verification demand is new.
+            return self.profile.model_copy(
+                update={
+                    "requires_workspace_mutation": True,
+                    "requires_local_context": True,
+                    "requires_verification": True,
+                    "allows_web_first": False,
+                    "acceptance_criteria": [
+                        *self.profile.acceptance_criteria,
+                        CRITERION_VERIFY_AFTER_MUTATION,
+                    ],
+                }
+            )
+        return self.profile
 
     def _known_paths_preview(self, *, limit: int = 15) -> str:
         paths = sorted(self._known_content_paths)
@@ -947,25 +995,55 @@ class PlannerService:
             gaps.append("plan objective no longer matches the original objective.")
         return gaps
 
+    def _has_workspace_change_evidence(self) -> bool:
+        """Whether this task actually changed the workspace, by any channel.
+
+        File tools produce hashed ``FILE_CREATED``/``FILE_CHANGED`` evidence;
+        shell commands produce only the ledger's coarse flag. Both are real
+        changes, and every consumer that keys off "did something change" must
+        see both - keying off file tools alone made the whole discipline blind
+        to the channel weak models actually use.
+        """
+        return (
+            self.ledger.has_success(EvidenceType.FILE_CREATED, EvidenceType.FILE_CHANGED)
+            or self.ledger.command_mutated_workspace
+        )
+
+    def _change_verification_state(self) -> tuple[bool, bool, str]:
+        """``(workspace changed, verification settled, what is still owed)``.
+
+        Verification only applies when (a) something actually changed, (b) the
+        change is not documentation-only and (c) the project exposes a way to
+        verify it. With no detectable test/build system we degrade gracefully
+        and complete with a warning rather than trapping the agent demanding
+        evidence it cannot get. A command-driven change has no paths to judge
+        doc-only-ness by, so it always counts as verifiable work.
+        """
+        has_file_change = self._has_workspace_change_evidence()
+        verification_applies = (
+            has_file_change
+            and (
+                self.ledger.command_mutated_workspace
+                or changes_require_verification(self.ledger.current_changed_paths())
+            )
+            and self.project_verification().has_any
+        )
+        verified, gap = self._verification_status(verification_applies)
+        return has_file_change, verified, gap
+
     def _completion_context(self, claim: CompletionClaim) -> CompletionContext:
         """Snapshot the evidence the completion policies are allowed to judge."""
         profile = self._effective_profile()
         assert profile is not None  # guarded by _claim_validity_gaps
-        has_file_change = self.ledger.has_success(
-            EvidenceType.FILE_CREATED, EvidenceType.FILE_CHANGED
-        )
+        has_file_change, verified, verification_gap = self._change_verification_state()
         changed_paths = tuple(self.ledger.current_changed_paths())
-        # Verification only applies when (a) the change is not documentation-only
-        # and (b) the project actually exposes a way to verify it. With no
-        # detectable test/build system we degrade gracefully and complete with a
-        # warning rather than trapping the agent demanding evidence it cannot get.
-        verification_applies = (
-            changes_require_verification(list(changed_paths))
-            and self.project_verification().has_any
-        )
-        verified, verification_gap = self._verification_status(verification_applies)
         phantom: tuple[str, ...] = ()
-        if has_file_change or profile.requires_workspace_mutation:
+        # A command-driven change is real but path-less, so no claimed path can
+        # be checked against it. Calling those paths fabricated would accuse the
+        # model of inventing exactly the work it just did through the shell.
+        if (
+            has_file_change or profile.requires_workspace_mutation
+        ) and not self.ledger.command_mutated_workspace:
             # Paths outside the workspace never enter the ledger's hash map, so
             # honestly claiming an external target must not read as fabrication.
             claimed = {
@@ -1268,6 +1346,46 @@ class PlannerService:
             "planning.plan.waiting",
             self.plan_snapshot(),
             source="core.planner",
+        )
+
+    async def note_final_answer_verification_debt(self) -> str | None:
+        """One nudge when a turn ends in prose having changed but not verified.
+
+        The evidence gate is the runtime's only hard quality trap, and it hangs
+        off ``complete_task`` - a meta-tool weak models simply never call (zero
+        calls across 241 observed model steps). Every one of those turns ended
+        the other way: the model stopped calling tools and answered. So the
+        checkpoint belongs at *that* stop, keyed on what the ledger recorded
+        rather than on the model volunteering a claim.
+
+        Returns the correction to inject, or ``None`` to let the answer stand.
+        Bounded to once per turn and fail-open by construction: a second prose
+        answer is accepted with the debt unpaid, exactly like ``CompletionGate``
+        releases a turn it cannot satisfy. Keyed on observed change, never on the
+        task label, so a read-only task never sees it.
+        """
+        if not (self.enabled and self.profile):
+            return None
+        if self.user_declined_mutation or self._verification_debt_nudged:
+            return None
+        has_change, verified, gap = self._change_verification_state()
+        if not has_change or verified:
+            return None
+        self._verification_debt_nudged = True
+        await self.event_bus.emit(
+            "planning.verification_debt.nudged",
+            {
+                "changed_paths": self.ledger.current_changed_paths(),
+                "command_mutated_workspace": self.ledger.command_mutated_workspace,
+            },
+            source="core.planner",
+        )
+        return (
+            "Runtime check: this turn changed the workspace, but "
+            + (gap or "no current successful verification evidence exists.")
+            + " Run that check now against the current state. If it genuinely "
+            "cannot run here, answer again and state the unverified change as an "
+            "explicit limitation instead of leaving it unsaid."
         )
 
     async def settle_agent_plan_on_final_answer(self) -> None:

@@ -642,6 +642,26 @@ class AgentOrchestrator:
         # corrections and ultimately handing the user a system message instead of
         # a reply. The only hard completion gate is the evidence-based
         # complete_task check, not this path.
+        #
+        # The verification checkpoint goes first and consumes the same budget:
+        # when the model has actually changed the workspace, "you left this
+        # unverified" is strictly better guidance than the generic "use the
+        # tools", and the two must never cost two round-trips.
+        if self.planner and self.planner.enabled:
+            debt = await self.planner.note_final_answer_verification_debt()
+            if debt:
+                state.no_tool_nudged = True
+                if response.text:
+                    self.conversation.add_assistant(
+                        bound_text(response.text, self.config.budgets.max_tool_output_chars),
+                        [],
+                    )
+                self.conversation.add_user(debt)
+                await self.set_state(
+                    AgentState.CALLING_MODEL, phase="correcting_unverified_change"
+                )
+                return None
+
         if self._requires_tool_for_progress() and not state.no_tool_nudged:
             state.no_tool_nudged = True
             if response.text:
