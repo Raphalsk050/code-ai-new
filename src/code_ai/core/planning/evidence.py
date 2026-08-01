@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
@@ -28,6 +29,70 @@ _REVIEW_TOOLS = frozenset(
 _SEVERE_FINDING_SEVERITIES = frozenset(
     {"critical", "high", "blocker", "severe", "major", "error"}
 )
+
+# Sinks a redirection can target without changing anything on disk.
+_NULL_SINKS = frozenset({"/dev/null", "nul", "nul:", "$null", "con"})
+
+# A ``>``/``>>`` redirection and whatever it writes to. Stream duplications
+# (``2>&1``) are excluded by the ``&`` guard: they route output, they do not
+# create a file.
+_REDIRECT_RE = re.compile(r">>?\s*(?!&)([^\s|;&<>()]+)")
+
+# Command *shapes* that write to the filesystem. Matching the shape rather than
+# parsing paths is deliberate: a shell grammar is not worth reimplementing, and
+# the signal only has to answer "did this touch the workspace", not "where".
+# POSIX and PowerShell spellings both appear because the agent runs on either.
+_MUTATING_COMMAND_RE = re.compile(
+    r"(?<![\w-])(?:"
+    r"cp|mv|rm|rmdir|mkdir|touch|ln|dd|truncate|tee|patch|"
+    r"Set-Content|Add-Content|Clear-Content|Out-File|New-Item|Remove-Item|"
+    r"Copy-Item|Move-Item|Rename-Item"
+    r")(?![\w-])",
+    re.IGNORECASE,
+)
+
+# In-place editors: ``sed`` only mutates with ``-i``, so the bare form (a filter)
+# must not count.
+_SED_IN_PLACE_RE = re.compile(r"(?<![\w-])sed\s+(?:-\S+\s+)*-\w*i\b")
+
+# A ``python -c`` / ``python - <<EOF`` payload that writes. Weak models reach for
+# this constantly, and it is invisible to every other detector here.
+_PYTHON_WRITE_RE = re.compile(
+    r"(?:"
+    # A write mode is only a write mode in the *mode argument*, so the comma is
+    # load-bearing: without it ``open('a.py')`` reads as a write, because the
+    # opening quote is followed by the "a" of the filename.
+    r"open\s*\([^)]*,\s*(?:mode\s*=\s*)?['\"][rwxabt+]*[wxa][rwxabt+]*['\"]"
+    r"|write_text\s*\(|write_bytes\s*\(|\.writelines\s*\("
+    r"|os\.(?:remove|unlink|rename|replace|makedirs|mkdir|rmdir)\s*\("
+    r"|shutil\.(?:copy|copy2|copyfile|copytree|move|rmtree)\s*\("
+    r"|pathlib\.Path\([^)]*\)\s*\.\s*(?:unlink|mkdir|rename)"
+    r")"
+)
+
+
+def command_mutates_workspace(argv: list[str] | str | None) -> bool:
+    """Whether a shell command's *shape* says it wrote to the filesystem.
+
+    ``execute_command`` is the agent's universal bypass: on shell-driven
+    workloads most real changes arrive as ``python -c``, a redirection or a
+    ``cp``, none of which the ledger can hash into ``FILE_CHANGED`` evidence.
+    Without this signal ``has_file_change`` stays false for the dominant channel
+    and the completion gate has nothing to demand verification for.
+
+    Coarse by design: it answers whether the workspace moved, never which paths.
+    A false positive costs one verification nudge (the gate fails open), which
+    is the cheap side of the trade.
+    """
+    text = " ".join(argv) if isinstance(argv, list) else (argv or "")
+    if not text.strip():
+        return False
+    if _SED_IN_PLACE_RE.search(text) or _PYTHON_WRITE_RE.search(text):
+        return True
+    for target in _REDIRECT_RE.findall(text):
+        if target.strip("'\"").casefold() not in _NULL_SINKS:
+            return True
+    return bool(_MUTATING_COMMAND_RE.search(text))
 
 
 def count_severe_findings(severity_summary: dict[str, int]) -> int:
@@ -84,6 +149,11 @@ class EvidenceLedger:
         self.max_summary_chars = max_summary_chars
         self.records: list[EvidenceRecord] = []
         self.changed_hashes: dict[str, str] = {}
+        # A successful shell command whose shape says it wrote to the filesystem.
+        # Path-less on purpose (see ``command_mutates_workspace``): it is the
+        # coarse "the workspace moved" signal for the one channel the hash map
+        # cannot follow, so the completion gate still knows a change happened.
+        self.command_mutated_workspace = False
         self.latest_verification_passed = False
         self.latest_verification_evidence_id: str | None = None
         self.verification_hashes: dict[str, str] = {}
@@ -201,6 +271,8 @@ class EvidenceLedger:
         the completion gate uses: the model never treated the task as a
         mutation, whatever the surface classifier said.
         """
+        if self.command_mutated_workspace:
+            return True
         return any(
             record.tool_name in {"write_file", "edit_code"}
             or record.evidence_type
@@ -253,12 +325,14 @@ class EvidenceLedger:
             EvidenceType.FILE_CHANGED,
         }:
             self.changed_hashes.update(record.new_hashes)
-            self.latest_verification_passed = False
-            self.latest_verification_evidence_id = None
-            self.verification_hashes = {}
-            self._verification_kinds_passed = set()
-            self.review_ran_after_last_change = False
-            self.open_severe_review_findings = 0
+            self._invalidate_change_dependent_state()
+        elif record.success and record.metadata.get("mutates_workspace"):
+            # A shell write is as real a change as a file-tool write, so it
+            # invalidates verification and review the same way - what passed
+            # before it describes the workspace as it no longer is. Only the
+            # hashes are missing, which is why the flag is path-less.
+            self.command_mutated_workspace = True
+            self._invalidate_change_dependent_state()
         elif record.evidence_type == EvidenceType.REVIEW_COMPLETED and record.success:
             self.review_ran_after_last_change = True
             self.open_severe_review_findings += count_severe_findings(
@@ -276,6 +350,15 @@ class EvidenceLedger:
             self.latest_verification_evidence_id = None
         if record.success:
             self._record_knowledge(record)
+
+    def _invalidate_change_dependent_state(self) -> None:
+        """Drop every judgement that describes the pre-change workspace."""
+        self.latest_verification_passed = False
+        self.latest_verification_evidence_id = None
+        self.verification_hashes = {}
+        self._verification_kinds_passed = set()
+        self.review_ran_after_last_change = False
+        self.open_severe_review_findings = 0
 
     def _record_knowledge(self, record: EvidenceRecord) -> None:
         if record.evidence_type == EvidenceType.FILE_READ:
@@ -435,6 +518,10 @@ def _records_from_payload(
                 if command_success
                 else EvidenceType.COMMAND_FAILED
             )
+        # Only a *non*-verification command can flag a mutation: test and build
+        # runners legitimately write caches and artefacts, and treating those as
+        # workspace changes would invalidate the very verification they just
+        # produced.
         return [
             EvidenceRecord(
                 **common,
@@ -447,6 +534,8 @@ def _records_from_payload(
                 metadata={
                     "cwd": payload.get("cwd"),
                     "verification_kind": kind.value if kind else None,
+                    "mutates_workspace": kind is None
+                    and command_mutates_workspace(argv),
                 },
             )
         ]

@@ -583,6 +583,81 @@ async def test_misclassified_mutation_is_answered_not_forced_into_tools(tmp_path
     assert provider.calls == 2
 
 
+class WritesThenAnswersProvider(_BaseProvider):
+    """Changes a file, then ends the turn in prose without ever verifying.
+
+    The dominant real shape: weak models never call ``complete_task``, so the
+    evidence gate behind it never runs and the turn simply stops.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        if self.calls == 1:
+            yield ProviderEvent(
+                kind="completed",
+                response=ModelResponse(
+                    tool_calls=[
+                        ToolCall(
+                            id="w1",
+                            name="write_file",
+                            arguments={"path": "mod.py", "content": "VALUE = 1\n"},
+                        )
+                    ],
+                    finish_reason=FinishReason.TOOL_CALLS,
+                ),
+            )
+            return
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(
+                text="Done, mod.py now has VALUE.", finish_reason=FinishReason.STOP
+            ),
+        )
+
+
+async def test_unverified_change_ending_in_prose_is_nudged_once(tmp_path) -> None:
+    # A pyproject makes pytest detectable, so verification is something the
+    # agent could actually run here.
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
+    provider = WritesThenAnswersProvider()
+    app = build_application(config=_config(tmp_path), provider=provider)
+    events: list[str] = []
+    app.subscribe(lambda event: events.append(event.event_type))
+
+    await app.start()
+    result = await app.submit_user_message("crie mod.py com a constante VALUE")
+    await app.close()
+
+    assert (tmp_path / "mod.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert "planning.verification_debt.nudged" in events
+    # One nudge, then the model's own answer stands: the checkpoint never traps
+    # the turn, exactly like the completion gate's fail-open release.
+    assert provider.calls == 3
+    assert result.text == "Done, mod.py now has VALUE."
+    assert events.count("planning.verification_debt.nudged") == 1
+
+
+async def test_read_only_prose_answer_is_not_nudged_for_verification(tmp_path) -> None:
+    # The regression half of the checkpoint: it keys off observed change, so a
+    # question that changed nothing must cost no extra round-trip.
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
+    provider = AnswersInProseProvider()
+    app = build_application(config=_config(tmp_path), provider=provider)
+    events: list[str] = []
+    app.subscribe(lambda event: events.append(event.event_type))
+
+    await app.start()
+    result = await app.submit_user_message("explain what the adder function does")
+    await app.close()
+
+    assert "planning.verification_debt.nudged" not in events
+    assert provider.calls == 1
+    assert result.text == "The adder function returns the sum of its two arguments."
+
+
 class ParallelReadsProvider(_BaseProvider):
     def __init__(self) -> None:
         self.calls = 0
