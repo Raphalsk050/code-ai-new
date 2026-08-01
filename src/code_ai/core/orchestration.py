@@ -1086,6 +1086,15 @@ class AgentOrchestrator:
         if productive:
             state.stall_rounds = 0
             state.stall_nudged = False
+            # Real progress buys back the clock, so the turn budget bounds time
+            # spent *going nowhere* rather than time spent working. As a wall
+            # clock it punished the wrong thing: on a local model a single step
+            # costs minutes, so a turn doing everything right was cut off after
+            # a handful of them with "I reached a runtime safety budget". The
+            # guard against an agent that spins is stall detection right here,
+            # which is semantic; max_model_steps and max_tool_calls remain the
+            # absolute ceilings.
+            state.deadline = time.monotonic() + self.config.budgets.turn_timeout()
             return None
 
         state.stall_rounds += 1
