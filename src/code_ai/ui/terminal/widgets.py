@@ -636,6 +636,8 @@ _TRACE_PREFIXES = (
     "term>",
     # A message typed mid-turn, waiting for the model to read it.
     "queued>",
+    # Background learning yielding the model to the turn (learning.cancelled).
+    "memory>",
     # The live execute_command output line (see view_models._apply_command_output).
     "cmd~",
 )
