@@ -267,6 +267,21 @@ class TerminalViewModel:
             self.conversation.append(f"tool> {name} failed: {message}")
         elif event.event_type.startswith("subagent."):
             self._apply_subagent_event(event)
+        elif event.event_type == "model.request.failed":
+            # Nothing rendered this before, so a request killed by the clock
+            # simply stopped mid-turn and left the transcript looking frozen -
+            # the one failure the user most needs named, and the only one that
+            # said nothing at all.
+            message = str(event.payload.get("message", ""))
+            line = f"error> model request failed: {message}"
+            if "timeout" in message.lower() or "timed out" in message.lower():
+                line += (
+                    " — the model needed longer than max_model_call_s /"
+                    " max_model_step_seconds allow"
+                )
+            self.conversation.append(line)
+        elif event.event_type == "learning.cancelled":
+            self.conversation.append("memory> reflection postponed so this turn gets the model")
         elif event.event_type in {"warning", "error"}:
             self.conversation.append(f"{event.event_type}> {event.payload.get('message', '')}")
         elif event.event_type == "usage.updated":
