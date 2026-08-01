@@ -222,3 +222,64 @@ def test_delivery_replaces_the_waiting_note() -> None:
     assert vm.conversation.count("you> use pytest") == 1
     waiting = [line for line in vm.conversation if line.startswith("queued> ")]
     assert waiting == ["queued> delivered to the model"]
+
+
+class _SlowReflection:
+    """Stands in for the background reflection: never finishes on its own."""
+
+    def __init__(self) -> None:
+        self.cancelled = False
+
+    async def run(self) -> None:
+        import asyncio
+
+        try:
+            await asyncio.sleep(30)
+        except BaseException:
+            self.cancelled = True
+            raise
+
+
+async def test_a_new_turn_cancels_background_learning(tmp_path) -> None:
+    # A local server answers one request at a time, so a reflection still
+    # running when a turn starts holds the turn behind it - measured at 50-120s
+    # to the first token, sometimes never. Memory is the half that gives way.
+    import asyncio
+
+    app = build_application(config=_config(tmp_path), provider=None)
+    provider = _ScriptedProvider()
+    app.orchestrator.provider = provider
+    reflection = _SlowReflection()
+    app.orchestrator._learning_task = asyncio.create_task(reflection.run())
+    await asyncio.sleep(0)  # let it start
+
+    await app.start()
+    await app.submit_user_message("go")
+    await app.close()
+
+    assert reflection.cancelled is True
+    assert app.orchestrator._learning_task is None
+
+
+def test_a_timed_out_request_is_named_in_the_transcript() -> None:
+    # It used to render nothing at all: the transcript just stopped.
+    vm = TerminalViewModel()
+
+    vm.apply(
+        _event(
+            "model.request.failed",
+            {"message": "Chat Completions request failed: Request timed out.", "type": "Provider"},
+        )
+    )
+
+    line = vm.conversation[-1]
+    assert line.startswith("error> model request failed:")
+    assert "max_model_call_s" in line
+
+
+def test_a_plain_request_failure_does_not_blame_the_timeout() -> None:
+    vm = TerminalViewModel()
+
+    vm.apply(_event("model.request.failed", {"message": "connection refused", "type": "Provider"}))
+
+    assert vm.conversation[-1] == "error> model request failed: connection refused"

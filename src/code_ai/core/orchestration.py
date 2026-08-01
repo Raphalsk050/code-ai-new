@@ -411,6 +411,12 @@ class AgentOrchestrator:
         resume_plan: bool = False,
         images: list[ImageContent] | None = None,
     ) -> TurnResult:
+        # Post-turn learning must not compete with the user for the model. On a
+        # local server a background reflection holds the whole thing: measured
+        # against a 35B, a turn landing behind one waited 50-120s for its first
+        # token and sometimes never got one, because the wait ate the request
+        # timeout. Memory is the expendable half of that trade.
+        await self._cancel_pending_learning()
         # Pull in any lessons/memories learned since this session's system prompt
         # was built, so the model benefits from them on this turn.
         self._refresh_system_prompt()
@@ -995,6 +1001,27 @@ class AgentOrchestrator:
             task.cancel()
             with contextlib.suppress(BaseException):
                 await task
+
+    async def _cancel_pending_learning(self) -> None:
+        """Stop a background reflection so the turn ahead has the model to itself.
+
+        Reflection is best-effort by design: what it would have distilled is
+        still in the conversation, and the next quiet moment can distill it
+        again. A turn blocked behind it is not recoverable in the same way, so
+        the reflection is what gives way.
+        """
+        task = self._learning_task
+        if task is None or task.done():
+            return
+        task.cancel()
+        with contextlib.suppress(BaseException):
+            await task
+        self._learning_task = None
+        await self.event_bus.emit(
+            "learning.cancelled",
+            {"reason": "a new turn needs the model"},
+            source="core.orchestrator",
+        )
 
     def _turn_evidence_summary(self) -> str:
         """The planner's recent evidence ledger, serialized for the digest."""

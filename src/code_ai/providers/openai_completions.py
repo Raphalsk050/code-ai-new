@@ -222,44 +222,52 @@ class OpenAIChatCompletionsProvider:
         # disconnects, so abandoning the iterator without closing the HTTP
         # response leaves the model running - the user cancels, the UI stops,
         # and the GPU carries on producing tokens nobody will read.
-        async with closing_stream(stream):
-            async for chunk in stream:
-                if debug:
-                    debug.log_raw_chunk(chunk)
-                usage = _usage_from_object(object_get(chunk, "usage")) or usage
-                choices = object_get(chunk, "choices", []) or []
-                if not choices:
-                    continue
-                choice = choices[0]
-                finish = _finish_reason(object_get(choice, "finish_reason")) or finish
-                delta = object_get(choice, "delta", {})
-                reasoning = _reasoning_delta(delta)
-                if reasoning:
-                    reasoning_parts.append(reasoning)
-                    yield ProviderEvent(kind="reasoning_delta", reasoning_delta=reasoning)
-                content = object_get(delta, "content", "")
-                if content:
-                    text_parts.append(content)
-                    yield ProviderEvent(kind="text_delta", text_delta=content)
+        try:
+            async with closing_stream(stream):
+                async for chunk in stream:
+                    if debug:
+                        debug.log_raw_chunk(chunk)
+                    usage = _usage_from_object(object_get(chunk, "usage")) or usage
+                    choices = object_get(chunk, "choices", []) or []
+                    if not choices:
+                        continue
+                    choice = choices[0]
+                    finish = _finish_reason(object_get(choice, "finish_reason")) or finish
+                    delta = object_get(choice, "delta", {})
+                    reasoning = _reasoning_delta(delta)
+                    if reasoning:
+                        reasoning_parts.append(reasoning)
+                        yield ProviderEvent(kind="reasoning_delta", reasoning_delta=reasoning)
+                    content = object_get(delta, "content", "")
+                    if content:
+                        text_parts.append(content)
+                        yield ProviderEvent(kind="text_delta", text_delta=content)
 
-                for tool_delta in object_get(delta, "tool_calls", []) or []:
-                    index = int(object_get(tool_delta, "index", 0) or 0)
-                    fragment = tool_fragments.setdefault(
-                        index, {"id": "", "name": "", "arguments": ""}
-                    )
-                    fragment["id"] += str(object_get(tool_delta, "id", "") or "")
-                    function = object_get(tool_delta, "function", {}) or {}
-                    fragment["name"] += str(object_get(function, "name", "") or "")
-                    fragment["arguments"] += str(object_get(function, "arguments", "") or "")
-                    # Surface streaming progress so the UI isn't frozen while a large
-                    # tool call (e.g. write_file's content) accumulates.
-                    yield ProviderEvent(
-                        kind="tool_call_delta",
-                        tool_call_name=fragment["name"],
-                        tool_call_arguments=fragment["arguments"],
-                        tool_call_index=index,
-                    )
+                    for tool_delta in object_get(delta, "tool_calls", []) or []:
+                        index = int(object_get(tool_delta, "index", 0) or 0)
+                        fragment = tool_fragments.setdefault(
+                            index, {"id": "", "name": "", "arguments": ""}
+                        )
+                        fragment["id"] += str(object_get(tool_delta, "id", "") or "")
+                        function = object_get(tool_delta, "function", {}) or {}
+                        fragment["name"] += str(object_get(function, "name", "") or "")
+                        fragment["arguments"] += str(object_get(function, "arguments", "") or "")
+                        # Surface streaming progress so the UI isn't frozen while a large
+                        # tool call (e.g. write_file's content) accumulates.
+                        yield ProviderEvent(
+                            kind="tool_call_delta",
+                            tool_call_name=fragment["name"],
+                            tool_call_arguments=fragment["arguments"],
+                            tool_call_index=index,
+                        )
 
+        except Exception as exc:
+            # A request that dies mid-stream (a read timeout above all) left no
+            # trace at all: the transcript simply stopped, so a turn killed by
+            # the clock was indistinguishable from one that never answered.
+            if debug:
+                debug.log_error(exc)
+            raise
         tool_calls: list[ToolCall] = []
         for index, fragment in sorted(tool_fragments.items()):
             name = fragment["name"]
