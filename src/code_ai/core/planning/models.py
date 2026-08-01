@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from enum import StrEnum
 from uuid import uuid4
 
@@ -713,3 +714,73 @@ def _mentions_workspace(text: str) -> bool:
     }
     path_like = bool(re.search(r"(^|\s)[\w./-]+\.(py|toml|md|json|cpp|h|hpp|ts|tsx|js)\b", text))
     return path_like or _contains_any(text, workspace_markers)
+
+
+# Verbs that, on their own, only ask the agent to carry on with what it was
+# already doing.
+_CONTINUATION_VERBS = frozenset(
+    {
+        "continue", "continua", "continuar", "continuemos", "continuando",
+        "prossiga", "prossegue", "prosseguir", "prossigamos",
+        "siga", "segue", "seguir", "sigamos",
+        "retome", "retoma", "retomar", "resume",
+        "vai", "va", "bora", "manda", "proceed",
+        "go", "keep", "carry",
+    }
+)
+
+# Words that may keep a continuation marker company without turning it into a
+# new request ("continue de onde paramos", "ok, pode seguir com o plano").
+# The set is closed on purpose: any message carrying a genuinely new objective
+# ("continue, mas agora faça X") contains tokens outside it and is therefore
+# never mistaken for a continuation.
+_CONTINUATION_FILLER = frozenset(
+    {
+        "por", "favor", "please", "ok", "okay", "beleza", "blz", "sim", "yes",
+        "obrigado", "obrigada", "thanks", "vamos", "let", "lets", "s",
+        "e", "and", "entao", "agora", "now", "ai", "ja", "pode", "podes",
+        "voce", "vc", "you", "can",
+        "de", "do", "da", "onde", "paramos", "parou", "paramo", "ponto",
+        "daqui", "dai", "em", "frente", "adiante",
+        "from", "where", "we", "left", "off", "on", "ahead", "going", "up",
+        "com", "isso", "aquilo", "it", "that", "the", "with",
+        "o", "a", "os", "as", "trabalho", "tarefa", "plano", "task", "work",
+        "plan",
+    }
+)
+
+# A longer message is making a request, not just poking the agent forward.
+_MAX_CONTINUATION_TOKENS = 8
+
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def is_continuation_request(text: str) -> bool:
+    """Whether this turn only asks the agent to carry on with the current task.
+
+    Re-running the surface classifier on such a message is a bug, not a
+    refinement: "continue" carries no mutation keyword, so a follow-up to an
+    implementation task gets relabelled ``CONVERSATION`` and the whole runtime
+    task state - profile, plan, evidence ledger - is thrown away mid-work.
+
+    Recognition is by closed vocabulary rather than a prefix match: the message
+    must consist *only* of continuation verbs and filler, so "continue, mas
+    agora faça X" stays the new request it is.
+    """
+    tokens = _WORD_RE.findall(_strip_accents(_normalize(text)))
+    if not tokens or len(tokens) > _MAX_CONTINUATION_TOKENS:
+        return False
+    if not any(token in _CONTINUATION_VERBS for token in tokens):
+        return False
+    return all(
+        token in _CONTINUATION_VERBS or token in _CONTINUATION_FILLER
+        for token in tokens
+    )
+
+
+def _strip_accents(text: str) -> str:
+    return "".join(
+        char
+        for char in unicodedata.normalize("NFD", text)
+        if unicodedata.category(char) != "Mn"
+    )

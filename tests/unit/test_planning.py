@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from code_ai.config.models import PlannerConfig
 from code_ai.core.planning import PlannerService, PlanningPhase, TaskProfile
-from code_ai.core.planning.models import PlanStatus
+from code_ai.core.planning.models import PlanStatus, is_continuation_request
 from code_ai.events.bus import AsyncEventBus
 from code_ai.tools.filesystem import EditCodeTool, ListFilesTool, ReadFileTool, WriteFileTool
 from code_ai.tools.internal import CompleteTaskTool, FinishDiscoveryTool, RequestExternalGapTool
@@ -206,6 +206,87 @@ def test_mutation_requests_keep_their_evidence_gate() -> None:
     for text in mutations:
         profile = TaskProfile.from_user_text(text)
         assert profile.requires_workspace_mutation is True, text
+
+
+def test_bare_continuation_markers_are_recognised() -> None:
+    for text in [
+        "continue",
+        "continue de onde paramos",
+        "Continue.",
+        "siga",
+        "prossiga com o plano",
+        "ok, pode seguir",
+        "vamos continuar",
+        "keep going",
+        "go ahead",
+        "continue from where we left off",
+    ]:
+        assert is_continuation_request(text) is True, text
+
+
+def test_continuation_detection_ignores_messages_carrying_a_new_objective() -> None:
+    # The failure mode this must not have: swallowing a real request because it
+    # happens to open with a continuation word.
+    for text in [
+        "continue, mas agora faça o parser",
+        "siga o padrão do arquivo config.py",
+        "continue implementando o endpoint de health check",
+        "go on and delete the cache directory",
+        "olá",
+        "",
+    ]:
+        assert is_continuation_request(text) is False, text
+
+
+async def test_continuation_turn_keeps_the_previous_mutation_task() -> None:
+    # "continue" carries no mutation keyword, so reclassifying it drops the task
+    # to CONVERSATION and silences the whole runtime state block mid-work.
+    service = PlannerService(
+        config=PlannerConfig(),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    await service.begin_turn(
+        "implemente um endpoint de health check", provider_supports_tools=True
+    )
+    plan_id = service.plan.plan_id
+
+    await service.begin_turn("continue de onde paramos", provider_supports_tools=True)
+
+    assert service.profile.requires_workspace_mutation is True
+    assert service.profile.intent == "implementation"
+    assert service.plan.plan_id == plan_id
+    assert service.task_context_block(recommended_tool_names={"write_file"}) != ""
+
+
+async def test_a_new_request_after_a_task_is_still_reclassified() -> None:
+    service = PlannerService(
+        config=PlannerConfig(),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    await service.begin_turn(
+        "implemente um endpoint de health check", provider_supports_tools=True
+    )
+    first_plan_id = service.plan.plan_id
+
+    await service.begin_turn("explique como funciona o parser", provider_supports_tools=True)
+
+    assert service.profile.requires_workspace_mutation is False
+    assert service.plan.plan_id != first_plan_id
+
+
+async def test_continuation_without_a_live_task_is_classified_normally() -> None:
+    service = PlannerService(
+        config=PlannerConfig(),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+
+    await service.begin_turn("continue", provider_supports_tools=True)
+
+    assert service.profile is not None
+    assert service.plan is not None
 
 
 async def test_local_edit_settles_misclassified_research_plan() -> None:

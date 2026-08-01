@@ -29,6 +29,7 @@ from code_ai.core.planning.models import (
     PlanStepStatus,
     TaskIntent,
     TaskProfile,
+    is_continuation_request,
 )
 from code_ai.core.planning.policy import PlannerToolPolicy, PolicyDecision
 from code_ai.core.planning.preconditions import PreconditionGate
@@ -229,7 +230,15 @@ class PlannerService:
         # Resuming keeps the plan authored in the previous (plan-mode) turn alive
         # so switching to act executes that checklist instead of reclassifying the
         # continuation text and wiping the model-authored steps.
-        if resume and self.profile is not None:
+        #
+        # A bare "continue"/"siga" takes the same path even without the explicit
+        # resume flag: it states no new objective, so classifying it afresh only
+        # loses the task. The surface classifier reads it as CONVERSATION, which
+        # silences the whole runtime task state block precisely when the model
+        # most needs it - the observed failure was mid-implementation follow-ups
+        # running with no planner scaffolding at all.
+        if self._continues_current_task(text, resume=resume):
+            self._require_tool_calling(provider_supports_tools)
             await self._resume_turn(text)
             return
         self.profile = TaskProfile.from_user_text(text)
@@ -249,11 +258,7 @@ class PlannerService:
         self._gathered_non_host_evidence = False
         self.completion_gate.reset()
         self._precondition_gate.note_turn_started()
-        if self.profile.requires_workspace_mutation and not provider_supports_tools:
-            raise ToolExecutionError(
-                "This implementation task requires tool-calling support; chat text cannot "
-                "modify the workspace."
-            )
+        self._require_tool_calling(provider_supports_tools)
 
         await self._emit_phase(
             PlanningPhase.DISCOVER_LOCAL
@@ -318,6 +323,28 @@ class PlannerService:
                 self.plan_snapshot(),
                 source="core.planner",
             )
+
+    def _continues_current_task(self, text: str, *, resume: bool) -> bool:
+        """Whether this turn carries on the live task instead of starting one.
+
+        Either the caller said so (plan approved, or a reply to a blocking
+        question) or the message itself is a bare continuation marker. Both need
+        a live task to continue: with no profile or plan there is nothing to
+        resume and the text must be classified normally.
+        """
+        if self.profile is None or self.plan is None:
+            return False
+        return resume or is_continuation_request(text)
+
+    def _require_tool_calling(self, provider_supports_tools: bool) -> None:
+        if not (self.profile and self.profile.requires_workspace_mutation):
+            return
+        if provider_supports_tools:
+            return
+        raise ToolExecutionError(
+            "This implementation task requires tool-calling support; chat text cannot "
+            "modify the workspace."
+        )
 
     def has_pending_question(self) -> bool:
         """Whether the previous turn ended on a blocking ask_user question."""
