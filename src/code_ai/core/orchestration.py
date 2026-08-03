@@ -1365,8 +1365,50 @@ class AgentOrchestrator:
                     return ModelResponse(
                         text="".join(streamed), finish_reason=FinishReason.UNKNOWN
                     )
+                if await self._drop_unreadable_images():
+                    # The payload the endpoint refused is gone; the same turn is
+                    # worth one more try as a text-only request.
+                    attempts = 0
+                    continue
                 await self._emit_request_failed(exc)
                 raise
+
+    async def _drop_unreadable_images(self) -> bool:
+        """Remove image payloads the endpoint just refused. True if any were there.
+
+        Images are attached to the conversation before the request that carries
+        them, so a server that rejects them leaves them sitting in the history:
+        every later turn re-sends the same payload, is refused again, and pays
+        the full retry schedule for it. One pasted screenshot is enough to make
+        the rest of the session crawl - which reads as the agent getting slower
+        rather than as an image that was never going to work.
+
+        Dropping them costs the picture and keeps the session. The replacement
+        text is deliberately visible to the model: it explains why it is being
+        asked about something it cannot see, instead of leaving it to guess.
+        """
+
+        dropped = False
+        for message in self.conversation.messages:
+            if message.role != "user" or not message.images:
+                continue
+            count = len(message.images)
+            message.images = []
+            message.content = (
+                f"{message.content}\n\n[{count} image(s) removed: this endpoint "
+                "refused the image payload, so they were dropped to keep the "
+                "conversation working. Answer from the text, and say plainly "
+                "that you could not see them if it matters.]"
+            ).strip()
+            dropped = True
+        if dropped:
+            self.conversation.reset_remote_state()
+            await self.event_bus.emit(
+                "images.dropped",
+                {"reason": "endpoint refused the image payload"},
+                source="core.orchestrator",
+            )
+        return dropped
 
     async def _collect_model_response(
         self,
