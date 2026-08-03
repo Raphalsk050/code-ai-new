@@ -79,11 +79,11 @@ def _looks_like_sampling_error(exc: Exception) -> bool:
 def _reasoning_delta(value: Any) -> str:
     """Extract reasoning text from an OpenAI-compatible delta/message.
 
-    Reasoning models served through vLLM/SGLang and similar OpenAI-compatible
-    backends expose chain-of-thought in a non-standard ``reasoning_content``
-    (sometimes ``reasoning``) field alongside the regular ``content``.
+    Reasoning models served through vLLM/SGLang, Ollama, and similar
+    OpenAI-compatible backends expose chain-of-thought in a non-standard
+    ``reasoning_content``/``reasoning``/``thinking`` field alongside ``content``.
     """
-    for key in ("reasoning_content", "reasoning"):
+    for key in ("reasoning_content", "reasoning", "thinking"):
         text = object_get(value, key, "")
         if text:
             return str(text)
