@@ -53,6 +53,27 @@ def _is_transient_exception(exc: Exception) -> bool:
     return status in {408, 409, 429, 500, 502, 503, 504}
 
 
+def _carries_images(request: ModelRequest) -> bool:
+    return any(getattr(message, "images", None) for message in request.messages)
+
+
+def _worth_retrying(exc: Exception, request: ModelRequest) -> bool:
+    """Whether re-sending this exact request could plausibly do better.
+
+    A 500 on a request carrying images is the server saying it could not process
+    that payload, and the payload does not change between attempts - so the
+    retries buy nothing and cost the caller the whole backoff schedule before it
+    can react. Overload and timeout codes still retry normally, images or not,
+    because those really are about the moment rather than the content.
+    """
+
+    if not _is_transient_exception(exc):
+        return False
+    if getattr(exc, "status_code", None) == 500 and _carries_images(request):
+        return False
+    return True
+
+
 # Field names an endpoint may reject when it does not understand a sampling
 # control we sent. Used to decide whether a failed request can be retried
 # without sampling kwargs rather than surfaced as a hard error.
@@ -160,7 +181,7 @@ class OpenAIChatCompletionsProvider:
                         yield event
                 return
             except Exception as exc:
-                if not _is_transient_exception(exc) or attempts >= 2:
+                if not _worth_retrying(exc, request) or attempts >= 2:
                     raise ProviderError(f"Chat Completions request failed: {exc}") from exc
                 attempts += 1
                 await asyncio.sleep(min(2.0, 0.25 * (2**attempts)) + random.random() * 0.1)
