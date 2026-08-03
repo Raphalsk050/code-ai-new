@@ -223,15 +223,27 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self._images.clear()
             return taken
 
-        def _paste_from_clipboard(self) -> None:
+        def _attach_clipboard_image(self) -> bool:
+            """Attach the clipboard's image, if it holds one. True when it did."""
+
             pasted_image = paste_image_from_system_clipboard()
-            if pasted_image is not None:
-                data, media_type = pasted_image
-                self.attach_image(
-                    ImageContent(
-                        data=base64.b64encode(data).decode("ascii"),
-                        media_type=media_type,
-                    )
+            if pasted_image is None:
+                return False
+            data, media_type = pasted_image
+            self.attach_image(
+                ImageContent(
+                    data=base64.b64encode(data).decode("ascii"),
+                    media_type=media_type,
+                )
+            )
+            return True
+
+        def _paste_from_clipboard(self, *, image_only: bool = False) -> None:
+            if self._attach_clipboard_image():
+                return
+            if image_only:
+                self.notify(
+                    "Nenhuma imagem na área de transferência.", severity="warning"
                 )
                 return
             text = paste_from_system_clipboard()
@@ -249,6 +261,29 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                     + " para habilitar o Ctrl+V.",
                     severity="warning",
                 )
+
+        def _on_paste(self, event) -> None:
+            """Catch the paste the *terminal* performed, not the key we asked for.
+
+            Windows Terminal (and others) handle Ctrl+V themselves: they take the
+            clipboard's text and send it back as a bracketed paste, so the app is
+            never told a key was pressed and the image branch below could never
+            run. What arrives here is only ever text - and when the clipboard
+            holds a picture and nothing else, there is no text, so the terminal
+            sends nothing at all and pasting appears to do nothing.
+
+            An empty paste is therefore the signal worth acting on: it means the
+            clipboard had nothing pasteable as text, which is exactly when an
+            image rendition is worth going to fetch. A paste that does carry text
+            is left alone - a clipboard often holds both, and hijacking an
+            ordinary text paste to attach a picture would be its own bug.
+            """
+
+            if getattr(event, "text", ""):
+                return
+            event.stop()
+            event.prevent_default()
+            self._attach_clipboard_image()
 
         @property
         def value(self) -> str:
@@ -318,6 +353,15 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 event.stop()
                 event.prevent_default()
                 self._paste_from_clipboard()
+                return
+            if key in ("alt+v", "ctrl+alt+v"):
+                # The way in when the terminal keeps Ctrl+V for itself, which
+                # Windows Terminal does by default: it pastes the clipboard's
+                # text and the key never reaches us, so an image-only clipboard
+                # has no other route. Alt+V is not claimed by those terminals.
+                event.stop()
+                event.prevent_default()
+                self._paste_from_clipboard(image_only=True)
                 return
             if key in ("shift+enter", "ctrl+j", "alt+enter"):
                 event.stop()
@@ -1728,6 +1772,8 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 f"tools: {tools}\n\n"
                 "keys: Ctrl+C copiar seleção / cancelar | Ctrl+L limpar\n"
                 "input: Enter envia · Shift+Enter/Ctrl+J nova linha\n"
+                "colar: Ctrl+V texto ou imagem · Alt+V imagem quando o "
+                "terminal fica com o Ctrl+V\n"
                 "copiar: selecione com o mouse, botão direito ou Ctrl+C"
             )
 

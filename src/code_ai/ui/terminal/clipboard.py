@@ -56,16 +56,34 @@ _IMAGE_SIGNATURES: tuple[tuple[bytes, str], ...] = (
     (b"GIF89a", "image/gif"),
 )
 
-# Renders the clipboard image (if any) as base64 PNG on stdout. -sta is required
-# for Clipboard access; no output simply means "no image on the clipboard".
+# Longest edge a pasted screenshot is reduced to before it is sent. Vision
+# models gain nothing from more: a 4K screenshot is millions of base64
+# characters on every subsequent request in the conversation, which costs far
+# more than the detail it carries.
+_MAX_IMAGE_EDGE_PX = 1568
+
+# Renders the clipboard image (if any) as base64 PNG on stdout, scaled down when
+# it is larger than the bound above. -sta is required for Clipboard access; no
+# output simply means "no image on the clipboard".
 _WINDOWS_IMAGE_SCRIPT = (
     "Add-Type -AssemblyName System.Windows.Forms; "
     "Add-Type -AssemblyName System.Drawing; "
     "$img = [System.Windows.Forms.Clipboard]::GetImage(); "
     "if ($img -ne $null) { "
+    f"$max = {_MAX_IMAGE_EDGE_PX}; "
+    "if ($img.Width -gt $max -or $img.Height -gt $max) { "
+    "$scale = [Math]::Min($max / $img.Width, $max / $img.Height); "
+    "$nw = [int]($img.Width * $scale); $nh = [int]($img.Height * $scale); "
+    "$small = New-Object System.Drawing.Bitmap $nw, $nh; "
+    "$g = [System.Drawing.Graphics]::FromImage($small); "
+    "$g.InterpolationMode = "
+    "[System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic; "
+    "$g.DrawImage($img, 0, 0, $nw, $nh); "
+    "$g.Dispose(); $img.Dispose(); $img = $small } "
     "$ms = New-Object System.IO.MemoryStream; "
     "$img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png); "
-    "[Console]::Out.Write([Convert]::ToBase64String($ms.ToArray())) }"
+    "[Console]::Out.Write([Convert]::ToBase64String($ms.ToArray())); "
+    "$ms.Dispose(); $img.Dispose() }"
 )
 
 
