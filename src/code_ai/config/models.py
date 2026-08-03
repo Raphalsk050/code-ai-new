@@ -291,7 +291,9 @@ class SamplingConfig:
     Standard fields map directly onto the OpenAI request body. ``top_k`` and
     ``min_p`` are not part of the OpenAI schema, so they are forwarded through
     ``extra_body`` for OpenAI-compatible servers (vLLM, SGLang, ...).
-    ``reasoning_effort``/``reasoning_summary`` only apply to the Responses API.
+    ``reasoning_effort`` is sent on both Chat Completions and Responses (it is
+    what enables thinking on most OpenAI-compatible local servers, not just a
+    dial for how much); ``reasoning_summary`` only applies to the Responses API.
     Any value left as ``None`` is omitted so the endpoint default applies.
     """
 
@@ -376,6 +378,16 @@ class SamplingConfig:
             kwargs["presence_penalty"] = self.presence_penalty
         if self.frequency_penalty is not None:
             kwargs["frequency_penalty"] = self.frequency_penalty
+        if self.reasoning_effort is not None:
+            # Chat Completions carries reasoning_effort as a plain field, and for
+            # several local servers it is the *only* switch that turns thinking
+            # on: Ollama's OpenAI-compatible endpoint ignores its own `think`
+            # flag here and enables reasoning solely on this parameter, then
+            # streams the result as `delta.reasoning`. Omitting it left every
+            # such model apparently thinking-free. A server that rejects the
+            # field trips the sampling-retry path and the request goes again
+            # without any sampling kwargs.
+            kwargs["reasoning_effort"] = self.reasoning_effort
         extra_body = self._extra_body_with_passthrough()
         if extra_body:
             kwargs["extra_body"] = extra_body
