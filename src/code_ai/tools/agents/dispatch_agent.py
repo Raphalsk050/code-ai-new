@@ -7,6 +7,7 @@ from code_ai.core.subagents.coordinator import Dispatcher, SubagentRequest
 from code_ai.core.subagents.profiles import SubagentProfileRegistry
 from code_ai.providers.models import ToolDefinition
 from code_ai.tools.base import ToolCapability, ToolContext
+from code_ai.tools.output import UNTRUSTED_DATA_NOTE
 
 # Rough serialized size of one report minus its summary (task preview, ids,
 # status, usage, JSON envelope). Used to split the parent's tool-output budget
@@ -29,20 +30,36 @@ class DispatchAgentTool:
     name = "dispatch_agent"
     capabilities = frozenset({ToolCapability.DELEGATE})
 
-    def __init__(self, profile_registry: SubagentProfileRegistry) -> None:
+    def __init__(
+        self,
+        profile_registry: SubagentProfileRegistry,
+        *,
+        max_concurrent: int | None = None,
+    ) -> None:
         self._profiles = profile_registry
+        # Stating the real cap lets the model size a fan-out by the work instead
+        # of guessing: anything above it queues rather than failing, so a wide
+        # batch is safe. Left out entirely when the caller does not know it,
+        # rather than inventing a number the runtime would not honour.
+        concurrency = (
+            f"Up to {max_concurrent} sub-agents run at a time and the rest queue, "
+            "so size the batch by the work rather than by that limit. "
+            if max_concurrent
+            else ""
+        )
         self.description = (
             "Delegate one or more focused subtasks to specialized sub-agents that "
             "run concurrently and in isolation, each returning its own report. Use "
             "this to parallelize independent work - e.g. fan out several read-only "
             "explorations at once, or hand a self-contained change to a worker while "
-            "you continue. Give each sub-agent a precise, standalone prompt: it "
-            "cannot see this conversation and cannot ask you questions, so ground "
-            "the prompt in evidence you have actually gathered (real paths, real "
+            "you continue. " + concurrency + "Give each sub-agent a precise, standalone "
+            "prompt: it cannot see this conversation and cannot ask you questions, so "
+            "ground the prompt in evidence you have actually gathered (real paths, real "
             "findings) and state the expected outcome. Each report includes an "
             "evidence digest of what the sub-agent really did (files read/changed, "
             "commands run with exit codes); reconcile reports against it instead of "
-            "taking summaries at face value. Available agent types:\n"
+            "taking summaries at face value. The user never sees these reports, so "
+            "carry anything that matters into your own answer. Available agent types:\n"
             + self._profiles.describe()
         )
         self.input_schema = {
@@ -120,6 +137,7 @@ class DispatchAgentTool:
             "reports": [
                 report.to_dict(max_summary_chars=per_summary) for report in reports
             ],
+            "note": UNTRUSTED_DATA_NOTE,
         }
 
 

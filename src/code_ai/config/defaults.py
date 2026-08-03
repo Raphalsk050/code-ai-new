@@ -14,6 +14,18 @@ DEFAULT_CONFIG_FILENAME = "config.json"
 RULES_DIRNAME = "rules"
 RULES_DIR_ENV = "CODE_AI_RULES_DIR"
 
+# The project's own instruction file: one markdown file at the workspace root
+# saying how this codebase wants to be worked on. It sits at the root rather than
+# inside ``.code-ai/`` so everyone on the team can see it, and it is read as the
+# most authoritative rule there is - the point of the file is to be able to
+# override the agent's built-in guidance without editing the agent.
+#
+# Three files, in ascending precedence: an install-wide one for how *you* work,
+# the committed project file for how the *team* works, and a local file for
+# personal overrides in this one checkout (keep it out of version control).
+INSTRUCTIONS_FILENAME = "CODEAI.md"
+INSTRUCTIONS_LOCAL_FILENAME = "CODEAI.local.md"
+
 # Workflows - named procedures invoked on demand (unlike rules, which are always
 # injected). Same two scopes and the same override story as rules: global ones
 # live install-wide, project ones live in the workspace so they can be committed.
@@ -75,6 +87,35 @@ def project_rules_dir(workspace: Path | str) -> Path:
 
     resolved = Path(workspace).expanduser().resolve()
     return resolved / DEFAULT_CONFIG_DIRNAME / RULES_DIRNAME
+
+
+def global_instructions_file() -> Path:
+    """Install-wide ``CODEAI.md``: how you want the agent to work everywhere.
+
+    Follows ``CODE_AI_RULES_DIR`` when set so a test or an alternate setup that
+    relocates rules relocates this file with them, and never reads the real home
+    directory by accident.
+    """
+
+    override = os.environ.get(RULES_DIR_ENV)
+    root = Path(override).expanduser() if override else Path.home() / DEFAULT_CONFIG_DIRNAME
+    return root / INSTRUCTIONS_FILENAME
+
+
+def project_instructions_files(workspace: Path | str) -> list[Path]:
+    """Workspace ``CODEAI.md`` files, least authoritative first.
+
+    The committed file states how the project wants to be worked on; the
+    ``.local`` one is for a single checkout and should stay out of version
+    control. Returned in precedence order so a later file's wording wins where
+    the two disagree.
+    """
+
+    resolved = Path(workspace).expanduser().resolve()
+    return [
+        resolved / INSTRUCTIONS_FILENAME,
+        resolved / INSTRUCTIONS_LOCAL_FILENAME,
+    ]
 
 
 def global_workflows_dir() -> Path:

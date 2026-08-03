@@ -130,6 +130,19 @@ class FailureMemoryStore:
             return entries[:limit]
         return entries
 
+    def lesson_for(self, signature: str) -> FailureMemory | None:
+        """The lesson recorded under ``signature`` exactly, if there is one.
+
+        This is the reliable half of recall. Rendering lessons into the prompt
+        puts them *somewhere* the model could look; a keyed lookup puts the right
+        one in front of it at the moment the same situation comes round again -
+        and because the signature is the same key the failure was filed under,
+        the match is exact rather than a guess about relevance.
+        """
+
+        entry = self._load(signature)
+        return entry if entry is not None and entry.lesson else None
+
     def render_for_prompt(self, *, limit: int = 8) -> str:
         """Render the strongest lessons as a prompt section, or ``""`` if none.
 
@@ -522,6 +535,27 @@ class MemoryService:
         """(scope label, store) pairs, for maintenance passes and inspection."""
 
         return (("global", self._global), ("project", self._project))
+
+    def knows_user_identity(self) -> bool:
+        """Whether anything is stored about who the user is."""
+
+        return any(entry.kind == "user" for entry in self._global.all())
+
+    def recallable(self) -> list[tuple[str, str]]:
+        """``(content, kind)`` for the memories worth resurfacing mid-turn.
+
+        Identity is left out on purpose. It applies to everything, so it can
+        never be *more* relevant to one step than another - repeating it would
+        only teach the agent to skim past these notes. What benefits from being
+        raised again is the specific fact: how the user wants a thing done, or
+        something learned about this project.
+        """
+
+        return [
+            (entry.content.strip(), entry.kind)
+            for entry in (*self._global.all(), *self._project.all())
+            if entry.content.strip() and entry.kind not in _ALWAYS_FULL_KINDS
+        ]
 
     def render_for_prompt(self, *, limit_per_kind: int | None = None) -> str:
         """Render stored memories grouped by kind, most-recently-updated first.

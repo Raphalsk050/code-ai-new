@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from code_ai.config.models import BudgetConfig
 from code_ai.tools.base import ToolCapability
+from code_ai.tools.review.prompts import REVIEW_CONFIDENCE_RUBRIC
 
 # Capabilities a sub-agent may never hold, whichever profile it runs under.
 # Interactive terminals and desktop control are backed by mutable singletons the
@@ -140,9 +141,15 @@ _REVIEWER = SubagentProfile(
         "You are a code-review sub-agent. Read the relevant code and run the review, "
         "build, and test tools to assess correctness, design, and risk. Do not edit "
         "any files - your job is to judge and report, not to fix.\n"
+        + REVIEW_CONFIDENCE_RUBRIC
+        + "Before you report a finding, argue the other side of it: look for the "
+        "guard, conversion, or caller that would make it a non-issue, and drop it "
+        "if you find one. The dispatcher acts on what you report, so a finding it "
+        "cannot reproduce costs more than the one you left out.\n"
         "Finish by replying with a structured review: an overall verdict, then the "
-        "findings ordered by severity, each with a file:line reference and why it "
-        "matters. Call out what is solid as well as what is wrong."
+        "surviving findings ordered by severity, each with a file:line reference, "
+        "its confidence score, and why it matters. Call out what is solid as well "
+        "as what is wrong."
     ),
 )
 

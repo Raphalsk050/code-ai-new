@@ -29,5 +29,9 @@ class CodeReviewTool:
             prompt=CODE_REVIEW_PROMPT,
             content=str(arguments.get("content", "")),
             source=self.name,
+            # The caller acts on this review directly, so precision matters more
+            # than the extra call: a finding that cannot be defended costs more
+            # to chase down than it ever saved.
+            refute=True,
         )
         return result.to_dict()

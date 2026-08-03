@@ -76,7 +76,9 @@ def test_report_ok_and_serialization() -> None:
     assert completed.ok is True
     data = completed.to_dict()
     assert data["status"] == "completed"
-    assert data["summary"].startswith("It lives")
+    assert data["summary"] == (
+        "<subagent_report>\nIt lives in config/loader.py:42.\n</subagent_report>"
+    )
     assert data["usage"]["total_tokens"] == 15
 
     failed = SubagentReport(

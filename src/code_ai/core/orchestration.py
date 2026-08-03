@@ -28,14 +28,17 @@ from code_ai.core.errors import (
     TransientProviderError,
     WorkspaceBoundaryError,
 )
-from code_ai.core.memory import FailureMemoryStore, MemoryService
+from code_ai.core.git_baseline import GitBaseline
+from code_ai.core.memory import FailureMemory, FailureMemoryStore, MemoryService
+from code_ai.core.memory_recall import MemoryRecall
 from code_ai.core.planning import PlannerService
 from code_ai.core.planning.policy import PolicyDecision
 from code_ai.core.reflection import ReflectionService, TurnDigest
+from code_ai.core.reminders import ReminderEngine, ToolRound
 from code_ai.core.rules import RulesService
 from code_ai.core.state import AgentState
 from code_ai.events.bus import AsyncEventBus
-from code_ai.prompts import VISION_ANALYSIS_PROMPT, build_system_prompt
+from code_ai.prompts import VISION_ANALYSIS_PROMPT, build_runtime_note, build_system_prompt
 from code_ai.providers.base import ModelProvider
 from code_ai.providers.models import (
     FinishReason,
@@ -179,6 +182,21 @@ class _TurnState:
     # compact line per executed tool call.
     user_text: str = ""
     actions: list[str] = field(default_factory=list)
+    # Watches how this turn is using its tools and surfaces the occasional
+    # reminder. Per-turn so cooldowns and the per-turn cap reset with the turn.
+    reminders: ReminderEngine = field(default_factory=ReminderEngine)
+    # Brings a stored memory back when the work reaches its subject. Per-turn so
+    # a memory raised once is not raised again in the same turn.
+    recall: MemoryRecall | None = None
+    # Tools whose past-failure lesson has already been put in front of the model
+    # this turn, so the warning lands once and keeps its weight.
+    lessons_surfaced: set[str] = field(default_factory=set)
+    # Whether any call in the round just executed came back an error. Set while
+    # results are recorded and consumed by the round observer straight after.
+    round_errored: bool = False
+    # Paths git says this turn changed, refreshed after any round that mutated
+    # the workspace. Empty when no baseline could be captured.
+    git_changed_paths: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -248,6 +266,7 @@ class AgentOrchestrator:
         workflows_catalog: Callable[[], str] | None = None,
         system_prompt_builder: Callable[[], str] | None = None,
         reflection: ReflectionService | None = None,
+        git_baseline: GitBaseline | None = None,
     ) -> None:
         self.config = config
         # Optional override for how the leading system message is (re)built. The
@@ -256,6 +275,10 @@ class AgentOrchestrator:
         # role prompt here, so ``_refresh_system_prompt`` keeps the delegated
         # persona instead of overwriting it with the top-level agent prompt.
         self._system_prompt_builder = system_prompt_builder
+        # Git's account of what the current turn changed, independent of what the
+        # tools reported. ``None`` (sub-agents, tests, non-repo workspaces) simply
+        # means the ledger stays the only account.
+        self.git_baseline = git_baseline
         self.provider = provider
         self.tool_registry = tool_registry
         self.conversation = conversation
@@ -443,6 +466,12 @@ class AgentOrchestrator:
             deadline=time.monotonic() + self.config.budgets.turn_timeout(),
             user_text=text,
         )
+        # Snapshot the tree before the model touches it, so "what changed this
+        # turn" is later answerable from git rather than from tool self-reports.
+        if self.git_baseline is not None:
+            await self.git_baseline.capture()
+        if self.memory is not None:
+            state.recall = MemoryRecall.from_contents(self.memory.recallable())
         try:
             early = await self._begin_planner(text, state, resume=resume_plan)
             if early is not None:
@@ -585,7 +614,7 @@ class AgentOrchestrator:
             compression = await self.compressor.ensure_capacity(self.conversation, tool_definitions)
             await self.emit_context_usage(compression)
 
-            request = self._build_request(step, tool_definitions)
+            request = self._build_request(step, tool_definitions, state)
             await self.event_bus.emit(
                 "model.request.started",
                 {
@@ -656,7 +685,7 @@ class AgentOrchestrator:
                         bound_text(response.text, self.config.budgets.max_tool_output_chars),
                         [],
                     )
-                self.conversation.add_user(debt)
+                self.conversation.add_user(build_runtime_note(debt))
                 await self.set_state(
                     AgentState.CALLING_MODEL, phase="correcting_unverified_change"
                 )
@@ -671,7 +700,7 @@ class AgentOrchestrator:
             correction = await self.planner.note_no_tool_response(
                 recommended_tool_names=self._recommended_tool_names()
             )
-            self.conversation.add_user(correction)
+            self.conversation.add_user(build_runtime_note(correction))
             await self.set_state(AgentState.CALLING_MODEL, phase="correcting_no_tool_response")
             return None
 
@@ -782,7 +811,11 @@ class AgentOrchestrator:
         state.tool_format_retries += 1
         # Do not persist the malformed markup as the assistant turn; only keep
         # the correction so the next attempt is not anchored to broken output.
-        self.conversation.add_user(self._tool_format_correction_text())
+        # Not supplementary: re-issuing the call is the next step, not a detour
+        # from the user's request.
+        self.conversation.add_user(
+            build_runtime_note(self._tool_format_correction_text(), supplementary=False)
+        )
         await self.event_bus.emit(
             "tool.call.malformed",
             {
@@ -847,7 +880,11 @@ class AgentOrchestrator:
             self.conversation.add_assistant(
                 bound_text(response.text, self.config.budgets.max_tool_output_chars), []
             )
-        self.conversation.add_user(self._interrupted_call_correction_text())
+        self.conversation.add_user(
+            build_runtime_note(
+                self._interrupted_call_correction_text(), supplementary=False
+            )
+        )
         await self.event_bus.emit(
             "tool.call.interrupted",
             {
@@ -864,7 +901,7 @@ class AgentOrchestrator:
     @staticmethod
     def _interrupted_call_correction_text() -> str:
         return (
-            "Runtime note: your previous tool call was cut off before it arrived, "
+            "Your previous tool call was cut off before it arrived, "
             "so it never ran and nothing in the workspace changed - whatever you "
             "just announced has not happened yet. Make the call again now. If it "
             "carried a large file, write it in smaller pieces so the call "
@@ -930,7 +967,10 @@ class AgentOrchestrator:
             return False
         state.budget_overflow_retries += 1
         self.conversation.add_user(
-            self._budget_overflow_text(response.reasoning, request.max_output_tokens)
+            build_runtime_note(
+                self._budget_overflow_text(response.reasoning, request.max_output_tokens),
+                supplementary=False,
+            )
         )
         await self.event_bus.emit(
             "model.budget_overflow",
@@ -1053,6 +1093,38 @@ class AgentOrchestrator:
         except Exception:  # noqa: BLE001 - the digest is best-effort input
             return ""
 
+    def _known_lesson(self, signature: str) -> FailureMemory | None:
+        """A lesson already on file for ``signature``, or ``None``."""
+
+        if self.failure_memory is None:
+            return None
+        try:
+            return self.failure_memory.lesson_for(signature)
+        except Exception:  # pragma: no cover - recall must never break a turn
+            return None
+
+    def _lesson_warning(self, names: tuple[str, ...], state: _TurnState) -> str | None:
+        """Warn about a tool this session has already been burned by.
+
+        Fired on the *first* use of that tool in the turn, before the same
+        mistake has a chance to land again. Once per tool per turn: the point is
+        to arrive ahead of the failure, not to narrate every call.
+        """
+
+        for name in names:
+            if name in state.lessons_surfaced:
+                continue
+            lesson = self._known_lesson(f"tool_error:{name}")
+            if lesson is None:
+                continue
+            state.lessons_surfaced.add(name)
+            return (
+                f"You have hit an error with '{name}' before ({lesson.count}x) and "
+                f"recorded what to do about it:\n- {lesson.lesson}\n"
+                "Check that this call already accounts for it."
+            )
+        return None
+
     async def _record_failure(
         self, *, trigger: str, context: str, fallback_lesson: str, signature: str | None = None
     ) -> None:
@@ -1094,6 +1166,7 @@ class AgentOrchestrator:
         unproductive rounds we nudge once, then wind down with a best-effort
         answer so the turn never spins to the hard step budget with no reply.
         """
+        await self._observe_tool_round(response, state)
         signature = self._progress_signature()
         if signature:
             productive = signature != state.progress_signature
@@ -1144,13 +1217,94 @@ class AgentOrchestrator:
             return await self._wind_down(state, reason=WIND_DOWN_STALLED)
         if state.stall_rounds >= limit // 2 and not state.stall_nudged:
             state.stall_nudged = True
-            self.conversation.add_user(self._stall_nudge_text())
+            self.conversation.add_user(build_runtime_note(self._stall_nudge_text()))
             await self.event_bus.emit(
                 "agent.stall.nudged",
                 {"stall_rounds": state.stall_rounds},
                 source="core.orchestrator",
             )
         return None
+
+    async def _observe_tool_round(
+        self, response: ModelResponse, state: _TurnState
+    ) -> None:
+        """Record what this round did, refresh the git view, and maybe say something.
+
+        Kept off the convergence path on purpose: a reminder is advice, so it must
+        never decide whether the turn continues. Anything that fails here is
+        swallowed - the turn is doing real work and a nudge is not worth breaking it.
+        """
+
+        names = tuple(call.name for call in response.tool_calls)
+        # Consumed here and reset, so it always describes the round just run.
+        errored, state.round_errored = state.round_errored, False
+        if not names:
+            return
+        capabilities = {name: self._capabilities_of(name) for name in names}
+        round_ = ToolRound(
+            names=names,
+            read_only=all(
+                caps and caps <= frozenset({ToolCapability.LOCAL_READ})
+                for caps in capabilities.values()
+            ),
+            mutating=any(
+                ToolCapability.LOCAL_WRITE in caps for caps in capabilities.values()
+            ),
+            ran_process=any(
+                ToolCapability.PROCESS in caps for caps in capabilities.values()
+            ),
+            errored=errored,
+        )
+        state.reminders.observe(round_)
+
+        if round_.mutating and self.git_baseline is not None:
+            # Only after a write: `git diff` on every round would tax a large
+            # repository for an answer that cannot have changed.
+            try:
+                state.git_changed_paths = await self.git_baseline.changed_paths()
+            except Exception:  # pragma: no cover - defensive, git already fails open
+                state.git_changed_paths = ()
+
+        # Strict priority, one note per round so they never stack. A lesson from
+        # a failure this session has already paid for outranks everything: it is
+        # the difference between repeating a bug and not. A memory bearing on the
+        # work comes next, and generic advice about how the turn is going last.
+        note = (
+            self._lesson_warning(names, state)
+            or self._recalled_memory(response, state)
+            or state.reminders.due(frozenset(self.tool_registry.names()))
+        )
+        if note:
+            self.conversation.add_user(build_runtime_note(note))
+            await self.event_bus.emit(
+                "agent.reminder", {"rounds": state.reminders.activity.rounds},
+                source="core.orchestrator",
+            )
+
+    @staticmethod
+    def _recalled_memory(response: ModelResponse, state: _TurnState) -> str | None:
+        """Any stored memory the calls in this round are about.
+
+        The focus text is what the round is *touching* - the paths, queries, and
+        commands in the arguments - because that is what says which part of the
+        work is happening now, far more precisely than the prose around it.
+        """
+
+        if state.recall is None:
+            return None
+        focus = [state.user_text]
+        for call in response.tool_calls:
+            focus.append(call.name)
+            arguments = call.arguments
+            if isinstance(arguments, dict):
+                focus.extend(str(value) for value in arguments.values())
+        return state.recall.consider(" ".join(focus))
+
+    def _capabilities_of(self, name: str) -> frozenset[ToolCapability]:
+        try:
+            return frozenset(self.tool_registry.capabilities(name))
+        except Exception:
+            return frozenset()
 
     def _progress_signature(self) -> tuple[object, ...]:
         if self.planner and self.planner.enabled:
@@ -1168,7 +1322,7 @@ class AgentOrchestrator:
     @staticmethod
     def _stall_nudge_text() -> str:
         return (
-            "Runtime check: recent tool calls have not advanced the task, and repeating "
+            "Recent tool calls have not advanced the task, and repeating "
             "the same observation will not help. If you already have enough information, "
             "reply to the user now with your final answer. If a workspace change still "
             "needs settling, make the single remaining change or call complete_task with "
@@ -1359,6 +1513,8 @@ class AgentOrchestrator:
         # the evidence ledger deterministic even when reads ran concurrently.
         for call in calls:
             outcome = outcomes[call.id]
+            if outcome.result.is_error:
+                state.round_errored = True
             state.actions.append(
                 self._action_line(call.name, call.arguments, outcome.result.is_error)
             )
@@ -1603,9 +1759,14 @@ class AgentOrchestrator:
                     "read-back command. Do not create or edit workspace files "
                     "just to satisfy completion evidence."
                 )
+            signature = f"tool_error:{call.name}"
+            # What was already known about this exact failure, captured *before*
+            # recording, so a lesson distilled from this very error is not read
+            # back as if it had been learned earlier.
+            prior = self._known_lesson(signature)
             await self._record_failure(
                 trigger="tool_error",
-                signature=f"tool_error:{call.name}",
+                signature=signature,
                 context=(
                     f"The tool '{call.name}' failed with: {bound_text(str(exc), 400)}. "
                     f"Arguments: {bound_text(json.dumps(call.arguments, default=str), 400)}"
@@ -1616,6 +1777,15 @@ class AgentOrchestrator:
                     "the error seen previously."
                 ),
             )
+            if prior is not None:
+                # Carried on the error itself rather than as a separate note: the
+                # model is looking at this result already, and a lesson it has to
+                # go looking for in the prompt is a lesson it repeats.
+                content = (
+                    f"{content}\n\nThis is not the first time. You recorded this "
+                    f"after it happened before (seen {prior.count}x):\n"
+                    f"- {prior.lesson}\nApply it now instead of retrying the same way."
+                )
             return _ToolOutcome(
                 result=ToolResult(
                     tool_call_id=call.id, name=call.name, content=content, is_error=True
@@ -2031,11 +2201,17 @@ class AgentOrchestrator:
     # ------------------------------------------------------------------ #
     # Request construction + planner helpers
     # ------------------------------------------------------------------ #
-    def _build_request(self, step: int, tool_definitions: list) -> ModelRequest:
+    def _build_request(
+        self, step: int, tool_definitions: list, state: _TurnState
+    ) -> ModelRequest:
         messages = self.conversation.snapshot()
-        planner_context = self._planner_context()
-        if planner_context:
-            messages = [*messages, Message(role="user", content=planner_context)]
+        runtime_context = "\n\n".join(
+            block
+            for block in (self._planner_context(), self._git_context(state))
+            if block
+        )
+        if runtime_context:
+            messages = [*messages, Message(role="user", content=runtime_context)]
         return ModelRequest(
             model=self.config.model,
             messages=messages,
@@ -2147,6 +2323,27 @@ class AgentOrchestrator:
         if not (self.planner and self.planner.enabled):
             return set()
         return self.planner.recommended_tool_names(self.tool_registry)
+
+    @staticmethod
+    def _git_context(state: _TurnState) -> str:
+        """State what the workspace actually looks like relative to the turn's start.
+
+        This is measured, not reported: it includes files changed through the
+        shell and excludes writes that restored what was already there. When it
+        disagrees with what the model believes it did, this is the side that is
+        right - which is exactly why it is worth showing back to the model.
+        """
+
+        if not state.git_changed_paths:
+            return ""
+        listed = "\n".join(f"- {path}" for path in state.git_changed_paths)
+        return (
+            "Files that actually differ from the workspace as it was when this "
+            f"turn started, according to git:\n{listed}\n"
+            "This is measured from the working tree, not from what the tools "
+            "reported. If it does not match what you believe you changed, trust "
+            "this list and look again before claiming the work is done."
+        )
 
     def _planner_context(self) -> str:
         if not (self.planner and self.planner.enabled):

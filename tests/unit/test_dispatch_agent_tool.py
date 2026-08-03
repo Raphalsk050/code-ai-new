@@ -78,7 +78,11 @@ async def test_dispatch_forwards_requests_and_returns_reports() -> None:
 
     assert result["dispatched"] == 2
     assert result["reports"][0]["agent_type"] == "explorer"
-    assert result["reports"][1]["summary"] == "handled add a flag"
+    # The summary is fenced so the parent reads it as reported data rather than
+    # as another instruction in its own conversation.
+    assert "handled add a flag" in result["reports"][1]["summary"]
+    assert result["reports"][1]["summary"].startswith("<subagent_report>")
+    assert result["note"]
     # Requests were parsed into typed objects and the caller depth forwarded.
     sent, depth = dispatcher.calls[0]
     assert [r.agent_type for r in sent] == ["explorer", "coder"]
