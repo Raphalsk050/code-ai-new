@@ -4,7 +4,13 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 from code_ai.core.subagents.evidence import SubagentEvidenceItem, compact_evidence_items
-from code_ai.tools.output import bound_text
+from code_ai.tools.output import bound_text, fence_untrusted
+
+# The summary is free text a sub-agent wrote, and a sub-agent's own context was
+# filled with files, command output, and web pages it did not control. Fencing it
+# keeps the parent reading the report as a finding rather than as a turn in its
+# own conversation.
+_SUMMARY_TAG = "subagent_report"
 
 # The serialized report is read by the orchestrating model, so every free-text
 # field is bounded: the parent wrote the task prompt itself, so a short echo is
@@ -71,7 +77,11 @@ class SubagentReport:
             "name": self.name,
             "task": bound_text(self.task, _TASK_PREVIEW_CHARS),
             "status": self.status.value,
-            "summary": bound_text(self.summary, max_summary_chars),
+            # Bound first, then fence: truncating afterwards could cut the
+            # closing delimiter off and leave the payload open-ended.
+            "summary": fence_untrusted(
+                bound_text(self.summary, max_summary_chars), tag=_SUMMARY_TAG
+            ),
             "error": (
                 None
                 if self.error is None

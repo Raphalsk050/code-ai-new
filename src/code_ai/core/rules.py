@@ -46,6 +46,11 @@ class RuleSource:
     # workflows/skills, not as always-on rules.
     exclude_dirs: frozenset[str] = field(default_factory=frozenset)
     extensions: frozenset[str] = DEFAULT_RULE_EXTENSIONS
+    # The project's own instruction file (``CODEAI.md``), as opposed to one rule
+    # among many. Rendered last and under a stronger heading, because its whole
+    # purpose is to let a project overrule the agent's built-in guidance without
+    # anyone editing the agent.
+    authoritative: bool = False
 
 
 @dataclass(slots=True)
@@ -57,6 +62,7 @@ class RuleRecord:
     body: str
     path: Path
     origin: str = NATIVE_ORIGIN
+    authoritative: bool = False
 
 
 def _parse_rule_markdown(text: str) -> tuple[str, str]:
@@ -138,6 +144,7 @@ class RulesService:
                     body=body,
                     path=path,
                     origin=source.origin,
+                    authoritative=source.authoritative,
                 )
             )
         return records
@@ -178,20 +185,50 @@ class RulesService:
         the model must treat them as overriding its own defaults. Each rule keeps
         its title so a rule can be referenced by name, and its origin so a rule
         the user wrote for another agent is recognisable as theirs.
+
+        Instruction files (``CODEAI.md``) are rendered last, under their own
+        heading. They are what a project uses to change how the agent behaves, so
+        they have to outrank both the ordinary rules above them and the built-in
+        guidance that follows in the prompt - and the model has to be told that
+        in as many words, because nothing about position alone conveys it.
         """
 
         records = self.load()
         if not records:
             return ""
 
-        lines = [
-            "# Rules (MANDATORY - always follow, never violate)",
-            "",
-            "These rules are binding for every action this session. They override your "
-            "own defaults and general guidance. If a rule conflicts with a request, "
-            "follow the rule and say so.",
-            "",
-        ]
+        ordinary = [record for record in records if not record.authoritative]
+        instructions = [record for record in records if record.authoritative]
+
+        lines: list[str] = []
+        if ordinary:
+            lines += [
+                "# Rules (MANDATORY - always follow, never violate)",
+                "",
+                "These rules are binding for every action this session. They override "
+                "your own defaults and general guidance. If a rule conflicts with a "
+                "request, follow the rule and say so.",
+                "",
+            ]
+            lines += self._render_records(ordinary)
+        if instructions:
+            lines += [
+                "# Project instructions (HIGHEST PRIORITY)",
+                "",
+                "The following was written for this workspace and outranks everything "
+                "else in this prompt, including any guidance further down and any rule "
+                "above. Where it contradicts your usual way of working, it wins - it "
+                "exists precisely to change that. Later sections outrank earlier ones. "
+                "If it conflicts with what the user is asking for, follow it and say "
+                "so rather than resolving the conflict silently.",
+                "",
+            ]
+            lines += self._render_records(instructions)
+        return "\n".join(lines).strip()
+
+    @staticmethod
+    def _render_records(records: list[RuleRecord]) -> list[str]:
+        lines: list[str] = []
         for record in records:
             label = record.scope
             if record.origin != NATIVE_ORIGIN:
@@ -199,4 +236,4 @@ class RulesService:
             lines.append(f"## {record.name} ({label})")
             lines.append(record.body)
             lines.append("")
-        return "\n".join(lines).strip()
+        return lines

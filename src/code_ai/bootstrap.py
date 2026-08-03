@@ -9,9 +9,11 @@ from code_ai.app.service import CodeAIApplication
 from code_ai.app.session import ApplicationSession
 from code_ai.config.defaults import (
     default_memories_dir,
+    global_instructions_file,
     global_knowledge_dir,
     global_rules_dir,
     project_conversations_dir,
+    project_instructions_files,
     project_memories_dir,
     project_rules_dir,
 )
@@ -21,11 +23,13 @@ from code_ai.context.compression import ContextCompressor
 from code_ai.context.conversation import ConversationState
 from code_ai.context.token_counting import TokenCounter
 from code_ai.context.usage import UsageLedger
+from code_ai.core.git_baseline import GitBaseline
+from code_ai.core.identity import detect_user_name
 from code_ai.core.memory import FailureMemoryStore, MemoryService, MemoryStore
 from code_ai.core.orchestration import AgentOrchestrator
 from code_ai.core.planning import PlannerService
 from code_ai.core.reflection import ReflectionService
-from code_ai.core.rules import RulesService
+from code_ai.core.rules import RuleSource, RulesService
 from code_ai.core.subagents import (
     SubagentCoordinator,
     SubagentRuntime,
@@ -190,6 +194,18 @@ def build_application(
         global_store=MemoryStore(global_knowledge_dir()),
         project_store=MemoryStore(project_memories_dir(config.workspace)),
     )
+    # First run only: learn the user's name from what the machine already knows,
+    # so the very first greeting can use it instead of asking. Once anything is
+    # stored about who they are, this never runs again - and if the detected
+    # name is wrong the user can correct it, which is saved over the top.
+    if not memory.knows_user_identity():
+        detected = detect_user_name(config.workspace)
+        if detected:
+            memory.add(
+                kind="user",
+                content=f"The user's name is {detected}.",
+                source="detected",
+            )
 
     async def _generate_learning(prompt: str) -> str:
         # Backs the post-turn reflection meta-call. Generous output cap because
@@ -226,7 +242,18 @@ def build_application(
     rules = RulesService(
         global_dir=global_rules_dir(),
         project_dir=project_rules_dir(config.workspace),
-        extra_sources=external_rule_sources(config.workspace),
+        extra_sources=(
+            *external_rule_sources(config.workspace),
+            # CODEAI.md last, and in ascending precedence within itself, so the
+            # workspace's own instruction file has the final word.
+            RuleSource(
+                path=global_instructions_file(), scope="global", authoritative=True
+            ),
+            *(
+                RuleSource(path=path, scope="project", authoritative=True)
+                for path in project_instructions_files(config.workspace)
+            ),
+        ),
     )
     # Named procedures the user runs on demand. Re-read on each prompt rebuild,
     # so authoring one mid-session makes it invocable right away.
@@ -321,7 +348,12 @@ def build_application(
         event_bus=event_bus,
         config=config,
     )
-    registry.register(DispatchAgentTool(profile_registry))
+    registry.register(
+        DispatchAgentTool(
+            profile_registry,
+            max_concurrent=config.budgets.max_concurrent_subagents,
+        )
+    )
 
     def tool_context(cancel_event: asyncio.Event | None) -> ToolContext:
         return ToolContext(
@@ -355,6 +387,7 @@ def build_application(
         skills_catalog=_skills_catalog,
         workflows_catalog=workflows.render_for_prompt,
         reflection=reflection,
+        git_baseline=GitBaseline(workspace),
     )
     session = ApplicationSession(session_id=event_bus.session_id, config=config)
     conversation_store = ConversationStore(project_conversations_dir(config.workspace))
