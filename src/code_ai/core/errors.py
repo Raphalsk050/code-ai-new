@@ -18,6 +18,18 @@ class UnsupportedProviderCapability(ProviderError):
     """The selected provider or endpoint does not support a requested capability."""
 
 
+class ImageLimitError(ProviderError):
+    """The request carried more images than the endpoint accepts in one prompt.
+
+    Carries the limit the endpoint named so the caller can fit the conversation
+    to it and try again, instead of throwing every attachment away.
+    """
+
+    def __init__(self, message: str, *, limit: int) -> None:
+        super().__init__(message)
+        self.limit = max(0, int(limit))
+
+
 class ContextCapacityError(CodeAIError):
     """The active request cannot fit within the configured context limit."""
 

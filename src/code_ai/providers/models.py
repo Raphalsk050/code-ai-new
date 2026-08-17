@@ -153,6 +153,10 @@ class ProviderCapabilities:
     remote_conversation_state: bool = False
     native_tokenization: bool = False
     image_support: bool = False
+    # Images accepted in a single request; 0 means the endpoint never named a
+    # cap. Servers do not advertise this, so it stays 0 until one refuses a
+    # request for carrying too many and states its own limit.
+    max_images_per_request: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

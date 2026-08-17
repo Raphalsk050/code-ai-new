@@ -7,9 +7,10 @@ from contextlib import aclosing
 from typing import Any
 
 from code_ai.config.models import AppConfig
-from code_ai.core.errors import ProviderError, TransientProviderError
+from code_ai.core.errors import ImageLimitError, ProviderError, TransientProviderError
 from code_ai.providers.base import build_openai_http_client, closing_stream
 from code_ai.providers.debug import ModelDebugLogger
+from code_ai.providers.images import parse_image_limit
 from code_ai.providers.models import (
     FinishReason,
     ModelRequest,
@@ -180,6 +181,12 @@ class OpenAIChatCompletionsProvider:
                     async for event in events:
                         yield event
                 return
+            except ImageLimitError as exc:
+                # Keeps the limit intact through the wrapping, so the caller can
+                # fit the conversation to it rather than guessing.
+                raise ImageLimitError(
+                    f"Chat Completions request failed: {exc}", limit=exc.limit
+                ) from exc
             except Exception as exc:
                 if not _worth_retrying(exc, request) or attempts >= 2:
                     raise ProviderError(f"Chat Completions request failed: {exc}") from exc
@@ -209,6 +216,13 @@ class OpenAIChatCompletionsProvider:
         try:
             stream = await self._client.chat.completions.create(**kwargs)
         except Exception as exc:
+            limit = parse_image_limit(str(exc))
+            if limit is not None:
+                # The endpoint just named what it accepts. Remember it, so the
+                # rest of the session sizes its requests to fit instead of
+                # rediscovering the same refusal on every attachment.
+                self._capabilities.max_images_per_request = limit
+                raise ImageLimitError(str(exc), limit=limit) from exc
             if self._stream_options_supported and "stream_options" in str(exc):
                 self._stream_options_supported = False
                 yield ProviderEvent(

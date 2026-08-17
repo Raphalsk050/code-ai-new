@@ -456,6 +456,11 @@ class AppConfig:
     # so the main model never receives image payloads it cannot read. Empty
     # sends images straight to the main model (multimodal setups).
     vision_model: str = ""
+    # Hard cap on images carried by a single model request. 0 leaves it to the
+    # endpoint, which is the common case: a server that only takes one image per
+    # prompt says so when it refuses one, and the limit is learned from there.
+    # Set it when the endpoint refuses without naming a number.
+    max_images_per_request: int = 0
     debug: bool = False
     show_ui: bool = True
     ssl_verification: bool = False
@@ -512,6 +517,7 @@ class AppConfig:
             inline_hints_enabled=bool(data.get("inline_hints_enabled", False)),
             inline_model=str(data.get("inline_model", "")),
             vision_model=str(data.get("vision_model", "")),
+            max_images_per_request=int(data.get("max_images_per_request", 0) or 0),
             debug=bool(data.get("debug", False)),
             show_ui=bool(data.get("show_ui", True)),
             ssl_verification=bool(data.get("ssl_verification", False)),
@@ -568,6 +574,8 @@ class AppConfig:
             )
         if self.output_token_reserve <= 0:
             raise ConfigurationError("output_token_reserve must be positive.")
+        if self.max_images_per_request < 0:
+            raise ConfigurationError("max_images_per_request must be zero or positive.")
         if not self.terminal_theme.strip():
             raise ConfigurationError("terminal_theme must be non-empty.")
         if not self.terminal_banner_font.strip():
