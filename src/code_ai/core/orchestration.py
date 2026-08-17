@@ -24,6 +24,7 @@ from code_ai.core.errors import (
     CancellationError,
     CodeAIError,
     CommandTimeoutError,
+    ImageLimitError,
     ProviderError,
     TransientProviderError,
     WorkspaceBoundaryError,
@@ -128,6 +129,14 @@ _MUTATION_DENIAL_CAPABILITIES = frozenset(
         ToolCapability.COMPUTER_CONTROL,
     }
 )
+
+
+def _chunked(items: list[ImageContent], size: int) -> list[list[ImageContent]]:
+    """Split ``items`` into groups of at most ``size`` (all of it when size < 1)."""
+
+    if size < 1:
+        return [list(items)]
+    return [items[start : start + size] for start in range(0, len(items), size)]
 
 
 @dataclass(slots=True)
@@ -451,14 +460,8 @@ class AgentOrchestrator:
         # shows what the user actually typed.
         if context:
             self.conversation.add_user(context)
-        if images and self._vision_model():
-            analysis = await self._describe_images(text, images)
-            if analysis is not None:
-                # The vision model already turned the pixels into text; keep the
-                # raw images out of the conversation so a non-multimodal main
-                # model never receives payloads it cannot read.
-                self.conversation.add_user(analysis)
-                images = None
+        if images:
+            images = await self._prepare_images(text, images)
         self.conversation.add_user(text, images=images)
 
         state = _TurnState(
@@ -507,65 +510,142 @@ class AgentOrchestrator:
         model = self.config.vision_model.strip()
         return "" if model == self.config.model.strip() else model
 
-    async def _describe_images(self, text: str, images: list[ImageContent]) -> str | None:
-        """Turn attached images into text via the configured vision model.
+    def _image_request_limit(self) -> int:
+        """Images this endpoint accepts in one request; 0 when it never said.
+
+        Two sources, whichever is stricter: what the user configured, and what
+        the endpoint told us when it refused a request for carrying too many.
+        """
+
+        limits = [
+            value
+            for value in (
+                int(getattr(self.config, "max_images_per_request", 0) or 0),
+                int(getattr(self.provider.capabilities, "max_images_per_request", 0) or 0),
+            )
+            if value > 0
+        ]
+        return min(limits) if limits else 0
+
+    async def _prepare_images(
+        self, text: str, images: list[ImageContent]
+    ) -> list[ImageContent] | None:
+        """Fit a batch of pasted images to what one request can actually carry.
+
+        Two separate reasons an image cannot simply be attached: the main model
+        may not read pixels at all (``vision_model`` covers that), and the
+        endpoint may accept only so many per prompt - one, on the servers that
+        prompted this. Six pasted screenshots used to travel as six payloads in
+        a single request and were refused outright, which cost the user every
+        one of them.
+
+        So the ones that do not fit are transcribed instead of dropped: they
+        travel as text, described in requests small enough to be accepted, and
+        only the newest few ride along as actual pixels.
+        """
+
+        limit = self._image_request_limit()
+        vision_model = self._vision_model()
+        if vision_model:
+            # A non-multimodal main model must never receive pixels: describe
+            # everything and attach nothing, as before.
+            describe, attach = list(images), []
+            model = vision_model
+        elif limit and len(images) > limit:
+            describe, attach = images[:-limit], images[-limit:]
+            model = self.config.model
+        else:
+            return list(images)
+
+        analysis = await self._describe_images(text, describe, model=model, limit=limit)
+        if analysis is None:
+            # Transcription failed. Attach what the endpoint will take rather
+            # than the whole batch it is certain to refuse; a limit of 0 means
+            # nothing has told us otherwise, so send them all as before.
+            return list(images[-limit:] if limit else images)
+        self.conversation.add_user(analysis)
+        return attach or None
+
+    async def _describe_images(
+        self,
+        text: str,
+        images: list[ImageContent],
+        *,
+        model: str,
+        limit: int = 0,
+    ) -> str | None:
+        """Turn attached images into text, in requests the endpoint will accept.
 
         The main model may not be multimodal, so ``vision_model`` acts as its
         eyes: a one-off call outside the conversation (no tools, no history)
         produces a task-focused description that travels as plain text instead
-        of pixels. Returns None on any failure so the caller can degrade to
-        attaching the raw images, which is exactly the pre-vision behavior.
+        of pixels. When the endpoint caps images per prompt, the batch is split
+        across that many calls, so the cap costs extra round-trips rather than
+        the pictures themselves. Returns None when every batch fails, so the
+        caller can degrade to attaching raw images as it did before.
         """
-        model = self._vision_model()
+        if not images:
+            return None
+        batches = _chunked(images, limit) if limit else [list(images)]
         await self.set_state(AgentState.CALLING_MODEL, phase="analyzing_images")
         await self.event_bus.emit(
             "vision.analysis.started",
-            {"model": model, "images": len(images)},
+            {"model": model, "images": len(images), "requests": len(batches)},
             source="core.orchestrator",
         )
-        request = ModelRequest(
-            model=model,
-            messages=[
-                Message(role="system", content=VISION_ANALYSIS_PROMPT),
-                Message(
-                    role="user",
-                    content=(
-                        "Describe the attached images. The user's request they "
-                        f"belong to, for context only:\n{text}"
+        described = 0
+        sections: list[str] = []
+        for index, batch in enumerate(batches):
+            request = ModelRequest(
+                model=model,
+                messages=[
+                    Message(role="system", content=VISION_ANALYSIS_PROMPT),
+                    Message(
+                        role="user",
+                        content=(
+                            "Describe the attached images. The user's request they "
+                            f"belong to, for context only:\n{text}"
+                        ),
+                        images=list(batch),
                     ),
-                    images=list(images),
-                ),
-            ],
-            # Transcribing dense screenshots takes room, and reasoning models
-            # spend output budget on hidden thinking first.
-            max_output_tokens=8192,
-        )
-        try:
-            response = await self.provider.complete(request)
-        except Exception as exc:
-            await self.event_bus.emit(
-                "vision.analysis.failed",
-                {"model": model, "error": str(exc)},
-                source="core.orchestrator",
+                ],
+                # Transcribing dense screenshots takes room, and reasoning models
+                # spend output budget on hidden thinking first.
+                max_output_tokens=8192,
             )
-            return None
-        description = (response.text or "").strip()
-        if not description:
-            await self.event_bus.emit(
-                "vision.analysis.failed",
-                {"model": model, "error": "empty response"},
-                source="core.orchestrator",
-            )
+            try:
+                response = await self.provider.complete(request)
+            except Exception as exc:
+                await self.event_bus.emit(
+                    "vision.analysis.failed",
+                    {"model": model, "error": str(exc)},
+                    source="core.orchestrator",
+                )
+                continue
+            description = (response.text or "").strip()
+            if not description:
+                await self.event_bus.emit(
+                    "vision.analysis.failed",
+                    {"model": model, "error": "empty response"},
+                    source="core.orchestrator",
+                )
+                continue
+            described += len(batch)
+            # Numbered only when split, so the single-image case reads exactly
+            # as it did before.
+            header = f"Image {index + 1}:\n" if len(batches) > 1 else ""
+            sections.append(header + description)
+        if not sections:
             return None
         await self.event_bus.emit(
             "vision.analysis.completed",
-            {"model": model, "images": len(images)},
+            {"model": model, "images": described, "requests": len(batches)},
             source="core.orchestrator",
         )
         return (
             f"[Image analysis by {model}] The next user message references "
             "attached images; this is what they contain, transcribed by a "
-            "vision model:\n\n" + description
+            "vision model:\n\n" + "\n\n".join(sections)
         )
 
     async def _begin_planner(
@@ -613,6 +693,10 @@ class AgentOrchestrator:
             tool_definitions = self.tool_registry.definitions(allowed)
             compression = await self.compressor.ensure_capacity(self.conversation, tool_definitions)
             await self.emit_context_usage(compression)
+            # Every request, not just the first: images accumulate in the
+            # history, so a turn that attached nothing can still carry the
+            # previous turn's payload past the cap.
+            await self._enforce_image_limit()
 
             request = self._build_request(step, tool_definitions, state)
             await self.event_bus.emit(
@@ -1360,6 +1444,21 @@ class AgentOrchestrator:
                     source="core.orchestrator",
                 )
                 await asyncio.sleep(min(2.0, 0.25 * (2**attempts)) + random.random() * 0.1)
+            except ImageLimitError as exc:
+                # The endpoint named its cap while refusing this request. Fit
+                # the conversation to it and send again: the pictures over the
+                # cap are worth losing, the turn is not.
+                if streamed:
+                    return ModelResponse(
+                        text="".join(streamed), finish_reason=FinishReason.UNKNOWN
+                    )
+                if await self._enforce_image_limit(exc.limit) or (
+                    await self._drop_unreadable_images()
+                ):
+                    attempts = 0
+                    continue
+                await self._emit_request_failed(exc)
+                raise
             except ProviderError as exc:
                 if streamed:
                     return ModelResponse(
@@ -1372,6 +1471,50 @@ class AgentOrchestrator:
                     continue
                 await self._emit_request_failed(exc)
                 raise
+
+    async def _enforce_image_limit(self, limit: int | None = None) -> bool:
+        """Keep the conversation within the endpoint's images-per-request cap.
+
+        Images stay in the history, so a second pasted screenshot puts two in
+        the same prompt even though each turn only ever attached one - which is
+        how a session that worked once starts failing on every later paste. The
+        newest attachments are the ones the current turn is about, so those are
+        the ones kept; the rest leave a note in their place, visible to the
+        model, so it knows a picture was there rather than inventing one.
+
+        Returns True when anything was trimmed.
+        """
+
+        cap = self._image_request_limit() if limit is None else max(0, limit)
+        if cap <= 0:
+            return False
+        budget = cap
+        trimmed = 0
+        # Newest first: the current turn's attachments are the ones worth pixels.
+        for message in reversed(self.conversation.messages):
+            if not message.images:
+                continue
+            if budget >= len(message.images):
+                budget -= len(message.images)
+                continue
+            keep = message.images[len(message.images) - budget :] if budget else []
+            dropped = len(message.images) - len(keep)
+            message.images = keep
+            budget = 0
+            trimmed += dropped
+            message.content = (
+                f"{message.content}\n\n[{dropped} earlier image(s) not sent: this "
+                f"endpoint accepts at most {cap} image(s) per request. Ask the user "
+                "to re-send one if you need to see it again.]"
+            ).strip()
+        if trimmed:
+            self.conversation.reset_remote_state()
+            await self.event_bus.emit(
+                "images.trimmed",
+                {"dropped": trimmed, "limit": cap},
+                source="core.orchestrator",
+            )
+        return bool(trimmed)
 
     async def _drop_unreadable_images(self) -> bool:
         """Remove image payloads the endpoint just refused. True if any were there.

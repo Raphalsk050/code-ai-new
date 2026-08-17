@@ -280,6 +280,23 @@ class TerminalViewModel:
                     " max_model_step_seconds allow"
                 )
             self.conversation.append(line)
+        elif event.event_type == "images.trimmed":
+            # Silently sending fewer images than were pasted reads as the model
+            # ignoring them; say which ones never left.
+            dropped = event.payload.get("dropped")
+            limit = event.payload.get("limit")
+            self.conversation.append(
+                f"image> {dropped} older image(s) not sent: this endpoint takes "
+                f"{limit} per request"
+            )
+        elif event.event_type == "vision.analysis.started":
+            count = event.payload.get("images")
+            requests = event.payload.get("requests") or 1
+            suffix = f" in {requests} requests" if requests and requests > 1 else ""
+            self.conversation.append(
+                f"image> reading {count} image(s) with "
+                f"{event.payload.get('model', '')}{suffix}..."
+            )
         elif event.event_type == "learning.cancelled":
             self.conversation.append("memory> reflection postponed so this turn gets the model")
         elif event.event_type in {"warning", "error"}:

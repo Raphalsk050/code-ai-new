@@ -8,9 +8,10 @@ from contextlib import aclosing
 from typing import Any
 
 from code_ai.config.models import AppConfig
-from code_ai.core.errors import ProviderError, TransientProviderError
+from code_ai.core.errors import ImageLimitError, ProviderError, TransientProviderError
 from code_ai.providers.base import build_openai_http_client, closing_stream
 from code_ai.providers.debug import ModelDebugLogger
+from code_ai.providers.images import parse_image_limit
 from code_ai.providers.models import (
     FinishReason,
     ModelRequest,
@@ -187,6 +188,12 @@ class OpenAIResponsesProvider:
                     async for event in events:
                         yield event
                 return
+            except ImageLimitError as exc:
+                # Keeps the limit intact through the wrapping, so the caller can
+                # fit the conversation to it rather than guessing.
+                raise ImageLimitError(
+                    f"Responses request failed: {exc}", limit=exc.limit
+                ) from exc
             except Exception as exc:
                 text = str(exc).lower()
                 if self._remote_state_supported and "previous_response" in text:
@@ -234,6 +241,12 @@ class OpenAIResponsesProvider:
         try:
             stream = await self._client.responses.create(**kwargs)
         except Exception as exc:
+            limit = parse_image_limit(str(exc))
+            if limit is not None:
+                # The endpoint just named what it accepts; remember it so the
+                # rest of the session sizes its requests to fit.
+                self._capabilities.max_images_per_request = limit
+                raise ImageLimitError(str(exc), limit=limit) from exc
             if self._sampling_supported and _looks_like_sampling_error(exc):
                 self._sampling_supported = False
                 yield ProviderEvent(
