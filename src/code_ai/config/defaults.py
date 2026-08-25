@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import tempfile
 from pathlib import Path
 
 DEFAULT_CONFIG_DIRNAME = ".code-ai"
@@ -31,6 +32,13 @@ INSTRUCTIONS_LOCAL_FILENAME = "CODEAI.local.md"
 # live install-wide, project ones live in the workspace so they can be committed.
 WORKFLOWS_DIRNAME = "workflows"
 WORKFLOWS_DIR_ENV = "CODE_AI_WORKFLOWS_DIR"
+
+# Sandbox - the isolated scratch root where builds, generated code, temporary
+# files and captured test output live, so none of them ever land in the user's
+# project tree. One directory per session under a shared base; the base is
+# overridable via an env var for tests and for machines whose temp dir is small.
+SANDBOX_DIRNAME = "python_agent_sandbox"
+SANDBOX_DIR_ENV = "CODE_AI_SANDBOX_DIR"
 
 # Written into a saved config.json when no real api_key is set, so the field is
 # never left blank. Treated as "unset" at runtime (see config.models), so it
@@ -171,6 +179,21 @@ def project_memories_dir(workspace: Path | str) -> Path:
     return Path.home() / DEFAULT_CONFIG_DIRNAME / "projects" / slug / "memories"
 
 
+def default_sandbox_base_dir() -> Path:
+    """Base directory holding one isolated sandbox per session.
+
+    Lives in the system temp dir rather than under the config dir or the
+    workspace: sandboxes are disposable by design, and the OS already reclaims
+    that space if a process dies before its own cleanup runs. ``CODE_AI_SANDBOX_DIR``
+    relocates it for tests and for hosts whose temp dir is too small to build in.
+    """
+
+    override = os.environ.get(SANDBOX_DIR_ENV)
+    if override:
+        return Path(override).expanduser()
+    return Path(tempfile.gettempdir()) / SANDBOX_DIRNAME
+
+
 DEFAULT_BUDGETS: dict[str, int] = {
     "build_tool_timeout_s": 300,
     "default_tool_timeout_s": 60,
@@ -291,6 +314,24 @@ DEFAULT_GOAL: dict[str, object] = {
 }
 
 
+DEFAULT_SANDBOX: dict[str, object] = {
+    # Master switch. Disabled, tools fall back to the previous behaviour (every
+    # write and every command lands in the workspace) instead of failing.
+    "enabled": True,
+    # Empty resolves to :func:`default_sandbox_base_dir` at startup.
+    "base_dir": "",
+    # How long a sandbox left behind by a crashed session survives before the
+    # next startup reaps it.
+    "ttl_hours": 24,
+    # Whether this session's own sandbox is removed when the app closes. Turn it
+    # off to inspect what a build produced after the fact.
+    "cleanup_on_exit": True,
+    # Per-stream ceiling for a captured run log, so one runaway build cannot
+    # fill the disk with a single artifact.
+    "max_artifact_bytes": 2_000_000,
+}
+
+
 DEFAULT_CONFIG: dict[str, object] = {
     "api_key": PLACEHOLDER_API_KEY,
     "api_mode": "responses",
@@ -300,6 +341,7 @@ DEFAULT_CONFIG: dict[str, object] = {
     "goal": DEFAULT_GOAL,
     "memory": DEFAULT_MEMORY,
     "planner": DEFAULT_PLANNER,
+    "sandbox": DEFAULT_SANDBOX,
     "sampling": DEFAULT_SAMPLING,
     "language": "en",
     "model": "gemma4:31b-cloud",

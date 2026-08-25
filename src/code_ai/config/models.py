@@ -11,7 +11,9 @@ from code_ai.config.defaults import (
     DEFAULT_MEMORY,
     DEFAULT_PLANNER,
     DEFAULT_SAMPLING,
+    DEFAULT_SANDBOX,
     PLACEHOLDER_API_KEY,
+    default_sandbox_base_dir,
 )
 from code_ai.core.errors import ConfigurationError
 from code_ai.util.redaction import redact_mapping
@@ -219,6 +221,51 @@ class MemoryConfig:
             raise ConfigurationError(
                 "reflection_min_tool_calls must be zero or positive."
             )
+
+
+@dataclass(slots=True)
+class SandboxConfig:
+    """Where the agent is allowed to build, run and scribble.
+
+    The sandbox is an isolated directory per session that absorbs every
+    byproduct of working on a project - build outputs, generated scripts,
+    temporary files, captured test logs - so the user's tree only ever changes
+    through a deliberate source edit. Disabling it degrades to the previous
+    behaviour rather than blocking: tools keep working against the workspace.
+    """
+
+    enabled: bool = bool(DEFAULT_SANDBOX["enabled"])
+    base_dir: str = str(DEFAULT_SANDBOX["base_dir"])
+    ttl_hours: int = int(DEFAULT_SANDBOX["ttl_hours"])
+    cleanup_on_exit: bool = bool(DEFAULT_SANDBOX["cleanup_on_exit"])
+    max_artifact_bytes: int = int(DEFAULT_SANDBOX["max_artifact_bytes"])
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any] | None) -> SandboxConfig:
+        values = dict(DEFAULT_SANDBOX)
+        if data:
+            values.update(data)
+        return cls(
+            enabled=bool(values["enabled"]),
+            base_dir=str(values["base_dir"] or ""),
+            ttl_hours=int(values["ttl_hours"]),
+            cleanup_on_exit=bool(values["cleanup_on_exit"]),
+            max_artifact_bytes=int(values["max_artifact_bytes"]),
+        )
+
+    def resolved_base_dir(self) -> Path:
+        """Absolute base directory holding one sandbox per session."""
+
+        configured = self.base_dir.strip()
+        if configured:
+            return Path(configured).expanduser()
+        return default_sandbox_base_dir()
+
+    def validate(self) -> None:
+        if self.ttl_hours <= 0:
+            raise ConfigurationError("sandbox ttl_hours must be positive.")
+        if self.max_artifact_bytes <= 0:
+            raise ConfigurationError("sandbox max_artifact_bytes must be positive.")
 
 
 @dataclass(slots=True)
@@ -442,6 +489,7 @@ class AppConfig:
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     planner: PlannerConfig = field(default_factory=PlannerConfig)
     sampling: SamplingConfig = field(default_factory=SamplingConfig)
+    sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     language: str = "en"
     model: str = "gemma4:31b-cloud"
     # Inline code hints (editor ghost text) in the VSCode extension. Off by
@@ -501,6 +549,9 @@ class AppConfig:
         sampling = SamplingConfig.from_mapping(
             data.get("sampling") if isinstance(data.get("sampling"), dict) else None
         )
+        sandbox = SandboxConfig.from_mapping(
+            data.get("sandbox") if isinstance(data.get("sandbox"), dict) else None
+        )
         workspace = Path(str(data.get("workspace", Path.cwd()))).expanduser()
         config = cls(
             api_key=normalize_api_key(str(data.get("api_key", ""))),
@@ -512,6 +563,7 @@ class AppConfig:
             memory=memory_config,
             planner=planner,
             sampling=sampling,
+            sandbox=sandbox,
             language=str(data.get("language", "en")),
             model=str(data.get("model", "gemma4:31b-cloud")),
             inline_hints_enabled=bool(data.get("inline_hints_enabled", False)),
@@ -561,6 +613,7 @@ class AppConfig:
         self.memory.validate()
         self.planner.validate()
         self.sampling.validate()
+        self.sandbox.validate()
         parsed = urlparse(self.base_url)
         if self.api_mode in {"responses", "completions", "ollama"} and parsed.scheme not in {
             "http",
