@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+from pathlib import Path
 from typing import Any
 
 from code_ai.core.errors import (
@@ -157,7 +158,7 @@ def _capture_run(
         return None
     try:
         record = sandbox.artifacts.record(
-            label=" ".join(result.argv[:3]),
+            label=_run_label(result.argv),
             stdout=result.stdout,
             stderr=result.stderr,
             metadata={
@@ -298,3 +299,16 @@ def _coerce_argv(arguments: dict[str, Any]) -> list[str]:
     ):
         raise ToolArgumentError("command must be a non-empty string.")
     return argv
+
+
+def _run_label(argv: list[str]) -> str:
+    """Short human name for a run, used as its artifact directory name.
+
+    The first token is usually an absolute interpreter path, which as a
+    directory name says nothing and buries the part that identifies the run.
+    Only its basename is kept, followed by the first couple of arguments.
+    """
+
+    if not argv:
+        return "run"
+    return " ".join([Path(argv[0]).name, *argv[1:3]])

@@ -309,3 +309,16 @@ async def test_a_terminal_without_a_sandbox_inherits_the_parent_environment(tmp_
     await StartTerminalTool().execute({}, context)
 
     assert manager.created["env"] is None
+
+
+async def test_an_artifact_is_named_after_the_command_not_its_interpreter_path(tmp_path) -> None:
+    context = make_context(tmp_path)
+
+    result = await ExecuteCommandTool().execute(
+        {"command": f"{shlex.quote(sys.executable)} -c {shlex.quote('print(1)')}"}, context
+    )
+
+    name = result["artifacts"]["directory"].rsplit("/", 1)[-1]
+    assert name.startswith("0001-")
+    # The absolute interpreter path would bury the part that identifies the run.
+    assert "usr" not in name and "bin" not in name
