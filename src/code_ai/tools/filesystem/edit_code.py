@@ -9,6 +9,7 @@ from typing import Any
 from code_ai.core.errors import ToolArgumentError, ToolExecutionError
 from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.filesystem.common import read_text_file, sha256_bytes
+from code_ai.tools.locations import LOCATION_SCHEMA, for_context
 from code_ai.tools.output import bound_text
 from code_ai.tools.schema import tool_schema
 
@@ -31,8 +32,12 @@ class EditCodeTool:
         {
             "path": {
                 "type": "string",
-                "description": "Workspace-relative path of the file to edit. Must already exist.",
+                "description": (
+                    "Path of the file to edit, relative to the chosen location. Must "
+                    "already exist."
+                ),
             },
+            "location": LOCATION_SCHEMA,
             # Declared before the two halves of the edit on purpose: arguments
             # stream in the order they are declared, so putting the
             # justification first means the user reads why the edit is being
@@ -63,7 +68,8 @@ class EditCodeTool:
         if not path_value:
             raise ToolArgumentError("path is required.")
 
-        path = context.workspace.resolve(path_value, must_exist=True)
+        location = for_context(context, arguments.get("location"))
+        path = location.resolve(path_value, must_exist=True)
         original, old_hash = read_text_file(path)
         replacements = self._build_replacements(original, edits)
         edited = self._apply(original, replacements)
@@ -94,7 +100,8 @@ class EditCodeTool:
             raise
 
         return {
-            "path": str(path.relative_to(context.workspace.root)),
+            "path": location.relative(path),
+            "location": location.location.value,
             "old_sha256": old_hash,
             "new_sha256": sha256_bytes(data),
             "changed": original != edited,

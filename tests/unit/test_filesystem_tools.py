@@ -48,9 +48,9 @@ async def test_write_read_and_edit_code_use_minimal_schema(tmp_path) -> None:
     read = ReadFileTool()
     edit = EditCodeTool()
 
-    assert set(write.input_schema["properties"]) == {"path", "content", "reason"}
+    assert set(write.input_schema["properties"]) == {"path", "content", "reason", "location"}
     # strict-mode requires every declared property (even nullable ones) in "required".
-    assert set(write.input_schema["required"]) == {"path", "content", "reason"}
+    assert set(write.input_schema["required"]) == {"path", "content", "reason", "location"}
     # No hash/occurrence guards exposed: strict mode would force the model to
     # emit them every call, and a stale value aborts otherwise-valid edits.
     assert set(edit.input_schema["properties"]) == {
@@ -58,6 +58,7 @@ async def test_write_read_and_edit_code_use_minimal_schema(tmp_path) -> None:
         "old_text",
         "new_text",
         "reason",
+        "location",
     }
     assert "expected_sha256" not in edit.input_schema["properties"]
     assert "expected_occurrences" not in edit.input_schema["properties"]

@@ -6,6 +6,7 @@ from typing import Any
 
 from code_ai.core.errors import ToolArgumentError
 from code_ai.tools.base import ToolCapability, ToolContext
+from code_ai.tools.locations import LOCATION_SCHEMA, for_context
 from code_ai.tools.schema import tool_schema
 
 DEFAULT_EXCLUDES = {
@@ -31,19 +32,27 @@ DEFAULT_EXCLUDES = {
 
 class ListFilesTool:
     name = "list_files"
-    description = "List bounded workspace files and directories with deterministic ordering."
+    description = (
+        "List bounded files and directories with deterministic ordering. Lists the "
+        "workspace by default; pass location 'sandbox' to inspect what this session "
+        "built or captured."
+    )
     capabilities = frozenset({ToolCapability.LOCAL_READ})
     input_schema = tool_schema(
         {
             "path": {
                 "type": "string",
-                "description": "Workspace-relative directory to list. Defaults to the root.",
+                "description": (
+                    "Directory to list, relative to the chosen location. Defaults to its root."
+                ),
             },
+            "location": LOCATION_SCHEMA,
         },
     )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-        root = context.workspace.resolve(str(arguments.get("path") or "."), must_exist=True)
+        location = for_context(context, arguments.get("location"))
+        root = location.resolve(str(arguments.get("path") or "."), must_exist=True)
         if not root.is_dir():
             raise ToolArgumentError("path must be a directory.")
         max_depth = max(0, min(20, int(arguments.get("max_depth") or 2)))
@@ -71,7 +80,7 @@ class ListFilesTool:
                 if len(entries) >= max_entries:
                     truncated = True
                     return
-                relative = child.relative_to(context.workspace.root).as_posix()
+                relative = child.relative_to(location.root).as_posix()
                 if _should_skip(
                     child,
                     relative=relative,
@@ -82,7 +91,7 @@ class ListFilesTool:
                 ):
                     skipped_count += 1
                     continue
-                if child.is_symlink() and not _symlink_stays_inside(child, context.workspace.root):
+                if child.is_symlink() and not _symlink_stays_inside(child, location.root):
                     skipped_count += 1
                     continue
                 entry = _entry(child, relative=relative, include_size=include_sizes)
@@ -92,8 +101,8 @@ class ListFilesTool:
 
         walk(root, 0)
         return {
-            "path": root.relative_to(context.workspace.root).as_posix()
-            if root != context.workspace.root
+            "path": root.relative_to(location.root).as_posix()
+            if root != location.root
             else ".",
             "max_depth": max_depth,
             "max_entries": max_entries,

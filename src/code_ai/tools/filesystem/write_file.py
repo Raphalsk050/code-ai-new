@@ -7,21 +7,25 @@ from typing import Any
 from code_ai.core.errors import ToolArgumentError, ToolExecutionError
 from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.filesystem.common import sha256_bytes, sha256_file
+from code_ai.tools.locations import LOCATION_SCHEMA, for_context
 from code_ai.tools.schema import tool_schema
 
 
 class WriteFileTool:
     name = "write_file"
     description = (
-        "Atomically write a UTF-8 text file inside the workspace with optional hash guards."
+        "Atomically write a UTF-8 text file with optional hash guards. Writes into the "
+        "workspace by default; pass location 'sandbox' for anything the project should "
+        "not keep - generated scripts, throwaway experiments, scratch data."
     )
     capabilities = frozenset({ToolCapability.LOCAL_WRITE})
     input_schema = tool_schema(
         {
             "path": {
                 "type": "string",
-                "description": "Workspace-relative path of the file to write.",
+                "description": "Path of the file to write, relative to the chosen location.",
             },
+            "location": LOCATION_SCHEMA,
             # Declared before the contents on purpose: arguments stream in the
             # order they are declared, so putting the justification first means
             # the user reads why the file is being written while it is still
@@ -48,7 +52,8 @@ class WriteFileTool:
         if not path_value:
             raise ToolArgumentError("path is required.")
         content = str(arguments.get("content", ""))
-        path = context.workspace.resolve(path_value, must_exist=False)
+        location = for_context(context, arguments.get("location"))
+        path = location.resolve(path_value, must_exist=False)
         expected_new = bool(arguments.get("expected_new_file", False))
         expected_hash = arguments.get("expected_sha256")
         create_dirs = bool(arguments.get("create_dirs", True))
@@ -83,7 +88,8 @@ class WriteFileTool:
             raise
 
         return {
-            "path": str(path.relative_to(context.workspace.root)),
+            "path": location.relative(path),
+            "location": location.location.value,
             "old_sha256": old_hash,
             "new_sha256": sha256_bytes(data),
             "bytes_written": len(data),
