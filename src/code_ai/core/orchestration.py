@@ -408,6 +408,7 @@ class AgentOrchestrator:
             build_system_prompt(
                 workspace=self.config.workspace,
                 language=self.config.language,
+                sandbox_root=self._sandbox_root(),
                 lessons=lessons,
                 memories=memories,
                 rules=rules,
@@ -415,6 +416,17 @@ class AgentOrchestrator:
                 workflows=workflows,
             )
         )
+
+    def _sandbox_root(self) -> str:
+        """Where this session's scratch root lives, for the prompt framing.
+
+        Read through the tool-context factory rather than kept as state: the
+        orchestrator does not own the sandbox, and the factory is already the
+        one place that knows what the tools will be handed.
+        """
+
+        sandbox = getattr(self.tool_context_factory(None), "sandbox", None)
+        return str(sandbox.root) if sandbox is not None else ""
 
     def _install_system_prompt(self, content: str) -> None:
         """Put the rebuilt prompt at index 0, replacing a system message there.

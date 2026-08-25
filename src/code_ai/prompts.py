@@ -25,10 +25,38 @@ ARCHITECTURE_PRINCIPLES = (
 )
 
 
+def build_sandbox_section(sandbox_root: str) -> str:
+    """The paragraph telling the model where it may build and scribble.
+
+    Empty when the session has no sandbox, so a configuration that disables it
+    never promises the model a place that does not exist.
+    """
+
+    if not sandbox_root.strip():
+        return ""
+    return f"""
+There are two places to work in. The configured workspace is the user's project
+and is where real source changes belong. This session also has an isolated
+sandbox at {sandbox_root.strip()} for everything the project should not keep:
+scripts you generate to try something out, throwaway experiments, scratch data,
+and the captured output of every command you run. The file and command tools
+take a "location" argument - omit it to act on the project, pass "sandbox" to
+act on the scratch area. When you want to run something rather than change the
+project, write it in the sandbox and run it there.
+
+You do not have to route the project's own builds and tests through the sandbox
+to keep the tree clean: what a toolchain writes on its own - caches, temp files,
+build directories - is already redirected there, so run them from the project as
+usual. Every command's full output is saved in the sandbox and the tool result
+names the file, so read that file when the returned excerpt was cut short.
+"""
+
+
 def build_system_prompt(
     *,
     workspace: Path,
     language: str,
+    sandbox_root: str = "",
     lessons: str = "",
     memories: str = "",
     rules: str = "",
@@ -36,6 +64,7 @@ def build_system_prompt(
     workflows: str = "",
 ) -> str:
     current_date = datetime.now().astimezone().date().isoformat()
+    sandbox_section = build_sandbox_section(sandbox_root)
     memories_section = f"\n\n{memories.strip()}\n" if memories.strip() else ""
     lessons_section = f"\n\n{lessons.strip()}\n" if lessons.strip() else ""
     # The skill catalog is injected (like rules) so the model always sees which
@@ -55,7 +84,8 @@ Configured response language: {language}
 Current local date: {current_date}
 {rules_section}
 Follow the user's instructions, use tools when they are needed, keep all file and
-command operations inside the configured workspace.
+command operations inside the configured workspace or this session's sandbox.
+{sandbox_section}
 
 For workspace tasks, local files are the source of truth. Inspect the workspace
 before proposing changes, search/read local code before using web_search, and
@@ -281,6 +311,7 @@ def build_subagent_system_prompt(
     role_prompt: str,
     workspace: Path,
     language: str,
+    sandbox_root: str = "",
     rules: str = "",
     skills: str = "",
 ) -> str:
@@ -294,6 +325,7 @@ def build_subagent_system_prompt(
     """
 
     current_date = datetime.now().astimezone().date().isoformat()
+    sandbox_section = build_sandbox_section(sandbox_root)
     rules_section = f"\n{rules.strip()}\n" if rules.strip() else ""
     skills_section = f"\n{skills.strip()}\n" if skills.strip() else ""
     return f"""{role_prompt.strip()}
@@ -306,10 +338,10 @@ back to the agent that dispatched you, so make it self-contained.
 Configured workspace: {workspace}
 Configured response language: {language}
 Current local date: {current_date}
-{rules_section}{skills_section}
-Keep all file and command operations inside the configured workspace. Local
-files are the source of truth: inspect before you act and follow existing
-project conventions. When a task needs file changes, action means calling the
+{rules_section}{skills_section}{sandbox_section}
+Keep all file and command operations inside the configured workspace or this
+session's sandbox. Local files are the source of truth: inspect before you act
+and follow existing project conventions. When a task needs file changes, action means calling the
 tools - never substitute a code block or explanation for a real edit. If a skill
 in the catalog above fits this task, load it with use_skill and follow it.
 """

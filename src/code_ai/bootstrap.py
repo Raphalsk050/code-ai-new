@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,8 @@ from code_ai.prompts import build_failure_lesson_prompt, build_system_prompt
 from code_ai.providers.base import ModelProvider
 from code_ai.providers.factory import create_provider
 from code_ai.providers.models import Message, ModelRequest
+from code_ai.sandbox.reaper import SandboxReaper
+from code_ai.sandbox.session import SessionSandbox
 from code_ai.tools.agents import DispatchAgentTool
 from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.computer import (
@@ -165,6 +168,7 @@ def build_application(
     event_bus = AsyncEventBus()
     provider = provider or create_provider(config)
     workspace = WorkspacePolicy.from_path(config.workspace)
+    sandbox = _build_sandbox(config, session_id=event_bus.session_id)
     registry = build_tool_registry()
 
     active_provider = provider
@@ -269,6 +273,7 @@ def build_application(
                 content=build_system_prompt(
                     workspace=config.workspace,
                     language=config.language,
+                    sandbox_root=str(sandbox.root) if sandbox else "",
                     lessons=failure_memory.render_for_prompt(
                         limit=config.memory.lessons_render_limit
                     ),
@@ -333,6 +338,10 @@ def build_application(
         config=config,
         provider=provider,
         workspace=workspace,
+        # Shared on purpose: sub-agents work on the same task, so what one
+        # builds is what the next one inspects. Isolation here is per session,
+        # not per agent.
+        sandbox=sandbox,
         base_registry=registry,
         rules_text=rules.render_for_prompt(),
         skills_text=_skills_catalog(),
@@ -360,6 +369,7 @@ def build_application(
             config=config,
             workspace=workspace,
             event_bus=event_bus,
+            sandbox=sandbox,
             cancel_event=cancel_event,
             review_service=review_service,
             terminal_manager=terminal_manager,
@@ -401,4 +411,31 @@ def build_application(
         conversation_store=conversation_store,
         workflows=workflows,
         skill_sources=session_skill_sources,
+        sandbox=sandbox,
     )
+
+
+def _build_sandbox(config: AppConfig, *, session_id: str) -> SessionSandbox | None:
+    """Prepare this session's isolated scratch root, and reap abandoned ones.
+
+    Best effort by design: a host whose temp directory is read-only should get
+    an agent that works against the project as it always did, not one that
+    refuses to start. Tools degrade to workspace-only behaviour when this
+    returns ``None``.
+    """
+
+    if not config.sandbox.enabled:
+        return None
+    base = config.sandbox.resolved_base_dir()
+    try:
+        sandbox = SessionSandbox.create(
+            session_id=session_id,
+            workspace=config.workspace,
+            base_dir=base,
+            max_artifact_bytes=config.sandbox.max_artifact_bytes,
+        )
+    except OSError:
+        return None
+    reaper = SandboxReaper(base=base, ttl=timedelta(hours=config.sandbox.ttl_hours))
+    reaper.sweep(keep=sandbox.root)
+    return sandbox

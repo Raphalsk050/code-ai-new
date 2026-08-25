@@ -15,6 +15,7 @@ from code_ai.events.bus import AsyncEventBus
 from code_ai.prompts import build_subagent_system_prompt
 from code_ai.providers.base import ModelProvider
 from code_ai.providers.models import Message
+from code_ai.sandbox.session import SessionSandbox
 from code_ai.tools.base import ToolContext
 from code_ai.tools.registry import ToolRegistry
 from code_ai.util.paths import WorkspacePolicy
@@ -52,6 +53,7 @@ class SubagentRuntime:
         provider: ModelProvider,
         workspace: WorkspacePolicy,
         base_registry: ToolRegistry,
+        sandbox: SessionSandbox | None = None,
         rules_text: str = "",
         skills_text: str = "",
         skill_sources: Sequence[object] = (),
@@ -62,6 +64,10 @@ class SubagentRuntime:
         self._provider = provider
         self._workspace = workspace
         self._base_registry = base_registry
+        # The session's sandbox, shared with the parent: sub-agents work on the
+        # same task, so what one builds is what the next one inspects. The
+        # isolation that matters is from the user's project, not between agents.
+        self._sandbox = sandbox
         self._rules_text = rules_text
         self._skills_text = skills_text
         # The same skill directories the parent searches, so a sub-agent that acts
@@ -82,6 +88,7 @@ class SubagentRuntime:
                 role_prompt=profile.role_prompt,
                 workspace=child_config.workspace,
                 language=child_config.language,
+                sandbox_root=str(self._sandbox.root) if self._sandbox else "",
                 rules=self._rules_text,
                 skills=self._skills_text,
             )
@@ -113,6 +120,7 @@ class SubagentRuntime:
                 config=child_config,
                 workspace=self._workspace,
                 event_bus=event_bus,
+                sandbox=self._sandbox,
                 cancel_event=cancel_event,
                 review_service=review_service,
                 skill_sources=self._skill_sources or None,

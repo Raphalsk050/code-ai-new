@@ -31,6 +31,7 @@ from code_ai.events.bus import AsyncEventBus, EventSubscriber
 from code_ai.events.models import EventEnvelope
 from code_ai.providers.base import ModelProvider
 from code_ai.providers.models import ImageContent
+from code_ai.sandbox.session import SessionSandbox
 from code_ai.tools.skills.common import SkillSource
 from code_ai.tools.terminal.manager import PersistentTerminalManager
 from code_ai.util.redaction import sanitized_environment
@@ -63,6 +64,7 @@ class CodeAIApplication:
         conversation_store: ConversationStore | None = None,
         workflows: WorkflowService | None = None,
         skill_sources: Sequence[SkillSource] = (),
+        sandbox: SessionSandbox | None = None,
     ) -> None:
         self.session = session
         self.event_bus = event_bus
@@ -71,6 +73,10 @@ class CodeAIApplication:
         self.compressor = compressor
         self.terminal_manager = terminal_manager
         self.conversation_store = conversation_store
+        # This session's isolated scratch root, owned here because the session
+        # owns its lifetime: it is removed when the app closes unless the user
+        # asked to keep it for inspection.
+        self.sandbox = sandbox
         # Saved procedures discoverable this session. Exposed on the facade
         # because clients run them by name: the TUI turns each one into a slash
         # command, and the model reaches the same records through use_workflow.
@@ -916,9 +922,25 @@ class CodeAIApplication:
             self._terminal_poll_task = None
         if self.terminal_manager:
             self.terminal_manager.close_all()
+        self._cleanup_sandbox()
         await self.provider.close()
         self.session.state = AgentState.CLOSED
         await self.event_bus.emit("session.closed", {}, source="app")
+
+    def _cleanup_sandbox(self) -> None:
+        """Discard this session's scratch root, unless it was asked to survive.
+
+        Failure here is deliberately silent: a sandbox that outlives its session
+        is reaped at the next startup by TTL, and shutdown is not the moment to
+        raise over a temp directory.
+        """
+
+        if self.sandbox is None or not self.session.config.sandbox.cleanup_on_exit:
+            return
+        try:
+            self.sandbox.cleanup()
+        except OSError:
+            pass
 
 
 ApplicationEventHandler = Callable[[EventEnvelope], Awaitable[None] | None]
