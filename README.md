@@ -13,6 +13,7 @@ Code-AI is a terminal-based coding agent with a small application facade, typed 
 - `events`: event contracts, event bus, and JSON Lines sinks.
 - `tools`: schemas and implementations for files, commands, terminals, review, system info, and web search.
 - `interop`: adapters that map other agents' on-disk conventions (rules, skills, workflows) onto Code-AI sources.
+- `sandbox`: the per-session scratch root where builds, generated code, and captured run output live instead of the user's project.
 - `config`: defaults, loading, validation, and redacted display.
 
 The CLI and UI do not parse provider SDK objects or execute tools directly. Provider adapters convert SDK-specific responses into normalized internal models at the boundary.
@@ -367,7 +368,8 @@ If the vision call fails, the raw images are attached as before.
 - `create_rule`
 - `dispatch_agent`
 
-File and process tools resolve symlinks and enforce that all operations remain inside the configured workspace.
+File and process tools resolve symlinks and enforce that all operations remain inside the configured workspace or this session's sandbox.
+They take an optional `location` (`project` or `sandbox`) that says which of the two a call is addressing; omitted, it is the project.
 
 ## Steering A Running Turn
 
@@ -383,13 +385,67 @@ Automatic compression runs before the configured context limit is exhausted. Com
 
 The summary re-enters the conversation as a user turn, never as a second system message: local engines render the served model's own chat template, and mainstream templates reject a request carrying system content anywhere but the top, or carrying no user turn at all. Both raise inside the template, which the engine reports as a 400 for the whole request. When summarizing leaves the kept window without a user turn, the latest user request is restated — capped, text only — so the model keeps steering on what was actually asked. Chat requests are normalized once more at the provider boundary (one leading system message, at least one user turn), so a shape bug upstream degrades into a slightly reworded prompt instead of an unrecoverable session.
 
+## The Sandbox
+
+Working on a project should not change the project by accident.
+Every session gets an isolated scratch root - by default `<system temp dir>/python_agent_sandbox/<session id>/` - and everything a task produces incidentally goes there: generated scripts, throwaway experiments, temporary files, and the captured output of every command.
+
+The root has four areas.
+`work/` is where the agent writes and runs its own code, and is the working directory of a sandboxed command.
+`tmp/` is the temp directory every spawned process sees.
+`cache/` holds the toolchain caches redirected out of the project.
+`artifacts/` holds one directory per command run.
+A `project` symlink points back at the workspace, so a command running in the sandbox can still read the real sources.
+
+Two mechanisms keep the project clean, and they answer different needs.
+
+The first is explicit: file and command tools take a `location`, and `sandbox` puts the call in the scratch root.
+That is for code the agent writes to try something out, which has no business being in the user's tree.
+The sandbox boundary refuses any path resolving outside it, including one that tries to leave through the `project` symlink, so a failed or half-finished sandbox run cannot leave anything behind in the project.
+
+The second is automatic: every command runs with the toolchain's own scratch redirected into the sandbox, including commands working in the project.
+`__pycache__`, `.pytest_cache`, pip/mypy/ruff caches, npm and yarn caches, `CARGO_TARGET_DIR`, the Go build cache and every process's `TMPDIR` all resolve inside the sandbox.
+So the project's own tests and builds are run from the project, as usual, and still leave nothing behind.
+An explicit `env` on the tool call wins over the redirection, for a task that genuinely needs the real cache.
+Adding a language is one class in `sandbox/runtimes.py` plus one entry in its registry.
+
+Each run is also persisted as an artifact: the two streams verbatim plus a JSON summary, under `artifacts/NNNN-<command>/`.
+The tool result carries a bounded excerpt and the paths, so output too large to return is still readable by reading the file.
+Each stream is capped so a runaway build cannot fill the disk through the mechanism meant to contain it.
+
+The sandbox is removed when the session closes.
+One left behind by a crash is reaped at the next startup, once it outlives `ttl_hours` or as soon as the process that owned it is provably gone.
+Deletion requires the ownership marker Code-AI writes at the root, so an unrelated directory sharing the base is never a candidate, and the `project` symlink is unlinked before anything is removed.
+
+Configuration lives under `sandbox` in `config.json`:
+
+```json
+{
+  "sandbox": {
+    "enabled": true,
+    "base_dir": "",
+    "ttl_hours": 24,
+    "cleanup_on_exit": true,
+    "max_artifact_bytes": 2000000
+  }
+}
+```
+
+`base_dir` empty resolves to the system temp dir, or to `CODE_AI_SANDBOX_DIR` when that is set.
+Set `cleanup_on_exit` to `false` to inspect what a build produced after the session ends.
+With `enabled` set to `false`, or on a host where the root cannot be created, tools degrade to acting on the workspace only - the agent works as it did before the sandbox existed rather than refusing to start.
+
 ## Security Boundaries
 
 Code-AI does not expose complete environment dictionaries, API keys, tokens, SSH material, unrelated user files, or raw provider headers in events or logs. Command tools inherit a sanitized environment and reject workspace escapes.
 
+The sandbox is a containment boundary at the tool layer, not an OS-level one: it decides which paths a tool call may resolve and where a toolchain writes its own scratch.
+It is not a security jail - a command the user approves can still reach the filesystem through its own syscalls, exactly as it could before.
+
 ## Known Limitations
 
 - Native persistent terminal control is initially POSIX-oriented and fails clearly on unsupported platforms.
+- The sandbox's `project` symlink is skipped on Windows without developer mode; the sandbox still works, and project files are reached through the workspace tools instead.
 - Ollama and OpenAI-compatible capability support depends on the server and selected model.
 - Remote conversation state is used only when supported and falls back to local conversation state if rejected.
 - The Textual UI is intentionally compact and consumes events through view models; richer command completion can be extended without touching core orchestration.
