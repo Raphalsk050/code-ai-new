@@ -777,12 +777,18 @@ class CodeAIApplication:
         cannot freeze the goal loop.
         """
         timeout = float(self.session.config.budgets.build_tool_timeout_s)
+        env = sanitized_environment(os.environ)
+        if self.sandbox is not None:
+            # A criterion is normally the project's own test or build command,
+            # so it runs from the workspace - but its caches and temp files
+            # belong in the sandbox like any other run.
+            env.update(self.sandbox.environment(os.environ))
         process = await asyncio.create_subprocess_shell(
             command,
             cwd=str(self.session.config.workspace),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            env=sanitized_environment(os.environ),
+            env=env,
         )
         try:
             stdout, _ = await asyncio.wait_for(process.communicate(), timeout=timeout)

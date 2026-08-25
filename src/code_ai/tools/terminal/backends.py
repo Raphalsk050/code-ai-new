@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import platform
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Protocol
 
@@ -51,13 +52,22 @@ def default_shell() -> str:
 
 
 def create_pty_session(
-    *, cwd: Path, command: str | None, rows: int, cols: int
+    *,
+    cwd: Path,
+    command: str | None,
+    rows: int,
+    cols: int,
+    env: Mapping[str, str] | None = None,
 ) -> PtySession:
-    """Spawn a PTY running ``command`` (or the default shell) for this platform."""
+    """Spawn a PTY running ``command`` (or the default shell) for this platform.
+
+    ``env`` replaces the child's whole environment when given, so callers pass a
+    complete one - an interactive shell missing PATH is not a shell.
+    """
     shell = command or default_shell()
     if platform.system() == "Windows":
-        return WinptyPtySession.spawn(shell, cwd=cwd, rows=rows, cols=cols)
-    return PexpectPtySession.spawn(shell, cwd=cwd, rows=rows, cols=cols)
+        return WinptyPtySession.spawn(shell, cwd=cwd, rows=rows, cols=cols, env=env)
+    return PexpectPtySession.spawn(shell, cwd=cwd, rows=rows, cols=cols, env=env)
 
 
 class PexpectPtySession:
@@ -67,7 +77,15 @@ class PexpectPtySession:
         self._child = child
 
     @classmethod
-    def spawn(cls, command: str, *, cwd: Path, rows: int, cols: int) -> PexpectPtySession:
+    def spawn(
+        cls,
+        command: str,
+        *,
+        cwd: Path,
+        rows: int,
+        cols: int,
+        env: Mapping[str, str] | None = None,
+    ) -> PexpectPtySession:
         try:
             import pexpect  # type: ignore
         except Exception as exc:
@@ -80,6 +98,7 @@ class PexpectPtySession:
             dimensions=(rows, cols),
             encoding="utf-8",
             timeout=0,
+            env=dict(env) if env else None,
         )
         return cls(child)
 
@@ -129,7 +148,15 @@ class WinptyPtySession:
         self._proc = proc
 
     @classmethod
-    def spawn(cls, command: str, *, cwd: Path, rows: int, cols: int) -> WinptyPtySession:
+    def spawn(
+        cls,
+        command: str,
+        *,
+        cwd: Path,
+        rows: int,
+        cols: int,
+        env: Mapping[str, str] | None = None,
+    ) -> WinptyPtySession:
         try:
             from winpty import PtyProcess  # type: ignore
         except Exception as exc:
@@ -137,7 +164,12 @@ class WinptyPtySession:
                 "pywinpty is required for persistent terminals on Windows."
             ) from exc
         try:
-            proc = PtyProcess.spawn(command, cwd=str(cwd), dimensions=(rows, cols))
+            proc = PtyProcess.spawn(
+                command,
+                cwd=str(cwd),
+                dimensions=(rows, cols),
+                env=dict(env) if env else None,
+            )
         except Exception as exc:
             raise TerminalSessionError(f"Could not spawn terminal: {exc}") from exc
         return cls(proc)

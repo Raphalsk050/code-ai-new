@@ -25,7 +25,9 @@ class FakeTerminalManager:
         self.interrupted: list[str] = []
         self.terminated: list[str] = []
 
-    def create(self, *, cwd: Path, command: object = None, rows: int = 24, cols: int = 80) -> str:
+    def create(
+        self, *, cwd: Path, command: object = None, rows: int = 24, cols: int = 80, env=None
+    ) -> str:
         self.created = (cwd, command)
         return "term-1"
 

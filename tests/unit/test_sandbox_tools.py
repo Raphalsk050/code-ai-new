@@ -15,6 +15,7 @@ from code_ai.tools.base import ToolContext
 from code_ai.tools.filesystem import ListFilesTool, ReadFileTool, WriteFileTool
 from code_ai.tools.locations import ToolLocation, for_context, resolve_location
 from code_ai.tools.process import ExecuteCommandTool
+from code_ai.tools.terminal import StartTerminalTool
 from code_ai.util.paths import WorkspacePolicy
 
 
@@ -259,3 +260,52 @@ async def test_commands_work_without_a_sandbox(tmp_path) -> None:
 
     assert result["exit_code"] == 0
     assert "artifacts" not in result
+
+
+# --------------------------------------------------------------- terminals
+
+
+class RecordingTerminalManager:
+    def __init__(self) -> None:
+        self.created: dict[str, object] = {}
+
+    def create(self, *, cwd, command=None, rows: int = 24, cols: int = 80, env=None) -> str:
+        self.created = {"cwd": cwd, "command": command, "env": env}
+        return "term-1"
+
+    def read_screen(self, session_id: str, *, include_cursor: bool = True) -> dict[str, object]:
+        return {"session_id": session_id, "rows": 24, "columns": 80, "screen": ""}
+
+
+async def test_a_sandboxed_terminal_starts_in_the_sandbox(tmp_path) -> None:
+    context = make_context(tmp_path)
+    manager = RecordingTerminalManager()
+    context.terminal_manager = manager
+
+    await StartTerminalTool().execute({"location": "sandbox"}, context)
+
+    assert manager.created["cwd"] == context.sandbox.layout.work
+
+
+async def test_a_project_terminal_still_inherits_the_redirection(tmp_path) -> None:
+    context = make_context(tmp_path)
+    manager = RecordingTerminalManager()
+    context.terminal_manager = manager
+
+    await StartTerminalTool().execute({}, context)
+
+    env = manager.created["env"]
+    assert manager.created["cwd"] == context.workspace.root
+    assert env["TMPDIR"] == str(context.sandbox.layout.tmp)
+    # A shell needs its whole environment, not just the redirection.
+    assert "PATH" in env
+
+
+async def test_a_terminal_without_a_sandbox_inherits_the_parent_environment(tmp_path) -> None:
+    context = make_context(tmp_path, with_sandbox=False)
+    manager = RecordingTerminalManager()
+    context.terminal_manager = manager
+
+    await StartTerminalTool().execute({}, context)
+
+    assert manager.created["env"] is None

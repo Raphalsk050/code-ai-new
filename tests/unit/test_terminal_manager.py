@@ -46,7 +46,9 @@ class FakePtySession:
 def make_manager() -> tuple[PersistentTerminalManager, list[FakePtySession]]:
     sessions: list[FakePtySession] = []
 
-    def factory(*, cwd: Path, command: str | None, rows: int, cols: int) -> FakePtySession:
+    def factory(
+        *, cwd: Path, command: str | None, rows: int, cols: int, env=None
+    ) -> FakePtySession:
         session = FakePtySession()
         sessions.append(session)
         return session
