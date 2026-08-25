@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
@@ -52,10 +52,18 @@ class PersistentTerminalManager:
             self._pyte = pyte
 
     def create(
-        self, *, cwd: Path, command: str | None = None, rows: int = 24, cols: int = 80
+        self,
+        *,
+        cwd: Path,
+        command: str | None = None,
+        rows: int = 24,
+        cols: int = 80,
+        env: Mapping[str, str] | None = None,
     ) -> str:
         self._load()
-        child = self._session_factory(cwd=cwd, command=command, rows=rows, cols=cols)
+        child = self._session_factory(
+            cwd=cwd, command=command, rows=rows, cols=cols, env=env
+        )
         screen = self._pyte.Screen(cols, rows)
         stream = self._pyte.Stream(screen)
         session_id = str(uuid4())

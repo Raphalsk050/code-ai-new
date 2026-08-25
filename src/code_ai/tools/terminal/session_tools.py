@@ -1,22 +1,33 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from code_ai.core.errors import ToolArgumentError
 from code_ai.tools.base import ToolCapability, ToolContext
+from code_ai.tools.locations import LOCATION_SCHEMA, for_context
 from code_ai.tools.schema import tool_schema
 
 
 class StartTerminalTool:
     name = "start_terminal"
-    description = "Start one persistent terminal session inside the workspace."
+    description = (
+        "Start one persistent terminal session. Starts in the workspace by default; "
+        "pass location 'sandbox' to start it in this session's scratch area. Either "
+        "way the shell inherits the sandbox redirection, so what a toolchain writes "
+        "on its own stays out of the project."
+    )
     capabilities = frozenset({ToolCapability.INTERACTIVE_TERMINAL})
     input_schema = tool_schema(
         {
             "cwd": {
                 "type": "string",
-                "description": "Workspace-relative directory to start in. Defaults to the root.",
+                "description": (
+                    "Directory to start in, relative to the chosen location. Defaults "
+                    "to its root."
+                ),
             },
+            "location": LOCATION_SCHEMA,
             "command": {
                 "type": "string",
                 "description": "Optional command to launch instead of a plain shell.",
@@ -26,9 +37,14 @@ class StartTerminalTool:
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         manager = _terminal_manager(context)
-        cwd = context.workspace.relative_workdir(arguments.get("cwd"))
+        location = for_context(context, arguments.get("location"))
+        cwd = location.workdir(arguments.get("cwd"))
         command = arguments.get("command")
-        created = manager.create(cwd=cwd, command=command if isinstance(command, str) else None)
+        created = manager.create(
+            cwd=cwd,
+            command=command if isinstance(command, str) else None,
+            env=_terminal_env(context),
+        )
         screen = manager.read_screen(created)
         await context.event_bus.emit(
             "terminal.screen.updated", screen, source="tool.start_terminal"
@@ -147,3 +163,18 @@ def _session_id(arguments: dict[str, Any]) -> str:
     if not session_id:
         raise ToolArgumentError("session_id is required.")
     return session_id
+
+
+def _terminal_env(context: ToolContext) -> dict[str, str] | None:
+    """Full environment for an interactive shell, with the sandbox redirection on top.
+
+    The whole inherited environment is passed rather than a filtered one: an
+    interactive shell without PATH, HOME or TERM is unusable, and the point
+    here is to redirect where a toolchain scribbles, not to strip the session
+    down. ``None`` when there is no sandbox, which leaves the child inheriting
+    the parent environment as before.
+    """
+
+    if context.sandbox is None:
+        return None
+    return {**os.environ, **context.sandbox.environment(os.environ)}
