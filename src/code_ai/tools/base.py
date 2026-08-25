@@ -8,6 +8,7 @@ from typing import Any, Protocol
 from code_ai.config.models import AppConfig
 from code_ai.events.bus import AsyncEventBus
 from code_ai.providers.models import ToolDefinition
+from code_ai.sandbox.session import SessionSandbox
 from code_ai.util.paths import WorkspacePolicy
 
 
@@ -31,6 +32,11 @@ class ToolContext:
     config: AppConfig
     workspace: WorkspacePolicy
     event_bus: AsyncEventBus
+    # This session's isolated scratch root. Everything a task produces
+    # incidentally - build output, generated scripts, temp files, captured
+    # logs - belongs here rather than in the user's tree. ``None`` when the
+    # sandbox is disabled, which degrades tools to workspace-only behaviour.
+    sandbox: SessionSandbox | None = None
     cancel_event: asyncio.Event | None = None
     review_service: Any = None
     terminal_manager: Any = None
