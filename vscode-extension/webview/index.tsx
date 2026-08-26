@@ -8,17 +8,20 @@ import type {
   EventEnvelope,
   HostToWebview,
   PermissionMode,
+  ServerConversation,
   Settings,
   WebviewToHost,
 } from "../src/protocol";
 import { ApprovalModal } from "./approval";
 import { CommandMenu } from "./command-menu";
 import { exactCommand, matchCommands, SlashCommand } from "./commands";
+import { ExplainPanel, ExplainViewState, INITIAL_EXPLAIN } from "./explain";
 import { HomeScreen } from "./home";
 import {
   DEFAULT_PREFS,
   EMPTY_PERSISTED,
   ExtPrefs,
+  mergeHistory,
   newId,
   PersistedState,
   removeConversation,
@@ -26,20 +29,20 @@ import {
 } from "./history";
 import {
   IconBack,
-  IconBook,
   IconBroom,
   IconCI,
   IconFile,
   IconPlus,
+  IconRefresh,
   IconSend,
   IconSettings,
   IconStop,
 } from "./icons";
 import { formatElapsed, ItemView, TypingIndicator } from "./messages";
 import { ModeSwitch } from "./mode-switch";
-import { applyEvent, initialState, isBusy, Item, ViewState } from "./reducer";
+import { applyEvent, initialState, isBusy, Item, messagesToItems, ViewState, workingLabel } from "./reducer";
 import { INITIAL_REFACTOR, RefactorPanel, RefactorViewState } from "./refactor";
-import { SettingsScreen } from "./settings";
+import { ModelsState, SettingsScreen } from "./settings";
 import { STYLE } from "./styles";
 
 declare function acquireVsCodeApi(): {
@@ -79,7 +82,10 @@ function App(): JSX.Element {
   const [returnScreen, setReturnScreen] = React.useState<Screen>("home");
   const [activeId, setActiveId] = React.useState<string | null>(null);
   const [settings, setSettings] = React.useState<Settings | null>(null);
+  const [models, setModels] = React.useState<ModelsState>({ status: "idle", list: [] });
+  const [serverConvos, setServerConvos] = React.useState<ServerConversation[]>([]);
   const [refactor, setRefactor] = React.useState<RefactorViewState>(INITIAL_REFACTOR);
+  const [explain, setExplain] = React.useState<ExplainViewState>(INITIAL_EXPLAIN);
 
   const [draft, setDraft] = React.useState("");
   const [editorContext, setEditorContext] = React.useState<EditorContext | null>(null);
@@ -90,6 +96,9 @@ function App(): JSX.Element {
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
   const pinnedRef = React.useRef(true);
+  // Id of a conversation opened without a local transcript cache: when the
+  // bridge answers with its stored messages we rebuild the transcript from them.
+  const pendingReconstructRef = React.useRef<string | null>(null);
 
   const prefs: ExtPrefs = persisted.prefs ?? DEFAULT_PREFS;
   const mode = prefs.mode;
@@ -107,6 +116,19 @@ function App(): JSX.Element {
         setSettings(data.settings);
       } else if (data?.type === "settingsUpdated") {
         setSettings(data.result.settings);
+      } else if (data?.type === "modelsListed") {
+        setModels({ status: "ready", list: data.models });
+      } else if (data?.type === "modelsError") {
+        setModels((m) => ({ ...m, status: "error", error: data.message }));
+      } else if (data?.type === "conversationsList") {
+        setServerConvos(data.conversations);
+      } else if (data?.type === "conversationLoaded") {
+        // Only rebuild the transcript when we opened a conversation that had no
+        // local cache; otherwise keep the richer client-side items.
+        if (pendingReconstructRef.current === data.id) {
+          pendingReconstructRef.current = null;
+          dispatch(clientEvent("client.load", { items: messagesToItems(data.messages) }));
+        }
       } else if (data?.type === "refactorStatus") {
         if (data.status === "analyzing") setRefactor((r) => ({ ...r, status: "analyzing", error: undefined }));
       } else if (data?.type === "refactorResult") {
@@ -128,6 +150,14 @@ function App(): JSX.Element {
           planning: { ...r.planning, [data.id]: false },
           planned: { ...r.planned, [data.id]: data.markdown },
         }));
+      } else if (data?.type === "explainStatus") {
+        // A new selection is being analyzed: drop the previous explanation so
+        // the panel never shows a stale result for a different range.
+        setExplain({ status: "analyzing", target: data.target });
+      } else if (data?.type === "explainResult") {
+        setExplain({ status: "ready", markdown: data.markdown, target: data.target });
+      } else if (data?.type === "explainError") {
+        setExplain((e) => ({ ...e, status: "error", error: data.message }));
       }
     };
     window.addEventListener("message", onMessage);
@@ -140,6 +170,14 @@ function App(): JSX.Element {
     send({ type: "setMode", mode: prefs.mode, autoRunRefactor: prefs.autoRunRefactor });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Refresh the durable conversation list from the bridge whenever we land on
+  // the home screen. Re-runs when the session first reaches READY so the list
+  // populates even though the bridge is still spawning on initial mount.
+  React.useEffect(() => {
+    if (screen === "home") send({ type: "listConversations" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen, state.status]);
 
   // -- persist the active transcript to local history ----------------------
   React.useEffect(() => {
@@ -192,9 +230,12 @@ function App(): JSX.Element {
 
   // -- conversation lifecycle ---------------------------------------------
   const startNewConversation = () => {
-    setActiveId(newId());
+    const id = newId();
+    setActiveId(id);
     dispatch(clientEvent("conversation.reset"));
-    send({ type: "newConversation" });
+    // Tag the bridge's fresh thread with this id so the turns it accrues are
+    // saved under it and can be resumed later.
+    send({ type: "newConversation", id });
     setDraft("");
     updatePrefs({ mode: "agent" });
     setScreen("chat");
@@ -202,14 +243,22 @@ function App(): JSX.Element {
 
   const openConversation = (id: string) => {
     const convo = persisted.conversations.find((c) => c.id === id);
+    const cached = (convo?.items ?? []) as Item[];
     setActiveId(id);
-    dispatch(clientEvent("client.load", { items: (convo?.items ?? []) as Item[] }));
+    dispatch(clientEvent("client.load", { items: cached }));
+    // Restore the model's context on the bridge so the thread can be continued.
+    // If we have no local transcript, ask the bridge to send its stored messages
+    // back so we can rebuild the view.
+    pendingReconstructRef.current = cached.length === 0 ? id : null;
+    send({ type: "loadConversation", id });
     updatePrefs({ mode: "agent" });
     setScreen("chat");
   };
 
   const deleteConversation = (id: string) => {
     persistState(removeConversation(persisted, id));
+    setServerConvos((list) => list.filter((c) => c.id !== id));
+    send({ type: "deleteConversation", id });
     if (id === activeId) setActiveId(null);
   };
 
@@ -316,9 +365,15 @@ function App(): JSX.Element {
         <SettingsScreen
           settings={settings}
           prefs={prefs}
+          models={models}
           onBack={() => setScreen(returnScreen)}
           onSave={(updates) => send({ type: "updateSettings", updates })}
           onPrefsChange={updatePrefs}
+          onRestart={() => send({ type: "restartBridge" })}
+          onListModels={() => {
+            setModels((m) => ({ ...m, status: "loading", error: undefined }));
+            send({ type: "listModels" });
+          }}
         />
       </div>
     );
@@ -328,7 +383,7 @@ function App(): JSX.Element {
     return (
       <div className="app">
         <HomeScreen
-          conversations={persisted.conversations}
+          entries={mergeHistory(persisted.conversations, serverConvos)}
           onNew={startNewConversation}
           onOpen={openConversation}
           onDelete={deleteConversation}
@@ -356,7 +411,9 @@ function App(): JSX.Element {
           Code-AI
           {busy && (
             <span className="heartbeat" title="The agent is working — this ticks while the process is alive">
-              working {formatElapsed(state.heartbeat)}
+              <span className="spinner heartbeat-spin" />
+              {workingLabel(state.status)}
+              <span className="heartbeat-clock">{formatElapsed(state.heartbeat)}</span>
             </span>
           )}
         </div>
@@ -373,6 +430,13 @@ function App(): JSX.Element {
             </button>
             <button className="icon-btn" title="New conversation" onClick={startNewConversation}>
               <IconPlus size={16} />
+            </button>
+            <button
+              className="icon-btn"
+              title="Restart Code-AI (reload settings without reloading the window)"
+              onClick={() => send({ type: "restartBridge" })}
+            >
+              <IconRefresh size={15} />
             </button>
             <button className="icon-btn" title="Settings" onClick={openSettings}>
               <IconSettings size={16} />
@@ -410,14 +474,7 @@ function App(): JSX.Element {
           onApply={applyRefactor}
         />
       ) : (
-        <ModeHint
-          icon={<IconBook size={26} />}
-          title="Explain mode"
-          lines={[
-            "Select code in the editor, then hover over it to see a detailed explanation.",
-            "The explanation appears inline, like a language-server hover.",
-          ]}
-        />
+        <ExplainPanel state={explain} />
       )}
 
       {mode === "agent" && (
@@ -499,22 +556,6 @@ function AgentBody({
       </div>
       {state.pendingApproval && <ApprovalModal approval={state.pendingApproval} onResolve={resolveApproval} />}
     </>
-  );
-}
-
-function ModeHint({ icon, title, lines }: { icon: JSX.Element; title: string; lines: string[] }): JSX.Element {
-  return (
-    <div className="transcript">
-      <div className="mode-hint">
-        <div className="spark">{icon}</div>
-        <h2>{title}</h2>
-        {lines.map((l, i) => (
-          <div key={i} className="mode-hint-line">
-            {l}
-          </div>
-        ))}
-      </div>
-    </div>
   );
 }
 

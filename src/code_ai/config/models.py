@@ -7,9 +7,14 @@ from urllib.parse import urlparse
 
 from code_ai.config.defaults import (
     DEFAULT_BUDGETS,
+    DEFAULT_FILE_IO,
+    DEFAULT_GOAL,
+    DEFAULT_MEMORY,
     DEFAULT_PLANNER,
     DEFAULT_SAMPLING,
+    DEFAULT_SANDBOX,
     PLACEHOLDER_API_KEY,
+    default_sandbox_base_dir,
 )
 from code_ai.core.errors import ConfigurationError
 from code_ai.util.redaction import redact_mapping
@@ -58,6 +63,14 @@ class BudgetConfig:
     max_turn_wall_time_s: int = DEFAULT_BUDGETS["max_turn_wall_time_s"]
     subagent_explorer_timeout_s: int = DEFAULT_BUDGETS["subagent_explorer_timeout_s"]
     subagent_worker_timeout_s: int = DEFAULT_BUDGETS["subagent_worker_timeout_s"]
+    max_subagent_depth: int = DEFAULT_BUDGETS["max_subagent_depth"]
+    max_concurrent_subagents: int = DEFAULT_BUDGETS["max_concurrent_subagents"]
+    max_subagents_per_turn: int = DEFAULT_BUDGETS["max_subagents_per_turn"]
+    subagent_retry_max_attempts: int = DEFAULT_BUDGETS["subagent_retry_max_attempts"]
+    subagent_circuit_failure_threshold: int = DEFAULT_BUDGETS[
+        "subagent_circuit_failure_threshold"
+    ]
+    subagent_circuit_reset_s: int = DEFAULT_BUDGETS["subagent_circuit_reset_s"]
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any] | None) -> BudgetConfig:
@@ -93,11 +106,15 @@ class PlannerConfig:
         DEFAULT_PLANNER["require_verification_for_changes"]
     )
     double_check_completion: bool = bool(DEFAULT_PLANNER["double_check_completion"])
+    require_review_for_risky_changes: bool = bool(
+        DEFAULT_PLANNER["require_review_for_risky_changes"]
+    )
     max_plan_steps: int = int(DEFAULT_PLANNER["max_plan_steps"])
     max_discovery_rounds: int = int(DEFAULT_PLANNER["max_discovery_rounds"])
     max_replans: int = int(DEFAULT_PLANNER["max_replans"])
     max_step_attempts: int = int(DEFAULT_PLANNER["max_step_attempts"])
     max_no_progress_rounds: int = int(DEFAULT_PLANNER["max_no_progress_rounds"])
+    max_completion_rejections: int = int(DEFAULT_PLANNER["max_completion_rejections"])
     persist_plan: bool = bool(DEFAULT_PLANNER["persist_plan"])
 
     @classmethod
@@ -115,11 +132,15 @@ class PlannerConfig:
                 values["require_verification_for_changes"]
             ),
             double_check_completion=bool(values["double_check_completion"]),
+            require_review_for_risky_changes=bool(
+                values["require_review_for_risky_changes"]
+            ),
             max_plan_steps=int(values["max_plan_steps"]),
             max_discovery_rounds=int(values["max_discovery_rounds"]),
             max_replans=int(values["max_replans"]),
             max_step_attempts=int(values["max_step_attempts"]),
             max_no_progress_rounds=int(values["max_no_progress_rounds"]),
+            max_completion_rejections=int(values["max_completion_rejections"]),
             persist_plan=bool(values["persist_plan"]),
         )
 
@@ -150,6 +171,177 @@ class PlannerConfig:
             raise ConfigurationError("max_plan_steps must be 100 or lower.")
         if self.max_no_progress_rounds > 20:
             raise ConfigurationError("max_no_progress_rounds must be 20 or lower.")
+
+
+@dataclass(slots=True)
+class MemoryConfig:
+    """Learning-loop knobs: post-turn reflection, consolidation, rendering.
+
+    All passes are best-effort and bounded — disabling any of them degrades to
+    the previous behavior (model-initiated ``remember`` calls plus failure
+    lessons) without breaking a session.
+    """
+
+    reflection_enabled: bool = bool(DEFAULT_MEMORY["reflection_enabled"])
+    reflection_min_tool_calls: int = int(DEFAULT_MEMORY["reflection_min_tool_calls"])
+    reflection_max_output_tokens: int = int(DEFAULT_MEMORY["reflection_max_output_tokens"])
+    consolidation_enabled: bool = bool(DEFAULT_MEMORY["consolidation_enabled"])
+    consolidation_min_new: int = int(DEFAULT_MEMORY["consolidation_min_new"])
+    render_limit_per_kind: int = int(DEFAULT_MEMORY["render_limit_per_kind"])
+    lessons_render_limit: int = int(DEFAULT_MEMORY["lessons_render_limit"])
+    lesson_pin_count: int = int(DEFAULT_MEMORY["lesson_pin_count"])
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any] | None) -> MemoryConfig:
+        values = dict(DEFAULT_MEMORY)
+        if data:
+            values.update(data)
+        return cls(
+            reflection_enabled=bool(values["reflection_enabled"]),
+            reflection_min_tool_calls=int(values["reflection_min_tool_calls"]),
+            reflection_max_output_tokens=int(values["reflection_max_output_tokens"]),
+            consolidation_enabled=bool(values["consolidation_enabled"]),
+            consolidation_min_new=int(values["consolidation_min_new"]),
+            render_limit_per_kind=int(values["render_limit_per_kind"]),
+            lessons_render_limit=int(values["lessons_render_limit"]),
+            lesson_pin_count=int(values["lesson_pin_count"]),
+        )
+
+    def validate(self) -> None:
+        positives = {
+            "reflection_max_output_tokens": self.reflection_max_output_tokens,
+            "consolidation_min_new": self.consolidation_min_new,
+            "render_limit_per_kind": self.render_limit_per_kind,
+            "lessons_render_limit": self.lessons_render_limit,
+            "lesson_pin_count": self.lesson_pin_count,
+        }
+        for key, value in positives.items():
+            if value <= 0:
+                raise ConfigurationError(f"Memory value {key} must be positive.")
+        if self.reflection_min_tool_calls < 0:
+            raise ConfigurationError(
+                "reflection_min_tool_calls must be zero or positive."
+            )
+
+
+@dataclass(slots=True)
+class FileIOConfig:
+    """How hard to try when the filesystem says "not right now".
+
+    Written for Windows, where a file operation can fail because some other
+    process happens to have the file open - an antivirus scanning it, a search
+    indexer reading it, a sync client uploading it, an encryption agent
+    rewriting it. None of those are real errors; they are timing. Raise
+    ``retry_attempts`` on a host where the interference is heavy.
+    """
+
+    retry_attempts: int = int(DEFAULT_FILE_IO["retry_attempts"])
+    retry_initial_delay_ms: int = int(DEFAULT_FILE_IO["retry_initial_delay_ms"])
+    retry_max_delay_ms: int = int(DEFAULT_FILE_IO["retry_max_delay_ms"])
+    allow_non_atomic_fallback: bool = bool(DEFAULT_FILE_IO["allow_non_atomic_fallback"])
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any] | None) -> FileIOConfig:
+        values = dict(DEFAULT_FILE_IO)
+        if data:
+            values.update(data)
+        return cls(
+            retry_attempts=int(values["retry_attempts"]),
+            retry_initial_delay_ms=int(values["retry_initial_delay_ms"]),
+            retry_max_delay_ms=int(values["retry_max_delay_ms"]),
+            allow_non_atomic_fallback=bool(values["allow_non_atomic_fallback"]),
+        )
+
+    def validate(self) -> None:
+        if self.retry_attempts < 1:
+            raise ConfigurationError("file_io retry_attempts must be at least 1.")
+        if self.retry_initial_delay_ms < 0:
+            raise ConfigurationError("file_io retry_initial_delay_ms must be zero or positive.")
+        if self.retry_max_delay_ms < self.retry_initial_delay_ms:
+            raise ConfigurationError(
+                "file_io retry_max_delay_ms must be at least retry_initial_delay_ms."
+            )
+
+
+@dataclass(slots=True)
+class SandboxConfig:
+    """Where the agent is allowed to build, run and scribble.
+
+    The sandbox is an isolated directory per session that absorbs every
+    byproduct of working on a project - build outputs, generated scripts,
+    temporary files, captured test logs - so the user's tree only ever changes
+    through a deliberate source edit. Disabling it degrades to the previous
+    behaviour rather than blocking: tools keep working against the workspace.
+    """
+
+    enabled: bool = bool(DEFAULT_SANDBOX["enabled"])
+    base_dir: str = str(DEFAULT_SANDBOX["base_dir"])
+    ttl_hours: int = int(DEFAULT_SANDBOX["ttl_hours"])
+    cleanup_on_exit: bool = bool(DEFAULT_SANDBOX["cleanup_on_exit"])
+    max_artifact_bytes: int = int(DEFAULT_SANDBOX["max_artifact_bytes"])
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any] | None) -> SandboxConfig:
+        values = dict(DEFAULT_SANDBOX)
+        if data:
+            values.update(data)
+        return cls(
+            enabled=bool(values["enabled"]),
+            base_dir=str(values["base_dir"] or ""),
+            ttl_hours=int(values["ttl_hours"]),
+            cleanup_on_exit=bool(values["cleanup_on_exit"]),
+            max_artifact_bytes=int(values["max_artifact_bytes"]),
+        )
+
+    def resolved_base_dir(self) -> Path:
+        """Absolute base directory holding one sandbox per session."""
+
+        configured = self.base_dir.strip()
+        if configured:
+            return Path(configured).expanduser()
+        return default_sandbox_base_dir()
+
+    def validate(self) -> None:
+        if self.ttl_hours <= 0:
+            raise ConfigurationError("sandbox ttl_hours must be positive.")
+        if self.max_artifact_bytes <= 0:
+            raise ConfigurationError("sandbox max_artifact_bytes must be positive.")
+
+
+@dataclass(slots=True)
+class GoalConfig:
+    """Limits and behavior of the /goal persistent-objective loop."""
+
+    max_iterations: int = int(DEFAULT_GOAL["max_iterations"])
+    max_goal_minutes: int = int(DEFAULT_GOAL["max_goal_minutes"])
+    max_no_progress_iterations: int = int(DEFAULT_GOAL["max_no_progress_iterations"])
+    judge_enabled: bool = bool(DEFAULT_GOAL["judge_enabled"])
+    confirm_criteria: bool = bool(DEFAULT_GOAL["confirm_criteria"])
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any] | None) -> GoalConfig:
+        values = dict(DEFAULT_GOAL)
+        if data:
+            values.update(data)
+        return cls(
+            max_iterations=int(values["max_iterations"]),
+            max_goal_minutes=int(values["max_goal_minutes"]),
+            max_no_progress_iterations=int(values["max_no_progress_iterations"]),
+            judge_enabled=bool(values["judge_enabled"]),
+            confirm_criteria=bool(values["confirm_criteria"]),
+        )
+
+    def validate(self) -> None:
+        limits = {
+            "max_iterations": self.max_iterations,
+            "max_goal_minutes": self.max_goal_minutes,
+            "max_no_progress_iterations": self.max_no_progress_iterations,
+        }
+        for key, value in limits.items():
+            if value <= 0:
+                raise ConfigurationError(f"Goal value {key} must be positive.")
+        if self.max_iterations > 500:
+            raise ConfigurationError("goal.max_iterations must be 500 or lower.")
 
 
 def _resolve_tool_policy(data: dict[str, Any] | None) -> str:
@@ -186,7 +378,9 @@ class SamplingConfig:
     Standard fields map directly onto the OpenAI request body. ``top_k`` and
     ``min_p`` are not part of the OpenAI schema, so they are forwarded through
     ``extra_body`` for OpenAI-compatible servers (vLLM, SGLang, ...).
-    ``reasoning_effort``/``reasoning_summary`` only apply to the Responses API.
+    ``reasoning_effort`` is sent on both Chat Completions and Responses (it is
+    what enables thinking on most OpenAI-compatible local servers, not just a
+    dial for how much); ``reasoning_summary`` only applies to the Responses API.
     Any value left as ``None`` is omitted so the endpoint default applies.
     """
 
@@ -271,6 +465,16 @@ class SamplingConfig:
             kwargs["presence_penalty"] = self.presence_penalty
         if self.frequency_penalty is not None:
             kwargs["frequency_penalty"] = self.frequency_penalty
+        if self.reasoning_effort is not None:
+            # Chat Completions carries reasoning_effort as a plain field, and for
+            # several local servers it is the *only* switch that turns thinking
+            # on: Ollama's OpenAI-compatible endpoint ignores its own `think`
+            # flag here and enables reasoning solely on this parameter, then
+            # streams the result as `delta.reasoning`. Omitting it left every
+            # such model apparently thinking-free. A server that rejects the
+            # field trips the sampling-retry path and the request goes again
+            # without any sampling kwargs.
+            kwargs["reasoning_effort"] = self.reasoning_effort
         extra_body = self._extra_body_with_passthrough()
         if extra_body:
             kwargs["extra_body"] = extra_body
@@ -321,10 +525,31 @@ class AppConfig:
     base_url: str = "http://localhost:11434/v1"
     permission_mode: str = "ask"
     budgets: BudgetConfig = field(default_factory=BudgetConfig)
+    goal: GoalConfig = field(default_factory=GoalConfig)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
     planner: PlannerConfig = field(default_factory=PlannerConfig)
     sampling: SamplingConfig = field(default_factory=SamplingConfig)
+    sandbox: SandboxConfig = field(default_factory=SandboxConfig)
+    file_io: FileIOConfig = field(default_factory=FileIOConfig)
     language: str = "en"
     model: str = "gemma4:31b-cloud"
+    # Inline code hints (editor ghost text) in the VSCode extension. Off by
+    # default; ``inline_model`` overrides the model used for these completions
+    # (empty falls back to ``model``) so a small/fast model can drive hints while
+    # the agent uses a stronger one.
+    inline_hints_enabled: bool = False
+    inline_model: str = ""
+    # Vision sidekick for non-multimodal main models. When set, images pasted
+    # into a prompt are described by this model in a one-off call and the
+    # description is injected into the conversation instead of the raw pixels,
+    # so the main model never receives image payloads it cannot read. Empty
+    # sends images straight to the main model (multimodal setups).
+    vision_model: str = ""
+    # Hard cap on images carried by a single model request. 0 leaves it to the
+    # endpoint, which is the common case: a server that only takes one image per
+    # prompt says so when it refuses one, and the limit is learned from there.
+    # Set it when the endpoint refuses without naming a number.
+    max_images_per_request: int = 0
     debug: bool = False
     show_ui: bool = True
     ssl_verification: bool = False
@@ -339,6 +564,10 @@ class AppConfig:
     terminal_banner_font: str = "tarty2"
     terminal_spinner: str = "ascii"
     terminal_session_collapsed: bool = False
+    # Show the file being written as the model streams it. Off leaves only the
+    # one-line progress trace, for terminals where repainting a code window on
+    # every fragment is too expensive (a slow SSH link, a heavy multiplexer).
+    terminal_live_code: bool = True
     learn: bool = True
     # Directory for persistent cross-session failure memories. ``None`` resolves
     # to ``<config dir>/memories`` at startup; tests point it at a temp dir.
@@ -349,11 +578,23 @@ class AppConfig:
         budgets = BudgetConfig.from_mapping(
             data.get("budgets") if isinstance(data.get("budgets"), dict) else None
         )
+        goal = GoalConfig.from_mapping(
+            data.get("goal") if isinstance(data.get("goal"), dict) else None
+        )
+        memory_config = MemoryConfig.from_mapping(
+            data.get("memory") if isinstance(data.get("memory"), dict) else None
+        )
         planner = PlannerConfig.from_mapping(
             data.get("planner") if isinstance(data.get("planner"), dict) else None
         )
         sampling = SamplingConfig.from_mapping(
             data.get("sampling") if isinstance(data.get("sampling"), dict) else None
+        )
+        sandbox = SandboxConfig.from_mapping(
+            data.get("sandbox") if isinstance(data.get("sandbox"), dict) else None
+        )
+        file_io = FileIOConfig.from_mapping(
+            data.get("file_io") if isinstance(data.get("file_io"), dict) else None
         )
         workspace = Path(str(data.get("workspace", Path.cwd()))).expanduser()
         config = cls(
@@ -362,10 +603,18 @@ class AppConfig:
             base_url=str(data.get("base_url", "http://localhost:11434/v1")),
             permission_mode=str(data.get("permission_mode", "ask")).strip().lower(),
             budgets=budgets,
+            goal=goal,
+            memory=memory_config,
             planner=planner,
             sampling=sampling,
+            sandbox=sandbox,
+            file_io=file_io,
             language=str(data.get("language", "en")),
             model=str(data.get("model", "gemma4:31b-cloud")),
+            inline_hints_enabled=bool(data.get("inline_hints_enabled", False)),
+            inline_model=str(data.get("inline_model", "")),
+            vision_model=str(data.get("vision_model", "")),
+            max_images_per_request=int(data.get("max_images_per_request", 0) or 0),
             debug=bool(data.get("debug", False)),
             show_ui=bool(data.get("show_ui", True)),
             ssl_verification=bool(data.get("ssl_verification", False)),
@@ -380,6 +629,7 @@ class AppConfig:
             terminal_banner_font=str(data.get("terminal_banner_font", "tarty2")),
             terminal_spinner=str(data.get("terminal_spinner", "ascii")),
             terminal_session_collapsed=bool(data.get("terminal_session_collapsed", False)),
+            terminal_live_code=bool(data.get("terminal_live_code", True)),
             learn=bool(data.get("learn", True)),
             memories_dir=(
                 str(data["memories_dir"]) if data.get("memories_dir") is not None else None
@@ -404,8 +654,12 @@ class AppConfig:
             raise ConfigurationError(f"workspace must exist and be a directory: {self.workspace}")
         self.workspace = self.workspace.resolve()
         self.budgets.validate()
+        self.goal.validate()
+        self.memory.validate()
         self.planner.validate()
         self.sampling.validate()
+        self.sandbox.validate()
+        self.file_io.validate()
         parsed = urlparse(self.base_url)
         if self.api_mode in {"responses", "completions", "ollama"} and parsed.scheme not in {
             "http",
@@ -419,6 +673,8 @@ class AppConfig:
             )
         if self.output_token_reserve <= 0:
             raise ConfigurationError("output_token_reserve must be positive.")
+        if self.max_images_per_request < 0:
+            raise ConfigurationError("max_images_per_request must be zero or positive.")
         if not self.terminal_theme.strip():
             raise ConfigurationError("terminal_theme must be non-empty.")
         if not self.terminal_banner_font.strip():

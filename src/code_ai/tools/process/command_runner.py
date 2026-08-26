@@ -11,6 +11,7 @@ from typing import Any
 from code_ai.core.errors import CancellationError, CommandTimeoutError, ToolArgumentError
 from code_ai.events.bus import AsyncEventBus
 from code_ai.tools.output import bound_text
+from code_ai.util.fileio import NO_RETRY, RetryPolicy, retry_transient_async
 from code_ai.util.redaction import sanitized_environment
 
 
@@ -51,6 +52,7 @@ class CommandRunner:
         cancel_event: asyncio.Event | None,
         extra_env: dict[str, str] | None = None,
         max_output_chars: int = 12000,
+        spawn_policy: RetryPolicy = NO_RETRY,
     ) -> CommandResult:
         if (
             not isinstance(argv, list)
@@ -70,14 +72,25 @@ class CommandRunner:
 
         start = time.monotonic()
         preexec_fn = os.setsid if hasattr(os, "setsid") else None
-        process = await asyncio.create_subprocess_exec(
-            *argv,
-            cwd=str(cwd),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-            preexec_fn=preexec_fn,
-        )
+
+        async def spawn() -> asyncio.subprocess.Process:
+            return await asyncio.create_subprocess_exec(
+                *argv,
+                cwd=str(cwd),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+                preexec_fn=preexec_fn,
+            )
+
+        # A program the agent just wrote is often still being scanned by the
+        # antivirus when it is asked to run, which on Windows is a hard refusal
+        # rather than a wait. Retrying turns that into a short pause.
+        process = (
+            await retry_transient_async(
+                spawn, policy=spawn_policy, what="start", path=Path(argv[0])
+            )
+        ).value
         stdout_parts: list[str] = []
         stderr_parts: list[str] = []
 

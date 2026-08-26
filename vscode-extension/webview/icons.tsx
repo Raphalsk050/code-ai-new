@@ -141,6 +141,15 @@ export const IconBook = ({ size = 16, className }: IconProps) => (
   </svg>
 );
 
+export const IconRefresh = ({ size = 16, className }: IconProps) => (
+  <svg {...base(size)} className={className}>
+    <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+    <path d="M21 3v5h-5" />
+    <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+    <path d="M3 21v-5h5" />
+  </svg>
+);
+
 export const IconSpark = ({ size = 16, className }: IconProps) => (
   <svg {...base(size)} className={className}>
     <path d="M12 3l1.8 4.6L18.5 9l-4.7 1.4L12 15l-1.8-4.6L5.5 9l4.7-1.4z" />

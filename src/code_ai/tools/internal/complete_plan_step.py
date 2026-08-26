@@ -10,9 +10,11 @@ class CompletePlanStepTool:
     name = "complete_plan_step"
     description = (
         "Mark the current step of your submitted checklist as done and move the live "
-        "task checklist to the next step. Call this each time you actually finish one "
-        "checklist step, so the sidebar and runtime track your real progress instead "
-        "of guessing. Do not call it to skip work you have not done."
+        "task checklist to the next step. Call this the moment you actually finish a "
+        "checklist step - include it in the same tool batch as the step's final "
+        "action, so the user sees progress immediately. Never postpone marking or "
+        "save several calls for the end of the task, and do not call it to skip "
+        "work you have not done."
     )
     capabilities = frozenset({ToolCapability.INTERNAL_TRANSITION})
     input_schema = tool_schema(
@@ -20,8 +22,9 @@ class CompletePlanStepTool:
             "completed_step": {
                 "type": "string",
                 "description": (
-                    "The checklist step you just finished, for the record (e.g. "
-                    "'Implement LLM adapter'). Optional but helps keep the log clear."
+                    "The exact title of the checklist step you just finished (e.g. "
+                    "'Implement LLM adapter'). Used to sync the checklist cursor to "
+                    "that step, so always pass it."
                 ),
             },
         },

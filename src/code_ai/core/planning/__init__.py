@@ -1,3 +1,13 @@
+from code_ai.core.planning.completion import (
+    CompletionContext,
+    CompletionEvidencePolicy,
+    CompletionGate,
+    GateVerdict,
+    MinimalCompletionPolicy,
+    StandardCompletionPolicy,
+    StrictCompletionPolicy,
+    select_policy,
+)
 from code_ai.core.planning.evidence import EvidenceLedger, EvidenceRecord
 from code_ai.core.planning.models import (
     AgentPlan,
@@ -15,12 +25,21 @@ from code_ai.core.planning.models import (
     TaskProfile,
 )
 from code_ai.core.planning.policy import PlannerToolPolicy, PolicyDecision
+from code_ai.core.planning.preconditions import PreconditionGate
 from code_ai.core.planning.service import PlannerService
 
 __all__ = [
     "AgentPlan",
     "AgentPlanStep",
     "CompletionClaim",
+    "CompletionContext",
+    "CompletionEvidencePolicy",
+    "CompletionGate",
+    "GateVerdict",
+    "MinimalCompletionPolicy",
+    "StandardCompletionPolicy",
+    "StrictCompletionPolicy",
+    "select_policy",
     "EvidenceLedger",
     "EvidenceRecord",
     "EvidenceType",
@@ -34,6 +53,7 @@ __all__ = [
     "PlannerToolPolicy",
     "PlanningPhase",
     "PolicyDecision",
+    "PreconditionGate",
     "TaskIntent",
     "TaskProfile",
 ]

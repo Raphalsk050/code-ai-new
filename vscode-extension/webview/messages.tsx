@@ -11,7 +11,7 @@ import {
   IconX,
 } from "./icons";
 import { Markdown } from "./markdown";
-import type { Item, ToolStatus } from "./reducer";
+import { Item, ToolStatus, workingLabel } from "./reducer";
 
 export function ItemView({ item }: { item: Item }): JSX.Element | null {
   switch (item.kind) {
@@ -121,7 +121,7 @@ export function TypingIndicator({ status, heartbeat }: { status: string; heartbe
         <span />
         <span />
         <span />
-        <em>{status.toLowerCase().replace(/_/g, " ")}</em>
+        <em>{workingLabel(status)}</em>
         {heartbeat ? <em className="typing-clock">· {formatElapsed(heartbeat)}</em> : null}
       </div>
     </Row>

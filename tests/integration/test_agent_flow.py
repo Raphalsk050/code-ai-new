@@ -342,7 +342,10 @@ async def test_mutation_task_rejects_code_block_until_tools_verify_and_complete(
     )
     assert "Created src/example.py" in result.text
     assert "agent.corrective_prompt.injected" in events
-    assert "planning.completion.rejected" in events
+    # A low-risk, verified single-file change completes on the first
+    # complete_task: the double-check tax only applies to high-risk changes.
+    assert "planning.completion.rejected" not in events
+    assert "planning.completion.accepted" in events
     assert "assistant.final" in events
 
 
@@ -621,3 +624,375 @@ async def test_direct_greeting_answers_directly_without_forcing_agentic_flow(tmp
     assert result.text == "Olá! Como posso ajudar?"
     assert provider.requests
     assert "tool.call.requested" not in events
+
+
+class FakePlanThenBlockingQuestionProvider:
+    """Submits a checklist, then ends the turn asking the user a question."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        return ProviderCapabilities(
+            streaming=True, tool_calling=True, provider_reported_usage=False
+        )
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        if self.calls == 1:
+            yield ProviderEvent(
+                kind="completed",
+                response=ModelResponse(
+                    tool_calls=[
+                        ToolCall(
+                            id="call_plan",
+                            name="submit_plan",
+                            arguments={
+                                "steps": [
+                                    "Inspect the project files",
+                                    "Summarise what is implemented",
+                                ]
+                            },
+                        )
+                    ],
+                    finish_reason=FinishReason.TOOL_CALLS,
+                ),
+            )
+            return
+        text = "Which module should I inspect first?"
+        yield ProviderEvent(kind="text_delta", text_delta=text)
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text=text, finish_reason=FinishReason.STOP),
+        )
+
+    async def complete(self, request: ModelRequest) -> ModelResponse:
+        async for event in self.stream(request):
+            if event.response:
+                return event.response
+        return ModelResponse()
+
+    async def close(self) -> None:
+        return None
+
+
+async def test_turn_ending_in_a_question_pauses_the_checklist(tmp_path) -> None:
+    # Regression: the turn ended in waiting_user with the checklist still ACTIVE
+    # and its current step IN_PROGRESS, so the sidebar spinner ran forever while
+    # nothing was executing. Every turn exit must pause an unsettled plan.
+    config = AppConfig.from_mapping(
+        {"api_mode": "ollama", "workspace": str(tmp_path), "model": "fake"}
+    )
+    provider = FakePlanThenBlockingQuestionProvider()
+    app = build_application(config=config, provider=provider)
+    events = []
+    app.subscribe(lambda event: events.append(event))
+
+    await app.start()
+    result = await app.submit_user_message("leia o projeto e me diga o que falta")
+    await app.close()
+
+    assert "Which module" in result.text
+    planner = app.orchestrator.planner
+    assert planner is not None and planner.agent_plan is not None
+    assert planner.agent_plan.status.value == "WAITING"
+    waiting = [e for e in events if e.event_type == "planning.plan.waiting"]
+    assert waiting, "turn end must emit the paused snapshot for the sidebar"
+    assert waiting[-1].payload["status"] == "WAITING"
+    assert waiting[-1].payload["current_step"] == "Inspect the project files"
+
+
+class FakeOutsideWorkspaceEditProvider:
+    """Tries write_file on an external path, falls back to a command, completes.
+
+    Scripted by agentic step. Failure-memory reflection requests are answered
+    with plain text and consume no step - their timing is asynchronous, so
+    indexing by raw call count would make the script nondeterministic.
+    """
+
+    def __init__(self, outside_path: str) -> None:
+        self.outside_path = outside_path
+        self.agent_steps = 0
+        self.write_file_result = ""
+
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        return ProviderCapabilities(
+            streaming=True, tool_calling=True, provider_reported_usage=False
+        )
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        if any(
+            message.role == "user" and "reviewing a failure" in message.content
+            for message in request.messages
+        ):
+            yield ProviderEvent(
+                kind="completed",
+                response=ModelResponse(text="noted", finish_reason=FinishReason.STOP),
+            )
+            return
+        self.agent_steps += 1
+        for message in request.messages:
+            if message.role == "tool" and message.tool_call_id == "write_1":
+                # The boundary rejection the model saw for its write_file attempt.
+                self.write_file_result = message.content
+        completion_args = {
+            "summary": f"Created {self.outside_path} via command.",
+            "changed_paths": [self.outside_path],
+        }
+        script = {
+            1: ToolCall(
+                id="write_1",
+                name="write_file",
+                arguments={"path": self.outside_path, "content": "hello\n"},
+            ),
+            2: ToolCall(
+                id="cmd_1",
+                name="execute_command",
+                arguments={"command": f"touch {self.outside_path}"},
+            ),
+            3: ToolCall(id="done_1", name="complete_task", arguments=completion_args),
+            4: ToolCall(
+                id="done_2",
+                name="complete_task",
+                arguments={**completion_args, "double_check_acknowledged": True},
+            ),
+        }
+        call = script.get(self.agent_steps)
+        if call is not None:
+            yield ProviderEvent(
+                kind="completed",
+                response=ModelResponse(
+                    tool_calls=[call], finish_reason=FinishReason.TOOL_CALLS
+                ),
+            )
+            return
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text="done", finish_reason=FinishReason.STOP),
+        )
+
+    async def complete(self, request: ModelRequest) -> ModelResponse:
+        async for event in self.stream(request):
+            if event.response:
+                return event.response
+        return ModelResponse()
+
+    async def close(self) -> None:
+        return None
+
+
+async def test_outside_workspace_edit_completes_without_workspace_evidence(tmp_path) -> None:
+    # Regression: a mutation targeting a file outside the workspace could never
+    # satisfy the completion gate (file tools are workspace-bound and the ledger
+    # only hashes workspace files), so the model was pushed to fabricate
+    # workspace files as evidence. The boundary rejection must teach the planner
+    # the target is external, guide the model to execute_command, and command
+    # evidence must then settle the completion.
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    outside = tmp_path / "outside" / "config.txt"
+    outside.parent.mkdir()
+    config = AppConfig.from_mapping(
+        {
+            "api_mode": "ollama",
+            "workspace": str(workspace),
+            "model": "fake",
+            "permission_mode": "bypass",
+        }
+    )
+    provider = FakeOutsideWorkspaceEditProvider(str(outside))
+    app = build_application(config=config, provider=provider)
+    events = []
+    app.subscribe(lambda event: events.append(event))
+
+    await app.start()
+    result = await app.submit_user_message(
+        f"edite o arquivo {outside} e garanta que ele exista"
+    )
+    await app.close()
+
+    # The boundary error taught the model the right channel...
+    assert "outside the workspace" in provider.write_file_result
+    assert "execute_command" in provider.write_file_result
+    # ...the planner learned the external target...
+    planner = app.orchestrator.planner
+    assert str(outside) in planner.external_targets
+    # ...the command really ran and completion settled on its evidence.
+    assert outside.exists()
+    assert "planning.completion.accepted" in {e.event_type for e in events}
+    assert str(outside) in result.text
+    # No fabricated evidence files appeared inside the workspace.
+    assert list(workspace.iterdir()) == []
+
+
+class FakeBlindWriteThenReadProvider:
+    """Tries to overwrite an existing file blind, is deferred, reads, retries."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.precondition_result = ""
+
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        return ProviderCapabilities(
+            streaming=True, tool_calling=True, provider_reported_usage=False
+        )
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        if self.calls == 2:
+            for message in request.messages:
+                if message.role == "tool" and "Precondition check" in message.content:
+                    self.precondition_result = message.content
+        script: dict[int, ToolCall] = {
+            1: ToolCall(
+                id="blind_1",
+                name="write_file",
+                arguments={"path": "config.py", "content": "TIMEOUT = 60\n"},
+            ),
+            2: ToolCall(id="read_1", name="read_file", arguments={"path": "config.py"}),
+            3: ToolCall(
+                id="write_1",
+                name="write_file",
+                arguments={"path": "config.py", "content": "TIMEOUT = 60\n"},
+            ),
+        }
+        call = script.get(
+            self.calls,
+            ToolCall(
+                id=f"complete_{self.calls}",
+                name="complete_task",
+                arguments={
+                    "summary": "Updated config.py timeout.",
+                    "double_check_acknowledged": True,
+                },
+            ),
+        )
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(
+                tool_calls=[call], finish_reason=FinishReason.TOOL_CALLS
+            ),
+        )
+
+    async def complete(self, request: ModelRequest) -> ModelResponse:
+        async for event in self.stream(request):
+            if event.response:
+                return event.response
+        return ModelResponse()
+
+    async def close(self) -> None:
+        return None
+
+
+async def test_blind_overwrite_is_deferred_until_the_file_is_read(tmp_path) -> None:
+    (tmp_path / "config.py").write_text("TIMEOUT = 30\n", encoding="utf-8")
+    config = AppConfig.from_mapping(
+        {
+            "api_mode": "ollama",
+            "workspace": str(tmp_path),
+            "model": "fake",
+            "permission_mode": "bypass",
+        }
+    )
+    provider = FakeBlindWriteThenReadProvider()
+    app = build_application(config=config, provider=provider)
+    events = []
+    app.subscribe(lambda event: events.append(event.event_type))
+
+    await app.start()
+    result = await app.submit_user_message("atualize o timeout no config.py para 60")
+    await app.close()
+
+    # The blind first write was deferred with guidance, not executed...
+    assert "read_file" in provider.precondition_result
+    assert (tmp_path / "config.py").read_text(encoding="utf-8") == "TIMEOUT = 60\n"
+    # ...and the turn still completed cleanly after read + retry.
+    assert "Updated config.py timeout." in result.text
+    assert result.error is None
+
+
+class FakeAnswerViaDocumentProvider:
+    """Reads code to answer a question, then tries to write a summary document.
+
+    Reproduces the reported failure: at the end of a read-only question the
+    model manufactures an ANALYSIS.md as "completion evidence" instead of just
+    answering. The runtime must defer that write and accept the prose answer.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.artifact_result = ""
+
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        return ProviderCapabilities(
+            streaming=True, tool_calling=True, provider_reported_usage=False
+        )
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        if self.calls == 3:
+            for message in request.messages:
+                if message.role == "tool" and "Precondition check" in message.content:
+                    self.artifact_result = message.content
+        if self.calls == 1:
+            response = ModelResponse(
+                tool_calls=[
+                    ToolCall(id="read_1", name="read_file", arguments={"path": "main.py"})
+                ],
+                finish_reason=FinishReason.TOOL_CALLS,
+            )
+        elif self.calls == 2:
+            # The unnecessary artifact: writing the findings to a document.
+            response = ModelResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="doc_1",
+                        name="write_file",
+                        arguments={"path": "ANALYSIS.md", "content": "# Findings\n"},
+                    )
+                ],
+                finish_reason=FinishReason.TOOL_CALLS,
+            )
+        else:
+            text = "O projeto e um script unico em main.py que imprime uma saudacao."
+            yield ProviderEvent(kind="text_delta", text_delta=text)
+            response = ModelResponse(text=text, finish_reason=FinishReason.STOP)
+        yield ProviderEvent(kind="completed", response=response)
+
+    async def complete(self, request: ModelRequest) -> ModelResponse:
+        async for event in self.stream(request):
+            if event.response:
+                return event.response
+        return ModelResponse()
+
+    async def close(self) -> None:
+        return None
+
+
+async def test_question_is_answered_in_prose_without_creating_documents(tmp_path) -> None:
+    (tmp_path / "main.py").write_text("print('hello')\n", encoding="utf-8")
+    config = AppConfig.from_mapping(
+        {
+            "api_mode": "ollama",
+            "workspace": str(tmp_path),
+            "model": "fake",
+            "permission_mode": "bypass",
+        }
+    )
+    provider = FakeAnswerViaDocumentProvider()
+    app = build_application(config=config, provider=provider)
+
+    await app.start()
+    result = await app.submit_user_message("como funciona a base de codigo desse projeto?")
+    await app.close()
+
+    # The unrequested document write was deferred with guidance...
+    assert "chat answer" in provider.artifact_result
+    assert not (tmp_path / "ANALYSIS.md").exists()
+    # ...and the prose answer was accepted as the task's completion.
+    assert "main.py" in result.text
+    assert result.error is None

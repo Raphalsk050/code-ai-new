@@ -26,7 +26,9 @@ class FakeTerminalApplication:
     def __init__(self, tmp_path) -> None:
         self.subscribers = []
         self.submitted: list[str] = []
+        self.submitted_images: list[list[object]] = []
         self.sequence = 0
+        self.plan_snapshot: dict[str, object] = {}
         config = AppConfig.from_mapping(
             {"api_mode": "ollama", "workspace": str(tmp_path), "model": "fake-model"}
         )
@@ -35,6 +37,22 @@ class FakeTerminalApplication:
             state=AgentState.READY,
             tool_registry=SimpleNamespace(names=lambda: ["read_file"]),
         )
+        # /term drives the shared PTY through the application's manager and
+        # event bus; tests plug a fake manager in when they exercise it.
+        self.terminal_manager = None
+        # Saved workflows the TUI turns into slash commands; tests that exercise
+        # them assign a real WorkflowService before creating the app.
+        self.workflows = None
+        # Skill directories the TUI turns into slash commands; tests that
+        # exercise them assign real sources before creating the app.
+        self.skill_sources = ()
+        self.event_bus = SimpleNamespace(emit=self._emit_bus)
+
+    async def _emit_bus(self, event_type: str, payload: dict[str, object], source=None) -> None:
+        await self.emit(event_type, payload)
+
+    def get_plan_snapshot(self) -> dict[str, object]:
+        return self.plan_snapshot
 
     def subscribe(self, subscriber):
         self.subscribers.append(subscriber)
@@ -44,8 +62,9 @@ class FakeTerminalApplication:
         await self.emit("status.changed", {"state": "READY"})
         await self.emit("phase.changed", {"phase": "waiting_user"})
 
-    async def submit_user_message(self, text: str) -> TurnResult:
+    async def submit_user_message(self, text: str, *, images=None) -> TurnResult:
         self.submitted.append(text)
+        self.submitted_images.append(list(images or []))
         await self.emit("user.message", {"text": text})
         await self.emit("model.stream.delta", {"text": "ok"})
         return TurnResult(text="ok", response=None)
@@ -89,6 +108,305 @@ async def test_terminal_enter_submits_input_and_renders_events(tmp_path) -> None
         assert "ai> ok" in terminal_app.vm.conversation
 
 
+async def test_doctor_modal_navigates_menu_and_saves(tmp_path) -> None:
+    from textual.widgets import Button, Input
+
+    from code_ai.ui.terminal.doctor import DoctorModal
+
+    cfg_path = tmp_path / "config.json"
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app, config_path=cfg_path)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "/doctor"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+
+        # /doctor pushed the guided-setup modal; query within it (the top screen).
+        modal = terminal_app.screen
+        assert isinstance(modal, DoctorModal)
+
+        # The main menu lists every setup topic.
+        for step_id in ("api_mode", "base_url", "api_key", "model", "vision_model", "workspace"):
+            modal.query_one(f"#doctor-menu-{step_id}", Button)
+
+        # The model step offers list/test/save and reveals the back button.
+        await modal._set_step("model")
+        await pilot.pause(0.1)
+        modal.query_one("#doctor-input-model", Input)
+        modal.query_one("#doctor-test-model", Button)
+        modal.query_one("#doctor-list-model", Button)
+        assert modal.query_one("#doctor-back", Button).has_class("doctor-hidden") is False
+
+        # The vision-model step reuses the same list/test/save tooling and
+        # saving it persists like any other field.
+        await modal._set_step("vision_model")
+        await pilot.pause(0.1)
+        modal.query_one("#doctor-list-vision_model", Button)
+        modal.query_one("#doctor-test-vision_model", Button)
+        modal.query_one("#doctor-input-vision_model", Input).value = "qwen2.5-vl:7b"
+        await pilot.click("#doctor-save-vision_model")
+        await pilot.pause(0.1)
+        assert fake_app.session.config.vision_model == "qwen2.5-vl:7b"
+
+        # The back button (always at the top of the dialog) returns to the menu.
+        await pilot.click("#doctor-back")
+        await pilot.pause(0.1)
+        assert modal._step == "menu"
+        modal.query_one("#doctor-menu-model", Button)
+
+        # The base URL step exposes a Validate button (reachability check).
+        await modal._set_step("base_url")
+        await pilot.pause(0.1)
+        modal.query_one("#doctor-validate-base_url", Button)
+
+        # Saving a text field via its button persists to the config file and
+        # applies live.
+        await modal._set_step("language")
+        await pilot.pause(0.1)
+        modal.query_one("#doctor-input-language", Input).value = "pt-BR"
+        await pilot.click("#doctor-save-language")
+        await pilot.pause(0.1)
+        assert fake_app.session.config.language == "pt-BR"
+        assert cfg_path.exists()
+
+
+async def test_subagent_events_populate_agents_panel(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        sidebar = terminal_app.query_one("#sidebar")
+        agents_panel = terminal_app.query_one("#subagents")
+        # Idle: the whole sidebar (and the agents division) is hidden.
+        assert sidebar.display is False
+        assert agents_panel.display is False
+
+        await fake_app.emit(
+            "subagent.dispatch.requested", {"count": 2, "types": ["explorer", "explorer"]}
+        )
+        await fake_app.emit(
+            "subagent.started",
+            {"agent_id": "a1", "agent_type": "explorer", "task": "find the loader"},
+        )
+        await fake_app.emit(
+            "subagent.started",
+            {"agent_id": "a2", "agent_type": "coder", "task": "add a flag"},
+        )
+        await pilot.pause(0.2)
+
+        # A dispatch makes the sidebar and the AGENTS division appear.
+        assert sidebar.display is True
+        assert agents_panel.display is True
+        types = {a["agent_type"] for a in terminal_app.vm.subagents_list()}
+        assert types == {"explorer", "coder"}
+
+        await fake_app.emit(
+            "subagent.completed",
+            {"agent_id": "a1", "agent_type": "explorer", "summary": "found it"},
+        )
+        await pilot.pause(0.1)
+        assert terminal_app.vm.subagents["a1"]["status"] == "completed"
+        # The panel widget was fed the roster it renders from.
+        panel = terminal_app.query_one("#subagents-body")
+        panel_types = {agent["agent_type"] for agent in panel._agents}
+        assert panel_types == {"explorer", "coder"}
+
+
+def _widget_text(widget) -> str:
+    """Everything a mounted widget is currently painting, as plain text."""
+    from textual.geometry import Region
+
+    # outer_size, not size: the box includes the border and padding rows.
+    region = Region(0, 0, widget.outer_size.width, widget.outer_size.height)
+    return "\n".join(strip.text for strip in widget.render_lines(region))
+
+
+def _write_opened(**extra: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "name": "write_file",
+        "call_started": True,
+        "writes": True,
+        "path": "src/app.py",
+        "chars": 30,
+    }
+    payload.update(extra)
+    return payload
+
+
+def _code_progress(offset: int, delta: str, **extra: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "name": "write_file",
+        "writes": True,
+        "path": "src/app.py",
+        "code_key": "content",
+        "code_offset": offset,
+        "code_delta": delta,
+        "code_complete": False,
+        "chars": 100 + offset,
+    }
+    payload.update(extra)
+    return payload
+
+
+async def test_the_window_opens_with_its_context_before_the_code(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        window = terminal_app.query_one("#code-window")
+        # Idle: no write in flight, so the window stays out of the way.
+        assert window.display is False
+
+        await fake_app.emit(
+            "tool.call.progress", _write_opened(reason="bound the cache")
+        )
+        await pilot.pause(0.3)
+
+        # Open, framed and explained - with no source in it yet.
+        assert window.display is True
+        assert window.border_title == "write_file"
+        assert window.border_subtitle == "src/app.py"
+        painted = _widget_text(window)
+        assert "Create / overwrite:  src/app.py" in painted
+        assert "Why: bound the cache" in painted
+        assert "receiving" in painted
+
+
+async def test_streamed_code_fills_the_open_window(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        window = terminal_app.query_one("#code-window")
+        await fake_app.emit("tool.call.progress", _write_opened())
+        await fake_app.emit("tool.call.progress", _code_progress(0, "def main():\n"))
+        await pilot.pause(0.2)
+        assert terminal_app.vm.code_stream_code == "def main():\n"
+
+        await fake_app.emit(
+            "tool.call.progress",
+            _code_progress(12, "    return 0\n", code_complete=True),
+        )
+        await pilot.pause(0.2)
+        assert terminal_app.vm.code_stream_code == "def main():\n    return 0\n"
+        assert terminal_app.vm.code_stream_complete is True
+        # A second settle: the window is height:auto, so it grows a row on the
+        # layout pass that follows the repaint.
+        await pilot.pause(0.2)
+        # The window renders the source itself, not just a progress count.
+        painted = _widget_text(window)
+        assert "def main():" in painted
+        assert "return 0" in painted
+        assert "✓" in painted
+
+
+async def test_the_reason_follows_the_learn_setting(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    fake_app.session.config.learn = False
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        await fake_app.emit("tool.call.progress", _write_opened(reason="bound the cache"))
+        await pilot.pause(0.3)
+
+        painted = _widget_text(terminal_app.query_one("#code-window"))
+        assert "Create / overwrite" in painted
+        assert "Why:" not in painted
+
+
+async def test_live_window_can_be_turned_off(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    fake_app.session.config.terminal_live_code = False
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        await fake_app.emit("tool.call.progress", _write_opened())
+        await fake_app.emit("tool.call.progress", _code_progress(0, "x = 1\n"))
+        await pilot.pause(0.2)
+
+        assert terminal_app.query_one("#code-window").display is False
+        # The one-line progress trace still reports the write.
+        assert any(line.startswith("tool~ write_file:") for line in terminal_app.vm.conversation)
+
+
+async def test_clear_closes_the_live_code_window(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        await fake_app.emit("tool.call.progress", _write_opened())
+        await pilot.pause(0.2)
+        assert terminal_app.query_one("#code-window").display is True
+
+        await terminal_app.action_clear()
+        await pilot.pause(0.2)
+        assert terminal_app.query_one("#code-window").display is False
+
+
+def _plan_snapshot(status: str = "ACTIVE") -> dict[str, object]:
+    return {
+        "status": status,
+        "progress": "1/3",
+        "current_step": "Implement the module",
+        "current_step_status": "IN_PROGRESS",
+        "completed_steps": ["Inspect files"],
+        "remaining_steps": ["Implement the module", "Verify"],
+    }
+
+
+async def test_clear_keeps_the_live_task_checklist_on_screen(tmp_path) -> None:
+    # Regression: /clear (Ctrl+L) blind-hid the plan panel even mid-task. With
+    # no plan event guaranteed to fire again soon (a long step, a paused plan),
+    # the user lost sight of the in-flight task with no way to bring it back.
+    # Clearing wipes the transcript; the live checklist is runtime state and
+    # must be rebuilt from the backend snapshot.
+    fake_app = FakeTerminalApplication(tmp_path)
+    fake_app.plan_snapshot = _plan_snapshot()
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        await fake_app.emit("planning.plan.created", _plan_snapshot())
+        await pilot.pause(0.1)
+        assert terminal_app.query_one("#plan").display is True
+
+        await terminal_app.action_clear()
+        await pilot.pause(0.1)
+
+        assert terminal_app.vm.conversation == []
+        assert terminal_app.vm.plan_visible is True
+        assert terminal_app.query_one("#plan").display is True
+        titles = [step["title"] for step in terminal_app.vm.plan_steps]
+        assert titles == ["Inspect files", "Implement the module", "Verify"]
+        assert terminal_app.vm.plan_progress == "1/3"
+
+
+async def test_clear_keeps_a_paused_checklist_and_drops_a_settled_one(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        # A plan paused at turn end (WAITING) is still the current task: keep it.
+        fake_app.plan_snapshot = _plan_snapshot(status="WAITING")
+        await fake_app.emit("planning.plan.created", _plan_snapshot())
+        await pilot.pause(0.1)
+        await terminal_app.action_clear()
+        assert terminal_app.vm.plan_visible is True
+        assert terminal_app.vm.plan_status == "WAITING"
+
+        # A settled plan belongs to the cleared transcript: it goes with it.
+        fake_app.plan_snapshot = _plan_snapshot(status="COMPLETED")
+        await terminal_app.action_clear()
+        assert terminal_app.vm.plan_visible is False
+        assert terminal_app.vm.plan_steps == []
+
+        # No plan at all (nothing submitted yet): panel stays hidden.
+        fake_app.plan_snapshot = {}
+        await terminal_app.action_clear()
+        assert terminal_app.vm.plan_visible is False
+
+
 async def test_ctrl_j_inserts_newline_and_enter_submits_multiline(tmp_path) -> None:
     fake_app = FakeTerminalApplication(tmp_path)
     terminal_app = create_terminal_app(fake_app)
@@ -107,6 +425,72 @@ async def test_ctrl_j_inserts_newline_and_enter_submits_multiline(tmp_path) -> N
         await pilot.pause(0.2)
         assert fake_app.submitted == ["line1\nline2"]
         assert input_widget.text == ""
+
+
+async def test_ctrl_v_attaches_clipboard_image_and_submits_it(tmp_path, monkeypatch) -> None:
+    import base64
+
+    png = b"\x89PNG\r\n\x1a\nfake-pixels"
+    monkeypatch.setattr(
+        "code_ai.ui.terminal.app.paste_image_from_system_clipboard",
+        lambda: (png, "image/png"),
+    )
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.focus()
+        await pilot.press("l", "o", "o", "k", "space")
+        await pilot.press("ctrl+v")
+        assert input_widget.text == "look [Image #1]"
+
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert fake_app.submitted == ["look [Image #1]"]
+        (images,) = fake_app.submitted_images
+        assert [image.data for image in images] == [base64.b64encode(png).decode("ascii")]
+        assert images[0].media_type == "image/png"
+
+
+async def test_deleting_the_placeholder_drops_the_attachment(tmp_path, monkeypatch) -> None:
+    png = b"\x89PNG\r\n\x1a\nfake-pixels"
+    monkeypatch.setattr(
+        "code_ai.ui.terminal.app.paste_image_from_system_clipboard",
+        lambda: (png, "image/png"),
+    )
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.focus()
+        await pilot.press("ctrl+v")
+        assert input_widget.text == "[Image #1]"
+        # Editing the placeholder out of the prompt removes the attachment.
+        input_widget.value = "just words"
+
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert fake_app.submitted == ["just words"]
+        assert fake_app.submitted_images == [[]]
+
+
+async def test_ctrl_v_falls_back_to_text_paste_without_an_image(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "code_ai.ui.terminal.app.paste_image_from_system_clipboard", lambda: None
+    )
+    monkeypatch.setattr(
+        "code_ai.ui.terminal.app.paste_from_system_clipboard", lambda: "copied text"
+    )
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.focus()
+        await pilot.press("ctrl+v")
+        assert input_widget.text == "copied text"
 
 
 async def test_ctrl_c_copies_active_selection_instead_of_quitting(tmp_path) -> None:
@@ -467,6 +851,47 @@ def test_view_model_drops_pure_tool_call_text_on_recovery() -> None:
     assert view_model.conversation == ["you> read it"]
 
 
+def test_view_model_collapses_streamed_working_trace_into_final_answer() -> None:
+    from code_ai.ui.terminal.view_models import TerminalViewModel
+
+    view_model = TerminalViewModel()
+    # The answer prose streamed on the "working" channel (tool-required task),
+    # then the runtime announced the same text as the turn's final answer.
+    view_model.conversation.append("working> Preciso de mais detalhes.")
+    event = EventEnvelope.create(
+        event_type="assistant.final",
+        session_id="fake-session",
+        sequence=1,
+        payload={"text": "Preciso de mais detalhes."},
+        source="core.orchestrator",
+    )
+
+    view_model.apply(event)
+
+    assert view_model.conversation == ["ai> Preciso de mais detalhes."]
+
+
+def test_view_model_keeps_working_trace_that_differs_from_final_answer() -> None:
+    from code_ai.ui.terminal.view_models import TerminalViewModel
+
+    view_model = TerminalViewModel()
+    view_model.conversation.append("working> Analisando o projeto...")
+    event = EventEnvelope.create(
+        event_type="assistant.final",
+        session_id="fake-session",
+        sequence=1,
+        payload={"text": "Qual banco de dados devo usar?"},
+        source="core.orchestrator",
+    )
+
+    view_model.apply(event)
+
+    assert view_model.conversation == [
+        "working> Analisando o projeto...",
+        "ai> Qual banco de dados devo usar?",
+    ]
+
+
 def test_terminal_view_model_shows_command_output() -> None:
     from code_ai.ui.terminal.view_models import TerminalViewModel
 
@@ -608,6 +1033,24 @@ def test_config_model_command_persists_and_updates_active_config(tmp_path) -> No
     assert "Applied now" in result
     assert fake_app.session.config.model == "other-model"
     assert saved["model"] == "other-model"
+
+
+def test_config_vision_model_command_persists_and_updates_active_config(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    config_path = tmp_path / "config.json"
+    result = handle_config_command(
+        fake_app,
+        "/config vision-model qwen2.5-vl:7b",
+        config_path=config_path,
+    )
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert "Applied now" in result
+    assert fake_app.session.config.vision_model == "qwen2.5-vl:7b"
+    assert saved["vision_model"] == "qwen2.5-vl:7b"
+
+    # "off" clears the setting, sending images to the main model again.
+    handle_config_command(fake_app, "/config vision-model off", config_path=config_path)
+    assert fake_app.session.config.vision_model == ""
 
 
 def test_config_api_key_command_persists_and_redacts(tmp_path) -> None:
@@ -809,6 +1252,40 @@ def test_config_learn_completes_and_suggests_values() -> None:
     assert "/config learn off" in rendered
 
 
+def test_config_live_code_command_persists_and_updates_active_config(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    config_path = tmp_path / "config.json"
+    result = handle_config_command(
+        fake_app,
+        "/config live-code off",
+        config_path=config_path,
+    )
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert "Live code off" in result
+    assert fake_app.session.config.terminal_live_code is False
+    assert saved["terminal_live_code"] is False
+
+
+def test_config_live_code_command_rejects_invalid_value(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    config_path = tmp_path / "config.json"
+    result = handle_config_command(
+        fake_app,
+        "/config live-code sometimes",
+        config_path=config_path,
+    )
+    assert "Usage: /config live-code" in result
+    assert not config_path.exists()
+
+
+def test_config_live_code_completes_and_suggests_values() -> None:
+    assert command_completion("/config live-c") == "/config live-code "
+    assert command_completion("/config live-code of") == "/config live-code off"
+    rendered = render_suggestions("/config live-code ")
+    assert "/config live-code on" in rendered
+    assert "/config live-code off" in rendered
+
+
 async def test_up_arrow_recalls_previous_submitted_entries(tmp_path) -> None:
     fake_app = FakeTerminalApplication(tmp_path)
     terminal_app = create_terminal_app(fake_app)
@@ -945,3 +1422,540 @@ async def test_config_help_picker_runs_argless_commands(tmp_path) -> None:
         assert input_widget.value == ""
         # /config show appends the redacted config to the conversation.
         assert any('"model"' in line for line in terminal_app.vm.conversation)
+
+
+async def test_agents_panel_mounts_one_card_per_subagent(tmp_path) -> None:
+    from textual.widgets import Collapsible
+
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(120, 45)) as pilot:
+        await fake_app.emit("user.message", {"text": "explore"})
+        for agent_id, name, task in (
+            ("a1", "Kepler", "map the loader and every config path in the repo"),
+            ("a2", "Feynman", "review the domain code"),
+        ):
+            await fake_app.emit(
+                "subagent.started",
+                {"agent_id": agent_id, "agent_type": "explorer", "name": name, "task": task},
+            )
+        await pilot.pause(0.2)
+
+        panel = terminal_app.query_one("#subagents-body")
+        cards = panel.query(".agent-card")
+        assert len(cards) == 2
+        assert "2 running" in str(panel.query_one(".agents-summary", Static).render())
+
+        # Each card: a header row and the delegated task folded shut.
+        first = cards.nodes[0]
+        header = str(first.query_one(".agent-card-header", Static).render())
+        assert "Kepler" in header and "explorer" in header
+        collapsible = first.query_one(Collapsible)
+        assert collapsible.collapsed is True
+        assert "\n" not in collapsible.title
+
+        # Clicking the preview expands the full task text.
+        await pilot.click(first.query_one("CollapsibleTitle"))
+        await pilot.pause(0.1)
+        assert collapsible.collapsed is False
+        body = str(first.query_one(".agent-task-body", Static).render())
+        assert "map the loader and every config path in the repo" in body
+
+
+async def test_agents_panel_keeps_expanded_card_across_updates(tmp_path) -> None:
+    from textual.widgets import Collapsible
+
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(120, 45)) as pilot:
+        await fake_app.emit("user.message", {"text": "explore"})
+        await fake_app.emit(
+            "subagent.started",
+            {"agent_id": "a1", "agent_type": "explorer", "name": "Kepler", "task": "t1"},
+        )
+        await pilot.pause(0.2)
+
+        panel = terminal_app.query_one("#subagents-body")
+        first = panel.query(".agent-card").nodes[0]
+        await pilot.click(first.query_one("CollapsibleTitle"))
+        await pilot.pause(0.1)
+        assert first.query_one(Collapsible).collapsed is False
+
+        # Progress and a later dispatch repaint the roster in place: the
+        # expanded card must survive, not be remounted shut.
+        await fake_app.emit(
+            "subagent.progress",
+            {"agent_id": "a1", "event": "tool.call.started", "tool": "read_file"},
+        )
+        await fake_app.emit(
+            "subagent.started",
+            {"agent_id": "a2", "agent_type": "coder", "name": "Newton", "task": "t2"},
+        )
+        await pilot.pause(0.2)
+        cards = panel.query(".agent-card")
+        assert len(cards) == 2
+        assert cards.nodes[0] is first
+        assert first.query_one(Collapsible).collapsed is False
+        assert "read_file" in str(first.query_one(".agent-task-body", Static).render())
+
+        # A settled agent flips its marker; a new turn clears the roster.
+        await fake_app.emit(
+            "subagent.completed",
+            {"agent_id": "a1", "agent_type": "explorer", "name": "Kepler", "summary": "ok"},
+        )
+        await pilot.pause(0.2)
+        assert str(first.query_one(".agent-card-header", Static).render()).startswith("✓")
+
+        await fake_app.emit("user.message", {"text": "next"})
+        await pilot.pause(0.2)
+        assert len(panel.query(".agent-card")) == 0
+
+
+class FakeUiTerminalManager:
+    """Manager double for the /term flow: records input, serves one screen."""
+
+    def __init__(self) -> None:
+        self.sent_text: list[tuple[str, str]] = []
+        self.entered: list[str] = []
+        self.controls: list[tuple[str, str]] = []
+        self.killed: list[str] = []
+        self.screen_text = "C:\\workspace> _"
+        self._session_id = "sess-1234abcd"
+
+    def create(self, *, cwd, command=None, rows: int = 24, cols: int = 80) -> str:
+        return self._session_id
+
+    def latest_session_id(self) -> str | None:
+        return self._session_id
+
+    def send_text(self, session_id: str, text: str) -> None:
+        self.sent_text.append((session_id, text))
+
+    def send_enter(self, session_id: str) -> None:
+        self.entered.append(session_id)
+
+    def send_control(self, session_id: str, key: str) -> None:
+        self.controls.append((session_id, key))
+
+    def terminate(self, session_id: str) -> None:
+        self.killed.append(session_id)
+
+    def read_screen(self, session_id: str, *, include_cursor: bool = True) -> dict[str, object]:
+        return {
+            "session_id": session_id,
+            "rows": 24,
+            "columns": 80,
+            "screen": self.screen_text,
+            "closed": False,
+        }
+
+
+async def test_term_commands_drive_the_shared_terminal_session(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    manager = FakeUiTerminalManager()
+    fake_app.terminal_manager = manager
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(120, 44)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+
+        # /term start opens the session and the TERMINAL panel appears with
+        # the live screen (fed by the terminal.screen.updated event).
+        input_widget.value = "/term start"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert any(
+            line.startswith("term> Sessão sess-123") for line in terminal_app.vm.conversation
+        )
+        assert terminal_app.vm.terminal_visible is True
+        assert terminal_app.vm.terminal_screen == "C:\\workspace> _"
+        assert terminal_app.query_one("#terminal").display is True
+        assert terminal_app.query_one("#sidebar").display is True
+
+        # Free text after /term is typed into the session followed by Enter —
+        # the user acts on the same PTY the agent drives.
+        input_widget.value = "/term echo hi"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert manager.sent_text == [("sess-1234abcd", "echo hi")]
+        assert manager.entered == ["sess-1234abcd"]
+
+        # Ctrl+C reaches the session (interrupt a runaway process).
+        input_widget.value = "/term ctrl c"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert manager.controls == [("sess-1234abcd", "c")]
+
+        # /term kill terminates it and the panel flips to closed.
+        input_widget.value = "/term kill"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert manager.killed == ["sess-1234abcd"]
+        assert terminal_app.vm.terminal_closed is True
+
+
+async def test_term_without_a_manager_degrades_gracefully(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "/term start"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert any("indisponível" in line for line in terminal_app.vm.conversation)
+        assert terminal_app.vm.terminal_visible is False
+
+
+def test_view_model_streams_command_output_chunks_in_place() -> None:
+    from code_ai.ui.terminal.view_models import TerminalViewModel
+
+    view_model = TerminalViewModel()
+    for sequence, chunk in enumerate(("building", " wheel", "\ndone"), start=1):
+        view_model.apply(
+            EventEnvelope.create(
+                event_type="command.output",
+                session_id="fake-session",
+                sequence=sequence,
+                payload={"stream": "stdout", "text": chunk},
+                source="tool.execute_command",
+            )
+        )
+
+    # All chunks merged into one live cmd~ line, not one line per chunk.
+    assert view_model.conversation == ["cmd~ building wheel\ndone"]
+
+
+def test_view_model_keeps_terminal_panel_across_turns() -> None:
+    from code_ai.ui.terminal.view_models import TerminalViewModel
+
+    view_model = TerminalViewModel()
+    view_model.apply(
+        EventEnvelope.create(
+            event_type="terminal.screen.updated",
+            session_id="fake-session",
+            sequence=1,
+            payload={
+                "session_id": "abc12345",
+                "rows": 24,
+                "columns": 80,
+                "screen": "$ npm run dev\nserver listening on :3000",
+                "closed": False,
+            },
+            source="terminal.poller",
+        )
+    )
+    assert view_model.terminal_visible is True
+    assert "listening" in view_model.terminal_screen
+
+    # A new user turn clears plan/agents (turn-scoped) but the terminal is
+    # session-scoped: a dev server keeps running, so the panel must survive.
+    view_model.apply(
+        EventEnvelope.create(
+            event_type="user.message",
+            session_id="fake-session",
+            sequence=2,
+            payload={"text": "continue"},
+            source="test",
+        )
+    )
+    assert view_model.terminal_visible is True
+    assert view_model.terminal_session_id == "abc12345"
+
+
+def test_markdown_answer_keeps_raw_xml_visible() -> None:
+    # Rich's Markdown silently drops html_block/html_inline tokens, so an
+    # answer quoting an XML document outside a code fence vanished from the
+    # chat entirely - the user saw prose around a hole where the XML should be.
+    from code_ai.ui.terminal.widgets import markdown_to_content
+
+    body = (
+        "Aqui esta o exemplo.xml:\n\n"
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<biblioteca nome="minha">\n'
+        '  <livro id="1" ano="1899">\n'
+        "    <titulo>Dom Casmurro</titulo>\n"
+        "  </livro>\n"
+        "</biblioteca>\n\n"
+        "O arquivo <b>foi criado</b>."
+    )
+    plain = markdown_to_content(body, 78).plain
+
+    for fragment in (
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<biblioteca nome="minha">',
+        "<titulo>Dom Casmurro</titulo>",
+        "</biblioteca>",
+        "<b>foi criado</b>",  # inline HTML also renders literally
+    ):
+        assert fragment in plain, f"missing from rendered answer: {fragment}"
+    # The prolog and the root element are one contiguous block: no blank hole
+    # between the merged html_block tokens.
+    xml_start = plain.index("<?xml")
+    xml_end = plain.index("</biblioteca>")
+    assert "\n\n" not in plain[xml_start:xml_end]
+
+
+def test_markdown_fenced_code_still_renders_normally() -> None:
+    from code_ai.ui.terminal.widgets import markdown_to_content
+
+    body = 'Veja:\n\n```xml\n<a b="c"/>\n```\n'
+    plain = markdown_to_content(body, 78).plain
+    assert '<a b="c"/>' in plain
+
+
+def _workflow_app(tmp_path, files: dict[str, str]):
+    """A fake app whose workflows come from a real directory on disk."""
+
+    from code_ai.core.workflows import WorkflowService, WorkflowSource
+
+    root = tmp_path / "workflows"
+    root.mkdir(parents=True, exist_ok=True)
+    for name, text in files.items():
+        (root / name).write_text(text, encoding="utf-8")
+    fake_app = FakeTerminalApplication(tmp_path)
+    fake_app.workflows = WorkflowService(
+        sources=[WorkflowSource(root=root, scope="project", origin="cline")]
+    )
+    return fake_app
+
+
+async def test_slash_workflow_submits_its_saved_steps(tmp_path) -> None:
+    fake_app = _workflow_app(tmp_path, {"deploy.md": "# Deploy\n\n1. Build\n2. Ship"})
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "/deploy 1.4.0"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+
+        assert len(fake_app.submitted) == 1
+        submitted = fake_app.submitted[0]
+        assert 'Run the "deploy" workflow' in submitted
+        assert "1. Build" in submitted
+        assert "Additional input for this run: 1.4.0" in submitted
+        assert any("Running workflow deploy" in line for line in terminal_app.vm.conversation)
+
+
+async def test_unknown_slash_text_is_submitted_as_a_message(tmp_path) -> None:
+    fake_app = _workflow_app(tmp_path, {"deploy.md": "1. Build"})
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "/not-a-workflow"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+
+        assert fake_app.submitted == ["/not-a-workflow"]
+
+
+async def test_a_workflow_cannot_shadow_a_builtin_command(tmp_path) -> None:
+    fake_app = _workflow_app(tmp_path, {"status.md": "Never run this."})
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "/status"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+
+        assert fake_app.submitted == []
+        assert not any("Never run this" in line for line in terminal_app.vm.conversation)
+
+
+async def test_workflows_command_lists_them_with_origin(tmp_path) -> None:
+    fake_app = _workflow_app(
+        tmp_path, {"deploy.md": "Ship a release.", "triage.md": "Triage a bug."}
+    )
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)):
+        terminal_app._append_conversation_line(terminal_app._workflows_text())
+        rendered = "\n".join(terminal_app.vm.conversation)
+
+        assert "/deploy" in rendered
+        assert "Ship a release." in rendered
+        assert "(cline)" in rendered
+
+
+async def test_workflow_appears_in_command_suggestions(tmp_path) -> None:
+    fake_app = _workflow_app(tmp_path, {"deploy.md": "Ship a release."})
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)):
+        terminal_app._set_command_suggestions("/dep")
+        suggestions = terminal_app.query_one("#command-suggestions", Static)
+        assert suggestions.display is True
+        rendered = str(suggestions.render())
+        assert "/deploy" in rendered
+        assert "Ship a release." in rendered
+
+
+async def test_tab_completes_a_workflow_name(tmp_path) -> None:
+    fake_app = _workflow_app(tmp_path, {"deploy.md": "Ship a release."})
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "/depl"
+        await pilot.press("tab")
+        await pilot.pause(0.2)
+
+        assert input_widget.value == "/deploy "
+
+
+def _skill_app(tmp_path, files: dict[str, str]):
+    """A fake app whose skills come from a real directory on disk."""
+
+    from code_ai.tools.skills.common import SkillSource
+
+    root = tmp_path / "skills"
+    root.mkdir(parents=True, exist_ok=True)
+    for name, text in files.items():
+        target = root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    fake_app = FakeTerminalApplication(tmp_path)
+    fake_app.skill_sources = (SkillSource(root=root, origin="cline"),)
+    return fake_app
+
+
+async def test_slash_skill_forces_its_instructions(tmp_path) -> None:
+    fake_app = _skill_app(
+        tmp_path,
+        {
+            "pdf-magic/SKILL.md": (
+                "---\nname: pdf-magic\ndescription: Extract tables from PDFs.\n---\n\n"
+                "Use pdfplumber, never regex."
+            )
+        },
+    )
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "/pdf-magic extrair a tabela do relatorio.pdf"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+
+        assert len(fake_app.submitted) == 1
+        submitted = fake_app.submitted[0]
+        assert 'Use the "pdf-magic" skill' in submitted
+        assert "Use pdfplumber, never regex." in submitted
+        assert "Task: extrair a tabela do relatorio.pdf" in submitted
+        assert any("Using skill pdf-magic" in line for line in terminal_app.vm.conversation)
+
+
+async def test_tab_completes_a_skill_name(tmp_path) -> None:
+    fake_app = _skill_app(
+        tmp_path,
+        {"pdf-magic/SKILL.md": "---\nname: pdf-magic\ndescription: Extract tables.\n---\n\nSteps."},
+    )
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "/pdf-m"
+        await pilot.press("tab")
+        await pilot.pause(0.2)
+
+        assert input_widget.value == "/pdf-magic "
+
+
+async def test_skills_command_lists_them_with_origin(tmp_path) -> None:
+    fake_app = _skill_app(
+        tmp_path,
+        {"pdf-magic/SKILL.md": "---\nname: pdf-magic\ndescription: Extract tables.\n---\n\nSteps."},
+    )
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)):
+        terminal_app._append_conversation_line(terminal_app._skills_text())
+        rendered = "\n".join(terminal_app.vm.conversation)
+
+        assert "/pdf-magic" in rendered
+        assert "Extract tables." in rendered
+        assert "(cline)" in rendered
+
+
+async def test_a_workflow_wins_over_a_same_named_skill(tmp_path) -> None:
+    from code_ai.core.workflows import WorkflowService, WorkflowSource
+
+    fake_app = _skill_app(
+        tmp_path,
+        {"release/SKILL.md": "---\nname: release\ndescription: The skill.\n---\n\nSkill body."},
+    )
+    workflows_root = tmp_path / "workflows"
+    workflows_root.mkdir()
+    (workflows_root / "release.md").write_text("Workflow steps.", encoding="utf-8")
+    fake_app.workflows = WorkflowService(
+        sources=[WorkflowSource(root=workflows_root, scope="project", origin="code-ai")]
+    )
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "/release"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+
+        assert "Workflow steps." in fake_app.submitted[0]
+        assert "Skill body." not in fake_app.submitted[0]
+
+
+async def test_disabled_skill_is_not_a_slash_command(tmp_path) -> None:
+    fake_app = _skill_app(
+        tmp_path,
+        {
+            "legacy/SKILL.md": (
+                "---\nname: legacy\ndescription: Old.\ndisabled: true\n---\n\nDo not use."
+            )
+        },
+    )
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "/legacy"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+
+        # Not a command and not an instruction dump: it travels as plain text.
+        assert fake_app.submitted == ["/legacy"]
+
+
+async def test_bracketed_trace_text_never_raises_markup_error(tmp_path) -> None:
+    # Regression: every Static that receives a runtime-built string used to parse
+    # it as console markup, so a bracket in model or tool text raised MarkupError
+    # inside the event subscriber ("Event subscriber failed while handling
+    # planning.evidence.recorded (MarkupError)"). Static.update() visualizes
+    # eagerly, so the exception surfaced synchronously on the emit.
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        # Working, so the newest line is held back in the live tail — the widget
+        # that actually blew up.
+        await fake_app.emit("status.changed", {"state": "CALLING_MODEL"})
+        await fake_app.emit(
+            "planning.evidence.recorded",
+            {"type": "FILE_READ", "summary": "read parser.py [1/3] lines [10:40]"},
+        )
+        await pilot.pause(0.05)
+
+        assert "[1/3]" in terminal_app.vm.conversation[-1]
+
+        # The same hazard reaches the plan step through the session panel and the
+        # model name through the status line.
+        await fake_app.emit(
+            "planning.step.started",
+            {"current_step": "fix [bug] in parser", "plan_progress": "1/2"},
+        )
+        await pilot.pause(0.05)
+
+        for widget_id in ("#stream-tail", "#statusline", "#session-info", "#command-suggestions"):
+            assert terminal_app.query_one(widget_id, Static)._render_markup is False

@@ -18,7 +18,11 @@ from code_ai.providers.models import (
     TokenUsage,
     ToolCall,
 )
-from code_ai.providers.translation import parse_arguments, tools_to_chat
+from code_ai.providers.translation import (
+    normalize_chat_messages,
+    parse_arguments,
+    tools_to_chat,
+)
 
 
 def normalize_native_ollama_base_url(base_url: str) -> str:
@@ -84,6 +88,10 @@ def messages_to_ollama(messages: list[Message]) -> list[dict[str, Any]]:
             )
             continue
         entry: dict[str, Any] = {"role": message.role, "content": message.content}
+        if message.images:
+            # Native Ollama takes raw base64 (no data-URL wrapper). Non-vision
+            # models simply ignore the field, so sending is always safe.
+            entry["images"] = [image.data for image in message.images]
         if message.tool_calls:
             # Replay tool calls structurally so the model keeps invoking tools
             # instead of echoing them back as text in its next turn.
@@ -117,7 +125,9 @@ class NativeOllamaProvider:
             provider_reported_usage=True,
             remote_conversation_state=False,
             native_tokenization=False,
-            image_support=False,
+            # The /api/chat wire format always accepts images; whether the
+            # pixels are read depends on the served model (e.g. qwen2.5-vl).
+            image_support=True,
         )
 
     @property
@@ -128,7 +138,12 @@ class NativeOllamaProvider:
         url = urljoin(self._base_url, "api/chat")
         payload: dict[str, Any] = {
             "model": request.model,
-            "messages": messages_to_ollama(request.messages),
+            # Ollama renders the served model's own chat template too, so the
+            # same structural rules apply. Tool results are replayed as user
+            # turns by ``messages_to_ollama``, so they already count as one.
+            "messages": messages_to_ollama(
+                normalize_chat_messages(request.messages, tool_results_are_user_turns=True)
+            ),
             "stream": True,
         }
         if request.tools:
@@ -170,7 +185,20 @@ class NativeOllamaProvider:
                     if reasoning:
                         reasoning_parts.append(reasoning)
                         yield ProviderEvent(kind="reasoning_delta", reasoning_delta=reasoning)
-                    tool_calls.extend(_ollama_tool_calls(message))
+                    for call in _ollama_tool_calls(message):
+                        index = len(tool_calls)
+                        tool_calls.append(call)
+                        # Ollama's native API delivers a tool call whole rather
+                        # than fragment by fragment, so this is the only chance
+                        # to announce it. The UI still gets the file it is about
+                        # to write - it just arrives in one piece instead of
+                        # typing itself out.
+                        yield ProviderEvent(
+                            kind="tool_call_delta",
+                            tool_call_name=call.name,
+                            tool_call_arguments=json.dumps(call.arguments, ensure_ascii=False),
+                            tool_call_index=index,
+                        )
                     usage = _ollama_usage(data) or usage
         except UnsupportedProviderCapability:
             raise

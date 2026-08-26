@@ -37,7 +37,12 @@ body {
 .statusbar .brand .heartbeat {
   margin-left: 8px; font-weight: 400; font-size: 11px; color: var(--accent);
   font-variant-numeric: tabular-nums;
+  display: inline-flex; align-items: center; gap: 6px;
 }
+.heartbeat .heartbeat-spin {
+  width: 9px; height: 9px; border-width: 1.5px;
+}
+.heartbeat .heartbeat-clock { opacity: .8; }
 .typing-clock { color: var(--accent); font-variant-numeric: tabular-nums; }
 .statusbar .meta { margin-left: auto; display: flex; align-items: center; gap: 10px; color: var(--muted); }
 .statusbar .meta .pill {
@@ -460,6 +465,18 @@ button { font-family: inherit; cursor: pointer; }
 }
 .switch.on .switch-knob { transform: translateX(14px); }
 .settings-note { font-size: 11.5px; color: var(--muted); margin-top: 4px; }
+.settings-restart {
+  display: flex; align-items: center; gap: 14px; margin-top: 8px;
+  padding-top: 14px; border-top: 1px solid var(--border);
+}
+.settings-restart .settings-note { margin-top: 0; flex: 1; }
+.settings-restart-btn { flex: none; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }
+.model-row { display: flex; align-items: stretch; gap: 8px; }
+.model-input { flex: 1; min-width: 0; }
+.model-list-btn { flex: none; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }
+.model-picker { margin-top: 8px; width: 100%; }
+.model-note { font-size: 11.5px; color: var(--muted); margin-top: 6px; }
+.model-error { font-size: 11.5px; color: var(--vscode-errorForeground, #f85149); margin-top: 6px; }
 
 /* ---- refactor panel ---- */
 .refactor { max-width: 820px; margin: 0 auto; padding: 16px 18px 28px; }
@@ -508,6 +525,34 @@ button { font-family: inherit; cursor: pointer; }
   display: flex; justify-content: flex-end;
 }
 .refactor-all button { font-size: 12.5px; }
+
+/* ---- explain panel ---- */
+.explain { max-width: 820px; margin: 0 auto; padding: 16px 18px 28px; }
+.explain-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.explain-head > svg { color: var(--accent); }
+.explain-title { font-weight: 600; font-size: 13.5px; color: var(--vscode-foreground); }
+.explain-toggle {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; padding: 0; border: none; border-radius: 6px;
+  background: none; color: var(--muted); cursor: pointer;
+}
+.explain-toggle:hover:not(:disabled) { background: var(--surface); color: var(--vscode-foreground); }
+.explain-toggle:disabled { opacity: .4; cursor: default; }
+.explain-chevron { transform: rotate(0deg); transition: transform .15s ease; }
+.explain-chevron.open { transform: rotate(90deg); }
+.explain-spin { margin-left: auto; }
+.explain-target {
+  font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px;
+  color: var(--muted); margin: 0 0 12px 30px;
+}
+.explain-body { font-size: 12.5px; line-height: 1.5; }
+.explain-empty { color: var(--muted); font-size: 12.5px; padding: 6px 0; line-height: 1.6; }
+.explain-status { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12.5px; padding: 10px 0; }
+.explain-error {
+  color: var(--vscode-errorForeground, #f85149); font-size: 12.5px; padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, #f85149 40%, transparent); border-radius: 8px;
+  background: color-mix(in srgb, #f85149 8%, transparent);
+}
 
 /* ---- animations ---- */
 .spinner {

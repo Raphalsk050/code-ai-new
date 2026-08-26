@@ -44,6 +44,28 @@ def test_file_environment_and_cli_precedence(tmp_path, monkeypatch) -> None:
     assert config.model == "cli-model"
 
 
+def test_vision_model_loads_from_config_file_and_defaults_empty(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "api_mode": "ollama",
+                "workspace": str(tmp_path),
+                "vision_model": "qwen2.5-vl:7b",
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(explicit_path=config_path)
+    assert config.vision_model == "qwen2.5-vl:7b"
+
+    config_path.write_text(
+        json.dumps({"api_mode": "ollama", "workspace": str(tmp_path)}),
+        encoding="utf-8",
+    )
+    assert load_config(explicit_path=config_path).vision_model == ""
+
+
 def test_terminal_theme_loads_from_config_file(tmp_path) -> None:
     config_path = tmp_path / "config.json"
     config_path.write_text(
@@ -90,6 +112,43 @@ def test_terminal_spinner_loads_from_config_file(tmp_path) -> None:
     )
     config = load_config(explicit_path=config_path)
     assert config.terminal_spinner == "braille-full"
+
+
+def test_memory_config_loads_from_config_file_with_defaults(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "api_mode": "ollama",
+                "workspace": str(tmp_path),
+                "memory": {"reflection_enabled": False, "consolidation_min_new": 5},
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(explicit_path=config_path)
+    assert config.memory.reflection_enabled is False
+    assert config.memory.consolidation_min_new == 5
+    # Unspecified knobs keep their defaults.
+    assert config.memory.reflection_min_tool_calls == 3
+    assert config.memory.render_limit_per_kind == 25
+    assert config.memory.lesson_pin_count == 5
+
+
+def test_invalid_memory_config_is_rejected(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "api_mode": "ollama",
+                "workspace": str(tmp_path),
+                "memory": {"render_limit_per_kind": 0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigurationError):
+        load_config(explicit_path=config_path)
 
 
 def test_invalid_budget_is_rejected(tmp_path) -> None:

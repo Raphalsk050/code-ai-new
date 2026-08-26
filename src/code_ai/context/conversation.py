@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from code_ai.providers.models import Message, ToolCall, ToolResult
+from code_ai.providers.models import ImageContent, Message, ToolCall, ToolResult
 
 
 @dataclass(slots=True)
@@ -11,8 +11,8 @@ class ConversationState:
     previous_response_id: str | None = None
     remote_state_supported: bool = True
 
-    def add_user(self, text: str) -> None:
-        self.messages.append(Message(role="user", content=text))
+    def add_user(self, text: str, images: list[ImageContent] | None = None) -> None:
+        self.messages.append(Message(role="user", content=text, images=list(images or [])))
 
     def add_assistant(self, text: str, tool_calls: list[ToolCall] | None = None) -> None:
         calls = list(tool_calls or [])

@@ -1,16 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import difflib
-import os
-import tempfile
 from dataclasses import dataclass
 from typing import Any
 
 from code_ai.core.errors import ToolArgumentError, ToolExecutionError
 from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.filesystem.common import read_text_file, sha256_bytes
+from code_ai.tools.locations import LOCATION_SCHEMA, for_context
 from code_ai.tools.output import bound_text
 from code_ai.tools.schema import tool_schema
+from code_ai.util.fileio import RetryPolicy, atomic_write_bytes
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,7 +32,23 @@ class EditCodeTool:
         {
             "path": {
                 "type": "string",
-                "description": "Workspace-relative path of the file to edit. Must already exist.",
+                "description": (
+                    "Path of the file to edit, relative to the chosen location. Must "
+                    "already exist."
+                ),
+            },
+            "location": LOCATION_SCHEMA,
+            # Declared before the two halves of the edit on purpose: arguments
+            # stream in the order they are declared, so putting the
+            # justification first means the user reads why the edit is being
+            # made while it is still being made, instead of after the fact.
+            "reason": {
+                "type": "string",
+                "description": (
+                    "One or two plain-language sentences explaining why this edit is needed and "
+                    "what it accomplishes. Shown to the user while the edit streams in, and in "
+                    "the approval prompt before they decide whether to allow it."
+                ),
             },
             "old_text": {
                 "type": "string",
@@ -40,14 +57,6 @@ class EditCodeTool:
             "new_text": {
                 "type": "string",
                 "description": "Replacement text inserted in place of old_text.",
-            },
-            "reason": {
-                "type": "string",
-                "description": (
-                    "One or two plain-language sentences explaining why this edit is needed and "
-                    "what it accomplishes. Shown to the user in the approval prompt before they "
-                    "decide whether to allow it."
-                ),
             },
         },
         required=("path", "old_text", "new_text"),
@@ -59,8 +68,10 @@ class EditCodeTool:
         if not path_value:
             raise ToolArgumentError("path is required.")
 
-        path = context.workspace.resolve(path_value, must_exist=True)
-        original, old_hash = read_text_file(path)
+        location = for_context(context, arguments.get("location"))
+        path = location.resolve(path_value, must_exist=True)
+        policy = RetryPolicy.from_config(context.config.file_io)
+        original, old_hash = read_text_file(path, policy=policy)
         replacements = self._build_replacements(original, edits)
         edited = self._apply(original, replacements)
         diff = "".join(
@@ -73,28 +84,22 @@ class EditCodeTool:
         )
 
         data = edited.encode("utf-8")
-        fd, temp_name = tempfile.mkstemp(
-            prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+        outcome = await asyncio.to_thread(
+            atomic_write_bytes,
+            path,
+            data,
+            policy=policy,
+            allow_non_atomic_fallback=context.config.file_io.allow_non_atomic_fallback,
         )
-        try:
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(data)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temp_name, path)
-        except Exception:
-            try:
-                os.unlink(temp_name)
-            except FileNotFoundError:
-                pass
-            raise
 
         return {
-            "path": str(path.relative_to(context.workspace.root)),
+            "path": location.relative(path),
+            "location": location.location.value,
             "old_sha256": old_hash,
             "new_sha256": sha256_bytes(data),
             "changed": original != edited,
             "diff": bound_text(diff, context.config.budgets.max_tool_output_chars),
+            **outcome.to_dict(),
         }
 
     def _build_replacements(self, original: str, edits: list[Any]) -> list[_Replacement]:

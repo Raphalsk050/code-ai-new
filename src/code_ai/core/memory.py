@@ -23,15 +23,32 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from code_ai.util.fileio import RetryPolicy, atomic_write_text
+
+# Memory stores are constructed with a directory, not the app configuration,
+# so they use the built-in retry defaults that mirror the file_io section.
+_POLICY = RetryPolicy()
+
 # Turns a failure-context blob into a concise, one-sentence lesson.
 LessonGenerator = Callable[[str], Awaitable[str]]
 
 _MAX_LESSON_CHARS = 400
+
+# Reinforcement weighting for lesson ranking: each doubling of a lesson's
+# recurrence count buys it one day of recency. A failure class hit 40 times
+# stays ahead of a week of one-off lessons, while pure recency still breaks
+# ties between equally-reinforced entries.
+_COUNT_RECENCY_BONUS_S = 86400.0
+
+
+def _lesson_score(entry: FailureMemory) -> float:
+    return entry.last_seen + _COUNT_RECENCY_BONUS_S * math.log2(entry.count + 1)
 
 
 @dataclass(slots=True)
@@ -44,6 +61,11 @@ class FailureMemory:
     count: int = 1
     first_seen: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
+
+    @property
+    def id(self) -> str:
+        """Stable short id (the on-disk filename stem), for display/curation."""
+        return hashlib.sha256(self.signature.encode("utf-8")).hexdigest()[:16]
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -76,20 +98,31 @@ class FailureMemoryStore:
         *,
         lesson_generator: LessonGenerator | None = None,
         max_entries: int = 200,
+        pin_count: int = 5,
     ) -> None:
         self._dir = Path(directory)
         self._lesson_generator = lesson_generator
         self._max_entries = max_entries
+        # A lesson reinforced at least this many times is chronic: it renders
+        # even when newer one-off lessons fill the top slots.
+        self._pin_count = pin_count
 
     # -- reads ---------------------------------------------------------------
 
     def lessons(self, *, limit: int | None = None) -> list[FailureMemory]:
-        """Return stored lessons, most-recently-seen first."""
+        """Return stored lessons, strongest first.
+
+        Ordering is recency weighted by reinforcement (see ``_lesson_score``),
+        so a chronic failure class outranks a string of one-off lessons, and
+        pruning evicts the weakest entries instead of merely the oldest.
+        """
 
         entries: list[FailureMemory] = []
         if not self._dir.exists():
             return entries
         for path in self._dir.glob("*.json"):
+            if path.name.startswith("_"):
+                continue  # bookkeeping files (e.g. the maintenance marker)
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
@@ -98,18 +131,43 @@ class FailureMemoryStore:
             entry = FailureMemory.from_dict(data)
             if entry.lesson:
                 entries.append(entry)
-        entries.sort(key=lambda e: e.last_seen, reverse=True)
+        entries.sort(key=_lesson_score, reverse=True)
         if limit is not None:
             return entries[:limit]
         return entries
 
-    def render_for_prompt(self, *, limit: int = 8) -> str:
-        """Render recent lessons as a prompt section, or ``""`` if none."""
+    def lesson_for(self, signature: str) -> FailureMemory | None:
+        """The lesson recorded under ``signature`` exactly, if there is one.
 
-        entries = self.lessons(limit=limit)
+        This is the reliable half of recall. Rendering lessons into the prompt
+        puts them *somewhere* the model could look; a keyed lookup puts the right
+        one in front of it at the moment the same situation comes round again -
+        and because the signature is the same key the failure was filed under,
+        the match is exact rather than a guess about relevance.
+        """
+
+        entry = self._load(signature)
+        return entry if entry is not None and entry.lesson else None
+
+    def render_for_prompt(self, *, limit: int = 8) -> str:
+        """Render the strongest lessons as a prompt section, or ``""`` if none.
+
+        The top ``limit`` by score always render; chronic lessons (count at or
+        above ``pin_count``) are appended even when they fall outside the top
+        slots, so a mistake the agent kept making cannot be crowded out of the
+        prompt by a burst of newer one-off lessons.
+        """
+
+        entries = self.lessons()
         if not entries:
             return ""
-        lines = [f"- {entry.lesson.strip()}" for entry in entries if entry.lesson.strip()]
+        selected = entries[:limit]
+        pinned = [e for e in entries[limit:] if e.count >= self._pin_count]
+        lines = [
+            f"- {entry.lesson.strip()}"
+            for entry in [*selected, *pinned]
+            if entry.lesson.strip()
+        ]
         if not lines:
             return ""
         return (
@@ -149,6 +207,15 @@ class FailureMemoryStore:
         self._prune()
         return entry
 
+    def remove(self, signature: str) -> bool:
+        """Delete a lesson by signature. True when one was actually removed."""
+
+        try:
+            self._path_for(signature).unlink()
+        except OSError:
+            return False
+        return True
+
     async def _distill_lesson(self, context: str, fallback_lesson: str) -> str:
         if self._lesson_generator is None:
             return _clip(fallback_lesson)
@@ -179,14 +246,15 @@ class FailureMemoryStore:
 
     def _save(self, entry: FailureMemory) -> None:
         self._dir.mkdir(parents=True, exist_ok=True)
-        path = self._path_for(entry.signature)
-        path.write_text(
+        atomic_write_text(
+            self._path_for(entry.signature),
             json.dumps(entry.to_dict(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
+            policy=_POLICY,
+            allow_non_atomic_fallback=True,
         )
 
     def _prune(self) -> None:
-        """Cap the store, evicting the least-recently-seen entries."""
+        """Cap the store, evicting the weakest (lowest-scored) entries."""
 
         entries = self.lessons()
         if len(entries) <= self._max_entries:
@@ -212,6 +280,10 @@ def _clip(text: str) -> str:
 # --------------------------------------------------------------------------- #
 
 _MAX_MEMORY_CHARS = 600
+
+# Bookkeeping file for maintenance passes (consolidation). Prefixed with "_" so
+# the entry loaders skip it; see the ``startswith("_")`` guards above.
+_MAINTENANCE_FILENAME = "_maintenance.json"
 
 # Durable facts about the user / how to work — kept globally, valid everywhere.
 GLOBAL_KINDS = frozenset({"user", "feedback"})
@@ -276,6 +348,8 @@ class MemoryStore:
         if not self._dir.exists():
             return entries
         for path in self._dir.glob("*.json"):
+            if path.name.startswith("_"):
+                continue  # bookkeeping files (e.g. the maintenance marker)
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
@@ -306,6 +380,84 @@ class MemoryStore:
         self._prune()
         return entry
 
+    def find_by_content(self, content: str) -> Memory | None:
+        """Look up the stored memory whose content matches ``content`` exactly.
+
+        Ids are content-addressed, so an exact-text match is a direct hash
+        lookup — the affordance retire/replace flows use to reference a fact
+        the way the model sees it (its text) instead of an internal id.
+        """
+
+        probe = Memory(kind="project", content=_clip_memory(content))
+        return self._load(probe.id)
+
+    def remove(self, memory_id: str) -> bool:
+        """Delete a memory by id. True when an entry was actually removed."""
+
+        try:
+            self._path_for(memory_id).unlink()
+        except OSError:
+            return False
+        return True
+
+    def rewrite(
+        self, memory_id: str, content: str, *, source: str | None = None
+    ) -> Memory | None:
+        """Replace a memory's text, keeping its kind and creation time.
+
+        Ids are content-addressed, so a rewrite is remove-then-add under the
+        hood; ``created`` is carried over so provenance survives the new id.
+        Returns the new entry, or ``None`` when ``memory_id`` does not exist.
+        """
+
+        existing = self._load(memory_id)
+        if existing is None:
+            return None
+        entry = Memory(
+            kind=existing.kind,
+            content=_clip_memory(content),
+            source=source or existing.source,
+            created=existing.created,
+        )
+        self.remove(memory_id)
+        self._save(entry)
+        return entry
+
+    # -- maintenance bookkeeping ---------------------------------------------
+
+    def new_entries_since_maintenance(self) -> int:
+        """Net store growth since the last :meth:`mark_maintained` call.
+
+        Drives the consolidation trigger: a store that never ran maintenance
+        counts every entry as new, so the first pass fires once the store is
+        big enough to be worth curating.
+        """
+
+        state = self._maintenance_state()
+        baseline = int(state.get("entries_at_last_run", 0) or 0)
+        return max(0, len(self.all()) - baseline)
+
+    def mark_maintained(self) -> None:
+        """Record the current store size as the new maintenance baseline."""
+
+        self._dir.mkdir(parents=True, exist_ok=True)
+        state = {"entries_at_last_run": len(self.all()), "last_run": time.time()}
+        atomic_write_text(
+            self._dir / _MAINTENANCE_FILENAME,
+            json.dumps(state),
+            policy=_POLICY,
+            allow_non_atomic_fallback=True,
+        )
+
+    def _maintenance_state(self) -> dict[str, object]:
+        try:
+            data = json.loads(
+                (self._dir / _MAINTENANCE_FILENAME).read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
     # -- persistence ---------------------------------------------------------
 
     def _path_for(self, memory_id: str) -> Path:
@@ -323,9 +475,11 @@ class MemoryStore:
 
     def _save(self, entry: Memory) -> None:
         self._dir.mkdir(parents=True, exist_ok=True)
-        self._path_for(entry.id).write_text(
+        atomic_write_text(
+            self._path_for(entry.id),
             json.dumps(entry.to_dict(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
+            policy=_POLICY,
+            allow_non_atomic_fallback=True,
         )
 
     def _prune(self) -> None:
@@ -373,6 +527,47 @@ class MemoryService:
         if kind not in VALID_KINDS:
             raise ValueError(f"unknown memory kind: {kind!r}")
         return self._store_for(kind).add(kind=kind, content=content, source=source)
+
+    def remove_by_content(self, content: str) -> bool:
+        """Delete the memory matching ``content`` exactly, wherever it lives.
+
+        The caller (reflection, the ``remember`` tool's ``replaces`` field)
+        knows facts by their text, not by scope, so both stores are probed.
+        Returns True when something was actually removed.
+        """
+
+        removed = False
+        for _scope, store in self.scoped_stores():
+            entry = store.find_by_content(content)
+            if entry is not None:
+                removed = store.remove(entry.id) or removed
+        return removed
+
+    def scoped_stores(self) -> tuple[tuple[str, MemoryStore], ...]:
+        """(scope label, store) pairs, for maintenance passes and inspection."""
+
+        return (("global", self._global), ("project", self._project))
+
+    def knows_user_identity(self) -> bool:
+        """Whether anything is stored about who the user is."""
+
+        return any(entry.kind == "user" for entry in self._global.all())
+
+    def recallable(self) -> list[tuple[str, str]]:
+        """``(content, kind)`` for the memories worth resurfacing mid-turn.
+
+        Identity is left out on purpose. It applies to everything, so it can
+        never be *more* relevant to one step than another - repeating it would
+        only teach the agent to skim past these notes. What benefits from being
+        raised again is the specific fact: how the user wants a thing done, or
+        something learned about this project.
+        """
+
+        return [
+            (entry.content.strip(), entry.kind)
+            for entry in (*self._global.all(), *self._project.all())
+            if entry.content.strip() and entry.kind not in _ALWAYS_FULL_KINDS
+        ]
 
     def render_for_prompt(self, *, limit_per_kind: int | None = None) -> str:
         """Render stored memories grouped by kind, most-recently-updated first.

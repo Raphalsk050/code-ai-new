@@ -135,21 +135,95 @@ Screen {
   color: #6b7280;
 }
 
+/* The window a write opens in. It carries the same accent as the approval
+   dialog it hands over to, and names the call in its border, so it reads as a
+   window onto the change rather than as code loose in the conversation.
+
+   Grows with the source until it caps, then holds still and shows only the
+   newest rows — so the window settles into a fixed size early instead of
+   pushing the conversation around on every line. Long lines clip rather than
+   wrap: a wrapped line would change the window's height as it is typed, which
+   reads as flicker. */
+#code-window {
+  height: auto;
+  max-height: 20;
+  border: round #ff9f1c;
+  border-title-color: #ff9f1c;
+  border-title-style: bold;
+  border-title-align: left;
+  border-subtitle-color: #9fb3c8;
+  background: #111820;
+  padding: 0 1;
+  margin-top: 1;
+  overflow-x: hidden;
+}
+
 #stream-tail {
   height: auto;
   max-height: 16;
   color: #d7dee8;
 }
 
-#plan {
+/* Right sidebar: stacks the PLAN and AGENTS panels. Fixed width; the whole
+   column is hidden when neither panel has anything to show. */
+#sidebar {
   width: 38;
   min-width: 30;
+}
+
+/* Each panel is its own bordered division. When both are visible they split the
+   height; when one is hidden the other fills the sidebar. Content that outgrows
+   the space scrolls inside the panel rather than pushing the layout around. */
+#plan, #subagents, #terminal {
+  width: 1fr;
+  height: 1fr;
   border: solid #8892a0;
   padding: 1;
 }
 
-#plan-body {
+#plan-scroll, #subagents-scroll, #terminal-scroll {
   height: 1fr;
+  scrollbar-size-vertical: 1;
+}
+
+#plan-body, #subagents-body, #terminal-body {
+  height: auto;
+}
+
+/* The roster summary ("3 agent(s) · 1 running") sits above the cards. */
+#subagents-body .agents-summary {
+  height: auto;
+  margin-bottom: 1;
+}
+
+/* Each sub-agent is its own card: a quietly bordered box. The borders alone
+   separate neighbours; extra margin read as too much dead space between cards. */
+#subagents-body .agent-card {
+  height: auto;
+  border: round #2b3440;
+  padding: 0 1;
+}
+
+/* The delegated task folds like the transcript's thinking block: a one-line
+   dim clickable preview, stripped of the default Collapsible chrome. */
+#subagents-body .agent-task {
+  height: auto;
+  width: 1fr;
+  background: transparent;
+  border-top: none;
+  padding: 0;
+}
+#subagents-body .agent-task > CollapsibleTitle {
+  padding: 0;
+  color: #6b7280;
+}
+#subagents-body .agent-task > CollapsibleTitle:hover {
+  color: #9aa4b2;
+  background: transparent;
+}
+#subagents-body .agent-task Contents {
+  padding: 0 0 0 2;
+  color: #6b7280;
 }
 
 #working-indicator {
@@ -268,4 +342,88 @@ ApprovalModal {
 #approval-actions Button {
   margin: 0 1;
   width: 24;
+}
+
+/* --- Doctor / guided setup modal ---------------------------------------- */
+DoctorModal {
+  align: center middle;
+}
+
+#doctor-dialog {
+  width: 80%;
+  max-width: 96;
+  height: 80%;
+  border: thick #ff9f1c;
+  background: #111820;
+  padding: 1 2;
+}
+
+#doctor-header {
+  height: auto;
+  padding-bottom: 1;
+}
+
+#doctor-title {
+  width: 1fr;
+  content-align: center middle;
+  color: #ff9f1c;
+  text-style: bold;
+}
+
+/* The back and close buttons flank the centered title. */
+#doctor-back, #doctor-close, #doctor-close-2 {
+  width: auto;
+  min-width: 8;
+  border: none;
+  height: 1;
+  padding: 0 1;
+}
+
+#doctor-body {
+  height: 1fr;
+  overflow: auto auto;
+  scrollbar-size: 1 1;
+}
+
+/* Menu entries and step actions are full-width, stacked rows. */
+#doctor-body Button {
+  width: 1fr;
+  margin: 0 0 1 0;
+}
+
+.doctor-intro, .doctor-note {
+  color: #9fb3c8;
+  padding-bottom: 1;
+}
+
+.doctor-input {
+  margin-bottom: 1;
+}
+
+/* The action row lays its buttons side by side, each sharing the width. */
+.doctor-actions {
+  height: auto;
+}
+
+.doctor-actions Button {
+  width: 1fr;
+  margin: 0 1 0 0;
+}
+
+/* The fetched model list: hidden until "List models" runs, then capped so it
+   scrolls rather than pushing the dialog. */
+#doctor-model-list {
+  height: auto;
+  max-height: 12;
+  border: solid #8892a0;
+}
+
+.doctor-hidden {
+  display: none;
+}
+
+#doctor-status {
+  height: auto;
+  color: #d7dee8;
+  padding-top: 1;
 }

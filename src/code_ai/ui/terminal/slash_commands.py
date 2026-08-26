@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shlex
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,8 @@ from code_ai.config.models import (
     SUPPORTED_REASONING_EFFORTS,
     normalize_api_mode,
 )
+from code_ai.core.workflows import WorkflowRecord
+from code_ai.tools.skills.common import SkillRecord
 from code_ai.ui.terminal.widgets import (
     CODE_AI_BANNER_FONT_OPTIONS,
     CODE_AI_SPINNER_OPTIONS,
@@ -32,6 +35,7 @@ class SlashCommand:
 
 SLASH_COMMANDS = [
     SlashCommand("/help", "Show available commands."),
+    SlashCommand("/doctor", "Guided setup: configure everything step by step."),
     SlashCommand("/status", "Show current session and provider state."),
     SlashCommand("/compact", "Request context compression."),
     SlashCommand("/auto", "Switch planner mode to auto."),
@@ -49,12 +53,36 @@ SLASH_COMMANDS = [
     ),
     SlashCommand("/plan-status", "Show planner phase and current step."),
     SlashCommand("/replan", "Request a bounded replan on the next turn."),
+    SlashCommand(
+        "/goal <objetivo>",
+        "Define a persistent goal; the agent iterates until it is verifiably met.",
+        "/goal ",
+    ),
+    SlashCommand("/goal start", "Confirm the proposed criteria and start the goal loop."),
+    SlashCommand("/goal status", "Show the goal, its criteria, and loop progress."),
+    SlashCommand("/goal stop", "Stop the goal loop (also cancels the running turn)."),
+    SlashCommand("/goal resume", "Resume a blocked goal and restart the loop."),
     SlashCommand("/cancel", "Cancel the active turn."),
+    SlashCommand(
+        "/term <texto>",
+        "Type a line into the shared interactive terminal session.",
+        "/term ",
+    ),
+    SlashCommand("/term start", "Open an interactive terminal in the workspace."),
+    SlashCommand("/term status", "Show the terminal session and its screen."),
+    SlashCommand(
+        "/term ctrl <c|d|z>",
+        "Send a control key (e.g. Ctrl+C) to the terminal.",
+        "/term ctrl ",
+    ),
+    SlashCommand("/term kill", "Terminate the interactive terminal session."),
     SlashCommand(
         "/debug <on|off|status>",
         "Log raw model requests/responses for parser debugging.",
         "/debug ",
     ),
+    SlashCommand("/workflows", "List the saved workflows you can run by name."),
+    SlashCommand("/skills", "List the skills you can force by name."),
     SlashCommand("/clear", "Clear the conversation view."),
     SlashCommand("/quit", "Close Code-AI."),
     SlashCommand("/config help", "Browse and pick a /config command to run."),
@@ -67,6 +95,11 @@ SLASH_COMMANDS = [
         "/config model <name>",
         "Persist and switch the model for future calls.",
         "/config model ",
+    ),
+    SlashCommand(
+        "/config vision-model <name>",
+        "Vision model that reads pasted images for a non-multimodal main model.",
+        "/config vision-model ",
     ),
     SlashCommand(
         "/config api-key <key>",
@@ -123,6 +156,11 @@ SLASH_COMMANDS = [
         "Show/hide the model's explanation of why it's making each change.",
         "/config learn ",
     ),
+    SlashCommand(
+        "/config live-code <on|off>",
+        "Show/hide the file being written, live, as the model streams it.",
+        "/config live-code ",
+    ),
 ]
 
 API_MODE_SUGGESTIONS = ("responses", "completions", "ollama")
@@ -164,7 +202,45 @@ def config_commands(*, include_help: bool = False) -> list[SlashCommand]:
     ]
 
 
-def command_suggestions(prefix: str, *, limit: int = 8) -> list[SlashCommand]:
+def _asset_command(name: str, description: str, fallback: str) -> SlashCommand:
+    summary = " ".join(description.split()) or fallback
+    if len(summary) > 80:
+        summary = summary[:77].rstrip() + "..."
+    return SlashCommand(f"/{name}", summary, f"/{name} ")
+
+
+def workflow_commands(records: Sequence[WorkflowRecord]) -> list[SlashCommand]:
+    """Expose each saved workflow as its own slash command.
+
+    Workflows are user-authored, so they cannot be declared statically: they are
+    discovered on disk (including in another agent's directory) and appear in the
+    picker exactly like a built-in command, which is how the user expects to run
+    them by name.
+    """
+
+    return [
+        _asset_command(record.name, record.description, f"Run the {record.name} workflow.")
+        for record in records
+    ]
+
+
+def skill_commands(records: Sequence[SkillRecord]) -> list[SlashCommand]:
+    """Expose each skill as its own slash command.
+
+    A skill normally loads on its own when the task matches its description.
+    Naming it explicitly is the override: it forces that skill for the next turn
+    instead of leaving the choice to the model.
+    """
+
+    return [
+        _asset_command(record.name, record.description, f"Use the {record.name} skill.")
+        for record in records
+    ]
+
+
+def command_suggestions(
+    prefix: str, *, limit: int = 8, extra: Sequence[SlashCommand] = ()
+) -> list[SlashCommand]:
     text = prefix.lstrip()
     if not text.startswith("/"):
         return []
@@ -173,22 +249,24 @@ def command_suggestions(prefix: str, *, limit: int = 8) -> list[SlashCommand]:
     if value_matches:
         return value_matches[:limit]
 
+    # Built-ins first: a workflow can never shadow a command the app owns.
+    available = [*SLASH_COMMANDS, *extra]
     command_prefix = text.rstrip()
-    matches = [item for item in SLASH_COMMANDS if item.command.startswith(command_prefix)]
+    matches = [item for item in available if item.command.startswith(command_prefix)]
     if matches:
         return matches[:limit]
     return [item for item in SLASH_COMMANDS if item.command.startswith("/config")][:limit]
 
 
-def render_suggestions(prefix: str) -> str:
-    suggestions = command_suggestions(prefix)
+def render_suggestions(prefix: str, *, extra: Sequence[SlashCommand] = ()) -> str:
+    suggestions = command_suggestions(prefix, extra=extra)
     if not suggestions:
         return ""
     return "\n".join(f"{item.command:<42} {item.description}" for item in suggestions)
 
 
-def command_completion(prefix: str) -> str | None:
-    suggestions = command_suggestions(prefix, limit=1)
+def command_completion(prefix: str, *, extra: Sequence[SlashCommand] = ()) -> str | None:
+    suggestions = command_suggestions(prefix, limit=1, extra=extra)
     if not suggestions:
         return None
     completion = suggestions[0].completion_text
@@ -228,6 +306,20 @@ def handle_config_command(application: Any, command_text: str, *, config_path: P
             config_path=config_path,
             changes={"model": " ".join(parts[2:])},
             live_fields={"model"},
+            restart_required=False,
+        )
+    if action == "vision-model":
+        if len(parts) < 3:
+            return "command> Usage: /config vision-model <name|off>"
+        value = " ".join(parts[2:])
+        # "off"/"none" restores the default: images go to the main model.
+        if value.strip().lower() in {"off", "none"}:
+            value = ""
+        return _apply_config_change(
+            application,
+            config_path=config_path,
+            changes={"vision_model": value},
+            live_fields={"vision_model"},
             restart_required=False,
         )
     if action == "language":
@@ -390,6 +482,28 @@ def handle_config_command(application: Any, command_text: str, *, config_path: P
                 "explanation of why each change is needed."
             )
         return "command> Learn mode off. Approval prompts will no longer show explanations."
+    if action == "live-code":
+        if len(parts) != 3 or parts[2].strip().lower() not in {"on", "off"}:
+            return "command> Usage: /config live-code <on|off>"
+        enabled = parts[2].strip().lower() == "on"
+        result = _apply_config_change(
+            application,
+            config_path=config_path,
+            changes={"terminal_live_code": enabled},
+            live_fields={"terminal_live_code"},
+            restart_required=False,
+        )
+        if result.startswith("command> Config not changed"):
+            return result
+        if enabled:
+            return (
+                "command> Live code on. Files show up in a code window as the "
+                "model writes them."
+            )
+        return (
+            "command> Live code off. Writes report progress on one line only, "
+            "and the finished code still shows in the approval dialog."
+        )
     return f"command> Unknown config action: {action}"
 
 
@@ -535,6 +649,18 @@ def _value_suggestions(prefix: str) -> list[SlashCommand]:
             SlashCommand(
                 f"/config learn {value}",
                 "Show/hide the model's explanation of why it's making each change.",
+            )
+            for value in ("on", "off")
+            if value.startswith(value_prefix)
+        ]
+
+    live_code_prefix = "/config live-code "
+    if prefix.startswith(live_code_prefix):
+        value_prefix = prefix[len(live_code_prefix) :].strip().lower()
+        return [
+            SlashCommand(
+                f"/config live-code {value}",
+                "Show/hide the file being written, live, as the model streams it.",
             )
             for value in ("on", "off")
             if value.startswith(value_prefix)

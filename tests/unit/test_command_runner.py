@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shlex
 import sys
 
@@ -35,8 +36,10 @@ def test_execute_command_schema_exposes_simple_command_string() -> None:
     assert schema["properties"]["cwd"]["type"] == ["string", "null"]
     assert schema["properties"]["timeout"]["type"] == ["number", "null"]
     assert "argv" not in schema["properties"]
-    assert "env" not in schema["properties"]
     assert "shell" not in schema["properties"]
+    # env is exposed so the model can set variables without a shell prefix.
+    assert schema["properties"]["env"]["type"] == ["object", "null"]
+    assert schema["properties"]["env"]["additionalProperties"] == {"type": "string"}
 
 
 async def test_execute_command_separates_stdout_stderr(tmp_path) -> None:
@@ -52,10 +55,18 @@ async def test_execute_command_separates_stdout_stderr(tmp_path) -> None:
     assert "err" in result["stderr"]
 
 
+# Prints the working directory in the platform's own notation. `pwd` cannot do
+# that portably: on Windows the one on PATH is usually Git's, which answers in
+# MSYS form ("/tmp/...") and never matches the native path under test.
+_PRINT_CWD = "import os;print(os.getcwd())"
+
+
 async def test_execute_command_defaults_to_workspace(tmp_path) -> None:
     context = make_context(tmp_path)
     tool = ExecuteCommandTool()
-    result = await tool.execute({"command": "pwd"}, context)
+    result = await tool.execute(
+        {"command": f'{shlex.quote(sys.executable)} -c "{_PRINT_CWD}"'}, context
+    )
     assert result["cwd"] == str(tmp_path)
     assert result["stdout"].strip() == str(tmp_path)
 
@@ -80,10 +91,54 @@ async def test_execute_command_keeps_legacy_argv_execution(tmp_path) -> None:
     context = make_context(tmp_path)
     tool = ExecuteCommandTool()
 
-    result = await tool.execute({"argv": ["pwd"]}, context)
+    result = await tool.execute({"argv": [sys.executable, "-c", _PRINT_CWD]}, context)
 
     assert result["exit_code"] == 0
     assert result["stdout"].strip() == str(tmp_path)
+
+
+async def test_execute_command_sets_environment_variables(tmp_path) -> None:
+    # The regression that stranded the agent: it needed an env var to run/test a
+    # project but execute_command runs without a shell. The env argument provides
+    # it directly instead of a (failing) VAR=value prefix.
+    context = make_context(tmp_path)
+    tool = ExecuteCommandTool()
+    script = "import os; print(os.environ.get('USE_FAKE_LLM', 'unset'))"
+
+    result = await tool.execute(
+        {
+            "command": f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}",
+            "env": {"USE_FAKE_LLM": "true"},
+        },
+        context,
+    )
+
+    assert result["exit_code"] == 0
+    assert result["stdout"].strip() == "true"
+
+
+async def test_execute_command_coerces_scalar_env_values(tmp_path) -> None:
+    context = make_context(tmp_path)
+    tool = ExecuteCommandTool()
+    script = "import os; print(os.environ['PORT'], os.environ['DEBUG'])"
+
+    result = await tool.execute(
+        {
+            "command": f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}",
+            "env": {"PORT": 8080, "DEBUG": True},
+        },
+        context,
+    )
+
+    assert result["stdout"].strip() == "8080 true"
+
+
+async def test_execute_command_rejects_malformed_env(tmp_path) -> None:
+    context = make_context(tmp_path)
+    tool = ExecuteCommandTool()
+
+    with pytest.raises(ToolArgumentError, match="env"):
+        await tool.execute({"command": "pwd", "env": ["USE_FAKE_LLM=true"]}, context)
 
 
 async def test_execute_command_rejects_empty_command(tmp_path) -> None:
@@ -181,3 +236,33 @@ async def test_execute_command_wrapper_duration_bounds_execution(tmp_path) -> No
             {"command": f"timeout 0.1 {shlex.quote(sys.executable)} -c {shlex.quote(sleep)}"},
             context,
         )
+
+
+def test_command_split_keeps_windows_path_separators() -> None:
+    # Regression: POSIX-mode shlex reads the backslash as an escape and eats it,
+    # so a Windows path in a command silently lost its separators and the
+    # command ran - exit code 0 - against a mangled path.
+    from code_ai.tools.process.execute_command import _split_command_line
+
+    argv = _split_command_line(r'del C:\ws\build\out.txt')
+
+    if os.name == "nt":
+        assert argv == ["del", r"C:\ws\build\out.txt"]
+    else:
+        # POSIX keeps its escapes; the backslash means what it means there.
+        assert argv == ["del", "C:wsbuildout.txt"]
+
+
+def test_command_split_still_honours_quoting() -> None:
+    from code_ai.tools.process.execute_command import _split_command_line
+
+    assert _split_command_line('echo "a b"') == ["echo", "a b"]
+    assert _split_command_line("git commit -m 'x y'") == ["git", "commit", "-m", "x y"]
+    assert _split_command_line("ls   -la") == ["ls", "-la"]
+
+
+def test_command_split_rejects_an_unterminated_quote() -> None:
+    from code_ai.tools.process.execute_command import _split_command_line
+
+    with pytest.raises(ValueError):
+        _split_command_line('echo "unterminated')
