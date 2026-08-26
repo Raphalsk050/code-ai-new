@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-import os
-import tempfile
 from importlib import resources
 from importlib.resources.abc import Traversable
 from pathlib import Path
 
 from code_ai.tools.skills.common import SKILL_ENTRYPOINT, skills_root
+from code_ai.util.fileio import RetryPolicy, atomic_write_text
+
+# Seeding runs at startup, before any configuration is in hand, so it uses
+# the built-in retry defaults rather than the user's file_io section.
+_POLICY = RetryPolicy()
 
 # Bumping this re-arms the one-time seed for installs that already ran an older
 # bundle: a marker written by a previous version no longer matches, so any
@@ -69,27 +72,11 @@ def seed_default_skills(root: Path | None = None) -> list[str]:
             if dest.exists():
                 continue
             dest_dir.mkdir(parents=True, exist_ok=True)
-            _atomic_write(dest, entry.read_text(encoding="utf-8"))
+            atomic_write_text(dest, entry.read_text(encoding="utf-8"), policy=_POLICY)
             seeded.append(name)
 
-        _atomic_write(marker, BUNDLE_VERSION + "\n")
+        atomic_write_text(marker, BUNDLE_VERSION + "\n", policy=_POLICY)
         return seeded
     except Exception:  # never let seeding break startup
         return []
 
-
-def _atomic_write(path: Path, content: str) -> None:
-    data = content.encode("utf-8")
-    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp_name, path)
-    except Exception:
-        try:
-            os.unlink(temp_name)
-        except FileNotFoundError:
-            pass
-        raise

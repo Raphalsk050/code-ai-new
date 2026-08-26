@@ -8,6 +8,7 @@ from code_ai.tools.filesystem.common import read_text_file
 from code_ai.tools.locations import LOCATION_SCHEMA, for_context
 from code_ai.tools.output import bound_text
 from code_ai.tools.schema import tool_schema
+from code_ai.util.fileio import RetryPolicy
 
 
 class ReadFileTool:
@@ -35,7 +36,9 @@ class ReadFileTool:
             raise ToolArgumentError("path is required.")
         location = for_context(context, arguments.get("location"))
         path = location.resolve(path_value, must_exist=True)
-        text, digest = read_text_file(path)
+        text, digest = read_text_file(
+            path, policy=RetryPolicy.from_config(context.config.file_io)
+        )
         lines = text.splitlines(keepends=True)
         start = int(arguments.get("start_line") or 1)
         end = int(arguments.get("end_line") or len(lines))

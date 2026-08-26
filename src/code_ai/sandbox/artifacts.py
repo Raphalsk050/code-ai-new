@@ -7,9 +7,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from code_ai.util.fileio import RetryPolicy, atomic_write_bytes
+
 _SLUG = re.compile(r"[^a-z0-9]+")
 _MAX_SLUG_LENGTH = 40
 _TRUNCATION_NOTICE = "\n[truncated: artifact size limit reached]\n"
+
+# The recorder is handed a size cap rather than the app configuration, so it
+# uses the built-in retry defaults that mirror the file_io section.
+_POLICY = RetryPolicy()
 
 
 def _slugify(label: str) -> str:
@@ -89,9 +95,9 @@ class ArtifactRecorder:
             "stdout_truncated": stdout_truncated,
             "stderr_truncated": stderr_truncated,
         }
-        result_path.write_text(
-            json.dumps(summary, indent=2, sort_keys=True, default=str),
-            encoding="utf-8",
+        _write(
+            result_path,
+            json.dumps(summary, indent=2, sort_keys=True, default=str).encode("utf-8"),
         )
         return RunRecord(
             directory=directory,
@@ -118,9 +124,15 @@ class ArtifactRecorder:
     def _write_stream(self, path: Path, text: str) -> bool:
         data = text.encode("utf-8", errors="replace")
         if len(data) <= self._max_bytes:
-            path.write_bytes(data)
+            _write(path, data)
             return False
         # Cut on a character boundary so the saved log stays valid UTF-8.
         head = data[: self._max_bytes].decode("utf-8", errors="ignore")
-        path.write_text(head + _TRUNCATION_NOTICE, encoding="utf-8")
+        _write(path, (head + _TRUNCATION_NOTICE).encode("utf-8"))
         return True
+
+
+def _write(path: Path, data: bytes) -> None:
+    """Write one artifact, waiting out a scanner that grabbed it as it appeared."""
+
+    atomic_write_bytes(path, data, policy=_POLICY, allow_non_atomic_fallback=True)

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-import tempfile
 from typing import Any
 
 from code_ai.core.errors import ToolArgumentError, ToolExecutionError
@@ -13,6 +11,7 @@ from code_ai.tools.skills.common import (
     sanitize_skill_name,
     skills_root,
 )
+from code_ai.util.fileio import RetryPolicy, atomic_write_text
 
 
 class CreateSkillTool:
@@ -77,7 +76,12 @@ class CreateSkillTool:
             name=name, description=description, instructions=instructions
         )
         skill_dir.mkdir(parents=True, exist_ok=True)
-        _atomic_write(entry, content)
+        atomic_write_text(
+            entry,
+            content,
+            policy=RetryPolicy.from_config(context.config.file_io),
+            allow_non_atomic_fallback=context.config.file_io.allow_non_atomic_fallback,
+        )
 
         await context.event_bus.emit(
             "skill.created",
@@ -92,19 +96,3 @@ class CreateSkillTool:
             "bytes_written": len(content.encode("utf-8")),
         }
 
-
-def _atomic_write(path, content: str) -> None:
-    data = content.encode("utf-8")
-    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp_name, path)
-    except Exception:
-        try:
-            os.unlink(temp_name)
-        except FileNotFoundError:
-            pass
-        raise

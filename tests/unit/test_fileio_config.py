@@ -43,3 +43,19 @@ def test_a_policy_that_cannot_work_is_rejected(tmp_path, overrides) -> None:
         AppConfig.from_mapping(
             {"api_mode": "ollama", "workspace": str(tmp_path), "file_io": overrides}
         )
+
+
+def test_the_built_in_defaults_match_the_configured_ones() -> None:
+    """The two must agree or a store that has no configuration behaves differently.
+
+    Startup seeding, the memory stores and the artifact recorder are all built
+    without the app configuration, so they fall back to RetryPolicy's own
+    defaults. Those are literals rather than an import, to keep util from
+    depending on config - which is exactly why they need a guard against drift.
+    """
+
+    from code_ai.util.fileio import RetryPolicy
+
+    configured = RetryPolicy.from_config(FileIOConfig())
+
+    assert RetryPolicy() == configured

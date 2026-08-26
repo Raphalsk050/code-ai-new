@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import os
-import tempfile
+import asyncio
 from typing import Any
 
 from code_ai.core.errors import ToolArgumentError, ToolExecutionError
@@ -9,6 +8,7 @@ from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.filesystem.common import sha256_bytes, sha256_file
 from code_ai.tools.locations import LOCATION_SCHEMA, for_context
 from code_ai.tools.schema import tool_schema
+from code_ai.util.fileio import RetryPolicy, atomic_write_bytes
 
 
 class WriteFileTool:
@@ -58,34 +58,30 @@ class WriteFileTool:
         expected_hash = arguments.get("expected_sha256")
         create_dirs = bool(arguments.get("create_dirs", True))
 
+        policy = RetryPolicy.from_config(context.config.file_io)
+
         old_hash: str | None = None
         if path.exists():
             if expected_new:
                 raise ToolExecutionError(f"File already exists: {path_value}")
-            old_hash = sha256_file(path)
+            old_hash = sha256_file(path, policy=policy)
             if expected_hash and old_hash != expected_hash:
                 raise ToolExecutionError("expected_sha256 does not match existing file.")
         elif expected_hash:
             raise ToolExecutionError("expected_sha256 was provided but file does not exist.")
 
-        if create_dirs:
-            path.parent.mkdir(parents=True, exist_ok=True)
         data = content.encode("utf-8")
-        fd, temp_name = tempfile.mkstemp(
-            prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+        # Off the event loop: the write retries a locked file for up to a
+        # second or two on Windows, and a slow network share can take longer
+        # still. Neither should freeze the UI.
+        outcome = await asyncio.to_thread(
+            atomic_write_bytes,
+            path,
+            data,
+            policy=policy,
+            allow_non_atomic_fallback=context.config.file_io.allow_non_atomic_fallback,
+            create_parents=create_dirs,
         )
-        try:
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(data)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temp_name, path)
-        except Exception:
-            try:
-                os.unlink(temp_name)
-            except FileNotFoundError:
-                pass
-            raise
 
         return {
             "path": location.relative(path),
@@ -93,4 +89,5 @@ class WriteFileTool:
             "old_sha256": old_hash,
             "new_sha256": sha256_bytes(data),
             "bytes_written": len(data),
+            **outcome.to_dict(),
         }

@@ -283,6 +283,7 @@ def atomic_write_bytes(
     *,
     policy: RetryPolicy = NO_RETRY,
     allow_non_atomic_fallback: bool = False,
+    create_parents: bool = True,
 ) -> WriteOutcome:
     """Write ``data`` to ``path``, replacing it as one step where possible.
 
@@ -298,7 +299,8 @@ def atomic_write_bytes(
     """
 
     parent = path.parent
-    parent.mkdir(parents=True, exist_ok=True)
+    if create_parents:
+        parent.mkdir(parents=True, exist_ok=True)
     temp_name = _write_temp_file(parent, path.name, data, policy)
     try:
         swap = retry_transient(
@@ -344,6 +346,7 @@ def atomic_write_text(
     *,
     policy: RetryPolicy = NO_RETRY,
     allow_non_atomic_fallback: bool = False,
+    create_parents: bool = True,
 ) -> WriteOutcome:
     """UTF-8 flavour of :func:`atomic_write_bytes`."""
 
@@ -352,6 +355,7 @@ def atomic_write_text(
         text.encode("utf-8"),
         policy=policy,
         allow_non_atomic_fallback=allow_non_atomic_fallback,
+        create_parents=create_parents,
     )
 
 

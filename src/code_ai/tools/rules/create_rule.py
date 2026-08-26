@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import os
-import tempfile
-from pathlib import Path
 from typing import Any
 
 from code_ai.config.defaults import global_rules_dir, project_rules_dir
@@ -10,6 +7,7 @@ from code_ai.core.errors import ToolArgumentError, ToolExecutionError
 from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.schema import tool_schema
 from code_ai.tools.skills.common import render_skill_markdown, sanitize_skill_name
+from code_ai.util.fileio import RetryPolicy, atomic_write_text
 
 _VALID_SCOPES = ("project", "global")
 
@@ -89,7 +87,12 @@ class CreateRuleTool:
             name=name, description=description, instructions=content
         )
         directory.mkdir(parents=True, exist_ok=True)
-        _atomic_write(path, rendered)
+        atomic_write_text(
+            path,
+            rendered,
+            policy=RetryPolicy.from_config(context.config.file_io),
+            allow_non_atomic_fallback=context.config.file_io.allow_non_atomic_fallback,
+        )
 
         await context.event_bus.emit(
             "rule.created",
@@ -105,19 +108,3 @@ class CreateRuleTool:
             "bytes_written": len(rendered.encode("utf-8")),
         }
 
-
-def _atomic_write(path: Path, content: str) -> None:
-    data = content.encode("utf-8")
-    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp_name, path)
-    except Exception:
-        try:
-            os.unlink(temp_name)
-        except FileNotFoundError:
-            pass
-        raise

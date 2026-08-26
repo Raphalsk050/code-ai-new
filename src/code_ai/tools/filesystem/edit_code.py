@@ -1,8 +1,7 @@
 from __future__ import annotations
 
+import asyncio
 import difflib
-import os
-import tempfile
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,6 +11,7 @@ from code_ai.tools.filesystem.common import read_text_file, sha256_bytes
 from code_ai.tools.locations import LOCATION_SCHEMA, for_context
 from code_ai.tools.output import bound_text
 from code_ai.tools.schema import tool_schema
+from code_ai.util.fileio import RetryPolicy, atomic_write_bytes
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,7 +70,8 @@ class EditCodeTool:
 
         location = for_context(context, arguments.get("location"))
         path = location.resolve(path_value, must_exist=True)
-        original, old_hash = read_text_file(path)
+        policy = RetryPolicy.from_config(context.config.file_io)
+        original, old_hash = read_text_file(path, policy=policy)
         replacements = self._build_replacements(original, edits)
         edited = self._apply(original, replacements)
         diff = "".join(
@@ -83,21 +84,13 @@ class EditCodeTool:
         )
 
         data = edited.encode("utf-8")
-        fd, temp_name = tempfile.mkstemp(
-            prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+        outcome = await asyncio.to_thread(
+            atomic_write_bytes,
+            path,
+            data,
+            policy=policy,
+            allow_non_atomic_fallback=context.config.file_io.allow_non_atomic_fallback,
         )
-        try:
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(data)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temp_name, path)
-        except Exception:
-            try:
-                os.unlink(temp_name)
-            except FileNotFoundError:
-                pass
-            raise
 
         return {
             "path": location.relative(path),
@@ -106,6 +99,7 @@ class EditCodeTool:
             "new_sha256": sha256_bytes(data),
             "changed": original != edited,
             "diff": bound_text(diff, context.config.budgets.max_tool_output_chars),
+            **outcome.to_dict(),
         }
 
     def _build_replacements(self, original: str, edits: list[Any]) -> list[_Replacement]:
