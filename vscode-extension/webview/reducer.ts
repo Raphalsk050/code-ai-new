@@ -3,7 +3,7 @@
 // but it produces rich, typed items (not flat strings) so the UI can render a
 // Claude/Codex/Cline-style transcript. Event names are the versioned contract.
 
-import type { EventEnvelope } from "../src/protocol";
+import type { EventEnvelope, StoredMessage } from "../src/protocol";
 
 export type ToolStatus = "running" | "done" | "failed";
 export type NoticeLevel = "info" | "warning" | "error" | "plan" | "permission";
@@ -44,16 +44,35 @@ export const initialState: ViewState = {
   heartbeat: 0,
 };
 
+// AgentState values that mean the agent is actively doing something. Must stay
+// in sync with `code_ai.core.state.AgentState` — the bridge forwards those exact
+// names via `status.changed`, and the terminal UI keys off the same set
+// (`code_ai.ui.terminal.widgets.WORKING_STATES`).
 const WORKING_STATES = new Set([
-  "THINKING",
-  "RUNNING_TOOL",
-  "STREAMING",
+  "CALLING_MODEL",
+  "EXECUTING_TOOL",
   "COMPRESSING_CONTEXT",
   "CANCELLING",
 ]);
 
 export function isBusy(status: string): boolean {
   return WORKING_STATES.has(status);
+}
+
+/** Human label for a working state, mirroring the terminal `working_label`. */
+export function workingLabel(status: string): string {
+  switch (status) {
+    case "CALLING_MODEL":
+      return "calling model";
+    case "EXECUTING_TOOL":
+      return "running tools";
+    case "COMPRESSING_CONTEXT":
+      return "compacting context";
+    case "CANCELLING":
+      return "cancelling";
+    default:
+      return "working";
+  }
 }
 
 // -- helpers ---------------------------------------------------------------
@@ -108,6 +127,47 @@ function webSearchDetail(result: any): string {
     .filter(Boolean)
     .map((t: string) => t.slice(0, 80));
   return titles.length ? `${list.length} result(s): ${titles.join(" · ")}` : `${list.length} result(s)`;
+}
+
+/**
+ * Rebuild transcript items from a saved conversation's raw provider messages.
+ * Used when reopening a conversation whose rich client-side transcript is no
+ * longer cached (e.g. after clearing webview state or on another machine), so
+ * history stays viewable straight from the bridge. Best-effort: tool result
+ * bodies were never stored verbatim in the UI, so cards show a short summary.
+ */
+export function messagesToItems(messages: StoredMessage[]): Item[] {
+  const items: Item[] = [];
+  const toolIndexById = new Map<string, number>();
+  let seq = 0;
+  const nid = () => `load-${seq++}`;
+  for (const m of messages) {
+    if (m.role === "user") {
+      const text = m.content ?? "";
+      // Skip the injected "[Editor context]" preamble messages — they are plumbing,
+      // not something the user typed.
+      if (!text.trim() || text.startsWith("[Editor context]")) continue;
+      items.push({ kind: "user", id: nid(), text });
+    } else if (m.role === "assistant") {
+      if (m.content && m.content.trim()) {
+        items.push({ kind: "assistant", id: nid(), text: m.content, streaming: false });
+      }
+      for (const call of m.tool_calls ?? []) {
+        items.push({ kind: "tool", id: nid(), toolId: call.id, name: call.name, status: "done", detail: "" });
+        toolIndexById.set(call.id, items.length - 1);
+      }
+    } else if (m.role === "tool") {
+      const content = m.content ?? "";
+      const isError = content.startsWith("ERROR: ");
+      const detail = (isError ? content.slice(7) : content).slice(0, 240);
+      const idx = m.tool_call_id != null ? toolIndexById.get(m.tool_call_id) : undefined;
+      if (idx != null) {
+        const it = items[idx];
+        if (it.kind === "tool") items[idx] = { ...it, status: isError ? "failed" : "done", detail };
+      }
+    }
+  }
+  return items;
 }
 
 // -- reducer ---------------------------------------------------------------
@@ -244,6 +304,48 @@ export function applyEvent(state: ViewState, event: EventEnvelope): ViewState {
       return { ...state, items: push(state.items, { kind: "notice", id, level: "plan", text: `✓ ${p.current_step ?? "step"}` }) };
     case "planning.step.failed":
       return { ...state, items: push(state.items, { kind: "notice", id, level: "error", text: `✗ ${p.current_step ?? "step"}` }) };
+    case "planning.plan.waiting":
+      return { ...state, items: push(state.items, { kind: "notice", id, level: "plan", text: `◌ paused, waiting for you (${p.progress ?? ""})` }) };
+
+    case "command.output": {
+      // Live output chunk from execute_command: stream it into the running tool
+      // card's detail so the user watches the command instead of a silent card.
+      const text = String(p.text ?? "");
+      if (!text) return state;
+      let idx = -1;
+      for (let i = state.items.length - 1; i >= 0; i--) {
+        const it = state.items[i];
+        if (it.kind === "tool" && it.status === "running") {
+          idx = i;
+          break;
+        }
+      }
+      if (idx < 0) return state;
+      const tool = state.items[idx] as Extract<Item, { kind: "tool" }>;
+      const copy = state.items.slice();
+      copy[idx] = { ...tool, detail: (tool.detail + text).slice(-240) };
+      return { ...state, items: copy };
+    }
+
+    case "terminal.screen.updated": {
+      // The interactive PTY's emulated screen changed (tool, /term, or the
+      // background poller). Render its newest rows as one in-place notice so
+      // a dev server's output stays visible without flooding the transcript.
+      const screen = String(p.screen ?? "");
+      const tail = screen
+        .split("\n")
+        .filter((line) => line.trim())
+        .slice(-4)
+        .join("\n");
+      const text = `[terminal] ${p.closed ? "(closed) " : ""}${tail}`.trim();
+      const last = state.items[state.items.length - 1];
+      if (last && last.kind === "notice" && last.text.startsWith("[terminal]")) {
+        const copy = state.items.slice();
+        copy[copy.length - 1] = { ...last, text };
+        return { ...state, items: copy };
+      }
+      return { ...state, items: push(state.items, { kind: "notice", id, level: "info", text }) };
+    }
 
     case "warning":
       return { ...state, items: push(state.items, { kind: "notice", id, level: "warning", text: String(p.message ?? "") }) };

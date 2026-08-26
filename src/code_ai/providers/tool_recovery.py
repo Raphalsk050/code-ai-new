@@ -131,14 +131,22 @@ class ToolCallStreamFilter:
         return "".join(emitted)
 
     def flush(self) -> str:
-        """Release held text at end of stream, dropping incomplete markers.
+        """Release held text at end of stream.
 
-        Any held text is, by construction, a marker prefix. If the stream ends
-        mid-marker it is a truncated tool call and must not leak; the full text
-        is still available to :func:`recover_tool_calls_from_text`.
+        Held text is, by construction, a marker prefix. A long fragment means
+        the stream was cut inside tool-call markup and must not leak (the full
+        text is still available to :func:`recover_tool_calls_from_text`). But a
+        one- or two-character hold is almost always ordinary punctuation that
+        happened to end the visible text - e.g. the backtick closing an inline
+        code span like ```<autor>``` right before the model switched to a
+        structured tool call. Dropping it visibly truncates the answer, so
+        short holds are released.
         """
+        held = self._held
         self._held = ""
-        return ""
+        if self._suppressed or len(held) > 2:
+            return ""
+        return held
 
 
 def _marker_status(candidate: str) -> str:

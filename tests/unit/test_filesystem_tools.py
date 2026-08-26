@@ -33,7 +33,10 @@ async def test_workspace_rejects_symlink_escape(tmp_path) -> None:
     outside = tmp_path.parent / "outside.txt"
     outside.write_text("secret", encoding="utf-8")
     link = tmp_path / "link.txt"
-    link.symlink_to(outside)
+    try:
+        link.symlink_to(outside)
+    except OSError as exc:  # Windows grants this only under Developer Mode/admin
+        pytest.skip(f"creating a symlink is not permitted here: {exc}")
     context = make_context(tmp_path)
     with pytest.raises(WorkspaceBoundaryError):
         context.workspace.resolve("link.txt", must_exist=True)
@@ -45,9 +48,9 @@ async def test_write_read_and_edit_code_use_minimal_schema(tmp_path) -> None:
     read = ReadFileTool()
     edit = EditCodeTool()
 
-    assert set(write.input_schema["properties"]) == {"path", "content", "reason"}
+    assert set(write.input_schema["properties"]) == {"path", "content", "reason", "location"}
     # strict-mode requires every declared property (even nullable ones) in "required".
-    assert set(write.input_schema["required"]) == {"path", "content", "reason"}
+    assert set(write.input_schema["required"]) == {"path", "content", "reason", "location"}
     # No hash/occurrence guards exposed: strict mode would force the model to
     # emit them every call, and a stale value aborts otherwise-valid edits.
     assert set(edit.input_schema["properties"]) == {
@@ -55,6 +58,7 @@ async def test_write_read_and_edit_code_use_minimal_schema(tmp_path) -> None:
         "old_text",
         "new_text",
         "reason",
+        "location",
     }
     assert "expected_sha256" not in edit.input_schema["properties"]
     assert "expected_occurrences" not in edit.input_schema["properties"]
@@ -154,3 +158,42 @@ async def test_search_code_finds_bounded_matches(tmp_path) -> None:
     assert result["matches"]
     assert result["matches"][0]["path"] == "src/app.py"
     assert result["matches"][0]["line"] == 2
+
+
+def test_rg_line_parses_a_path_that_contains_a_colon(tmp_path) -> None:
+    # Regression: matches were split on ":", so on Windows the drive letter
+    # became the path and the rest of the path became the line number. int()
+    # then raised, the except swallowed it, and every single match was dropped -
+    # search_code answered [] for any query whenever rg was installed.
+    from code_ai.tools.search.search_code import _parse_rg_line
+
+    hit = tmp_path / "src" / "app.py"
+    line = f"{hit}\x002:    return 42"
+
+    parsed = _parse_rg_line(line, workspace_root=tmp_path, max_output_chars=600)
+
+    assert parsed is not None
+    assert parsed["path"] == "src/app.py"
+    assert parsed["line"] == 2
+    assert parsed["snippet"].strip() == "return 42"
+
+
+def test_rg_line_falls_back_to_the_colon_form(tmp_path) -> None:
+    # An rg build that ignores --null must not cost us every result either.
+    from code_ai.tools.search.search_code import _parse_rg_line
+
+    hit = tmp_path / "src" / "app.py"
+    parsed = _parse_rg_line(
+        f"{hit}:7:    value = {{}}", workspace_root=tmp_path, max_output_chars=600
+    )
+
+    assert parsed is not None
+    assert parsed["path"] == "src/app.py"
+    assert parsed["line"] == 7
+
+
+def test_rg_line_rejects_a_non_match_line(tmp_path) -> None:
+    from code_ai.tools.search.search_code import _parse_rg_line
+
+    assert _parse_rg_line("", workspace_root=tmp_path, max_output_chars=600) is None
+    assert _parse_rg_line("nonsense", workspace_root=tmp_path, max_output_chars=600) is None

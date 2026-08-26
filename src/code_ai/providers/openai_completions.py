@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import random
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 from typing import Any
 
 from code_ai.config.models import AppConfig
-from code_ai.core.errors import ProviderError, TransientProviderError
-from code_ai.providers.base import build_openai_http_client
+from code_ai.core.errors import ImageLimitError, ProviderError, TransientProviderError
+from code_ai.providers.base import build_openai_http_client, closing_stream
 from code_ai.providers.debug import ModelDebugLogger
+from code_ai.providers.images import parse_image_limit
 from code_ai.providers.models import (
     FinishReason,
     ModelRequest,
@@ -21,6 +22,7 @@ from code_ai.providers.models import (
 )
 from code_ai.providers.translation import (
     messages_to_chat,
+    normalize_chat_messages,
     object_get,
     parse_arguments,
     tools_to_chat,
@@ -52,6 +54,27 @@ def _is_transient_exception(exc: Exception) -> bool:
     return status in {408, 409, 429, 500, 502, 503, 504}
 
 
+def _carries_images(request: ModelRequest) -> bool:
+    return any(getattr(message, "images", None) for message in request.messages)
+
+
+def _worth_retrying(exc: Exception, request: ModelRequest) -> bool:
+    """Whether re-sending this exact request could plausibly do better.
+
+    A 500 on a request carrying images is the server saying it could not process
+    that payload, and the payload does not change between attempts - so the
+    retries buy nothing and cost the caller the whole backoff schedule before it
+    can react. Overload and timeout codes still retry normally, images or not,
+    because those really are about the moment rather than the content.
+    """
+
+    if not _is_transient_exception(exc):
+        return False
+    if getattr(exc, "status_code", None) == 500 and _carries_images(request):
+        return False
+    return True
+
+
 # Field names an endpoint may reject when it does not understand a sampling
 # control we sent. Used to decide whether a failed request can be retried
 # without sampling kwargs rather than surfaced as a hard error.
@@ -78,11 +101,11 @@ def _looks_like_sampling_error(exc: Exception) -> bool:
 def _reasoning_delta(value: Any) -> str:
     """Extract reasoning text from an OpenAI-compatible delta/message.
 
-    Reasoning models served through vLLM/SGLang and similar OpenAI-compatible
-    backends expose chain-of-thought in a non-standard ``reasoning_content``
-    (sometimes ``reasoning``) field alongside the regular ``content``.
+    Reasoning models served through vLLM/SGLang, Ollama, and similar
+    OpenAI-compatible backends expose chain-of-thought in a non-standard
+    ``reasoning_content``/``reasoning``/``thinking`` field alongside ``content``.
     """
-    for key in ("reasoning_content", "reasoning"):
+    for key in ("reasoning_content", "reasoning", "thinking"):
         text = object_get(value, key, "")
         if text:
             return str(text)
@@ -114,7 +137,9 @@ class OpenAIChatCompletionsProvider:
             provider_reported_usage=True,
             remote_conversation_state=False,
             native_tokenization=False,
-            image_support=False,
+            # Multipart image_url content is standard Chat Completions; vision
+            # support ultimately depends on the model behind the endpoint.
+            image_support=True,
         )
         self._stream_options_supported = True
         self._sampling_supported = True
@@ -124,8 +149,13 @@ class OpenAIChatCompletionsProvider:
         return self._capabilities
 
     async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
-        async for event in self._stream_with_retry(request):
-            yield event
+        # Every layer needs closing, not just the innermost one: leaving an
+        # `async for` early suspends the generator under it rather than closing
+        # it, so without aclosing() at each hop the HTTP response at the bottom
+        # stays open and the server keeps generating.
+        async with aclosing(self._stream_with_retry(request)) as events:
+            async for event in events:
+                yield event
 
     async def complete(self, request: ModelRequest) -> ModelResponse:
         text_parts: list[str] = []
@@ -147,11 +177,18 @@ class OpenAIChatCompletionsProvider:
         attempts = 0
         while True:
             try:
-                async for event in self._stream_once(request):
-                    yield event
+                async with aclosing(self._stream_once(request)) as events:
+                    async for event in events:
+                        yield event
                 return
+            except ImageLimitError as exc:
+                # Keeps the limit intact through the wrapping, so the caller can
+                # fit the conversation to it rather than guessing.
+                raise ImageLimitError(
+                    f"Chat Completions request failed: {exc}", limit=exc.limit
+                ) from exc
             except Exception as exc:
-                if not _is_transient_exception(exc) or attempts >= 2:
+                if not _worth_retrying(exc, request) or attempts >= 2:
                     raise ProviderError(f"Chat Completions request failed: {exc}") from exc
                 attempts += 1
                 await asyncio.sleep(min(2.0, 0.25 * (2**attempts)) + random.random() * 0.1)
@@ -159,7 +196,7 @@ class OpenAIChatCompletionsProvider:
     async def _stream_once(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
         kwargs: dict[str, Any] = {
             "model": request.model,
-            "messages": messages_to_chat(request.messages),
+            "messages": messages_to_chat(normalize_chat_messages(request.messages)),
             "stream": True,
         }
         if request.max_output_tokens:
@@ -179,14 +216,22 @@ class OpenAIChatCompletionsProvider:
         try:
             stream = await self._client.chat.completions.create(**kwargs)
         except Exception as exc:
+            limit = parse_image_limit(str(exc))
+            if limit is not None:
+                # The endpoint just named what it accepts. Remember it, so the
+                # rest of the session sizes its requests to fit instead of
+                # rediscovering the same refusal on every attachment.
+                self._capabilities.max_images_per_request = limit
+                raise ImageLimitError(str(exc), limit=limit) from exc
             if self._stream_options_supported and "stream_options" in str(exc):
                 self._stream_options_supported = False
                 yield ProviderEvent(
                     kind="warning",
                     warning="Endpoint rejected streaming usage options; retrying without them.",
                 )
-                async for event in self._stream_once(request):
-                    yield event
+                async with aclosing(self._stream_once(request)) as events:
+                    async for event in events:
+                        yield event
                 return
             if self._sampling_supported and _looks_like_sampling_error(exc):
                 self._sampling_supported = False
@@ -194,8 +239,9 @@ class OpenAIChatCompletionsProvider:
                     kind="warning",
                     warning="Endpoint rejected sampling parameters; retrying without them.",
                 )
-                async for event in self._stream_once(request):
-                    yield event
+                async with aclosing(self._stream_once(request)) as events:
+                    async for event in events:
+                        yield event
                 return
             if _is_transient_exception(exc):
                 raise TransientProviderError(str(exc)) from exc
@@ -206,43 +252,78 @@ class OpenAIChatCompletionsProvider:
         reasoning_parts: list[str] = []
         usage: TokenUsage | None = None
         finish = FinishReason.UNKNOWN
-        async for chunk in stream:
+        # Held open in a context manager so cancellation actually reaches the
+        # server. An inference server keeps generating until the client
+        # disconnects, so abandoning the iterator without closing the HTTP
+        # response leaves the model running - the user cancels, the UI stops,
+        # and the GPU carries on producing tokens nobody will read.
+        try:
+            async with closing_stream(stream):
+                async for chunk in stream:
+                    if debug:
+                        debug.log_raw_chunk(chunk)
+                    usage = _usage_from_object(object_get(chunk, "usage")) or usage
+                    choices = object_get(chunk, "choices", []) or []
+                    if not choices:
+                        continue
+                    choice = choices[0]
+                    finish = _finish_reason(object_get(choice, "finish_reason")) or finish
+                    delta = object_get(choice, "delta", {})
+                    reasoning = _reasoning_delta(delta)
+                    if reasoning:
+                        reasoning_parts.append(reasoning)
+                        yield ProviderEvent(kind="reasoning_delta", reasoning_delta=reasoning)
+                    content = object_get(delta, "content", "")
+                    if content:
+                        text_parts.append(content)
+                        yield ProviderEvent(kind="text_delta", text_delta=content)
+
+                    for tool_delta in object_get(delta, "tool_calls", []) or []:
+                        index = int(object_get(tool_delta, "index", 0) or 0)
+                        fragment = tool_fragments.setdefault(
+                            index, {"id": "", "name": "", "arguments": ""}
+                        )
+                        fragment["id"] += str(object_get(tool_delta, "id", "") or "")
+                        function = object_get(tool_delta, "function", {}) or {}
+                        fragment["name"] += str(object_get(function, "name", "") or "")
+                        fragment["arguments"] += str(object_get(function, "arguments", "") or "")
+                        # Surface streaming progress so the UI isn't frozen while a large
+                        # tool call (e.g. write_file's content) accumulates.
+                        yield ProviderEvent(
+                            kind="tool_call_delta",
+                            tool_call_name=fragment["name"],
+                            tool_call_arguments=fragment["arguments"],
+                            tool_call_index=index,
+                        )
+
+        except Exception as exc:
+            # A request that dies mid-stream (a read timeout above all) left no
+            # trace at all: the transcript simply stopped, so a turn killed by
+            # the clock was indistinguishable from one that never answered.
             if debug:
-                debug.log_raw_chunk(chunk)
-            usage = _usage_from_object(object_get(chunk, "usage")) or usage
-            choices = object_get(chunk, "choices", []) or []
-            if not choices:
-                continue
-            choice = choices[0]
-            finish = _finish_reason(object_get(choice, "finish_reason")) or finish
-            delta = object_get(choice, "delta", {})
-            reasoning = _reasoning_delta(delta)
-            if reasoning:
-                reasoning_parts.append(reasoning)
-                yield ProviderEvent(kind="reasoning_delta", reasoning_delta=reasoning)
-            content = object_get(delta, "content", "")
-            if content:
-                text_parts.append(content)
-                yield ProviderEvent(kind="text_delta", text_delta=content)
-
-            for tool_delta in object_get(delta, "tool_calls", []) or []:
-                index = int(object_get(tool_delta, "index", 0) or 0)
-                fragment = tool_fragments.setdefault(index, {"id": "", "name": "", "arguments": ""})
-                fragment["id"] += str(object_get(tool_delta, "id", "") or "")
-                function = object_get(tool_delta, "function", {}) or {}
-                fragment["name"] += str(object_get(function, "name", "") or "")
-                fragment["arguments"] += str(object_get(function, "arguments", "") or "")
-
+                debug.log_error(exc)
+            raise
         tool_calls: list[ToolCall] = []
         for index, fragment in sorted(tool_fragments.items()):
             name = fragment["name"]
             if not name:
                 continue
+            try:
+                arguments = parse_arguments(fragment["arguments"] or "{}")
+            except (ValueError, TypeError) as exc:
+                # A single malformed tool call must not abort the whole session.
+                # Drop it with a warning so the agent can retry instead of the
+                # JSONDecodeError surfacing as a fatal "request failed".
+                yield ProviderEvent(
+                    kind="warning",
+                    warning=f"Discarded tool call {name!r} with unparseable arguments: {exc}",
+                )
+                continue
             tool_calls.append(
                 ToolCall(
                     id=fragment["id"] or f"tool_call_{index}",
                     name=name,
-                    arguments=parse_arguments(fragment["arguments"] or "{}"),
+                    arguments=arguments,
                 )
             )
         response = ModelResponse(
@@ -282,7 +363,7 @@ def assemble_streamed_tool_call_fragments(fragments: list[dict[str, Any]]) -> li
             ToolCall(
                 id=item["id"] or f"tool_call_{index}",
                 name=item["name"],
-                arguments=json.loads(item["arguments"] or "{}"),
+                arguments=parse_arguments(item["arguments"] or "{}"),
             )
         )
     return calls

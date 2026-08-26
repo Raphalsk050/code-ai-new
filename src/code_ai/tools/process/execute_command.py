@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import re
 import shlex
+from pathlib import Path
 from typing import Any
 
 from code_ai.core.errors import (
@@ -11,17 +13,26 @@ from code_ai.core.errors import (
     ToolExecutionError,
 )
 from code_ai.tools.base import ToolCapability, ToolContext
-from code_ai.tools.process.command_runner import CommandRunner
+from code_ai.tools.locations import LOCATION_SCHEMA, ResolvedLocation, for_context
+from code_ai.tools.process.command_runner import CommandResult, CommandRunner
 from code_ai.tools.schema import tool_schema
+from code_ai.util.fileio import RetryPolicy, describe_os_error
 
 
 class ExecuteCommandTool:
     name = "execute_command"
     description = (
-        "Run a bounded non-interactive command inside the workspace. The command runs "
+        "Run a bounded non-interactive command. The command runs in the workspace by "
+        "default; pass location 'sandbox' to run it in this session's isolated scratch "
+        "area instead, which is where generated code and throwaway experiments belong. "
+        "Either way the toolchain's own scratch (caches, temp files, build artifacts) "
+        "is redirected into the sandbox, so running a build or a test suite does not "
+        "leave anything behind in the project. The command runs "
         "directly without a shell, so shell features and wrappers are unavailable: do not "
-        "prefix the command with 'timeout', 'time', 'env', or similar. Execution is already "
-        "time-bounded; pass the 'timeout' argument to control the limit."
+        "use pipes, redirects, '&&', globbing, or wrapper programs like 'timeout'/'time'. "
+        "To set environment variables, use the 'env' argument (a name->value map) instead "
+        "of a shell-style VAR=value prefix, which fails because there is no shell. "
+        "Execution is already time-bounded; pass the 'timeout' argument to control the limit."
     )
     capabilities = frozenset({ToolCapability.PROCESS})
     input_schema = tool_schema(
@@ -32,7 +43,20 @@ class ExecuteCommandTool:
             },
             "cwd": {
                 "type": "string",
-                "description": "Workspace-relative working directory. Defaults to the root.",
+                "description": (
+                    "Working directory relative to the chosen location. Defaults to the "
+                    "workspace root, or to the sandbox work area when location is 'sandbox'."
+                ),
+            },
+            "location": LOCATION_SCHEMA,
+            "env": {
+                "type": "object",
+                "description": (
+                    "Environment variables to set for this command, as a name->value map "
+                    '(e.g. {"USE_FAKE_LLM": "true"}). Use this instead of a shell-style '
+                    "VAR=value prefix, which fails because the command runs without a shell."
+                ),
+                "additionalProperties": {"type": "string"},
             },
             "timeout": {
                 "type": "number",
@@ -61,7 +85,8 @@ class ExecuteCommandTool:
         # wrapper is redundant and breaks where coreutils is absent (e.g. macOS). Strip
         # it and reuse its duration when the caller did not set one explicitly.
         argv, wrapped_timeout = _strip_timeout_wrapper(argv)
-        cwd = context.workspace.relative_workdir(arguments.get("cwd"))
+        location = for_context(context, arguments.get("location"))
+        cwd = location.workdir(arguments.get("cwd"))
         explicit_timeout = arguments.get("timeout")
         requested_timeout = float(
             explicit_timeout
@@ -80,16 +105,82 @@ class ExecuteCommandTool:
                 timeout=timeout,
                 event_bus=context.event_bus,
                 cancel_event=context.cancel_event,
-                extra_env=arguments.get("env") if isinstance(arguments.get("env"), dict) else None,
+                extra_env=_sandboxed_env(context, arguments.get("env")),
                 max_output_chars=context.config.budgets.max_tool_output_chars,
+                spawn_policy=RetryPolicy.from_config(context.config.file_io),
             )
         except CommandTimeoutError as exc:
             raise ToolExecutionError(f"Command timed out after {timeout:g}s.") from exc
         except CancellationError:
             raise
         except OSError as exc:
-            raise ToolExecutionError(f"Command failed to start: {exc}") from exc
-        return result.to_dict(max_chars=context.config.budgets.max_tool_output_chars)
+            # describe_os_error names the Windows cause, so "the file is open
+            # in another process" reaches the model instead of a bare errno.
+            raise ToolExecutionError(
+                f"Command failed to start: {describe_os_error(exc)}"
+            ) from exc
+        payload = result.to_dict(max_chars=context.config.budgets.max_tool_output_chars)
+        payload["location"] = location.location.value
+        artifacts = _capture_run(context, result=result, location=location)
+        if artifacts is not None:
+            payload["artifacts"] = artifacts
+        return payload
+
+
+def _sandboxed_env(context: ToolContext, requested: object) -> dict[str, str] | None:
+    """Environment for one command: sandbox redirection first, caller last.
+
+    The redirection applies even to a command working in the project, because
+    that is the whole point - a test run belongs in the project directory, the
+    cache it writes does not. An explicit ``env`` from the caller still wins, so
+    a task that genuinely needs the real cache can say so.
+    """
+
+    env: dict[str, str] = {}
+    if context.sandbox is not None:
+        env.update(context.sandbox.environment(os.environ))
+    caller = _coerce_env(requested)
+    if caller:
+        env.update(caller)
+    return env or None
+
+
+def _capture_run(
+    context: ToolContext,
+    *,
+    result: CommandResult,
+    location: ResolvedLocation,
+) -> dict[str, Any] | None:
+    """Persist the run's full output in the sandbox and say where it landed.
+
+    The tool result carries only a bounded excerpt; the artifact holds every
+    byte, so a build log too large to return is still readable. Failing to
+    record is never fatal - the command already ran, and its result is what the
+    caller asked for.
+    """
+
+    sandbox = context.sandbox
+    if sandbox is None:
+        return None
+    try:
+        record = sandbox.artifacts.record(
+            label=_run_label(result.argv),
+            stdout=result.stdout,
+            stderr=result.stderr,
+            metadata={
+                "argv": result.argv,
+                "cwd": result.cwd,
+                "exit_code": result.exit_code,
+                "duration_s": round(result.duration_s, 3),
+                "timed_out": result.timed_out,
+                "location": location.location.value,
+            },
+        )
+    except OSError:
+        return None
+    captured = record.to_dict(relative_to=sandbox.root)
+    captured["root"] = str(sandbox.root)
+    return captured
 
 
 _TIMEOUT_WRAPPERS = frozenset({"timeout", "gtimeout"})
@@ -149,13 +240,57 @@ def _strip_timeout_wrapper(argv: list[str]) -> tuple[list[str], float | None]:
     return inner, duration
 
 
+def _coerce_env(value: object) -> dict[str, str] | None:
+    """Validate the optional ``env`` map into ``{str: str}``.
+
+    Scalar values (numbers, booleans) are coerced to strings so a model that
+    passes ``{"PORT": 8080}`` is not punished with a hard failure; structured
+    values and non-string keys are rejected with a clear message.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ToolArgumentError("env must be a map of environment variable names to values.")
+    env: dict[str, str] = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not key:
+            raise ToolArgumentError("env names must be non-empty strings.")
+        if isinstance(item, bool):
+            env[key] = "true" if item else "false"
+        elif isinstance(item, (str, int, float)):
+            env[key] = str(item)
+        else:
+            raise ToolArgumentError(f"env value for {key!r} must be a string.")
+    return env or None
+
+
+def _split_command_line(command: str) -> list[str]:
+    """Split a command line into argv, shell-like but without a shell.
+
+    On Windows the backslash is the path separator, not an escape character.
+    POSIX-mode shlex reads it as an escape and eats it, so ``del C:\\ws\\a.txt``
+    silently becomes ``del C:wsa.txt`` — a command that then runs against a
+    mangled path and reports success. Dropping the escape character leaves
+    backslashes literal while keeping quoting and whitespace splitting intact.
+
+    POSIX platforms keep the standard behaviour: there a backslash really is an
+    escape, and the convention is worth more than the paths it would protect.
+    """
+    if os.name != "nt":
+        return shlex.split(command)
+    lexer = shlex.shlex(command, posix=True)
+    lexer.whitespace_split = True
+    lexer.escape = ""
+    return list(lexer)
+
+
 def _coerce_argv(arguments: dict[str, Any]) -> list[str]:
     command = arguments.get("command")
     if isinstance(command, str):
         if not command.strip():
             raise ToolArgumentError("command is required.")
         try:
-            argv = shlex.split(command)
+            argv = _split_command_line(command)
         except ValueError as exc:
             raise ToolArgumentError(f"command could not be parsed: {exc}") from exc
         if not argv:
@@ -170,3 +305,16 @@ def _coerce_argv(arguments: dict[str, Any]) -> list[str]:
     ):
         raise ToolArgumentError("command must be a non-empty string.")
     return argv
+
+
+def _run_label(argv: list[str]) -> str:
+    """Short human name for a run, used as its artifact directory name.
+
+    The first token is usually an absolute interpreter path, which as a
+    directory name says nothing and buries the part that identifies the run.
+    Only its basename is kept, followed by the first couple of arguments.
+    """
+
+    if not argv:
+        return "run"
+    return " ".join([Path(argv[0]).name, *argv[1:3]])

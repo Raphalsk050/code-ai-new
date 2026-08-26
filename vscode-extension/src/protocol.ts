@@ -23,7 +23,12 @@ export type BridgeMethod =
   | "newConversation"
   | "getSettings"
   | "updateSettings"
+  | "listModels"
+  | "listConversations"
+  | "loadConversation"
+  | "deleteConversation"
   | "explainCode"
+  | "inlineComplete"
   | "analyzeRefactor"
   | "planRefactor"
   | "cancel"
@@ -47,6 +52,8 @@ export interface Settings {
   permission_mode: string;
   reasoning_effort: string;
   learn: boolean;
+  inline_hints_enabled: boolean;
+  inline_model: string;
   max_context_tokens: number;
   workspace: string;
   supported: {
@@ -71,6 +78,31 @@ export interface UpdateSettingsResult {
   settings: Settings;
 }
 
+/** A tool call as persisted in a saved conversation (round-trip shape). */
+export interface StoredToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, any>;
+}
+
+/** One message as persisted in a saved conversation. */
+export interface StoredMessage {
+  role: string;
+  content: string;
+  tool_call_id?: string;
+  name?: string;
+  tool_calls?: StoredToolCall[];
+}
+
+/** Metadata for a saved conversation, as listed by the bridge. */
+export interface ServerConversation {
+  id: string;
+  title: string;
+  created_at: number;
+  updated_at: number;
+  message_count: number;
+}
+
 /** A snapshot of what the user is looking at in the editor, attached to a turn. */
 export interface EditorContext {
   /** Workspace-relative path of the active file, e.g. `src/app.ts`. */
@@ -84,29 +116,50 @@ export interface EditorContext {
   endLine?: number;
 }
 
+/** Where in the editor an explanation applies, mirrored into the side panel. */
+export interface ExplainTarget {
+  path: string;
+  language: string;
+  /** 1-based inclusive line range of the explained selection. */
+  startLine?: number;
+  endLine?: number;
+}
+
 // Messages exchanged between the extension host and the webview.
 export type HostToWebview =
   | { type: "event"; event: EventEnvelope }
   | { type: "editorContext"; context: EditorContext | null }
   | { type: "settings"; settings: Settings }
   | { type: "settingsUpdated"; result: UpdateSettingsResult }
+  | { type: "modelsListed"; models: string[] }
+  | { type: "modelsError"; message: string }
+  | { type: "conversationsList"; conversations: ServerConversation[] }
+  | { type: "conversationLoaded"; id: string; messages: StoredMessage[] }
   | { type: "refactorStatus"; status: "analyzing" | "idle" }
   | { type: "refactorResult"; improvements: RefactorImprovement[]; path: string; language: string }
   | { type: "refactorError"; message: string }
   | { type: "refactorPlanning"; id: string }
-  | { type: "refactorPlanned"; id: string; markdown: string };
+  | { type: "refactorPlanned"; id: string; markdown: string }
+  | { type: "explainStatus"; status: "analyzing"; target: ExplainTarget }
+  | { type: "explainResult"; markdown: string; target: ExplainTarget }
+  | { type: "explainError"; message: string };
 
 export type PermissionMode = "ask" | "auto" | "bypass";
 
 export type WebviewToHost =
   | { type: "submit"; text: string; includeContext?: boolean }
-  | { type: "newConversation" }
+  | { type: "newConversation"; id: string }
+  | { type: "listConversations" }
+  | { type: "loadConversation"; id: string }
+  | { type: "deleteConversation"; id: string }
   | { type: "getSettings" }
   | { type: "updateSettings"; updates: Record<string, unknown> }
+  | { type: "listModels" }
   | { type: "setMode"; mode: AppMode; autoRunRefactor: boolean }
   | { type: "analyzeRefactor" }
   | { type: "planRefactor"; id: string; improvements: RefactorImprovement[] }
   | { type: "cancel" }
   | { type: "compact" }
   | { type: "resolveApproval"; call_id: string; scope: ApprovalScope; reason?: string }
-  | { type: "setPermissionMode"; mode: PermissionMode };
+  | { type: "setPermissionMode"; mode: PermissionMode }
+  | { type: "restartBridge" };

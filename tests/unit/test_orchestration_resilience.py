@@ -31,6 +31,9 @@ def _config(tmp_path, **overrides) -> AppConfig:
         "permission_mode": "bypass",
         # Keep learned failure memories out of the user's real config dir.
         "memories_dir": str(tmp_path / "memories"),
+        # These tests script exact provider call sequences; the post-turn
+        # reflection meta-call would add calls the scripts do not expect.
+        "memory": {"reflection_enabled": False},
     }
     data.update(overrides)
     return AppConfig.from_mapping(data)
@@ -546,12 +549,11 @@ class AnswersInProseProvider(_BaseProvider):
         )
 
 
-async def test_misclassified_question_is_answered_not_forced_into_tools(tmp_path) -> None:
-    # "explain ... the adder function" trips the "add" mutation marker, so the task
-    # is misread as a workspace mutation and the phase escalates to EXECUTE after the
-    # auto-listing. The model only wants to answer in prose: it must be nudged toward
-    # tools at most once, then have *its* answer surfaced — not be spiralled into a
-    # system correction delivered to the user as the reply.
+async def test_explanation_question_is_answered_directly_without_nudging(tmp_path) -> None:
+    # "explain what the adder function does" used to trip the "add" mutation
+    # marker by substring; word-boundary matching plus the explanation-start
+    # veto now classify it as a question, so the prose answer is accepted on
+    # the very first round - no corrective nudge, no evidence demands.
     provider = AnswersInProseProvider()
     app = build_application(config=_config(tmp_path), provider=provider)
 
@@ -561,8 +563,99 @@ async def test_misclassified_question_is_answered_not_forced_into_tools(tmp_path
 
     assert result.error is None
     assert result.text == "The adder function returns the sum of its two arguments."
+    assert provider.calls == 1
+
+
+async def test_misclassified_mutation_is_answered_not_forced_into_tools(tmp_path) -> None:
+    # A genuinely mutation-classified request answered only in prose must be
+    # nudged toward tools at most once, then have *its* answer surfaced — not
+    # be spiralled into a system correction delivered to the user as the reply.
+    provider = AnswersInProseProvider()
+    app = build_application(config=_config(tmp_path), provider=provider)
+
+    await app.start()
+    result = await app.submit_user_message("update the adder function docs")
+    await app.close()
+
+    assert result.error is None
+    assert result.text == "The adder function returns the sum of its two arguments."
     # One nudge round, then the model's own answer is accepted (not an endless loop).
     assert provider.calls == 2
+
+
+class WritesThenAnswersProvider(_BaseProvider):
+    """Changes a file, then ends the turn in prose without ever verifying.
+
+    The dominant real shape: weak models never call ``complete_task``, so the
+    evidence gate behind it never runs and the turn simply stops.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        if self.calls == 1:
+            yield ProviderEvent(
+                kind="completed",
+                response=ModelResponse(
+                    tool_calls=[
+                        ToolCall(
+                            id="w1",
+                            name="write_file",
+                            arguments={"path": "mod.py", "content": "VALUE = 1\n"},
+                        )
+                    ],
+                    finish_reason=FinishReason.TOOL_CALLS,
+                ),
+            )
+            return
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(
+                text="Done, mod.py now has VALUE.", finish_reason=FinishReason.STOP
+            ),
+        )
+
+
+async def test_unverified_change_ending_in_prose_is_nudged_once(tmp_path) -> None:
+    # A pyproject makes pytest detectable, so verification is something the
+    # agent could actually run here.
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
+    provider = WritesThenAnswersProvider()
+    app = build_application(config=_config(tmp_path), provider=provider)
+    events: list[str] = []
+    app.subscribe(lambda event: events.append(event.event_type))
+
+    await app.start()
+    result = await app.submit_user_message("crie mod.py com a constante VALUE")
+    await app.close()
+
+    assert (tmp_path / "mod.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert "planning.verification_debt.nudged" in events
+    # One nudge, then the model's own answer stands: the checkpoint never traps
+    # the turn, exactly like the completion gate's fail-open release.
+    assert provider.calls == 3
+    assert result.text == "Done, mod.py now has VALUE."
+    assert events.count("planning.verification_debt.nudged") == 1
+
+
+async def test_read_only_prose_answer_is_not_nudged_for_verification(tmp_path) -> None:
+    # The regression half of the checkpoint: it keys off observed change, so a
+    # question that changed nothing must cost no extra round-trip.
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
+    provider = AnswersInProseProvider()
+    app = build_application(config=_config(tmp_path), provider=provider)
+    events: list[str] = []
+    app.subscribe(lambda event: events.append(event.event_type))
+
+    await app.start()
+    result = await app.submit_user_message("explain what the adder function does")
+    await app.close()
+
+    assert "planning.verification_debt.nudged" not in events
+    assert provider.calls == 1
+    assert result.text == "The adder function returns the sum of its two arguments."
 
 
 class ParallelReadsProvider(_BaseProvider):
@@ -672,3 +765,295 @@ async def test_per_tool_timeout_cooperatively_cancels_without_killing_turn(tmp_p
     assert "tool.call.failed" in events
     assert result.cancelled is False
     assert result.text == "after timeout"
+
+
+class ChecklistThenProseProvider(_BaseProvider):
+    """Submits a checklist, declares every step done, then answers in prose.
+
+    Mirrors the field failure: the final complete_plan_step cannot advance (the
+    last step only settles with the whole plan), the model believes it is done
+    and ends the turn with a prose answer instead of complete_task.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        if self.calls == 1:
+            calls = [
+                ToolCall(
+                    id="c1",
+                    name="submit_plan",
+                    arguments={
+                        "steps": ["Inspect the workspace", "Present the summary"]
+                    },
+                )
+            ]
+        elif self.calls == 2:
+            calls = [
+                ToolCall(
+                    id="c2",
+                    name="complete_plan_step",
+                    arguments={"completed_step": "Inspect the workspace"},
+                )
+            ]
+        elif self.calls == 3:
+            calls = [
+                ToolCall(
+                    id="c3",
+                    name="complete_plan_step",
+                    arguments={"completed_step": "Present the summary"},
+                )
+            ]
+        else:
+            yield ProviderEvent(
+                kind="completed",
+                response=ModelResponse(
+                    text="Here is the architecture summary.",
+                    finish_reason=FinishReason.STOP,
+                ),
+            )
+            return
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(
+                tool_calls=calls, finish_reason=FinishReason.TOOL_CALLS
+            ),
+        )
+
+
+async def test_prose_finish_settles_fully_declared_checklist(tmp_path) -> None:
+    # Field regression: an analysis turn whose model completed every checklist
+    # step via complete_plan_step and then answered in prose left the sidebar
+    # frozen at N-1/N with the last step spinning, because only complete_task
+    # used to settle the plan.
+    provider = ChecklistThenProseProvider()
+    app = build_application(config=_config(tmp_path), provider=provider)
+    events: list = []
+    app.subscribe(lambda event: events.append(event))
+
+    await app.start()
+    result = await app.submit_user_message(
+        "analyze the repository architecture and present a summary"
+    )
+    await app.close()
+
+    assert result.error is None
+    assert result.text == "Here is the architecture summary."
+
+    # The final complete_plan_step result is honest about not advancing.
+    step_results = [
+        event.payload.get("result")
+        for event in events
+        if event.event_type == "tool.call.completed"
+        and event.payload.get("name") == "complete_plan_step"
+    ]
+    assert len(step_results) == 2
+    assert "status" not in step_results[0]
+    assert step_results[1]["status"] == "final_step_still_running"
+
+    # The prose ending settles the checklist so the sidebar shows it complete.
+    completed = [e for e in events if e.event_type == "planning.plan.completed"]
+    assert completed
+    assert completed[-1].payload["status"] == "COMPLETED"
+    assert completed[-1].payload["progress"] == "2/2"
+
+
+class AnnounceThenHangProvider(_BaseProvider):
+    """Announces a write, starts streaming its call, then stalls mid-call.
+
+    The shape a real model produces on a large file: prose first, then the
+    arguments dribbling in. The stall stands in for whatever cuts a stream off
+    part-way - the step budget expiring, the endpoint dropping the connection.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        arguments = '{"path": "app.py", "content": "x = 1\\n"}'
+        if self.calls == 1:
+            yield ProviderEvent(kind="text_delta", text_delta="I'll implement app.py now.")
+            yield ProviderEvent(
+                kind="tool_call_delta",
+                tool_call_name="write_file",
+                tool_call_arguments=arguments[:20],
+                tool_call_index=0,
+            )
+            await asyncio.sleep(30)
+            return
+        if self.calls == 2:
+            yield ProviderEvent(
+                kind="tool_call_delta",
+                tool_call_name="write_file",
+                tool_call_arguments=arguments,
+                tool_call_index=0,
+            )
+            yield ProviderEvent(
+                kind="completed",
+                response=ModelResponse(
+                    tool_calls=[
+                        ToolCall(
+                            id="call_1",
+                            name="write_file",
+                            arguments={"path": "app.py", "content": "x = 1\n"},
+                        )
+                    ],
+                    finish_reason=FinishReason.TOOL_CALLS,
+                ),
+            )
+            return
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text="app.py is written.", finish_reason=FinishReason.STOP),
+        )
+
+
+async def test_tool_call_cut_off_mid_stream_is_reissued(tmp_path) -> None:
+    # A step that dies mid-call leaves only the announcement behind. Surfacing
+    # that as the answer is how the agent used to end a turn in waiting_user
+    # having written nothing, so the call must be asked for again instead.
+    config = _config(
+        tmp_path,
+        planner={"enabled": False},
+        budgets={"max_model_call_s": 1, "max_model_step_seconds": 1},
+    )
+    provider = AnnounceThenHangProvider()
+    app = build_application(config=config, provider=provider)
+    events: list[str] = []
+    app.subscribe(lambda event: events.append(event.event_type))
+
+    await app.start()
+    result = await app.submit_user_message("implement app.py")
+    await app.close()
+
+    assert "tool.call.interrupted" in events
+    assert provider.calls == 3
+    # The write actually happened, and the announcement is not the answer.
+    assert (tmp_path / "app.py").read_text() == "x = 1\n"
+    assert result.text == "app.py is written."
+
+
+class LostCallThenCleanProvider(_BaseProvider):
+    """Streams a tool call, then completes without it.
+
+    This is what a provider does when it cannot parse the arguments it just
+    received: it drops the call with a warning. The response that reaches the
+    orchestrator is indistinguishable from a plain prose answer unless the
+    streamed call is accounted for.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        if self.calls == 1:
+            yield ProviderEvent(kind="text_delta", text_delta="Writing the file now.")
+            yield ProviderEvent(
+                kind="tool_call_delta",
+                tool_call_name="write_file",
+                tool_call_arguments='{"path": "app.py", "content": "x = 1',
+                tool_call_index=0,
+            )
+            yield ProviderEvent(
+                kind="completed",
+                response=ModelResponse(
+                    text="Writing the file now.", finish_reason=FinishReason.TOOL_CALLS
+                ),
+            )
+            return
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text="All done.", finish_reason=FinishReason.STOP),
+        )
+
+
+async def test_dropped_tool_call_is_reissued(tmp_path) -> None:
+    provider = LostCallThenCleanProvider()
+    app = build_application(
+        config=_config(tmp_path, planner={"enabled": False}), provider=provider
+    )
+    events: list[str] = []
+    app.subscribe(lambda event: events.append(event.event_type))
+
+    await app.start()
+    result = await app.submit_user_message("write app.py")
+    await app.close()
+
+    assert "tool.call.interrupted" in events
+    assert provider.calls == 2
+    assert result.text == "All done."
+
+
+class AlwaysLosesCallProvider(_BaseProvider):
+    """Never manages to deliver the call it keeps starting."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        yield ProviderEvent(kind="text_delta", text_delta="Writing it now.")
+        yield ProviderEvent(
+            kind="tool_call_delta",
+            tool_call_name="write_file",
+            tool_call_arguments='{"path": "app.py"',
+            tool_call_index=0,
+        )
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(
+                text="Writing it now.", finish_reason=FinishReason.TOOL_CALLS
+            ),
+        )
+
+
+async def test_repeatedly_lost_tool_call_stops_re_prompting(tmp_path) -> None:
+    # Bounded: a stream that keeps breaking must still end the turn with a
+    # best-effort reply rather than re-prompting forever.
+    provider = AlwaysLosesCallProvider()
+    app = build_application(
+        config=_config(tmp_path, planner={"enabled": False}), provider=provider
+    )
+    events: list[str] = []
+    app.subscribe(lambda event: events.append(event.event_type))
+
+    await app.start()
+    result = await app.submit_user_message("write app.py")
+    await app.close()
+
+    assert events.count("tool.call.interrupted") == 2
+    assert provider.calls == 3
+    assert result.text == "Writing it now."
+
+
+class ProseOnlyProvider(_BaseProvider):
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        yield ProviderEvent(kind="text_delta", text_delta="No tool needed here.")
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(
+                text="No tool needed here.", finish_reason=FinishReason.STOP
+            ),
+        )
+
+
+async def test_plain_prose_answer_is_not_treated_as_interrupted(tmp_path) -> None:
+    # Nothing streamed a call, so the prose is the answer and must be delivered
+    # on the first step - the guard must not re-prompt every chat reply.
+    provider = ProseOnlyProvider()
+    app = build_application(
+        config=_config(tmp_path, planner={"enabled": False}), provider=provider
+    )
+    events: list[str] = []
+    app.subscribe(lambda event: events.append(event.event_type))
+
+    await app.start()
+    result = await app.submit_user_message("hello")
+    await app.close()
+
+    assert "tool.call.interrupted" not in events
+    assert result.text == "No tool needed here."

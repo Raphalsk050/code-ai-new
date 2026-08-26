@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from enum import StrEnum
 from uuid import uuid4
 
@@ -303,6 +304,11 @@ class AgentPlan(BaseModel):
     steps: list[AgentPlanStep]
     current_index: int = 0
     status: PlanStatus = PlanStatus.ACTIVE
+    # The model called complete_plan_step on the final step. advance() refuses to
+    # settle that step (only completion settles the whole plan), but remembering
+    # the declaration lets a turn that ends in a clean final answer complete the
+    # plan instead of freezing the sidebar on a step the model reported done.
+    final_step_declared: bool = False
 
     @model_validator(mode="after")
     def _validate(self) -> AgentPlan:
@@ -328,6 +334,30 @@ class AgentPlan(BaseModel):
             return None
         return self.steps[self.current_index]
 
+    @property
+    def on_final_step(self) -> bool:
+        return (
+            self.status == PlanStatus.ACTIVE
+            and self.current_index >= len(self.steps) - 1
+        )
+
+    def resolve_completed_index(self, title: str) -> int:
+        """Index of the not-yet-completed step the model declared finished.
+
+        The model reports *which* step it completed by title; when that step sits
+        ahead of the cursor (the model did several steps' work in one burst and
+        only then reported), the cursor must catch up through it instead of
+        lagging one advance behind until the end of the task. Falls back to the
+        current step when the title is missing or matches nothing pending, which
+        preserves the plain advance-by-one behaviour.
+        """
+        normalized = title.strip().casefold()
+        if normalized:
+            for index in range(self.current_index, len(self.steps)):
+                if self.steps[index].title.strip().casefold() == normalized:
+                    return index
+        return self.current_index
+
     def advance(self) -> bool:
         """Mark the running step done and move to the next, if any.
 
@@ -350,11 +380,44 @@ class AgentPlan(BaseModel):
         self.current_index = len(self.steps) - 1
         self.status = PlanStatus.COMPLETED
 
+    def pause(self) -> None:
+        """Suspend an active plan while control is handed back to the user.
+
+        The turn ended without settling the plan (a blocking question, a prose
+        answer, a cancellation, a failure); the current step keeps its position
+        but the plan is no longer running, so the sidebar must stop spinning.
+        :meth:`resume` reactivates it when a follow-up turn picks the plan up.
+        """
+        if self.status == PlanStatus.ACTIVE:
+            self.status = PlanStatus.WAITING
+
+    def resume(self) -> None:
+        if self.status == PlanStatus.WAITING:
+            self.status = PlanStatus.ACTIVE
+
+    def settle(self, status: PlanStatus) -> None:
+        """Freeze the plan in a terminal non-success state (blocked/failed).
+
+        The running step is marked FAILED so the sidebar shows where the plan
+        stopped, instead of a step that keeps spinning after the turn ended.
+        A paused (WAITING) plan settles the same way: it still points at the
+        step it stopped on.
+        """
+        if self.status in {PlanStatus.ACTIVE, PlanStatus.WAITING}:
+            self.steps[self.current_index].status = PlanStepStatus.FAILED
+        self.status = status
+
     def snapshot(self) -> dict[str, object]:
         completed = [
             step.title for step in self.steps if step.status == PlanStepStatus.COMPLETED
         ]
-        current = self.current_step
+        # A settled (blocked/failed) plan still points at the step it stopped on,
+        # so the sidebar can render it as failed rather than silently pending.
+        current = (
+            None
+            if self.status == PlanStatus.COMPLETED
+            else self.steps[self.current_index]
+        )
         return {
             "status": self.status.value,
             "progress": f"{len(completed)}/{len(self.steps)}",
@@ -471,6 +534,15 @@ def _steps_for_profile(profile: TaskProfile) -> list[PlanStep]:
     ]
 
 
+# Criteria appended only for mutation-classified tasks. Named so the planner
+# can drop exactly these when a user denial downgrades the task mid-turn (see
+# PlannerService.note_user_denial).
+CRITERION_APPLY_VIA_TOOLS = "Apply changes through file tools rather than chat text."
+CRITERION_VERIFY_AFTER_MUTATION = (
+    "Run an applicable verification command after the last mutation."
+)
+
+
 def _acceptance_criteria(
     *, objective: str, mutation: bool, local: bool, external: bool
 ) -> list[str]:
@@ -478,12 +550,7 @@ def _acceptance_criteria(
     if local:
         criteria.append("Use actual local workspace evidence.")
     if mutation:
-        criteria.extend(
-            [
-                "Apply changes through file tools rather than chat text.",
-                "Run an applicable verification command after the last mutation.",
-            ]
-        )
+        criteria.extend([CRITERION_APPLY_VIA_TOOLS, CRITERION_VERIFY_AFTER_MUTATION])
     if external:
         criteria.append("Use current external evidence before answering.")
     return criteria
@@ -497,28 +564,94 @@ def _contains_any(text: str, needles: set[str]) -> bool:
     return any(needle in text for needle in needles)
 
 
+# Mutation verbs, matched on word boundaries so a verb *inside* another word
+# never trips the gate ("adder" is not "add", "descreva" is not "escreva").
+# Morphological suffixes cover the common PT/EN inflections ("adicione",
+# "adicionar", "updated", "atualizando"), which plain substring markers missed.
+_MUTATION_RE = re.compile(
+    r"\b(?:"
+    r"add(?:ed|ing|s)?|adicion\w*|appl(?:y|ies|ied|ying)|"
+    r"atualiz\w*|chang(?:e|es|ed|ing)|consert\w*|corrig\w*|corrija|"
+    r"creat(?:e|es|ed|ing)|cri(?:e|ar|a)|edit(?:e|ar|a|ed|ing|s)?|"
+    r"escrev\w*|fix(?:es|ed|ing)?|implement\w*|modif\w*|"
+    r"refator\w*|refactor\w*|remov\w*|renam\w*|renome\w*|updat\w*"
+    r")\b"
+)
+
+# A message that *opens* as a question or an explanation request is asking to
+# understand something, not to change it - even when a mutation verb appears as
+# the subject ("explique a função update_user", "como adicionar um endpoint?",
+# "pelo que voce comecaria a implementar hoje?"). Misreading these as mutations
+# traps the turn behind a file-change evidence gate no explanation can ever
+# satisfy - and actively steers the model into changes nobody asked for. The
+# veto is deliberately biased: a real mutation phrased as a question degrades
+# gracefully (tools stay available and any actual file change still demands
+# verification through the evidence-keyed gate), while a trapped explanation
+# has no way out.
+_EXPLANATION_START_RE = re.compile(
+    r"^(?:"
+    r"explique|explica|me explique|me explica|explain|"
+    r"descreva|descreve|describe|"
+    r"o que|oque|what|por que|porque|why|como|how|"
+    r"qual|quais|which|quando|when|onde|where|quem|who|"
+    r"pelo que|pelo qual|pela qual|por onde|por qual|"
+    r"sera que|será que|que tal|devo|deveria|deveriamos|deveríamos|"
+    r"vale a pena|faz sentido|"
+    r"should i|should we|would it|is it|"
+    r"me diga|diga|tell me|"
+    r"resuma|resumo|summarize|summarise|"
+    r"analise|análise|analyze|analyse|"
+    r"entenda|help me understand|walk me through"
+    r")\b"
+)
+
+# Second-person request markers: a question that asks the *agent* to do the
+# change ("pode criar o arquivo?", "can you add a test?") is still a mutation
+# request. "pode ser"/"poderia ser" are excluded - those open a hypothesis
+# ("could it be..."), not a request.
+_REQUEST_MARKER_RE = re.compile(
+    r"\b(?:"
+    r"por favor|please|"
+    r"pode(?:s|ria|riam)?(?!\s+ser\b)|voc[eê] pode|consegue(?:ria)?|"
+    r"can you|could you|would you|will you"
+    r")\b"
+)
+
+# Unambiguous "do it" shapes that survive the question veto: PT imperative /
+# subjunctive forms ("implemente", "crie", "atualize") anywhere, or an English
+# base verb opening the message ("update the README ...").
+_IMPERATIVE_MUTATION_RE = re.compile(
+    r"\b(?:"
+    r"implemente(?:m)?|crie(?:m)?|adicione(?:m)?|corrija(?:m)?|conserte(?:m)?|"
+    r"atualize(?:m)?|edite(?:m)?|escreva(?:m)?|remova(?:m)?|renomeie(?:m)?|"
+    r"refatore(?:m)?|modifique(?:m)?|aplique(?:m)?|mude(?:m)?|troque(?:m)?|"
+    r"ajuste(?:m)?|arrume(?:m)?|fa[çc]a(?:m)?"
+    r")\b"
+)
+_EN_LEADING_MUTATION_RE = re.compile(
+    r"^(?:implement|create|add|fix|update|write|edit|remove|rename|refactor|"
+    r"modify|apply|change|make)\b"
+)
+
+
 def _is_mutation_request(text: str) -> bool:
-    mutation_markers = {
-        "add",
-        "adicionar",
-        "apply",
-        "change",
-        "conserte",
-        "corrija",
-        "create",
-        "crie",
-        "edit",
-        "fix",
-        "implemente",
-        "implement",
-        "modify",
-        "refactor",
-        "refatore",
-        "remove",
-        "rename",
-        "update",
-    }
-    return _contains_any(text, mutation_markers)
+    stripped = text.strip()
+    if _EXPLANATION_START_RE.match(stripped):
+        return False
+    if not _MUTATION_RE.search(stripped):
+        return False
+    # Question-shaped text asks *about* changing, it does not ask to change:
+    # "seria melhor implementar isso em rust?" wants an opinion, not files. It
+    # only stays a mutation when the phrasing addresses the agent with the
+    # action ("pode criar...?", "crie X, pode ser?", "can you add...?").
+    if (
+        stripped.endswith("?")
+        and not _REQUEST_MARKER_RE.search(stripped)
+        and not _IMPERATIVE_MUTATION_RE.search(stripped)
+        and not _EN_LEADING_MUTATION_RE.match(stripped)
+    ):
+        return False
+    return True
 
 
 def _is_command_request(text: str) -> bool:
@@ -581,3 +714,73 @@ def _mentions_workspace(text: str) -> bool:
     }
     path_like = bool(re.search(r"(^|\s)[\w./-]+\.(py|toml|md|json|cpp|h|hpp|ts|tsx|js)\b", text))
     return path_like or _contains_any(text, workspace_markers)
+
+
+# Verbs that, on their own, only ask the agent to carry on with what it was
+# already doing.
+_CONTINUATION_VERBS = frozenset(
+    {
+        "continue", "continua", "continuar", "continuemos", "continuando",
+        "prossiga", "prossegue", "prosseguir", "prossigamos",
+        "siga", "segue", "seguir", "sigamos",
+        "retome", "retoma", "retomar", "resume",
+        "vai", "va", "bora", "manda", "proceed",
+        "go", "keep", "carry",
+    }
+)
+
+# Words that may keep a continuation marker company without turning it into a
+# new request ("continue de onde paramos", "ok, pode seguir com o plano").
+# The set is closed on purpose: any message carrying a genuinely new objective
+# ("continue, mas agora faça X") contains tokens outside it and is therefore
+# never mistaken for a continuation.
+_CONTINUATION_FILLER = frozenset(
+    {
+        "por", "favor", "please", "ok", "okay", "beleza", "blz", "sim", "yes",
+        "obrigado", "obrigada", "thanks", "vamos", "let", "lets", "s",
+        "e", "and", "entao", "agora", "now", "ai", "ja", "pode", "podes",
+        "voce", "vc", "you", "can",
+        "de", "do", "da", "onde", "paramos", "parou", "paramo", "ponto",
+        "daqui", "dai", "em", "frente", "adiante",
+        "from", "where", "we", "left", "off", "on", "ahead", "going", "up",
+        "com", "isso", "aquilo", "it", "that", "the", "with",
+        "o", "a", "os", "as", "trabalho", "tarefa", "plano", "task", "work",
+        "plan",
+    }
+)
+
+# A longer message is making a request, not just poking the agent forward.
+_MAX_CONTINUATION_TOKENS = 8
+
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def is_continuation_request(text: str) -> bool:
+    """Whether this turn only asks the agent to carry on with the current task.
+
+    Re-running the surface classifier on such a message is a bug, not a
+    refinement: "continue" carries no mutation keyword, so a follow-up to an
+    implementation task gets relabelled ``CONVERSATION`` and the whole runtime
+    task state - profile, plan, evidence ledger - is thrown away mid-work.
+
+    Recognition is by closed vocabulary rather than a prefix match: the message
+    must consist *only* of continuation verbs and filler, so "continue, mas
+    agora faça X" stays the new request it is.
+    """
+    tokens = _WORD_RE.findall(_strip_accents(_normalize(text)))
+    if not tokens or len(tokens) > _MAX_CONTINUATION_TOKENS:
+        return False
+    if not any(token in _CONTINUATION_VERBS for token in tokens):
+        return False
+    return all(
+        token in _CONTINUATION_VERBS or token in _CONTINUATION_FILLER
+        for token in tokens
+    )
+
+
+def _strip_accents(text: str) -> str:
+    return "".join(
+        char
+        for char in unicodedata.normalize("NFD", text)
+        if unicodedata.category(char) != "Mn"
+    )

@@ -2,26 +2,39 @@ import * as React from "react";
 
 import type { AppMode, Settings } from "../src/protocol";
 import { ExtPrefs } from "./history";
-import { IconBack } from "./icons";
+import { IconBack, IconRefresh } from "./icons";
 
 // Local, editable mirror of the backend settings. `null` until the bridge
 // answers `getSettings`; the panel shows a loading state meanwhile.
 type Draft = Record<string, string | number | boolean>;
+
+/** State of the on-demand "list models" query for the model field. */
+export interface ModelsState {
+  status: "idle" | "loading" | "ready" | "error";
+  list: string[];
+  error?: string;
+}
 
 const RESTART_FIELDS = new Set(["api_mode", "base_url", "api_key", "workspace", "max_context_tokens"]);
 
 export function SettingsScreen({
   settings,
   prefs,
+  models,
   onBack,
   onSave,
   onPrefsChange,
+  onRestart,
+  onListModels,
 }: {
   settings: Settings | null;
   prefs: ExtPrefs;
+  models: ModelsState;
   onBack: () => void;
   onSave: (updates: Record<string, unknown>) => void;
   onPrefsChange: (next: Partial<ExtPrefs>) => void;
+  onRestart: () => void;
+  onListModels: () => void;
 }): JSX.Element {
   const [draft, setDraft] = React.useState<Draft>({});
   const [apiKey, setApiKey] = React.useState("");
@@ -38,6 +51,8 @@ export function SettingsScreen({
       permission_mode: settings.permission_mode,
       reasoning_effort: settings.reasoning_effort,
       learn: settings.learn,
+      inline_hints_enabled: settings.inline_hints_enabled,
+      inline_model: settings.inline_model,
       max_context_tokens: settings.max_context_tokens,
       workspace: settings.workspace,
     });
@@ -95,7 +110,41 @@ export function SettingsScreen({
 
           <Section title="Provider & model" hint="Restart fields apply after reopening the panel.">
             <Field label="Model">
-              <input value={String(draft.model ?? "")} onChange={(e) => set("model", e.target.value)} />
+              <div className="model-row">
+                <input
+                  className="model-input"
+                  value={String(draft.model ?? "")}
+                  onChange={(e) => set("model", e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="btn-ghost model-list-btn"
+                  title="List the models the configured provider serves"
+                  onClick={onListModels}
+                  disabled={models.status === "loading"}
+                >
+                  {models.status === "loading" ? <span className="spinner" /> : <IconRefresh size={13} />}
+                  <span>{models.status === "loading" ? "Listing…" : "List models"}</span>
+                </button>
+              </div>
+              {models.status === "ready" && models.list.length > 0 && (
+                <select
+                  className="model-picker"
+                  value=""
+                  onChange={(e) => {
+                    if (e.target.value) set("model", e.target.value);
+                  }}
+                >
+                  <option value="">Pick from {models.list.length} available…</option>
+                  {models.list.map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+              )}
+              {models.status === "ready" && models.list.length === 0 && (
+                <div className="model-note">The provider returned no models.</div>
+              )}
+              {models.status === "error" && <div className="model-error">{models.error}</div>}
             </Field>
             <Field label="API mode" restart>
               <select value={String(draft.api_mode ?? "")} onChange={(e) => set("api_mode", e.target.value)}>
@@ -116,6 +165,25 @@ export function SettingsScreen({
                   setApiKey(e.target.value);
                   setSaved(false);
                 }}
+              />
+            </Field>
+          </Section>
+
+          <Section
+            title="Inline hints"
+            hint="Editor ghost-text completions driven by the same provider."
+          >
+            <Toggle
+              label="Enable inline code hints"
+              hint="Suggest completions as you type. Toggle quickly from the status bar too."
+              checked={Boolean(draft.inline_hints_enabled)}
+              onChange={(v) => set("inline_hints_enabled", v)}
+            />
+            <Field label="Inline hints model">
+              <input
+                placeholder="Leave blank to use the main model"
+                value={String(draft.inline_model ?? "")}
+                onChange={(e) => set("inline_model", e.target.value)}
               />
             </Field>
           </Section>
@@ -159,9 +227,14 @@ export function SettingsScreen({
             </Field>
           </Section>
 
-          <div className="settings-note">
-            Fields marked <span className="restart-tag">restart</span> are saved now but take effect
-            after restarting Code-AI.
+          <div className="settings-restart">
+            <div className="settings-note">
+              Fields marked <span className="restart-tag">restart</span> are saved now but take effect
+              after restarting Code-AI. This reloads the config without reloading the window.
+            </div>
+            <button className="btn-ghost settings-restart-btn" onClick={onRestart}>
+              <IconRefresh size={13} /> Restart Code-AI
+            </button>
           </div>
         </div>
       )}

@@ -1,22 +1,22 @@
 import * as React from "react";
 
 import { IconCI, IconHistory, IconPlus, IconSettings, IconTrash } from "./icons";
-import { Conversation, relativeTime, sorted } from "./history";
+import { HistoryEntry, relativeTime } from "./history";
 
 export function HomeScreen({
-  conversations,
+  entries,
   onNew,
   onOpen,
   onDelete,
   onSettings,
 }: {
-  conversations: Conversation[];
+  entries: HistoryEntry[];
   onNew: () => void;
   onOpen: (id: string) => void;
   onDelete: (id: string) => void;
   onSettings: () => void;
 }): JSX.Element {
-  const list = sorted(conversations);
+  const list = entries;
   return (
     <div className="home">
       <div className="home-topbar">
@@ -50,7 +50,7 @@ export function HomeScreen({
                 <div className="history-item-main">
                   <div className="history-title">{c.title}</div>
                   <div className="history-meta">
-                    {relativeTime(c.updatedAt)} · {c.items.length} messages
+                    {relativeTime(c.updatedAt)} · {c.count} messages
                   </div>
                 </div>
                 <button

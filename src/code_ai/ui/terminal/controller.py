@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from code_ai.app.service import CodeAIApplication
+from code_ai.core.errors import GoalStateError, TerminalSessionError
 from code_ai.events.models import EventEnvelope
+from code_ai.providers.models import ImageContent
 from code_ai.ui.terminal.view_models import TerminalViewModel
 
 
@@ -15,9 +17,9 @@ class TerminalController:
     async def handle_event(self, event: EventEnvelope) -> None:
         self.view_model.apply(event)
 
-    async def submit(self, text: str) -> None:
+    async def submit(self, text: str, images: list[ImageContent] | None = None) -> None:
         if text.strip():
-            await self.app.submit_user_message(text.strip())
+            await self.app.submit_user_message(text.strip(), images=list(images or []))
 
     async def compact(self) -> str:
         result = await self.app.request_context_compression()
@@ -46,6 +48,10 @@ class TerminalController:
     async def replan(self, reason: str | None = None) -> str:
         return await self.app.request_replan(reason=reason)
 
+    def plan_snapshot(self) -> dict[str, object]:
+        """The backend's authoritative plan snapshot (see PlannerService)."""
+        return self.app.get_plan_snapshot()
+
     def plan_status(self) -> str:
         snapshot = self.app.get_plan_snapshot()
         return (
@@ -56,3 +62,167 @@ class TerminalController:
             f"current: {snapshot.get('current_step')}\n"
             f"verification passed: {snapshot.get('latest_verification_passed')}"
         )
+
+    # -- interactive terminal (/term) ---------------------------------------
+    # The same PTY sessions the model drives through its terminal tools, now
+    # reachable by the human: /term types into the session, so user and agent
+    # share one live terminal instead of the user being locked out of it.
+
+    async def terminal_start(self, command: str | None = None) -> str:
+        manager = getattr(self.app, "terminal_manager", None)
+        if manager is None:
+            return "term> Terminal indisponível nesta sessão."
+        try:
+            session_id = manager.create(
+                cwd=self.app.session.config.workspace, command=command
+            )
+        except TerminalSessionError as exc:
+            return f"term> {exc}"
+        await self._emit_terminal_screen(manager, session_id)
+        return (
+            f"term> Sessão {session_id[:8]} iniciada. Digite /term <texto> para "
+            "enviar comandos; /term ctrl c interrompe; /term kill encerra."
+        )
+
+    async def terminal_send(self, text: str) -> str:
+        def type_and_run(manager, session_id: str) -> None:
+            manager.send_text(session_id, text)
+            manager.send_enter(session_id)
+
+        return await self._terminal_action(type_and_run)
+
+    async def terminal_enter(self) -> str:
+        return await self._terminal_action(
+            lambda manager, session_id: manager.send_enter(session_id)
+        )
+
+    async def terminal_control(self, key: str) -> str:
+        return await self._terminal_action(
+            lambda manager, session_id: manager.send_control(session_id, key)
+        )
+
+    async def terminal_kill(self) -> str:
+        manager = getattr(self.app, "terminal_manager", None)
+        session_id = manager.latest_session_id() if manager else None
+        if manager is None or session_id is None:
+            return "term> Nenhuma sessão de terminal ativa."
+        try:
+            manager.terminate(session_id)
+        except TerminalSessionError as exc:
+            return f"term> {exc}"
+        self.view_model.terminal_closed = True
+        await self.app.event_bus.emit(
+            "terminal.screen.updated",
+            {"session_id": session_id, "screen": self.view_model.terminal_screen,
+             "closed": True},
+            source="ui.term",
+        )
+        return f"term> Sessão {session_id[:8]} encerrada."
+
+    def terminal_status(self) -> str:
+        manager = getattr(self.app, "terminal_manager", None)
+        session_id = manager.latest_session_id() if manager else None
+        if manager is None or session_id is None:
+            return (
+                "term> Nenhuma sessão ativa. Use /term start [comando] para abrir "
+                "um terminal interativo."
+            )
+        screen = manager.read_screen(session_id)
+        return (
+            f"term> Sessão {session_id[:8]} · {screen.get('columns')}x"
+            f"{screen.get('rows')}"
+            f"{' · encerrada' if screen.get('closed') else ''}\n"
+            f"{screen.get('screen') or '(tela vazia)'}"
+        )
+
+    async def _terminal_action(self, action) -> str:
+        """Run one manager action against the latest session and emit its screen."""
+        manager = getattr(self.app, "terminal_manager", None)
+        session_id = manager.latest_session_id() if manager else None
+        if manager is None or session_id is None:
+            return "term> Nenhuma sessão ativa. Use /term start [comando] primeiro."
+        try:
+            action(manager, session_id)
+        except TerminalSessionError as exc:
+            return f"term> {exc}"
+        await self._emit_terminal_screen(manager, session_id)
+        return ""
+
+    async def _emit_terminal_screen(self, manager, session_id: str) -> None:
+        screen = manager.read_screen(session_id)
+        await self.app.event_bus.emit(
+            "terminal.screen.updated", screen, source="ui.term"
+        )
+
+    # -- persistent goal (/goal) -------------------------------------------
+
+    async def define_goal(self, objective: str) -> str:
+        try:
+            snapshot = await self.app.define_goal(objective)
+        except GoalStateError as exc:
+            return f"goal> {exc}"
+        lines = self._format_goal_criteria(snapshot)
+        if snapshot.get("started"):
+            return (
+                "goal> Objetivo definido e loop iniciado (critérios derivados "
+                "automaticamente):\n" + lines
+            )
+        return (
+            "goal> Objetivo definido. Critérios de aceitação propostos:\n"
+            + lines
+            + "\n\nUse /goal start para começar (o agente só para quando todos "
+            "os critérios passarem), ou /goal stop para descartar."
+        )
+
+    async def start_goal(self) -> str:
+        try:
+            snapshot = await self.app.start_goal()
+        except GoalStateError as exc:
+            return f"goal> {exc}"
+        return (
+            "goal> Loop iniciado. O agente vai iterar até todos os critérios "
+            f"passarem ({snapshot.get('criteria_progress')} no momento). "
+            "Use /goal stop para interromper."
+        )
+
+    async def stop_goal(self) -> str:
+        try:
+            snapshot = await self.app.stop_goal()
+        except GoalStateError as exc:
+            return f"goal> {exc}"
+        return f"goal> Parada solicitada. Status: {snapshot.get('status')}."
+
+    def goal_status(self) -> str:
+        snapshot = self.app.goal_snapshot()
+        if snapshot.get("status") == "none":
+            return "goal> Nenhum objetivo definido. Use /goal <objetivo>."
+        header = (
+            "goal> Status do objetivo\n"
+            f"objetivo: {snapshot.get('objective')}\n"
+            f"status: {snapshot.get('status')}"
+            f"{' (loop rodando)' if snapshot.get('loop_running') else ''}\n"
+            f"iterações: {snapshot.get('iterations')}\n"
+            f"critérios: {snapshot.get('criteria_progress')}"
+        )
+        reason = str(snapshot.get("stop_reason") or "")
+        if reason:
+            header += f"\nmotivo: {reason}"
+        return header + "\n" + self._format_goal_criteria(snapshot)
+
+    @staticmethod
+    def _format_goal_criteria(snapshot: dict[str, object]) -> str:
+        criteria = snapshot.get("criteria")
+        if not isinstance(criteria, list) or not criteria:
+            return "  (nenhum critério)"
+        lines = []
+        for item in criteria:
+            if not isinstance(item, dict):
+                continue
+            met = item.get("met")
+            mark = "✓" if met else ("✗" if met is not None else "•")
+            line = f"  {mark} {item.get('label')}"
+            detail = str(item.get("detail") or "")
+            if detail and met is False:
+                line += f" — {detail}"
+            lines.append(line)
+        return "\n".join(lines)

@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import Coroutine
 from typing import Any, TextIO
 
 from code_ai.app.service import CodeAIApplication
@@ -136,12 +137,15 @@ class BridgeServer:
 
     # -- handlers ----------------------------------------------------------
 
-    async def _h_submit(self, params: dict[str, Any]) -> dict[str, Any]:
-        text = str(params.get("text") or "")
-        context = str(params.get("context") or "")
-        # Turns stream their progress as events; accept and run in the
-        # background so the read loop stays responsive (e.g. to cancel/approve).
-        task = asyncio.create_task(self._app.submit_user_message(text, context=context))
+    def _start_background_turn(self, coro: Coroutine[Any, Any, Any]) -> None:
+        """Run a turn-producing coroutine off the read loop.
+
+        Turns stream their progress as events; acknowledging the RPC right away
+        keeps the read loop responsive (e.g. to cancel/approve) while the turn
+        runs. A turn awaited inline could even deadlock: an approval prompt
+        inside it blocks on the very RPC the frozen loop would never read.
+        """
+        task = asyncio.create_task(coro)
         self._turn_tasks.add(task)
         task.add_done_callback(self._turn_tasks.discard)
         # Heartbeat: a reasoning model can go silent for tens of seconds with no
@@ -151,6 +155,11 @@ class BridgeServer:
         # _turn_tasks so it never blocks shutdown or the turn's own completion.
         hb = asyncio.create_task(self._heartbeat(task))
         task.add_done_callback(lambda _: hb.cancel())
+
+    async def _h_submit(self, params: dict[str, Any]) -> dict[str, Any]:
+        text = str(params.get("text") or "")
+        context = str(params.get("context") or "")
+        self._start_background_turn(self._app.submit_user_message(text, context=context))
         return {"status": "accepted"}
 
     async def _heartbeat(self, turn_task: asyncio.Task[Any]) -> None:
@@ -172,8 +181,24 @@ class BridgeServer:
             pass
 
     async def _h_new_conversation(self, params: dict[str, Any]) -> dict[str, Any]:
-        await self._app.reset_conversation()
-        return {"status": "ok"}
+        conversation_id = params.get("conversation_id") or params.get("id")
+        await self._app.reset_conversation(
+            conversation_id=str(conversation_id) if conversation_id else None
+        )
+        return {"status": "ok", "conversation_id": self._app.conversation_id}
+
+    async def _h_list_conversations(self, params: dict[str, Any]) -> dict[str, Any]:
+        return {"conversations": await self._app.list_conversations()}
+
+    async def _h_load_conversation(self, params: dict[str, Any]) -> dict[str, Any]:
+        conversation_id = str(params.get("conversation_id") or params.get("id") or "")
+        return await self._app.load_conversation(conversation_id)
+
+    async def _h_delete_conversation(self, params: dict[str, Any]) -> dict[str, Any]:
+        deleted = await self._app.delete_conversation(
+            str(params.get("conversation_id") or params.get("id") or "")
+        )
+        return {"deleted": deleted}
 
     async def _h_explain_code(self, params: dict[str, Any]) -> dict[str, Any]:
         markdown = await self._app.explain_code(
@@ -182,6 +207,15 @@ class BridgeServer:
             language=str(params.get("language") or ""),
         )
         return {"markdown": markdown}
+
+    async def _h_inline_complete(self, params: dict[str, Any]) -> dict[str, Any]:
+        completion = await self._app.inline_complete(
+            prefix=str(params.get("prefix") or ""),
+            suffix=str(params.get("suffix") or ""),
+            path=str(params.get("path") or ""),
+            language=str(params.get("language") or ""),
+        )
+        return {"completion": completion}
 
     async def _h_analyze_refactor(self, params: dict[str, Any]) -> dict[str, Any]:
         improvements = await self._app.analyze_refactor(
@@ -203,6 +237,10 @@ class BridgeServer:
 
     async def _h_get_settings(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._app.get_settings()
+
+    async def _h_list_models(self, params: dict[str, Any]) -> dict[str, Any]:
+        models = await self._app.list_models()
+        return {"models": models}
 
     async def _h_update_settings(self, params: dict[str, Any]) -> dict[str, Any]:
         updates = params.get("updates")
@@ -238,8 +276,12 @@ class BridgeServer:
         return {"resolved": resolved}
 
     async def _h_answer_question(self, params: dict[str, Any]) -> dict[str, Any]:
-        await self._app.submit_question_answer(str(params.get("answer") or ""))
-        return {"status": "ok"}
+        # The answer resumes the paused turn, so it runs in the background
+        # exactly like a submitted message.
+        self._start_background_turn(
+            self._app.submit_question_answer(str(params.get("answer") or ""))
+        )
+        return {"status": "accepted"}
 
     async def _h_shutdown(self, params: dict[str, Any]) -> dict[str, Any]:
         self._stop.set()
@@ -248,9 +290,14 @@ class BridgeServer:
     _HANDLERS: dict[str, Any] = {
         "submitUserMessage": _h_submit,
         "newConversation": _h_new_conversation,
+        "listConversations": _h_list_conversations,
+        "loadConversation": _h_load_conversation,
+        "deleteConversation": _h_delete_conversation,
         "getSettings": _h_get_settings,
+        "listModels": _h_list_models,
         "updateSettings": _h_update_settings,
         "explainCode": _h_explain_code,
+        "inlineComplete": _h_inline_complete,
         "analyzeRefactor": _h_analyze_refactor,
         "planRefactor": _h_plan_refactor,
         "cancel": _h_cancel,
@@ -263,7 +310,9 @@ class BridgeServer:
     }
 
     # Methods whose model call may run long; dispatched off the read loop.
-    _CONCURRENT_METHODS = frozenset({"explainCode", "analyzeRefactor", "planRefactor"})
+    _CONCURRENT_METHODS = frozenset(
+        {"explainCode", "inlineComplete", "analyzeRefactor", "planRefactor", "listModels"}
+    )
 
 
 async def run_bridge(app: CodeAIApplication, *, stdin: TextIO, stdout: TextIO) -> int:

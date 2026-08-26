@@ -53,30 +53,124 @@ def test_render_plan_includes_markers_and_titles() -> None:
     assert "1/3" in rendered
 
 
-def test_view_model_shows_plan_on_created_and_hides_on_final() -> None:
+def test_view_model_plan_persists_through_turn_end() -> None:
+    # The plan panel is a turn artifact: it stays visible through the turn's end
+    # (assistant.final and the return to READY) so a turn that both planned and
+    # delegated shows the plan alongside the AGENTS panel, instead of the plan
+    # collapsing and leaving only agents on screen.
     vm = TerminalViewModel()
     vm.apply(_event("planning.plan.created", _snapshot()))
     assert vm.plan_visible is True
     assert len(vm.plan_steps) == 3
 
     vm.apply(_event("assistant.final", {"text": "done"}))
-    assert vm.plan_visible is False
-    # Steps are retained (just hidden) so a re-show needs no rebuild.
+    assert vm.plan_visible is True
+    vm.apply(_event("status.changed", {"state": "READY"}))
+    assert vm.plan_visible is True
     assert len(vm.plan_steps) == 3
 
 
-def test_view_model_hides_plan_when_turn_returns_to_ready() -> None:
-    # Answer-only turns never emit assistant.final; returning to READY must
-    # still collapse the panel.
+def test_view_model_clears_plan_on_next_user_turn() -> None:
     vm = TerminalViewModel()
     vm.apply(_event("planning.plan.created", _snapshot()))
-    assert vm.plan_visible is True
     vm.apply(_event("status.changed", {"state": "READY"}))
+    assert vm.plan_visible is True
+
+    # The next user message starts a fresh turn and clears the previous plan.
+    vm.apply(_event("user.message", {"text": "next task"}))
     assert vm.plan_visible is False
+    assert vm.plan_steps == []
 
 
-def test_view_model_hides_plan_when_status_not_active() -> None:
+def test_view_model_shows_completed_plan_checklist() -> None:
+    # A finished plan keeps its checklist on screen (all steps done), like the
+    # AGENTS panel keeps completed agents, until the next user turn.
     vm = TerminalViewModel()
     vm.apply(_event("planning.plan.created", _snapshot()))
     vm.apply(_event("planning.step.completed", _snapshot(status="COMPLETED")))
-    assert vm.plan_visible is False
+    assert vm.plan_visible is True
+
+
+def test_view_model_settles_plan_on_plan_completed() -> None:
+    # planning.plan.completed carries the settled snapshot: every step done,
+    # no running step left, header flips to N/N COMPLETED.
+    vm = TerminalViewModel()
+    vm.apply(_event("planning.plan.created", _snapshot()))
+    assert any(s["status"] == "running" for s in vm.plan_steps)
+
+    vm.apply(
+        _event(
+            "planning.plan.completed",
+            _snapshot(
+                status="COMPLETED",
+                progress="3/3",
+                current_step=None,
+                current_step_status="",
+                completed_steps=[
+                    "Discover local context",
+                    "Implement reference file",
+                    "Verify and report",
+                ],
+                remaining_steps=[],
+            ),
+        )
+    )
+
+    assert vm.plan_status == "COMPLETED"
+    assert vm.plan_progress == "3/3"
+    assert vm.current_step == "-"
+    assert [s["status"] for s in vm.plan_steps] == ["done", "done", "done"]
+    assert vm.plan_visible is True
+    assert any("plan> plan completed (3/3)" in line for line in vm.conversation)
+
+
+def test_build_plan_steps_pauses_current_step_when_plan_waits() -> None:
+    # A WAITING plan has nothing executing: the current step must render paused
+    # (a fixed marker, no spinner), not running.
+    steps = build_plan_steps(_snapshot(status="WAITING"))
+    assert [s["status"] for s in steps] == ["done", "paused", "pending"]
+
+
+def test_render_plan_shows_paused_step_without_spinner() -> None:
+    steps = build_plan_steps(_snapshot(status="WAITING"))
+    rendered = render_plan(steps, "1/3", "WAITING", "|", "#ff9f1c").plain
+    assert "◌ Implement reference file" in rendered
+    assert "aguardando você" in rendered
+    assert "| Implement reference file" not in rendered
+    assert "executando" not in rendered
+
+
+def test_view_model_pauses_plan_on_waiting_event() -> None:
+    # Regression: a turn that ended waiting for the user (ask_user question,
+    # prose answer, failure) left the sidebar's current step spinning forever.
+    # The planning.plan.waiting snapshot must flip it to paused and keep the
+    # panel visible.
+    vm = TerminalViewModel()
+    vm.apply(_event("planning.plan.created", _snapshot()))
+    assert any(s["status"] == "running" for s in vm.plan_steps)
+
+    vm.apply(_event("planning.plan.waiting", _snapshot(status="WAITING")))
+
+    assert vm.plan_status == "WAITING"
+    assert not any(s["status"] == "running" for s in vm.plan_steps)
+    paused = [s for s in vm.plan_steps if s["title"] == "Implement reference file"][0]
+    assert paused["status"] == "paused"
+    assert vm.plan_visible is True
+    assert any("plan> paused, waiting for you" in line for line in vm.conversation)
+
+
+def test_view_model_marks_stopped_step_failed_on_plan_blocked() -> None:
+    vm = TerminalViewModel()
+    vm.apply(_event("planning.plan.created", _snapshot()))
+
+    vm.apply(
+        _event(
+            "planning.plan.blocked",
+            _snapshot(status="BLOCKED", current_step_status="FAILED"),
+        )
+    )
+
+    assert vm.plan_status == "BLOCKED"
+    stopped = [s for s in vm.plan_steps if s["title"] == "Implement reference file"][0]
+    assert stopped["status"] == "failed"
+    assert any("plan> plan blocked" in line for line in vm.conversation)

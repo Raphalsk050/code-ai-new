@@ -4,10 +4,11 @@ import re
 from dataclasses import dataclass
 from importlib import resources
 
+from markdown_it import MarkdownIt
+from markdown_it.token import Token
 from rich.console import Console, RenderableType
 from rich.markdown import Markdown
 from rich.text import Text
-
 from textual.content import Content
 
 try:
@@ -190,14 +191,20 @@ def spinner_color(progress: float) -> str:
 # --- Plan panel (planned-steps checklist beside the conversation) -----------
 # Per-step marker glyphs and colors. The running step's glyph is supplied by
 # the live spinner instead of a fixed marker.
-_PLAN_MARKERS = {"done": "✓", "pending": "○", "failed": "✗"}
+_PLAN_MARKERS = {"done": "✓", "pending": "○", "failed": "✗", "paused": "◌"}
 _PLAN_TITLE_STYLES = {
     "done": "#7b8493",
     "running": "bold #d7dee8",
     "pending": "#9aa4b2",
     "failed": "#e0a0a0",
+    "paused": "#9aa4b2",
 }
-_PLAN_MARKER_STYLES = {"done": "#48d17a", "pending": "#56606e", "failed": "#e05252"}
+_PLAN_MARKER_STYLES = {
+    "done": "#48d17a",
+    "pending": "#56606e",
+    "failed": "#e05252",
+    "paused": "#8892a0",
+}
 _PLAN_SUB_STYLE = "#56606e"
 _PLAN_HEADER_STYLE = "#8892a0"
 _PLAN_TITLE_WIDTH = 32
@@ -213,18 +220,26 @@ def build_plan_steps(payload: dict[object, object]) -> list[dict[str, str]]:
 
     ``completed_steps`` and ``remaining_steps`` are both emitted in plan order,
     and steps run sequentially, so the completed ones are always the prefix.
-    The current step is flagged running (or failed) and the rest pending.
+    The current step is flagged running (failed, or paused when the plan is
+    WAITING on the user - nothing is executing, so it must not spin) and the
+    rest pending.
     """
     completed = [str(title) for title in (payload.get("completed_steps") or [])]
     remaining = [str(title) for title in (payload.get("remaining_steps") or [])]
     current = payload.get("current_step")
     current_label = None if current is None else str(current)
     current_status = str(payload.get("current_step_status") or "")
+    plan_waiting = str(payload.get("status") or "") == "WAITING"
 
     steps: list[dict[str, str]] = [{"title": title, "status": "done"} for title in completed]
     for title in remaining:
         if current_label is not None and title == current_label:
-            status = "failed" if current_status == "FAILED" else "running"
+            if current_status == "FAILED":
+                status = "failed"
+            elif plan_waiting:
+                status = "paused"
+            else:
+                status = "running"
         else:
             status = "pending"
         steps.append({"title": title, "status": status})
@@ -261,8 +276,121 @@ def render_plan(
         text.append(title, style=_PLAN_TITLE_STYLES.get(status, "#9aa4b2"))
         if status == "running":
             text.append("\n  executando", style=_PLAN_SUB_STYLE)
+        elif status == "paused":
+            text.append("\n  aguardando você", style=_PLAN_SUB_STYLE)
         if index < len(steps) - 1:
             text.append("\n")
+    return text
+
+
+# --- Sub-agents panel (live delegated-agent activity, below the plan) --------
+# Terminal-state glyphs; a running agent borrows the live spinner instead.
+_AGENT_MARKERS = {"completed": "✓", "failed": "✗", "rejected": "⊘"}
+_AGENT_MARKER_STYLES = {
+    "completed": "#48d17a",
+    "failed": "#e05252",
+    "rejected": "#e0a0a0",
+    "running": "#ff9f1c",
+}
+_AGENT_TYPE_STYLES = {
+    "running": "bold #d7dee8",
+    "completed": "#7b8493",
+    "failed": "#e0a0a0",
+    "rejected": "#9aa4b2",
+}
+_AGENT_DETAIL_STYLE = "#56606e"
+_AGENT_TASK_WIDTH = 30
+
+
+def render_subagents_summary(agents: list[dict[str, str]]) -> Text:
+    """The AGENTS panel's one-line roster summary ("3 agent(s) · 1 running")."""
+    running = sum(1 for agent in agents if agent.get("status") == "running")
+    header = f"{len(agents)} agent(s)"
+    if running:
+        header += f" · {running} running"
+    return Text(header, style=_PLAN_HEADER_STYLE)
+
+
+def render_subagent_header(
+    agent: dict[str, str],
+    running_glyph: str,
+    running_color: str,
+) -> Text:
+    """One sub-agent card's title row: status marker, name, dim type suffix.
+
+    The marker is the live spinner while the agent runs and a terminal glyph
+    (✓ / ✗ / ⊘) once it settles.
+    """
+    text = Text()
+    status = agent.get("status", "running")
+    agent_type = agent.get("agent_type", "agent")
+    label = agent.get("name") or agent_type
+    if status == "running":
+        marker, marker_style = running_glyph, f"bold {running_color}"
+    else:
+        marker = _AGENT_MARKERS.get(status, "•")
+        marker_style = _AGENT_MARKER_STYLES.get(status, "#56606e")
+    text.append(marker + " ", style=marker_style)
+    text.append(label, style=_AGENT_TYPE_STYLES.get(status, "#9aa4b2"))
+    if agent.get("name"):
+        # The type as a dim suffix, so the name reads as the agent's identity.
+        text.append(f"  {agent_type}", style=_AGENT_DETAIL_STYLE)
+    return text
+
+
+def subagent_task_preview(task: str) -> str:
+    """Collapsed-title preview of a delegated task: one flattened, capped line.
+
+    Multi-line tasks are squashed to single spaces so the Collapsible title
+    never wraps; the full text lives in the expanded body.
+    """
+    flattened = " ".join(task.split())
+    return _truncate_title(flattened or "task", _AGENT_TASK_WIDTH)
+
+
+def render_subagent_task(agent: dict[str, str]) -> Text:
+    """Expanded card body: the full delegated task plus the latest activity."""
+    text = Text()
+    task = agent.get("task", "").strip()
+    detail = agent.get("detail", "").strip()
+    text.append(task or "(no task)", style=_AGENT_DETAIL_STYLE)
+    if detail:
+        text.append("\n· " + detail, style=_AGENT_DETAIL_STYLE)
+    return text
+
+
+# --- Terminal panel (live interactive PTY screen, below the agents panel) ----
+_TERMINAL_HEADER_STYLE = "#8892a0"
+_TERMINAL_SCREEN_STYLE = "#d7dee8"
+_TERMINAL_CLOSED_STYLE = "#e0a0a0"
+# How many rows of the emulated screen the panel shows; the newest survive.
+_TERMINAL_PANEL_MAX_ROWS = 18
+
+
+def render_terminal_screen(
+    session_id: str,
+    screen: str,
+    rows: int,
+    cols: int,
+    closed: bool,
+) -> Text:
+    """Render the interactive terminal's emulated screen for the TERMINAL panel.
+
+    A short header (session id, dimensions, state) over the newest rows of the
+    ``pyte`` display. Only the tail is shown — the panel is a live viewport,
+    not a scrollback; the model (and the user via /term) can always read the
+    full screen through the read_screen tool.
+    """
+    text = Text()
+    header = f"{session_id[:8] or '-'} · {cols}x{rows}"
+    text.append(header, style=_TERMINAL_HEADER_STYLE)
+    if closed:
+        text.append("  encerrado", style=_TERMINAL_CLOSED_STYLE)
+    text.append("\n")
+    lines = screen.splitlines()
+    if len(lines) > _TERMINAL_PANEL_MAX_ROWS:
+        lines = lines[-_TERMINAL_PANEL_MAX_ROWS:]
+    text.append("\n".join(line.rstrip() for line in lines), style=_TERMINAL_SCREEN_STYLE)
     return text
 
 
@@ -404,6 +532,47 @@ ASSISTANT_LINE_PREFIX = "ai> "
 _DEFAULT_MARKDOWN_WIDTH = 80
 
 
+def _parse_markdown_keeping_markup_visible(body: str) -> list[Token]:
+    """Parse Markdown so raw XML/HTML in the answer stays visible.
+
+    Rich's ``Markdown`` has no renderer for ``html_block``/``html_inline``
+    tokens: it silently drops them. An answer quoting an XML/HTML document
+    outside a code fence (which models do all the time when asked to produce
+    XML) then simply vanishes from the terminal — the user sees the prose
+    around a hole where the document should be. Rewrite block HTML into a
+    fenced code block (preserving its line structure, with highlighting) and
+    inline HTML into literal text, so angle-bracket content always renders.
+    """
+    parser = MarkdownIt().enable("strikethrough").enable("table")
+    tokens = parser.parse(body)
+    rewritten: list[Token] = []
+    for token in tokens:
+        if token.type == "html_block":
+            # markdown-it splits one document into several html_block tokens
+            # (the <?xml?> prolog and the root element, for instance); merge
+            # runs of them so the document renders as one contiguous block.
+            previous = rewritten[-1] if rewritten else None
+            if previous is not None and previous.type == "fence" and previous.meta.get(
+                "from_html_block"
+            ):
+                previous.content += token.content
+                continue
+            fence = Token("fence", "code", 0)
+            fence.content = token.content
+            fence.info = "xml"
+            fence.markup = "```"
+            fence.block = True
+            fence.meta = {"from_html_block": True}
+            rewritten.append(fence)
+            continue
+        if token.type == "inline" and token.children:
+            for child in token.children:
+                if child.type == "html_inline":
+                    child.type = "text"
+        rewritten.append(token)
+    return rewritten
+
+
 def markdown_to_content(body: str, width: int) -> Content:
     """Render Markdown to a Textual-native :class:`Content`.
 
@@ -420,7 +589,11 @@ def markdown_to_content(body: str, width: int) -> Content:
     """
     width = max(20, width)
     console = Console(width=width)
-    segments = console.render(Markdown(body), console.options.update_width(width))
+    markdown = Markdown(body)
+    # Re-parse with the HTML-preserving token rewrite; ``parsed`` is what
+    # ``Markdown.__rich_console__`` walks, so this is the one override point.
+    markdown.parsed = _parse_markdown_keeping_markup_visible(body)
+    segments = console.render(markdown, console.options.update_width(width))
     text = Text()
     for segment in segments:
         if segment.control:
@@ -453,12 +626,20 @@ _TRACE_PREFIXES = (
     "thinking>",
     "working>",
     "tool>",
+    "subagent>",
     "evidence>",
     "plan>",
     "approval>",
     "policy>",
     "completion>",
     "permission>",
+    "term>",
+    # A message typed mid-turn, waiting for the model to read it.
+    "queued>",
+    # Background learning yielding the model to the turn (learning.cancelled).
+    "memory>",
+    # The live execute_command output line (see view_models._apply_command_output).
+    "cmd~",
 )
 # Multi-line trace text (the model's reasoning) carries its own blank lines; they
 # are collapsed so the dim trace stays compact instead of sprawling.

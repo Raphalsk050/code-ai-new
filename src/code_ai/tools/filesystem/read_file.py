@@ -5,20 +5,27 @@ from typing import Any
 from code_ai.core.errors import ToolArgumentError
 from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.filesystem.common import read_text_file
+from code_ai.tools.locations import LOCATION_SCHEMA, for_context
 from code_ai.tools.output import bound_text
 from code_ai.tools.schema import tool_schema
+from code_ai.util.fileio import RetryPolicy
 
 
 class ReadFileTool:
     name = "read_file"
-    description = "Read a UTF-8 text file inside the workspace, optionally bounded to a line range."
+    description = (
+        "Read a UTF-8 text file, optionally bounded to a line range. Reads the "
+        "workspace by default; pass location 'sandbox' to read something this "
+        "session produced in its scratch area."
+    )
     capabilities = frozenset({ToolCapability.LOCAL_READ})
     input_schema = tool_schema(
         {
             "path": {
                 "type": "string",
-                "description": "Workspace-relative path of the text file to read.",
+                "description": "Path of the text file to read, relative to the chosen location.",
             },
+            "location": LOCATION_SCHEMA,
         },
         required=("path",),
     )
@@ -27,8 +34,11 @@ class ReadFileTool:
         path_value = str(arguments.get("path", ""))
         if not path_value:
             raise ToolArgumentError("path is required.")
-        path = context.workspace.resolve(path_value, must_exist=True)
-        text, digest = read_text_file(path)
+        location = for_context(context, arguments.get("location"))
+        path = location.resolve(path_value, must_exist=True)
+        text, digest = read_text_file(
+            path, policy=RetryPolicy.from_config(context.config.file_io)
+        )
         lines = text.splitlines(keepends=True)
         start = int(arguments.get("start_line") or 1)
         end = int(arguments.get("end_line") or len(lines))
@@ -37,7 +47,8 @@ class ReadFileTool:
         selected = "".join(lines[start - 1 : end])
         max_chars = int(arguments.get("max_chars") or context.config.budgets.max_tool_output_chars)
         return {
-            "path": str(path.relative_to(context.workspace.root)),
+            "path": location.relative(path),
+            "location": location.location.value,
             "sha256": digest,
             "start_line": start,
             "end_line": min(end, len(lines)),

@@ -125,3 +125,65 @@ def test_render_limit_caps_feedback_but_never_identity(tmp_path) -> None:
 
 def test_render_empty_when_nothing_saved(tmp_path) -> None:
     assert _service(tmp_path).render_for_prompt() == ""
+
+
+def test_find_by_content_matches_exact_text(tmp_path) -> None:
+    store = MemoryStore(tmp_path / "mem")
+    store.add(kind="project", content="Build with make release.")
+
+    found = store.find_by_content("Build with make release.")
+    assert found is not None
+    assert found.kind == "project"
+    assert store.find_by_content("Build with cargo.") is None
+
+
+def test_remove_deletes_entry(tmp_path) -> None:
+    store = MemoryStore(tmp_path / "mem")
+    entry = store.add(kind="project", content="Old fact.")
+
+    assert store.remove(entry.id) is True
+    assert store.all() == []
+    # Removing again reports nothing was there.
+    assert store.remove(entry.id) is False
+
+
+def test_rewrite_replaces_text_and_keeps_provenance(tmp_path) -> None:
+    store = MemoryStore(tmp_path / "mem")
+    entry = store.add(kind="feedback", content="The stack is Flask.")
+
+    rewritten = store.rewrite(entry.id, "The stack is FastAPI.", source="consolidation")
+    assert rewritten is not None
+    assert rewritten.kind == "feedback"
+    assert rewritten.created == entry.created
+    assert rewritten.source == "consolidation"
+    assert [e.content for e in store.all()] == ["The stack is FastAPI."]
+    # The old id is gone; rewriting a missing id is a no-op.
+    assert store.rewrite(entry.id, "whatever") is None
+
+
+def test_maintenance_marker_tracks_growth_and_is_not_an_entry(tmp_path) -> None:
+    store = MemoryStore(tmp_path / "mem")
+    store.add(kind="project", content="fact 1")
+    store.add(kind="project", content="fact 2")
+
+    # Never maintained: everything counts as new.
+    assert store.new_entries_since_maintenance() == 2
+
+    store.mark_maintained()
+    assert store.new_entries_since_maintenance() == 0
+    store.add(kind="project", content="fact 3")
+    assert store.new_entries_since_maintenance() == 1
+
+    # The marker file lives in the same directory but is never read as a memory.
+    assert len(store.all()) == 3
+
+
+def test_service_remove_by_content_probes_both_scopes(tmp_path) -> None:
+    service = _service(tmp_path)
+    service.add(kind="feedback", content="global fact")
+    service.add(kind="project", content="project fact")
+
+    assert service.remove_by_content("project fact") is True
+    assert service.remove_by_content("global fact") is True
+    assert service.remove_by_content("never existed") is False
+    assert service.render_for_prompt() == ""

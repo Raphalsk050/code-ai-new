@@ -3,7 +3,7 @@
 // runs in a single bridge process, so this is a client-side transcript archive:
 // it lets the user browse and reopen past conversations, and start fresh ones.
 
-import type { AppMode } from "../src/protocol";
+import type { AppMode, ServerConversation } from "../src/protocol";
 import type { Item } from "./reducer";
 
 export interface Conversation {
@@ -11,6 +11,47 @@ export interface Conversation {
   title: string;
   updatedAt: number;
   items: Item[];
+}
+
+/** A conversation shown on the home screen, merged from the bridge (source of
+ * truth for what exists) and the local cache (rich transcript for preview). */
+export interface HistoryEntry {
+  id: string;
+  title: string;
+  updatedAt: number;
+  count: number;
+}
+
+/**
+ * Union of the bridge's saved conversations and the local transcript cache. The
+ * bridge is authoritative for existence (so history survives a cleared webview
+ * state), while a locally-cached conversation contributes its fresher title and
+ * message count. Newest-first.
+ */
+export function mergeHistory(
+  client: Conversation[],
+  server: ServerConversation[]
+): HistoryEntry[] {
+  const byId = new Map<string, HistoryEntry>();
+  for (const s of server) {
+    byId.set(s.id, {
+      id: s.id,
+      title: s.title || "Conversation",
+      updatedAt: (s.updated_at || 0) * 1000, // stored in seconds
+      count: s.message_count,
+    });
+  }
+  for (const c of client) {
+    if (c.items.length === 0) continue;
+    const prev = byId.get(c.id);
+    byId.set(c.id, {
+      id: c.id,
+      title: c.title,
+      updatedAt: Math.max(c.updatedAt, prev?.updatedAt ?? 0),
+      count: c.items.length,
+    });
+  }
+  return [...byId.values()].sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 /** Extension-side preferences (not part of the backend config.json). */
