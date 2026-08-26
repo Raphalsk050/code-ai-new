@@ -17,7 +17,9 @@ from code_ai.util.fileio import (
     describe_os_error,
     is_transient_os_error,
     read_bytes,
+    remove_tree,
     retry_transient,
+    retry_transient_async,
 )
 
 FAST = RetryPolicy(attempts=4, initial_delay_s=0.0, max_delay_s=0.0)
@@ -301,3 +303,85 @@ def test_a_read_waits_out_whatever_is_holding_the_file(tmp_path, monkeypatch) ->
 def test_a_read_of_something_that_is_not_there_fails_immediately(tmp_path) -> None:
     with pytest.raises(FileNotFoundError):
         read_bytes(tmp_path / "missing.txt", policy=NO_RETRY)
+
+
+# ------------------------------------------------------------- async retry
+
+
+async def test_the_async_driver_waits_out_the_same_failures(tmp_path) -> None:
+    calls = {"n": 0}
+
+    async def flaky() -> str:
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise windows_error(fileio.ERROR_SHARING_VIOLATION)
+        return "started"
+
+    result = await retry_transient_async(flaky, policy=FAST, what="start", path=tmp_path)
+
+    assert result.value == "started"
+    assert result.attempts == 3
+
+
+async def test_the_async_driver_does_not_retry_a_real_failure(tmp_path) -> None:
+    calls = {"n": 0}
+
+    async def missing() -> None:
+        calls["n"] += 1
+        raise FileNotFoundError(errno.ENOENT, "no such program")
+
+    with pytest.raises(FileNotFoundError):
+        await retry_transient_async(missing, policy=FAST, what="start", path=tmp_path)
+
+    assert calls["n"] == 1
+
+
+async def test_the_async_driver_gives_the_same_readable_failure(tmp_path) -> None:
+    async def held() -> None:
+        raise windows_error(fileio.ERROR_SHARING_VIOLATION)
+
+    with pytest.raises(FileOperationError) as caught:
+        await retry_transient_async(held, policy=FAST, what="start", path=tmp_path / "app.exe")
+
+    assert "another process" in str(caught.value)
+
+
+# ------------------------------------------------------------ tree removal
+
+
+def test_removing_a_tree_that_is_free_just_works(tmp_path) -> None:
+    tree = tmp_path / "sandbox"
+    (tree / "work").mkdir(parents=True)
+    (tree / "work" / "out.bin").write_text("x", encoding="utf-8")
+
+    assert remove_tree(tree, policy=FAST) is True
+    assert not tree.exists()
+
+
+def test_removing_a_tree_that_is_not_there_is_not_a_failure(tmp_path) -> None:
+    assert remove_tree(tmp_path / "never-existed") is True
+
+
+def test_a_read_only_file_does_not_stop_the_removal(tmp_path) -> None:
+    tree = tmp_path / "sandbox"
+    tree.mkdir()
+    locked = tree / "build.lock"
+    locked.write_text("x", encoding="utf-8")
+    locked.chmod(0o444)
+
+    assert remove_tree(tree, policy=FAST) is True
+
+
+def test_a_tree_that_will_not_go_is_reported_rather_than_raised(tmp_path, monkeypatch) -> None:
+    tree = tmp_path / "sandbox"
+    tree.mkdir()
+
+    def always_held(*args, **kwargs):
+        raise windows_error(fileio.ERROR_SHARING_VIOLATION)
+
+    monkeypatch.setattr(fileio.shutil, "rmtree", always_held)
+
+    # Cleanup runs at shutdown; a dev server still holding a build directory
+    # must not turn into an exception on the way out.
+    assert remove_tree(tree, policy=FAST) is False
+    assert tree.exists()

@@ -16,6 +16,7 @@ from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.locations import LOCATION_SCHEMA, ResolvedLocation, for_context
 from code_ai.tools.process.command_runner import CommandResult, CommandRunner
 from code_ai.tools.schema import tool_schema
+from code_ai.util.fileio import RetryPolicy, describe_os_error
 
 
 class ExecuteCommandTool:
@@ -106,13 +107,18 @@ class ExecuteCommandTool:
                 cancel_event=context.cancel_event,
                 extra_env=_sandboxed_env(context, arguments.get("env")),
                 max_output_chars=context.config.budgets.max_tool_output_chars,
+                spawn_policy=RetryPolicy.from_config(context.config.file_io),
             )
         except CommandTimeoutError as exc:
             raise ToolExecutionError(f"Command timed out after {timeout:g}s.") from exc
         except CancellationError:
             raise
         except OSError as exc:
-            raise ToolExecutionError(f"Command failed to start: {exc}") from exc
+            # describe_os_error names the Windows cause, so "the file is open
+            # in another process" reaches the model instead of a bare errno.
+            raise ToolExecutionError(
+                f"Command failed to start: {describe_os_error(exc)}"
+            ) from exc
         payload = result.to_dict(max_chars=context.config.budgets.max_tool_output_chars)
         payload["location"] = location.location.value
         artifacts = _capture_run(context, result=result, location=location)

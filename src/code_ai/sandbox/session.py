@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import platform
-import shutil
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,11 +16,16 @@ from code_ai.sandbox.layout import (
     SandboxLayout,
 )
 from code_ai.sandbox.runtimes import DEFAULT_RUNTIMES, LanguageRuntime, build_runtime_scratch
+from code_ai.util.fileio import RetryPolicy, remove_tree
 from code_ai.util.paths import WorkspacePolicy
 
 # Owner-only: a sandbox holds whatever a build produced, which on a shared host
 # is nobody else's business.
 _DIRECTORY_MODE = 0o700
+
+# Cleanup is best-effort and runs at shutdown, so it waits briefly for a
+# lingering build process rather than either failing or delaying the exit.
+_CLEANUP_POLICY = RetryPolicy(attempts=3, initial_delay_s=0.05, max_delay_s=0.2)
 
 
 class SessionSandbox:
@@ -237,6 +241,10 @@ def remove_sandbox(path: Path) -> bool:
     link is unlinked explicitly before the tree is removed. ``rmtree`` would not
     follow it either, but this is the one operation in the feature that could
     destroy the user's work, and it should not rest on a library detail.
+
+    Removal is retried: on Windows a build directory a compiler or dev server
+    still holds cannot be deleted on the first ask, and read-only flags on
+    build output stop it outright until they are cleared.
     """
 
     if not is_sandbox_root(path):
@@ -247,5 +255,4 @@ def remove_sandbox(path: Path) -> bool:
             link.unlink()
     except OSError:
         pass
-    shutil.rmtree(path, ignore_errors=True)
-    return not path.exists()
+    return remove_tree(path, policy=_CLEANUP_POLICY)
