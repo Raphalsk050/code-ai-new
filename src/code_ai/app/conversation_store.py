@@ -8,6 +8,11 @@ from pathlib import Path
 from typing import Any
 
 from code_ai.providers.models import ImageContent, Message, ToolCall
+from code_ai.util.fileio import RetryPolicy, atomic_write_text
+
+# The store is not handed the app configuration, so it uses the built-in
+# retry defaults, which mirror the file_io section's own.
+_POLICY = RetryPolicy()
 
 logger = logging.getLogger(__name__)
 
@@ -112,10 +117,15 @@ class ConversationStore:
             "previous_response_id": previous_response_id,
             "messages": [_message_to_record(m) for m in messages],
         }
-        path = self._path(conversation_id)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(path)  # atomic swap so a crash never leaves a half-written file
+        # Atomic swap so a crash never leaves a half-written file, retried
+        # because on Windows a sync client or scanner can be holding the file
+        # for the fraction of a second the swap needs.
+        atomic_write_text(
+            self._path(conversation_id),
+            json.dumps(record, ensure_ascii=False),
+            policy=_POLICY,
+            allow_non_atomic_fallback=True,
+        )
 
     def load(self, conversation_id: str) -> dict[str, Any] | None:
         path = self._path(conversation_id)

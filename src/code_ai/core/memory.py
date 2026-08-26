@@ -29,6 +29,12 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from code_ai.util.fileio import RetryPolicy, atomic_write_text
+
+# Memory stores are constructed with a directory, not the app configuration,
+# so they use the built-in retry defaults that mirror the file_io section.
+_POLICY = RetryPolicy()
+
 # Turns a failure-context blob into a concise, one-sentence lesson.
 LessonGenerator = Callable[[str], Awaitable[str]]
 
@@ -240,10 +246,11 @@ class FailureMemoryStore:
 
     def _save(self, entry: FailureMemory) -> None:
         self._dir.mkdir(parents=True, exist_ok=True)
-        path = self._path_for(entry.signature)
-        path.write_text(
+        atomic_write_text(
+            self._path_for(entry.signature),
             json.dumps(entry.to_dict(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
+            policy=_POLICY,
+            allow_non_atomic_fallback=True,
         )
 
     def _prune(self) -> None:
@@ -435,8 +442,11 @@ class MemoryStore:
 
         self._dir.mkdir(parents=True, exist_ok=True)
         state = {"entries_at_last_run": len(self.all()), "last_run": time.time()}
-        (self._dir / _MAINTENANCE_FILENAME).write_text(
-            json.dumps(state), encoding="utf-8"
+        atomic_write_text(
+            self._dir / _MAINTENANCE_FILENAME,
+            json.dumps(state),
+            policy=_POLICY,
+            allow_non_atomic_fallback=True,
         )
 
     def _maintenance_state(self) -> dict[str, object]:
@@ -465,9 +475,11 @@ class MemoryStore:
 
     def _save(self, entry: Memory) -> None:
         self._dir.mkdir(parents=True, exist_ok=True)
-        self._path_for(entry.id).write_text(
+        atomic_write_text(
+            self._path_for(entry.id),
             json.dumps(entry.to_dict(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
+            policy=_POLICY,
+            allow_non_atomic_fallback=True,
         )
 
     def _prune(self) -> None:
