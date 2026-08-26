@@ -435,6 +435,46 @@ Configuration lives under `sandbox` in `config.json`:
 Set `cleanup_on_exit` to `false` to inspect what a build produced after the session ends.
 With `enabled` set to `false`, or on a host where the root cannot be created, tools degrade to acting on the workspace only - the agent works as it did before the sandbox existed rather than refusing to start.
 
+## Windows: When Other Software Holds The File
+
+On POSIX a process reading a file never stops you from replacing it. Windows works the other way round: a handle can deny sharing, so an antivirus scanning a file, a search indexer reading it, a sync client uploading it, or a disk-encryption or DLP agent rewriting it makes an ordinary write fail - for a few hundred milliseconds, with an error that reads like a permanent one.
+
+Every file operation the agent performs waits those out.
+The retry classifier is deliberately asymmetric: `ERROR_ACCESS_DENIED` on Windows is usually a scanner holding a handle, so it is retried, while `EACCES` on POSIX means the permissions really are wrong and is not.
+`ERROR_SHARING_VIOLATION`, `ERROR_LOCK_VIOLATION`, `ERROR_USER_MAPPED_FILE`, and the network-drive blips join it on Windows.
+A missing file, a bad path, or a full disk is still raised on the first try, because waiting cannot change any of those.
+
+Writes prefer the Windows `ReplaceFileW` call over a plain rename.
+A rename leaves a brand-new file in the target's place, which loses the attributes, ACLs and alternate data streams the original carried; `ReplaceFileW` carries them forward, which is what keeps an encrypted file encrypted after the agent edits it.
+
+When a lock outlives every retry, the file is rewritten in place instead.
+That is not atomic, and the tool result says so with `atomic: false`, but a file another process holds open without denying writes can still be written this way - on a locked-down host it is the difference between working and not.
+Set `file_io.allow_non_atomic_fallback` to `false` to refuse it and fail cleanly instead.
+
+The same treatment covers the neighbouring failures: a program the agent just wrote is often still being scanned when it is asked to run, so a blocked spawn is retried too, and sandbox cleanup clears read-only flags between attempts rather than giving up on a build directory a compiler still holds.
+
+A write that needed help reports it - `write_attempts`, `write_waited_s`, and `atomic` - so the model sees what happened rather than a bare failure, and a write that fails anyway names the cause and the Windows code.
+
+```json
+{
+  "file_io": {
+    "retry_attempts": 6,
+    "retry_initial_delay_ms": 50,
+    "retry_max_delay_ms": 1000,
+    "allow_non_atomic_fallback": true
+  }
+}
+```
+
+To find out whether a particular machine is interfering, and by how much:
+
+```bash
+code-ai doctor file-io --rounds 50
+```
+
+It runs the agent's real write path against the configured workspace (or `--path`), and reports how many writes needed a retry, how long they waited, whether any lost atomicity, and which errors appeared.
+Raise `retry_attempts` and `retry_max_delay_ms` when writes still fail.
+
 ## Security Boundaries
 
 Code-AI does not expose complete environment dictionaries, API keys, tokens, SSH material, unrelated user files, or raw provider headers in events or logs. Command tools inherit a sanitized environment and reject workspace escapes.
@@ -446,6 +486,7 @@ It is not a security jail - a command the user approves can still reach the file
 
 - Native persistent terminal control is initially POSIX-oriented and fails clearly on unsupported platforms.
 - The sandbox's `project` symlink is skipped on Windows without developer mode; the sandbox still works, and project files are reached through the workspace tools instead.
+- The Windows file-locking paths are exercised by simulating the exact errors Windows raises, not on a Windows runner: the release build cross-compiles under Wine and there is no Windows CI. `code-ai doctor file-io` is how a real host gets checked.
 - Ollama and OpenAI-compatible capability support depends on the server and selected model.
 - Remote conversation state is used only when supported and falls back to local conversation state if rejected.
 - The Textual UI is intentionally compact and consumes events through view models; richer command completion can be extended without touching core orchestration.
