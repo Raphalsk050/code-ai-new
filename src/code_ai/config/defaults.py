@@ -314,6 +314,25 @@ DEFAULT_GOAL: dict[str, object] = {
 }
 
 
+DEFAULT_FILE_IO: dict[str, object] = {
+    # Windows holds mandatory locks, so an antivirus, a search indexer, a sync
+    # client or a disk-encryption agent that opened a file for a fraction of a
+    # second makes an otherwise valid write fail outright. Those failures are
+    # transient by nature: the fix is to wait and try again, not to give up.
+    # POSIX shares almost none of this, which is why the defaults are cheap
+    # enough to leave on everywhere.
+    "retry_attempts": 6,
+    "retry_initial_delay_ms": 50,
+    "retry_max_delay_ms": 1000,
+    # Last resort when a lock outlives every retry: rewrite the file in place
+    # instead of swapping a replacement into its name. That gives up atomicity,
+    # so it is reported whenever it happens - but a file another process merely
+    # holds open for reading can still be written this way, and on a locked-down
+    # Windows host it is the difference between working and not.
+    "allow_non_atomic_fallback": True,
+}
+
+
 DEFAULT_SANDBOX: dict[str, object] = {
     # Master switch. Disabled, tools fall back to the previous behaviour (every
     # write and every command lands in the workspace) instead of failing.
@@ -342,6 +361,7 @@ DEFAULT_CONFIG: dict[str, object] = {
     "memory": DEFAULT_MEMORY,
     "planner": DEFAULT_PLANNER,
     "sandbox": DEFAULT_SANDBOX,
+    "file_io": DEFAULT_FILE_IO,
     "sampling": DEFAULT_SAMPLING,
     "language": "en",
     "model": "gemma4:31b-cloud",

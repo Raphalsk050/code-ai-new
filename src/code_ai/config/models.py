@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 
 from code_ai.config.defaults import (
     DEFAULT_BUDGETS,
+    DEFAULT_FILE_IO,
     DEFAULT_GOAL,
     DEFAULT_MEMORY,
     DEFAULT_PLANNER,
@@ -220,6 +221,45 @@ class MemoryConfig:
         if self.reflection_min_tool_calls < 0:
             raise ConfigurationError(
                 "reflection_min_tool_calls must be zero or positive."
+            )
+
+
+@dataclass(slots=True)
+class FileIOConfig:
+    """How hard to try when the filesystem says "not right now".
+
+    Written for Windows, where a file operation can fail because some other
+    process happens to have the file open - an antivirus scanning it, a search
+    indexer reading it, a sync client uploading it, an encryption agent
+    rewriting it. None of those are real errors; they are timing. Raise
+    ``retry_attempts`` on a host where the interference is heavy.
+    """
+
+    retry_attempts: int = int(DEFAULT_FILE_IO["retry_attempts"])
+    retry_initial_delay_ms: int = int(DEFAULT_FILE_IO["retry_initial_delay_ms"])
+    retry_max_delay_ms: int = int(DEFAULT_FILE_IO["retry_max_delay_ms"])
+    allow_non_atomic_fallback: bool = bool(DEFAULT_FILE_IO["allow_non_atomic_fallback"])
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any] | None) -> FileIOConfig:
+        values = dict(DEFAULT_FILE_IO)
+        if data:
+            values.update(data)
+        return cls(
+            retry_attempts=int(values["retry_attempts"]),
+            retry_initial_delay_ms=int(values["retry_initial_delay_ms"]),
+            retry_max_delay_ms=int(values["retry_max_delay_ms"]),
+            allow_non_atomic_fallback=bool(values["allow_non_atomic_fallback"]),
+        )
+
+    def validate(self) -> None:
+        if self.retry_attempts < 1:
+            raise ConfigurationError("file_io retry_attempts must be at least 1.")
+        if self.retry_initial_delay_ms < 0:
+            raise ConfigurationError("file_io retry_initial_delay_ms must be zero or positive.")
+        if self.retry_max_delay_ms < self.retry_initial_delay_ms:
+            raise ConfigurationError(
+                "file_io retry_max_delay_ms must be at least retry_initial_delay_ms."
             )
 
 
@@ -490,6 +530,7 @@ class AppConfig:
     planner: PlannerConfig = field(default_factory=PlannerConfig)
     sampling: SamplingConfig = field(default_factory=SamplingConfig)
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
+    file_io: FileIOConfig = field(default_factory=FileIOConfig)
     language: str = "en"
     model: str = "gemma4:31b-cloud"
     # Inline code hints (editor ghost text) in the VSCode extension. Off by
@@ -552,6 +593,9 @@ class AppConfig:
         sandbox = SandboxConfig.from_mapping(
             data.get("sandbox") if isinstance(data.get("sandbox"), dict) else None
         )
+        file_io = FileIOConfig.from_mapping(
+            data.get("file_io") if isinstance(data.get("file_io"), dict) else None
+        )
         workspace = Path(str(data.get("workspace", Path.cwd()))).expanduser()
         config = cls(
             api_key=normalize_api_key(str(data.get("api_key", ""))),
@@ -564,6 +608,7 @@ class AppConfig:
             planner=planner,
             sampling=sampling,
             sandbox=sandbox,
+            file_io=file_io,
             language=str(data.get("language", "en")),
             model=str(data.get("model", "gemma4:31b-cloud")),
             inline_hints_enabled=bool(data.get("inline_hints_enabled", False)),
@@ -614,6 +659,7 @@ class AppConfig:
         self.planner.validate()
         self.sampling.validate()
         self.sandbox.validate()
+        self.file_io.validate()
         parsed = urlparse(self.base_url)
         if self.api_mode in {"responses", "completions", "ollama"} and parsed.scheme not in {
             "http",
