@@ -31,12 +31,15 @@ the UI as well.
 
 from __future__ import annotations
 
+import asyncio
 import ctypes
 import errno
 import os
+import shutil
+import stat
 import tempfile
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Generic, TypeVar
@@ -168,6 +171,56 @@ class Attempted(Generic[T]):
     waited_s: float
 
 
+class _RetryLoop:
+    """The decisions a retry makes, shared by the blocking and async drivers.
+
+    Only the waiting differs between the two - one sleeps the thread, the other
+    yields to the event loop - so everything else lives here rather than in two
+    copies that would drift apart.
+    """
+
+    def __init__(self, policy: RetryPolicy, *, what: str, path: Path) -> None:
+        self._policy = policy
+        self._what = what
+        self._path = path
+        self._delays = list(policy.delays())
+        self._last: OSError | None = None
+        self.waited_s = 0.0
+
+    def next_delay(self, exc: OSError, attempt: int) -> float | None:
+        """How long to wait before try ``attempt + 1``, or ``None`` to stop.
+
+        Re-raises a permanent failure - a missing directory, a bad path, no
+        space - because waiting cannot change any of those.
+        """
+
+        if not is_transient_os_error(exc):
+            raise exc
+        self._last = exc
+        if attempt > len(self._delays):
+            return None
+        delay = self._delays[attempt - 1]
+        self.waited_s += delay
+        return delay
+
+    @property
+    def last_error(self) -> OSError | None:
+        return self._last
+
+    def exhausted(self) -> FileOperationError:
+        last = self._last
+        assert last is not None
+        return FileOperationError(
+            f"Could not {self._what} {self._path}: {describe_os_error(last)}. "
+            f"Tried {self._policy.attempts} times over {self.waited_s:.2f}s. "
+            "Close whatever is holding the file, or raise file_io.retry_attempts.",
+            path=self._path,
+            operation=self._what,
+            attempts=self._policy.attempts,
+            waited_s=self.waited_s,
+        )
+
+
 def retry_transient(
     operation: Callable[[], T],
     *,
@@ -177,37 +230,49 @@ def retry_transient(
 ) -> Attempted[T]:
     """Run ``operation``, retrying only the failures that are worth retrying.
 
-    A permanent error - a missing directory, a bad path, no space - is raised on
-    the first try, because waiting cannot change it. A transient one is retried
+    A permanent error is raised on the first try. A transient one is retried
     until the policy runs out, and only then becomes a
     :class:`FileOperationError` that says what held the file and for how long.
     """
 
-    waited = 0.0
-    delays = list(policy.delays())
-    last: OSError | None = None
+    loop = _RetryLoop(policy, what=what, path=path)
     for attempt in range(1, policy.attempts + 1):
         try:
-            return Attempted(value=operation(), attempts=attempt, waited_s=waited)
+            return Attempted(value=operation(), attempts=attempt, waited_s=loop.waited_s)
         except OSError as exc:
-            if not is_transient_os_error(exc):
-                raise
-            last = exc
-            if attempt > len(delays):
+            delay = loop.next_delay(exc, attempt)
+            if delay is None:
                 break
-            delay = delays[attempt - 1]
             time.sleep(delay)
-            waited += delay
-    assert last is not None
-    raise FileOperationError(
-        f"Could not {what} {path}: {describe_os_error(last)}. "
-        f"Tried {policy.attempts} times over {waited:.2f}s. "
-        "Close whatever is holding the file, or raise file_io.retry_attempts.",
-        path=path,
-        operation=what,
-        attempts=policy.attempts,
-        waited_s=waited,
-    ) from last
+    raise loop.exhausted() from loop.last_error
+
+
+async def retry_transient_async(
+    operation: Callable[[], Awaitable[T]],
+    *,
+    policy: RetryPolicy,
+    what: str,
+    path: Path,
+) -> Attempted[T]:
+    """Same contract as :func:`retry_transient`, for a caller on the event loop.
+
+    Used where the operation is already asynchronous and cannot simply be moved
+    to a worker thread - spawning a process, for one, where a freshly written
+    executable is often still being scanned by the antivirus that will release
+    it a moment later.
+    """
+
+    loop = _RetryLoop(policy, what=what, path=path)
+    for attempt in range(1, policy.attempts + 1):
+        try:
+            value = await operation()
+            return Attempted(value=value, attempts=attempt, waited_s=loop.waited_s)
+        except OSError as exc:
+            delay = loop.next_delay(exc, attempt)
+            if delay is None:
+                break
+            await asyncio.sleep(delay)
+    raise loop.exhausted() from loop.last_error
 
 
 def _best_effort_fsync(handle: object) -> None:
@@ -407,3 +472,48 @@ def _discard(temp_name: str) -> None:
         os.unlink(temp_name)
     except OSError:
         pass
+
+
+def remove_tree(path: Path, *, policy: RetryPolicy = NO_RETRY) -> bool:
+    """Delete a directory tree, waiting out locks and read-only flags.
+
+    Windows refuses to delete a file another process still has open, and marks
+    build output read-only often enough that a single ``rmtree`` is not a
+    reliable way to remove a scratch directory. Between tries the read-only
+    flags are cleared, which is what turns the second attempt into a different
+    attempt rather than the same one repeated.
+
+    Returns whether the tree is gone. A tree that survives is not an error -
+    the caller is cleaning up, and something else can try again later.
+    """
+
+    if not path.exists():
+        return True
+
+    def attempt() -> None:
+        try:
+            shutil.rmtree(path)
+        except OSError:
+            _clear_readonly_flags(path)
+            raise
+
+    try:
+        retry_transient(attempt, policy=policy, what="remove", path=path)
+    except (OSError, FileOperationError):
+        # Cleanup never fails loudly: on Windows a dev server still holding a
+        # build directory is a normal thing to meet, and the caller is on its
+        # way out. Whatever survives is reported by the return value instead.
+        pass
+    return not path.exists()
+
+
+def _clear_readonly_flags(root: Path) -> None:
+    """Make everything under ``root`` writable, so the next delete can proceed."""
+
+    for current, directories, files in os.walk(root):
+        for name in (*directories, *files):
+            target = Path(current) / name
+            try:
+                target.chmod(target.stat().st_mode | stat.S_IWRITE)
+            except OSError:
+                continue
