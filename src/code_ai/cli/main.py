@@ -47,6 +47,24 @@ def build_parser() -> argparse.ArgumentParser:
         "memory_id", help="Id prefix as shown by 'code-ai memories list'."
     )
 
+    doctor_parser = subparsers.add_parser(
+        "doctor", help="Diagnose a host that is getting in the agent's way."
+    )
+    doctor_sub = doctor_parser.add_subparsers(dest="doctor_command", required=True)
+    file_io_parser = doctor_sub.add_parser(
+        "file-io",
+        help="Check whether other software on this machine is blocking file writes.",
+    )
+    file_io_parser.add_argument(
+        "--rounds", type=int, default=25, help="How many write/read cycles to run."
+    )
+    file_io_parser.add_argument(
+        "--path",
+        type=Path,
+        dest="probe_path",
+        help="Directory to probe. Defaults to the configured workspace.",
+    )
+
     config_parser = subparsers.add_parser("config", help="Manage configuration.")
     config_sub = config_parser.add_subparsers(dest="config_command", required=True)
     init_parser = config_sub.add_parser("init", help="Create a safe example configuration.")
@@ -108,6 +126,12 @@ def main(argv: list[str] | None = None) -> int:
                 config = load_config(explicit_path=args.config, cli_overrides=_overrides(args))
                 print(redacted_config_json(config))
                 return 0
+
+        if args.command == "doctor" and args.doctor_command == "file-io":
+            from code_ai.cli.file_probe import run_file_probe
+
+            config = load_config(explicit_path=args.config, cli_overrides=_overrides(args))
+            return run_file_probe(config, rounds=args.rounds, directory=args.probe_path)
 
         if args.command == "memories":
             from code_ai.cli.memories import run_memories_command
