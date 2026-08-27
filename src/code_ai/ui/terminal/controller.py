@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from code_ai.app.service import CodeAIApplication
 from code_ai.core.errors import GoalStateError, TerminalSessionError
+from code_ai.core.interaction import Answer, render_answers
 from code_ai.events.models import EventEnvelope
 from code_ai.providers.models import ImageContent
 from code_ai.ui.terminal.view_models import TerminalViewModel
@@ -20,6 +23,19 @@ class TerminalController:
     async def submit(self, text: str, images: list[ImageContent] | None = None) -> None:
         if text.strip():
             await self.app.submit_user_message(text.strip(), images=list(images or []))
+
+    async def answer_questions(self, answers: Sequence[Answer]) -> None:
+        """Send the answered cards back as the reply to the blocking question.
+
+        The cards collapse into one message, each line naming the question it
+        answers, and go through the same path a typed reply takes - so the
+        paused plan resumes exactly as it does today and the model needs to
+        know nothing about how the answer was collected.
+        """
+
+        text = render_answers(answers)
+        if text.strip():
+            await self.app.submit_question_answer(text)
 
     async def compact(self) -> str:
         result = await self.app.request_context_compression()
