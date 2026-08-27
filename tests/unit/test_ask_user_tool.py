@@ -96,3 +96,17 @@ async def test_blank_options_are_tolerated_because_that_is_only_sloppiness(tmp_p
     )
 
     assert result["options"] == ["Postgres"]
+
+
+def test_the_prompt_tells_the_model_to_ask_a_vague_spec_in_cards() -> None:
+    from pathlib import Path
+
+    from code_ai.prompts import build_system_prompt
+
+    prompt = build_system_prompt(workspace=Path("/ws"), language="pt-BR")
+
+    # Batched, one per unknown, with options - the shape the card UI renders.
+    assert "once per unknown, all in the same step" in prompt
+    assert '"options"' in prompt
+    # And a brake, so the feature does not turn into an interrogation.
+    assert "Three sharp questions beat ten" in prompt
