@@ -436,11 +436,14 @@ QuestionnaireModal {
   align: center middle;
 }
 
+/* A definite height with the card list as the only flexible part: the action
+   row has to stay reachable, and an auto-height dialog that outgrows the
+   screen clips its own footer off instead of shrinking the list. */
 #questions-dialog {
   width: 80%;
   max-width: 100;
-  height: auto;
-  max-height: 90%;
+  height: 26;
+  max-height: 92%;
   border: thick #ff9f1c;
   background: #111820;
   padding: 1 2;
@@ -462,8 +465,7 @@ QuestionnaireModal {
 }
 
 #questions-cards {
-  height: auto;
-  max-height: 18;
+  height: 1fr;
   overflow-y: auto;
   scrollbar-size: 1 1;
 }
@@ -475,6 +477,19 @@ QuestionnaireModal {
   margin-bottom: 1;
   border: round #2b3a4a;
   background: #111820;
+}
+
+.question-card-label {
+  height: auto;
+  width: 1fr;
+}
+
+/* Indented under the label, and wrapping inside the card rather than past it. */
+.question-card-desc {
+  height: auto;
+  width: 1fr;
+  padding-left: 6;
+  color: #9fb3c8;
 }
 
 .question-card:focus {

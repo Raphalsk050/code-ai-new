@@ -31,8 +31,13 @@ _DESCRIPTION_STYLE = Style(color="#9fb3c8")
 _MARK_STYLE = Style(color="#7ee787", bold=True)
 
 
-class QuestionCard(Static):
-    """One answer, pressable with the mouse, a number key, or Enter."""
+class QuestionCard(Vertical):
+    """One answer, pressable with the mouse, a number key, or Enter.
+
+    Composed of child widgets rather than one multi-line renderable: a long
+    description has to wrap, and only real children get their wrapped height
+    measured - a hand-indented second line overflows the card's own border.
+    """
 
     can_focus = True
 
@@ -50,17 +55,33 @@ class QuestionCard(Static):
         self._selected = selected
         self.set_class(selected, "-selected")
 
-    def render(self) -> Text:
+    def compose(self) -> ComposeResult:
+        yield Static(self._label(), classes="question-card-label", markup=False)
+        if self._option.description:
+            yield Static(
+                self._option.description, classes="question-card-desc", markup=False
+            )
+
+    def _label(self) -> Text:
         # The mark column is always present, selected or not, so choosing an
-        # option never shifts the labels sideways.
+        # option never shifts the label sideways.
         text = Text(no_wrap=False)
         text.append("✓ " if self._selected else "  ", style=_MARK_STYLE)
         text.append(f"[{self._index + 1}] ", style=_KEY_STYLE)
         text.append(self._option.label, style=_LABEL_STYLE)
-        if self._option.description:
-            text.append("\n      ")
-            text.append(self._option.description, style=_DESCRIPTION_STYLE)
         return text
+
+    def set_selected(self, selected: bool) -> None:
+        """Repaint just this card.
+
+        Rebuilding the page instead would scroll the list back to the top and
+        throw focus onto the first card, which on a multi-select question means
+        losing your place after every single choice.
+        """
+
+        self._selected = selected
+        self.set_class(selected, "-selected")
+        self.query_one(".question-card-label", Static).update(self._label())
 
     def on_click(self) -> None:
         self.post_message(self.Pressed(self._index))
@@ -91,17 +112,25 @@ class QuestionnaireModal(ModalScreen[list[Answer] | None]):
         self._page = 0
         self._chosen: list[set[int]] = [set() for _ in self._questions]
         self._other: list[str] = ["" for _ in self._questions]
+        self._cards: list[QuestionCard] = []
 
     # -- layout ------------------------------------------------------------
 
     def compose(self) -> ComposeResult:
+        # markup=False throughout: the question text and its options come from
+        # the model, and the key hints spell out "[Esc]" and "[Enter]" - both are
+        # read as console markup otherwise, which silently eats the brackets and
+        # everything between them.
         with Vertical(id="questions-dialog"):
-            yield Static("", id="questions-title")
-            yield Static("", id="questions-why")
-            yield Static("", id="questions-prompt")
-            yield VerticalScroll(id="questions-cards")
-            yield Input(placeholder="Outra resposta…", id="questions-other")
-            yield Static("", id="questions-keys")
+            yield Static("", id="questions-title", markup=False)
+            yield Static("", id="questions-why", markup=False)
+            yield Static("", id="questions-prompt", markup=False)
+            # The free-text field lives inside the scrolling area, below the
+            # cards: it is one more way to answer, and keeping it out of the
+            # fixed chrome is what leaves room for a card on a short terminal.
+            with VerticalScroll(id="questions-cards"):
+                yield Input(placeholder="Outra resposta…", id="questions-other")
+            yield Static("", id="questions-keys", markup=False)
             with Horizontal(id="questions-actions"):
                 yield Button("‹ Anterior", id="questions-previous")
                 yield Button("Avançar ›", variant="primary", id="questions-advance")
@@ -128,24 +157,25 @@ class QuestionnaireModal(ModalScreen[list[Answer] | None]):
         self.query_one("#questions-prompt", Static).update(question.prompt)
 
         cards = self.query_one("#questions-cards", VerticalScroll)
-        await cards.remove_children()
-        chosen = self._chosen[self._page]
-        await cards.mount(
-            *(
-                QuestionCard(option, index=index, selected=index in chosen)
-                for index, option in enumerate(question.keyed_options)
-            )
-        )
-        cards.display = bool(question.keyed_options)
-
         other = self.query_one("#questions-other", Input)
+        for existing in self._cards:
+            await existing.remove()
+        chosen = self._chosen[self._page]
+        self._cards = [
+            QuestionCard(option, index=index, selected=index in chosen)
+            for index, option in enumerate(question.keyed_options)
+        ]
+        # Mounted before the input so the cards read as the answer and the text
+        # field as the way out of them.
+        await cards.mount(*self._cards, before=other)
+
         other.value = self._other[self._page]
         other.display = question.allow_other
         other.placeholder = (
             "Sua resposta…" if not question.keyed_options else "Outra resposta…"
         )
 
-        self.query_one("#questions-keys", Static).update(self._keys_hint())
+        self._refresh_keys()
         self.query_one("#questions-previous", Button).disabled = self._page == 0
         self.query_one("#questions-advance", Button).display = not self._is_last
         self.query_one("#questions-submit", Button).display = self._is_last
@@ -177,15 +207,23 @@ class QuestionnaireModal(ModalScreen[list[Answer] | None]):
                 marks.append("○")
         return " ".join(marks)
 
+    def _refresh_keys(self) -> None:
+        self.query_one("#questions-keys", Static).update(self._keys_hint())
+
+    def _refresh_title(self) -> None:
+        self.query_one("#questions-title", Static).update(self._title(len(self._questions)))
+
     def _keys_hint(self) -> str:
+        """One line, short enough not to wrap in a narrow dialog."""
+
         parts: list[str] = []
         if self._question.keyed_options:
             parts.append("[1-9] escolher")
         if self._question.multi_select:
             parts.append("[Enter] confirmar")
         parts.append("[←/→] navegar")
-        parts.append("[Esc] responder digitando")
-        return "   ·   ".join(parts)
+        parts.append("[Esc] digitar")
+        return " · ".join(parts)
 
     def _focus_first(self) -> None:
         """Put focus where the answer is, so the keyboard works without a click."""
@@ -223,7 +261,13 @@ class QuestionnaireModal(ModalScreen[list[Answer] | None]):
         chosen = self._chosen[self._page]
         if self._question.multi_select:
             chosen.symmetric_difference_update({index})
-            await self._render_page()
+            if index < len(self._cards):
+                card = self._cards[index]
+                card.set_selected(index in chosen)
+                # Choosing by number can land on a card below the fold; showing
+                # what was just ticked is the whole feedback for that keypress.
+                card.scroll_visible()
+            self._refresh_title()
             return
         # Single choice: picking one is the whole answer, so it moves on by
         # itself rather than making the user confirm what they just pressed.
