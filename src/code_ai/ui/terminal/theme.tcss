@@ -427,3 +427,84 @@ DoctorModal {
   color: #d7dee8;
   padding-top: 1;
 }
+
+/* --- Question cards (ask_user) ------------------------------------------
+   One page per question. The cards are the primary control: focusable,
+   clickable, and keyed 1-9, with the free-text field kept underneath as the
+   fallback rather than the default. */
+QuestionnaireModal {
+  align: center middle;
+}
+
+#questions-dialog {
+  width: 80%;
+  max-width: 100;
+  height: auto;
+  max-height: 90%;
+  border: thick #ff9f1c;
+  background: #111820;
+  padding: 1 2;
+}
+
+#questions-title {
+  padding-bottom: 1;
+}
+
+#questions-why {
+  color: #f5c84c;
+  padding-bottom: 1;
+}
+
+#questions-prompt {
+  color: #d7dee8;
+  text-style: bold;
+  padding-bottom: 1;
+}
+
+#questions-cards {
+  height: auto;
+  max-height: 18;
+  overflow-y: auto;
+  scrollbar-size: 1 1;
+}
+
+.question-card {
+  height: auto;
+  width: 1fr;
+  padding: 0 1;
+  margin-bottom: 1;
+  border: round #2b3a4a;
+  background: #111820;
+}
+
+.question-card:focus {
+  border: round #ff9f1c;
+  background: #17212c;
+}
+
+.question-card:hover {
+  border: round #7aa2f7;
+}
+
+.question-card.-selected {
+  border: round #7ee787;
+}
+
+#questions-other {
+  margin-bottom: 1;
+}
+
+#questions-keys {
+  color: #9fb3c8;
+  padding-bottom: 1;
+}
+
+#questions-actions {
+  height: auto;
+  align-horizontal: center;
+}
+
+#questions-actions Button {
+  margin: 0 1;
+  width: 18;
+}
