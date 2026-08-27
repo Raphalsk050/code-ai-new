@@ -385,6 +385,22 @@ Automatic compression runs before the configured context limit is exhausted. Com
 
 The summary re-enters the conversation as a user turn, never as a second system message: local engines render the served model's own chat template, and mainstream templates reject a request carrying system content anywhere but the top, or carrying no user turn at all. Both raise inside the template, which the engine reports as a 400 for the whole request. When summarizing leaves the kept window without a user turn, the latest user request is restated — capped, text only — so the model keeps steering on what was actually asked. Chat requests are normalized once more at the provider boundary (one leading system message, at least one user turn), so a shape bug upstream degrades into a slightly reworded prompt instead of an unrecoverable session.
 
+## Asking The User
+
+A request that does not say which stack, which storage, or how far to go cannot be built correctly by guessing, and answering it with a wall of questions in prose is how questions go unanswered.
+The agent calls `ask_user` once per unknown, all in the same step, and the terminal turns them into one questionnaire: one page per question, numbered and counted, with the agent's candidate answers as cards.
+
+A card is pressed with the mouse, with its number key, or with Enter when it has focus.
+A single-choice question advances by itself on a press; a multi-select page toggles and waits for Enter or the Send button.
+Left and right move between pages, a dot per question shows what is already answered, and a free-text field sits under the cards for the answer the agent did not anticipate - it is the only control on a question that had no options to offer.
+
+Escape closes the dialog without answering.
+That is never a dead end: the questions are also the turn's final answer in the transcript, numbered the same way, so they can be answered by typing instead - which is also what a headless run or an embedding client gets, since the structured questions travel on `interaction.question.requested` and any client is free to ignore them.
+
+The answers come back as one message with a line per question, each naming what it answers, and go through the same path a typed reply takes - so the plan the question paused resumes exactly as before.
+
+Options are written as `Label :: why it might be the right call`, a flat list of strings rather than nested objects, because the tool schemas here stay atomic for the sake of small local models.
+
 ## The Sandbox
 
 Working on a project should not change the project by accident.
