@@ -127,6 +127,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
 
     from code_ai.ui.terminal.approval import TerminalApprovalGateway
     from code_ai.ui.terminal.doctor import DoctorModal
+    from code_ai.ui.terminal.questions import QuestionnaireModal
 
     # Saved workflows and skills become slash commands. Both lists are authored by
     # the user (on disk, possibly in another agent's directory), so they are read
@@ -771,6 +772,9 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             # model is hung mid-request); a second Ctrl+Q while armed force-quits.
             self._force_quit_armed = False
             self._close_task: asyncio.Task[None] | None = None
+            # Guards the question dialog against being pushed twice: every event
+            # after the turn ends would otherwise see the same pending questions.
+            self._questions_open = False
 
         def compose(self) -> ComposeResult:
             yield Header(show_clock=True)
@@ -886,6 +890,35 @@ def create_terminal_app(application, *, config_path: Path | None = None):
         async def _on_event(self, event) -> None:
             await self.controller.handle_event(event)
             self._render_event(event)
+            self._open_questions_if_waiting()
+
+        def _open_questions_if_waiting(self) -> None:
+            """Show the question cards once the turn that asked them has ended.
+
+            Deliberately not opened the moment ask_user fires: the turn is still
+            finishing, and a dialog over a moving transcript hides the question's
+            own text. Waiting for the turn to end means the questions are in the
+            scrollback first, so closing the dialog leaves something to answer.
+            """
+
+            if self._questions_open or not self.vm.pending_questions:
+                return
+            if not self.vm.turn_is_over():
+                return
+            questionnaire = self.vm.take_questionnaire()
+            if questionnaire.is_empty:
+                return
+            self._questions_open = True
+            self.push_screen(QuestionnaireModal(questionnaire), self._questions_answered)
+
+        def _questions_answered(self, answers) -> None:
+            self._questions_open = False
+            if not answers:
+                # Dismissed without answering: the questions are in the
+                # transcript and the input is right there, so there is nothing
+                # to recover from.
+                return
+            self.run_worker(self.controller.answer_questions(answers))
 
         def _render_event(self, event) -> None:
             self._sync_conversation()
