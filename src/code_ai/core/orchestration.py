@@ -30,6 +30,7 @@ from code_ai.core.errors import (
     WorkspaceBoundaryError,
 )
 from code_ai.core.git_baseline import GitBaseline
+from code_ai.core.interaction import Questionnaire
 from code_ai.core.memory import FailureMemory, FailureMemoryStore, MemoryService
 from code_ai.core.memory_recall import MemoryRecall
 from code_ai.core.planning import PlannerService
@@ -1732,45 +1733,37 @@ class AgentOrchestrator:
                 return await self._finish_turn(self.planner.accepted_final_text, response, state)
 
         # A successful ask_user call blocks on the user by contract, so the turn
-        # ends here with the question as the final answer. Feeding the "blocked"
+        # ends here with the questions as the final answer. Feeding the "blocked"
         # tool result back into the model instead only burned extra steps on
         # "I'm waiting" prose that rendered as dim working trace, while the
         # question itself never reached the user as a real message.
-        question = self._blocking_question(calls, outcomes)
-        if question is not None:
-            return await self._finish_turn(question, response, state, announce_final=True)
+        questionnaire = self._blocking_questionnaire(calls, outcomes)
+        if not questionnaire.is_empty:
+            return await self._finish_turn(
+                questionnaire.render_text(), response, state, announce_final=True
+            )
         return None
 
     @staticmethod
-    def _blocking_question(
+    def _blocking_questionnaire(
         calls: list[ToolCall], outcomes: dict[str, _ToolOutcome]
-    ) -> str | None:
-        """User-facing text of a successful ask_user call in the batch, or None.
+    ) -> Questionnaire:
+        """Every question this batch of tool calls ended on, in the order asked.
 
-        Choices are folded into the message as a numbered list so the user can
-        answer by number in their next message.
+        All of them, not the first: a vague request leaves several independent
+        unknowns, and the model is told to ask them together in one step. Taking
+        only the first would drop the rest on the floor and force the user
+        through one round trip per question.
         """
-        for call in calls:
-            outcome = outcomes.get(call.id)
-            if call.name != "ask_user" or outcome is None or outcome.result.is_error:
-                continue
-            payload = outcome.payload or {}
-            question = str(payload.get("question") or "").strip()
-            if not question:
-                continue
-            raw_choices = payload.get("choices")
-            choices = [
-                choice.strip()
-                for choice in (raw_choices if isinstance(raw_choices, list) else [])
-                if isinstance(choice, str) and choice.strip()
-            ]
-            if choices:
-                numbered = "\n".join(
-                    f"{index}. {choice}" for index, choice in enumerate(choices, start=1)
-                )
-                question = f"{question}\n\n{numbered}"
-            return question
-        return None
+
+        payloads = [
+            outcome.payload or {}
+            for call in calls
+            if call.name == "ask_user"
+            and (outcome := outcomes.get(call.id)) is not None
+            and not outcome.result.is_error
+        ]
+        return Questionnaire.from_payloads(payloads)
 
     @staticmethod
     def _action_line(name: str, arguments: dict[str, object], failed: bool) -> str:
