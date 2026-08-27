@@ -69,16 +69,16 @@ class AsksThenKeepsTalkingProvider(_BaseProvider):
     request a second completion in this turn.
     """
 
-    def __init__(self, *, choices: list[str] | None = None) -> None:
+    def __init__(self, *, options: list[str] | None = None) -> None:
         self.calls = 0
-        self.choices = choices
+        self.options = options
 
     async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
         self.calls += 1
         if self.calls == 1:
             arguments: dict[str, object] = {"question": QUESTION}
-            if self.choices is not None:
-                arguments["choices"] = self.choices
+            if self.options is not None:
+                arguments["options"] = self.options
             yield ProviderEvent(
                 kind="completed",
                 response=ModelResponse(
@@ -234,8 +234,10 @@ async def test_submit_question_answer_reaches_the_model(tmp_path) -> None:
     assert "SQLite" in answers[0].summary
 
 
-async def test_ask_user_choices_render_as_numbered_options(tmp_path) -> None:
-    provider = AsksThenKeepsTalkingProvider(choices=["SQLite", "Postgres"])
+async def test_ask_user_options_render_as_numbered_cards(tmp_path) -> None:
+    provider = AsksThenKeepsTalkingProvider(
+        options=["SQLite :: zero configuração", "Postgres"]
+    )
     app = build_application(config=_config(tmp_path), provider=provider)
 
     await app.start()
@@ -244,5 +246,66 @@ async def test_ask_user_choices_render_as_numbered_options(tmp_path) -> None:
 
     assert provider.calls == 1
     assert result.text.startswith(QUESTION)
-    assert "1. SQLite" in result.text
-    assert "2. Postgres" in result.text
+    # A client with no card UI still gets something answerable by number.
+    assert "[1] SQLite - zero configuração" in result.text
+    assert "[2] Postgres" in result.text
+    assert "responda pelo número" in result.text
+
+
+class AsksSeveralQuestionsProvider(_BaseProvider):
+    """Asks every unknown of a vague request in one step, as the prompt tells it to."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="q1",
+                        name="ask_user",
+                        arguments={
+                            "question": "Qual banco de dados?",
+                            "header": "Banco",
+                            "options": ["Postgres :: consistência forte", "SQLite"],
+                        },
+                    ),
+                    ToolCall(
+                        id="q2",
+                        name="ask_user",
+                        arguments={
+                            "question": "Como autenticar?",
+                            "header": "Auth",
+                            "options": ["OAuth", "Usuário e senha"],
+                        },
+                    ),
+                ],
+                finish_reason=FinishReason.TOOL_CALLS,
+            ),
+        )
+
+
+async def test_every_question_of_one_step_lands_in_a_single_questionnaire(tmp_path) -> None:
+    provider = AsksSeveralQuestionsProvider()
+    app = build_application(config=_config(tmp_path), provider=provider)
+    events: list[EventEnvelope] = []
+    app.subscribe(events.append)
+
+    await app.start()
+    result = await app.submit_user_message("faz um sistema de estoque")
+    await app.close()
+
+    # One turn, both questions - not one round trip per question.
+    assert provider.calls == 1
+    assert "Preciso de 2 respostas" in result.text
+    assert "Pergunta 1 de 2 · Banco" in result.text
+    assert "Pergunta 2 de 2 · Auth" in result.text
+
+    asked = [e for e in events if e.event_type == "interaction.question.requested"]
+    assert len(asked) == 2
+    # The structured payload is what a card UI renders from.
+    assert asked[0].payload["options"] == ["Postgres :: consistência forte", "SQLite"]
+    assert asked[1].payload["header"] == "Auth"
