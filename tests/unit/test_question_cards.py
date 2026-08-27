@@ -7,7 +7,9 @@ from pathlib import Path
 from textual.app import App
 
 from code_ai.core.interaction import Answer, Question, Questionnaire
+from code_ai.ui.terminal.app import create_terminal_app
 from code_ai.ui.terminal.questions import QuestionCard, QuestionnaireModal
+from tests.unit.test_terminal_ui import FakeTerminalApplication
 
 THEME = Path("src/code_ai/ui/terminal/theme.tcss").resolve()
 
@@ -218,3 +220,110 @@ async def test_the_key_hints_match_what_the_page_actually_accepts() -> None:
         assert "[1-9] escolher" not in text_of(modal, "#questions-keys")
         modal.dismiss(None)
         await pilot.pause()
+
+
+# ------------------------------------------------------- inside the real TUI
+
+
+async def ask_two_questions(fake_app) -> None:
+    """Replay what a turn ending on two ask_user calls actually emits."""
+
+    await fake_app.emit("status.changed", {"state": "EXECUTING_TOOL"})
+    await fake_app.emit(
+        "interaction.question.requested",
+        {
+            "question": "Qual banco de dados?",
+            "header": "Banco",
+            "options": ["Postgres :: consistência forte", "SQLite"],
+            "why_required": "Sem isso não dá para escolher o schema.",
+        },
+    )
+    await fake_app.emit(
+        "interaction.question.requested",
+        {"question": "Como autenticar?", "header": "Auth", "options": ["OAuth", "Senha"]},
+    )
+    await fake_app.emit("status.changed", {"state": "READY"})
+
+
+async def test_the_cards_open_when_the_turn_ends_and_send_one_reply(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    fake_app.answered = []
+
+    async def submit_question_answer(text: str) -> None:
+        fake_app.answered.append(text)
+
+    fake_app.submit_question_answer = submit_question_answer
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        await ask_two_questions(fake_app)
+        await pilot.pause()
+
+        modal = terminal_app.screen
+        assert isinstance(modal, QuestionnaireModal)
+        assert "Pergunta 1 de 2 · Banco" in text_of(modal, "#questions-title")
+        assert "Sem isso não dá" in text_of(modal, "#questions-why")
+
+        await pilot.press("1")
+        await pilot.pause()
+        assert "Pergunta 2 de 2 · Auth" in text_of(terminal_app.screen, "#questions-title")
+        await pilot.press("2")
+        await pilot.pause(0.2)
+
+    # One message, each line naming the question it answers.
+    assert fake_app.answered == ["1. Banco: Postgres\n2. Auth: Senha"]
+
+
+async def test_the_cards_do_not_open_while_the_agent_is_still_working(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        await fake_app.emit("status.changed", {"state": "EXECUTING_TOOL"})
+        await fake_app.emit(
+            "interaction.question.requested", {"question": "Qual banco?", "options": ["A"]}
+        )
+        await pilot.pause()
+
+        # A dialog over a moving transcript would hide the question's own text.
+        assert not isinstance(terminal_app.screen, QuestionnaireModal)
+
+
+async def test_closing_the_cards_sends_nothing(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    fake_app.answered = []
+    fake_app.submit_question_answer = lambda text: fake_app.answered.append(text)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        await ask_two_questions(fake_app)
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert fake_app.answered == []
+        # And it does not spring back open on the next event.
+        await fake_app.emit("status.changed", {"state": "READY"})
+        await pilot.pause()
+        assert not isinstance(terminal_app.screen, QuestionnaireModal)
+
+
+async def test_a_new_user_message_drops_a_question_that_was_never_answered(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        await fake_app.emit("status.changed", {"state": "EXECUTING_TOOL"})
+        await fake_app.emit(
+            "interaction.question.requested", {"question": "Qual banco?", "options": ["A"]}
+        )
+        # The user types something else instead of answering.
+        await fake_app.emit("user.message", {"text": "deixa pra lá, faz outra coisa"})
+        await fake_app.emit("status.changed", {"state": "READY"})
+        await pilot.pause()
+
+        assert not isinstance(terminal_app.screen, QuestionnaireModal)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from code_ai.core.interaction import Questionnaire
 from code_ai.events.models import EventEnvelope
 from code_ai.ui.terminal.widgets import build_plan_steps
 
@@ -60,6 +61,28 @@ class TerminalViewModel:
     code_stream_reason: str = ""
     code_stream_code: str = ""
     code_stream_complete: bool = False
+    # Questions this turn ended on, in the order the agent asked them. Filled by
+    # ask_user and drained by the client that shows them; a client with no
+    # question UI simply never reads it, and the questions still reach the user
+    # as the turn's final answer.
+    pending_questions: list[dict[str, object]] = field(default_factory=list)
+
+    def turn_is_over(self) -> bool:
+        """Whether the agent has stopped working, however the turn ended."""
+
+        return self.status in _TURN_OVER_STATES
+
+    def take_questionnaire(self) -> Questionnaire:
+        """Claim the pending questions, leaving none behind.
+
+        Draining on read is what keeps the dialog from reopening on the next
+        event: the caller either shows them now or they are gone, and the text
+        form in the transcript remains the fallback either way.
+        """
+
+        questionnaire = Questionnaire.from_payloads(self.pending_questions)
+        self.pending_questions = []
+        return questionnaire
 
     def subagents_list(self) -> list[dict[str, str]]:
         return list(self.subagents.values())
@@ -119,6 +142,10 @@ class TerminalViewModel:
                 self.conversation.append(f"evidence> {evidence_type} recorded")
             else:
                 self.conversation.append(f"evidence> {evidence_type}: {summary[:180]}")
+        elif event.event_type == "interaction.question.requested":
+            self.pending_questions.append(dict(event.payload))
+        elif event.event_type == "interaction.question.answered":
+            self.pending_questions = []
         elif event.event_type == "permission.mode.changed":
             self.permission_mode = str(event.payload.get("mode", self.permission_mode))
             self.conversation.append(f"permission> mode set to {self.permission_mode}")
@@ -163,6 +190,9 @@ class TerminalViewModel:
             self.plan_visible = False
             self.plan_steps = []
             self.clear_code_stream()
+            # A question from a previous turn that was never answered is stale:
+            # this message is the user moving on, whatever it says.
+            self.pending_questions = []
             self.conversation.append(f"you> {event.payload.get('text', '')}")
         elif event.event_type == "user.message.queued":
             # Typed while the agent was working. Shown as the user's line right
