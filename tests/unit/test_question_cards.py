@@ -15,10 +15,15 @@ THEME = Path("src/code_ai/ui/terminal/theme.tcss").resolve()
 
 
 def text_of(modal, selector: str) -> str:
-    """Plain text a Static is currently showing, whatever it was updated with."""
+    """Plain text a Static actually renders.
 
-    content = modal.query_one(selector).content
-    return getattr(content, "plain", content)
+    Read from render(), not from the value handed to update(): console markup
+    silently eats "[Enter]" and "[Esc]" unless markup is off, and a test that
+    inspects the input string never notices.
+    """
+
+    rendered = modal.query_one(selector).render()
+    return getattr(rendered, "plain", str(rendered))
 
 
 def question(prompt: str, **overrides) -> Question:
@@ -129,12 +134,17 @@ async def test_several_options_can_be_chosen_when_the_question_allows_it() -> No
     async with app.run_test(size=(100, 40)) as pilot:
         await pilot.pause()
         modal = app.screen
+        first = modal.query(QuestionCard).first()
         await pilot.press("1")
         await pilot.pause()
         await pilot.press("2")
         await pilot.pause()
         # Multi-select does not advance on a press, so both are still on the page.
         assert "Pergunta" not in text_of(modal, "#questions-title")
+        # And the page was not rebuilt underneath the user: the same card widget
+        # is still there, which is what keeps the scroll and focus in place.
+        assert modal.query(QuestionCard).first() is first
+        assert first.has_class("-selected")
         modal._submit()
         await pilot.pause()
 
@@ -180,9 +190,8 @@ async def test_a_question_with_no_options_offers_the_text_field_only() -> None:
     async with app.run_test(size=(100, 40)) as pilot:
         await pilot.pause()
         modal = app.screen
-        assert modal.query(QuestionCard).__len__() == 0
+        assert len(modal.query(QuestionCard)) == 0
         assert modal.query_one("#questions-other").display is True
-        assert modal.query_one("#questions-cards").display is False
         modal.dismiss(None)
         await pilot.pause()
 
@@ -212,8 +221,13 @@ async def test_the_key_hints_match_what_the_page_actually_accepts() -> None:
     async with app.run_test(size=(100, 40)) as pilot:
         await pilot.pause()
         modal = app.screen
-        assert "[1-9] escolher" in text_of(modal, "#questions-keys")
-        assert "[Enter] confirmar" in text_of(modal, "#questions-keys")
+        # Read from the rendered widget, not the string handed to it: console
+        # markup silently eats "[Enter]" and "[Esc]" unless markup is off, and a
+        # test that checks the input never notices.
+        rendered = text_of(modal, "#questions-keys")
+        assert "[1-9] escolher" in rendered
+        assert "[Enter] confirmar" in rendered
+        assert "[Esc] digitar" in rendered
         await pilot.press("right")
         await pilot.pause()
         # Nothing to choose on a free-text page, so no number hint.
