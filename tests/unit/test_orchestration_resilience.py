@@ -1057,3 +1057,224 @@ async def test_plain_prose_answer_is_not_treated_as_interrupted(tmp_path) -> Non
 
     assert "tool.call.interrupted" not in events
     assert result.text == "No tool needed here."
+
+
+# --------------------------------------------------------------------------- #
+# The turn preamble: everything that runs before the model, and the ways it
+# used to kill the flow without saying a word.
+#
+# run_turn's first job is acknowledging the message. Before that it used to
+# stop background learning, rebuild the system prompt, snapshot git, recall
+# memories and transcribe images - none of it inside a failure boundary, all of
+# it before the state changed. A step that hung or raised there ended the turn
+# with no event emitted at all: the screen kept showing "READY | waiting_user",
+# the typed message never appeared, and nothing on screen explained it.
+# --------------------------------------------------------------------------- #
+
+
+class OkProvider(_BaseProvider):
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        yield ProviderEvent(kind="text_delta", text_delta="done")
+        yield ProviderEvent(
+            kind="completed", response=ModelResponse(text="done", finish_reason=FinishReason.STOP)
+        )
+
+
+def _prepared_app(tmp_path, provider=None):
+    return build_application(
+        config=_config(tmp_path, planner={"enabled": False}), provider=provider or OkProvider()
+    )
+
+
+async def test_a_reflection_that_ignores_cancellation_cannot_hold_the_turn(tmp_path) -> None:
+    # The freeze, exactly: a background reflection that does not stop when
+    # cancelled was awaited without a bound, before any state change. The turn
+    # never started, the screen stayed on waiting_user, and Ctrl+C could not
+    # break it either - the cancellation landed on the same stuck wait.
+    app = _prepared_app(tmp_path)
+    await app.start()
+
+    running = asyncio.Event()
+    release = asyncio.Event()
+
+    async def stubborn() -> None:
+        running.set()
+        while not release.is_set():
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                # A provider client draining its connection in a finally, a
+                # retry loop catching everything: cancellation gets swallowed.
+                continue
+
+    learning = asyncio.create_task(stubborn())
+    app.orchestrator._learning_task = learning
+    await running.wait()
+
+    try:
+        turn = asyncio.create_task(app.submit_user_message("oi"))
+        done, _pending = await asyncio.wait({turn}, timeout=10)
+        assert turn in done, "the turn never started: still waiting on background learning"
+        assert (await turn).text == "done"
+        # The runtime gave up on it rather than waiting: it is still out there.
+        assert not learning.done()
+    finally:
+        release.set()
+        learning.cancel()
+        await asyncio.wait({learning}, timeout=2)
+        await app.close()
+
+
+async def test_the_message_is_acknowledged_before_any_preparation_runs(tmp_path) -> None:
+    # Why the freeze looked like nothing at all: the state change and the
+    # user.message event came after the preparation. They come first now, so a
+    # slow or broken step can never look like the message was never sent.
+    app = _prepared_app(tmp_path)
+    seen: list[str] = []
+    app.subscribe(lambda event: seen.append(event.event_type))
+    await app.start()
+
+    order: list[str] = []
+
+    def watched_refresh() -> None:
+        order.append(f"prepared:{seen.count('user.message')}")
+
+    app.orchestrator._refresh_system_prompt = watched_refresh
+    await app.submit_user_message("oi")
+    await app.close()
+
+    assert order and order[0] == "prepared:1", (
+        "preparation ran before the user's message was acknowledged"
+    )
+
+
+async def test_an_unreadable_memory_store_does_not_kill_the_turn(tmp_path) -> None:
+    # A real failure on a machine where another process holds the file open:
+    # it used to raise straight through run_turn, past every handler, into a
+    # caller that drops it. The turn must survive it and say what was lost.
+    app = _prepared_app(tmp_path)
+    events: list[tuple[str, str]] = []
+    app.subscribe(lambda event: events.append((event.event_type, str(event.payload))))
+    await app.start()
+
+    class UnreadableMemory:
+        def recallable(self):
+            raise PermissionError("memories/lesson.md: used by another process")
+
+        def render_for_prompt(self, **kwargs):
+            return ""
+
+    app.orchestrator.memory = UnreadableMemory()
+    result = await app.submit_user_message("oi")
+    await app.close()
+
+    assert result.text == "done"
+    warnings = [payload for kind, payload in events if kind == "warning"]
+    assert any("recalling memories" in payload for payload in warnings), warnings
+
+
+async def test_a_broken_system_prompt_refresh_does_not_kill_the_turn(tmp_path) -> None:
+    app = _prepared_app(tmp_path)
+    events: list[tuple[str, str]] = []
+    app.subscribe(lambda event: events.append((event.event_type, str(event.payload))))
+    await app.start()
+
+    def explode() -> None:
+        raise OSError("lessons.json: permission denied")
+
+    app.orchestrator._refresh_system_prompt = explode
+    result = await app.submit_user_message("oi")
+    await app.close()
+
+    assert result.text == "done"
+    assert any(
+        kind == "warning" and "refreshing the system prompt" in payload
+        for kind, payload in events
+    ), events
+
+
+async def test_a_broken_git_baseline_does_not_kill_the_turn(tmp_path) -> None:
+    app = _prepared_app(tmp_path)
+    events: list[tuple[str, str]] = []
+    app.subscribe(lambda event: events.append((event.event_type, str(event.payload))))
+    await app.start()
+
+    class BrokenBaseline:
+        async def capture(self) -> None:
+            raise RuntimeError("git index.lock held by another process")
+
+        async def changed_paths(self):
+            return ()
+
+    app.orchestrator.git_baseline = BrokenBaseline()
+    result = await app.submit_user_message("oi")
+    await app.close()
+
+    assert result.text == "done"
+    assert any(
+        kind == "warning" and "snapshotting the workspace" in payload
+        for kind, payload in events
+    ), events
+
+
+async def test_broken_image_preparation_still_answers_the_text(tmp_path) -> None:
+    from code_ai.providers.models import ImageContent
+
+    app = _prepared_app(tmp_path)
+    events: list[tuple[str, str]] = []
+    app.subscribe(lambda event: events.append((event.event_type, str(event.payload))))
+    await app.start()
+
+    async def explode(text, images):
+        raise RuntimeError("vision model unreachable")
+
+    app.orchestrator._prepare_images = explode
+    result = await app.submit_user_message(
+        "o que tem nesta imagem?", images=[ImageContent(data="xxx", media_type="image/png")]
+    )
+    await app.close()
+
+    # The pixels are lost, the question is still answered.
+    assert result.text == "done"
+    assert any(
+        kind == "warning" and "preparing the pasted images" in payload
+        for kind, payload in events
+    ), events
+
+
+async def test_every_preparation_step_failing_at_once_still_runs_the_turn(tmp_path) -> None:
+    # The bad machine: encryption agent on the files, git wedged, memories
+    # unreadable. The agent degrades to "just answer the question" instead of
+    # going quiet.
+    app = _prepared_app(tmp_path)
+    events: list[str] = []
+    app.subscribe(lambda event: events.append(event.event_type))
+    await app.start()
+
+    class Broken:
+        async def capture(self) -> None:
+            raise RuntimeError("git wedged")
+
+        async def changed_paths(self):
+            return ()
+
+    def explode() -> None:
+        raise OSError("prompt sources unreadable")
+
+    class UnreadableMemory:
+        def recallable(self):
+            raise PermissionError("locked")
+
+        def render_for_prompt(self, **kwargs):
+            return ""
+
+    app.orchestrator.git_baseline = Broken()
+    app.orchestrator._refresh_system_prompt = explode
+    app.orchestrator.memory = UnreadableMemory()
+
+    result = await app.submit_user_message("oi")
+    await app.close()
+
+    assert result.text == "done"
+    assert events.count("warning") >= 3
+    assert "turn.completed" in events
