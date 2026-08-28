@@ -6,8 +6,9 @@ import json
 import logging
 import random
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from code_ai.config.models import AppConfig
 from code_ai.context.compression import CompressionResult, ContextCompressor
@@ -79,6 +80,11 @@ _MAX_BUDGET_RETRIES = 2
 # Bounded so a stream that keeps breaking still terminates the turn instead of
 # re-prompting forever.
 _MAX_INTERRUPTED_CALL_RETRIES = 2
+# How long a background reflection gets to die once the next turn asks it to.
+# Long enough for an ordinary provider call to unwind, short enough that the
+# user never reads it as the agent ignoring them.
+_LEARNING_CANCEL_TIMEOUT_S = 2.0
+
 _TOOL_GUARD_POLL_SECONDS = 2.0
 _TOOL_GUARD_GRACE_SECONDS = 10.0
 
@@ -326,6 +332,9 @@ class AgentOrchestrator:
         # Messages typed while a turn is running, waiting to join the
         # conversation at the next model step. See queue_user_message.
         self._queued_user_messages: list[str] = []
+        # Pre-turn steps that failed synchronously, waiting for the next await
+        # to report them (see _prepare_step_sync).
+        self._pending_degradations: list[tuple[str, BaseException]] = []
         self.state = AgentState.STARTING
 
     @property
@@ -447,6 +456,59 @@ class AgentOrchestrator:
     # ------------------------------------------------------------------ #
     # Turn entry point
     # ------------------------------------------------------------------ #
+    async def _prepare_step(self, what: str, action: Awaitable[Any]) -> Any:
+        """Run one optional pre-turn step; never let it take the turn down.
+
+        Every caller is a nicety: a fresher prompt, a git baseline, recalled
+        memories, transcribed images. The turn is not. These used to run
+        unguarded, so a memory file the OS refused to read - a real thing on a
+        machine where another agent holds the file - raised through run_turn
+        and out into a caller that drops it, killing the flow in silence.
+
+        Failure is reported as a warning and the step's value is dropped.
+        """
+        try:
+            return await action
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - optional work, never fatal
+            await self._degraded(what, exc)
+            return None
+
+    def _prepare_step_sync(self, what: str, action: Callable[[], Any]) -> Any:
+        """``_prepare_step`` for a step that does not await.
+
+        Reports on the next emit rather than awaiting one here, so a synchronous
+        step stays synchronous.
+        """
+        try:
+            return action()
+        except Exception as exc:  # noqa: BLE001 - optional work, never fatal
+            logger.warning("Pre-turn step failed: %s", what, exc_info=exc)
+            self._pending_degradations.append((what, exc))
+            return None
+
+    async def _degraded(self, what: str, exc: BaseException) -> None:
+        """Tell the user a piece of the preparation failed, and carry on."""
+        logger.warning("Pre-turn step failed: %s", what, exc_info=exc)
+        await self.event_bus.emit(
+            "warning",
+            {
+                "message": (
+                    f"{what} failed ({type(exc).__name__}: {exc}); "
+                    "continuing without it"
+                ),
+                "step": what,
+            },
+            source="core.orchestrator",
+        )
+
+    async def _flush_degradations(self) -> None:
+        """Emit whatever the synchronous pre-turn steps had to report."""
+        pending, self._pending_degradations = self._pending_degradations, []
+        for what, exc in pending:
+            await self._degraded(what, exc)
+
     async def run_turn(
         self,
         text: str,
@@ -456,17 +518,27 @@ class AgentOrchestrator:
         resume_plan: bool = False,
         images: list[ImageContent] | None = None,
     ) -> TurnResult:
+        # Acknowledge the message before anything else runs. Everything between
+        # here and the model call is preparation - stopping background learning,
+        # rebuilding the prompt, snapshotting git, transcribing images - and all
+        # of it used to happen first, outside any failure boundary. A step that
+        # hung or raised there ended the turn with the state never changed and
+        # no event emitted: the screen kept showing "waiting_user", the typed
+        # message was simply gone, and there was nothing on screen to explain
+        # it. Saying "accepted" first means the user always sees their message
+        # land, whatever the preparation then does.
+        await self.set_state(AgentState.CALLING_MODEL, phase="accepted_user_message")
+        await self.event_bus.emit("user.message", {"text": text}, source="core.orchestrator")
+
         # Post-turn learning must not compete with the user for the model. On a
         # local server a background reflection holds the whole thing: measured
         # against a 35B, a turn landing behind one waited 50-120s for its first
         # token and sometimes never got one, because the wait ate the request
         # timeout. Memory is the expendable half of that trade.
-        await self._cancel_pending_learning()
+        await self._prepare_step("stopping background learning", self._cancel_pending_learning())
         # Pull in any lessons/memories learned since this session's system prompt
         # was built, so the model benefits from them on this turn.
-        self._refresh_system_prompt()
-        await self.set_state(AgentState.CALLING_MODEL, phase="accepted_user_message")
-        await self.event_bus.emit("user.message", {"text": text}, source="core.orchestrator")
+        self._prepare_step_sync("refreshing the system prompt", self._refresh_system_prompt)
         # Editor context (open file / selection forwarded by an embedding client)
         # is added to the conversation so the model sees it, but it is *not*
         # echoed as a `user.message` event — the transcript stays clean and only
@@ -474,7 +546,11 @@ class AgentOrchestrator:
         if context:
             self.conversation.add_user(context)
         if images:
-            images = await self._prepare_images(text, images)
+            # Images that cannot be prepared travel as nothing rather than
+            # taking the turn with them: the text is still worth answering.
+            images = await self._prepare_step(
+                "preparing the pasted images", self._prepare_images(text, images)
+            )
         self.conversation.add_user(text, images=images)
 
         state = _TurnState(
@@ -485,9 +561,12 @@ class AgentOrchestrator:
         # Snapshot the tree before the model touches it, so "what changed this
         # turn" is later answerable from git rather than from tool self-reports.
         if self.git_baseline is not None:
-            await self.git_baseline.capture()
+            await self._prepare_step("snapshotting the workspace", self.git_baseline.capture())
         if self.memory is not None:
-            state.recall = MemoryRecall.from_contents(self.memory.recallable())
+            state.recall = self._prepare_step_sync(
+                "recalling memories", lambda: MemoryRecall.from_contents(self.memory.recallable())
+            )
+        await self._flush_degradations()
         try:
             early = await self._begin_planner(text, state, resume=resume_plan)
             if early is not None:
@@ -1156,8 +1235,9 @@ class AgentOrchestrator:
         done, _pending = await asyncio.wait({task}, timeout=timeout)
         if task not in done:
             task.cancel()
-            with contextlib.suppress(BaseException):
-                await task
+            # Bounded for the same reason the turn's cancel is: a pass that
+            # ignores the cancellation must not hold the session open.
+            await asyncio.wait({task}, timeout=_LEARNING_CANCEL_TIMEOUT_S)
 
     async def _cancel_pending_learning(self) -> None:
         """Stop a background reflection so the turn ahead has the model to itself.
@@ -1166,17 +1246,34 @@ class AgentOrchestrator:
         still in the conversation, and the next quiet moment can distill it
         again. A turn blocked behind it is not recoverable in the same way, so
         the reflection is what gives way.
+
+        Which means the wait for it to die has to be bounded. ``await task``
+        after ``cancel()`` waits as long as the task takes to notice - and a
+        reflection sitting in a provider call whose client drains the connection
+        in a ``finally`` can take a very long time, or forever. This runs before
+        the turn changes state, so a wait that never returns leaves the screen
+        showing ``waiting_user`` with the user's message nowhere: the flow dies
+        with nothing to show for it, and Ctrl+C cannot even break it, because
+        the cancellation lands on the same stuck wait.
+
+        So: ask it to stop, give it a moment, and go on without it. A reflection
+        that will not stop keeps running in the background and loses its claim
+        on the next turn; the turn is what matters.
         """
         task = self._learning_task
         if task is None or task.done():
             return
         task.cancel()
-        with contextlib.suppress(BaseException):
-            await task
+        # asyncio.wait, not ``await task``: it returns on the timeout whatever
+        # the task does with the cancellation, and does not re-raise its error.
+        done, _pending = await asyncio.wait({task}, timeout=_LEARNING_CANCEL_TIMEOUT_S)
         self._learning_task = None
         await self.event_bus.emit(
             "learning.cancelled",
-            {"reason": "a new turn needs the model"},
+            {
+                "reason": "a new turn needs the model",
+                "stopped": task in done,
+            },
             source="core.orchestrator",
         )
 
