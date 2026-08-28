@@ -38,6 +38,12 @@ from code_ai.util.redaction import sanitized_environment
 
 logger = logging.getLogger(__name__)
 
+# How long a cancelled turn gets to actually stop before whatever asked for the
+# cancellation (a reset, a conversation load, shutdown) goes ahead without it.
+# Cancellation is cooperative, so a turn that is not looking would otherwise
+# hold the session open indefinitely.
+_TURN_CANCEL_TIMEOUT_S = 10.0
+
 # Continuation submitted when the user approves a plan and switches to act mode.
 # It is added to the conversation (and echoed in the transcript) so the model
 # starts executing the already-authored checklist instead of waiting for the
@@ -90,6 +96,11 @@ class CodeAIApplication:
         self._conversation_id: str | None = None
         self._current_cancel: asyncio.Event | None = None
         self._current_task: asyncio.Task[TurnResult] | None = None
+        # One turn at a time. submit_user_message decides between running and
+        # queueing by looking at _current_task, and there is a moment where that
+        # task is finished but the coroutine awaiting it has not resumed to
+        # clear it: two turns could start on the same conversation from there.
+        self._turn_lock = asyncio.Lock()
         # Persistent-goal machinery (/goal). The service holds the one goal per
         # session; the runner/task pair exists only while the loop is running.
         self._goal_service: GoalService | None = None
@@ -197,25 +208,32 @@ class CodeAIApplication:
             # wiped the plan and evidence ledger and made the question a dead
             # end in the terminal UI.
             resume_plan = True
-        self._current_cancel = asyncio.Event()
-        self._current_task = asyncio.create_task(
-            self.orchestrator.run_turn(
-                text,
-                cancel_event=self._current_cancel,
-                context=context,
-                resume_plan=resume_plan,
-                images=images,
+        async with self._turn_lock:
+            cancel = asyncio.Event()
+            task = asyncio.create_task(
+                self.orchestrator.run_turn(
+                    text,
+                    cancel_event=cancel,
+                    context=context,
+                    resume_plan=resume_plan,
+                    images=images,
+                )
             )
-        )
-        try:
-            return await self._current_task
-        finally:
-            self._current_task = None
-            self._current_cancel = None
-            # Persist the thread so it can be resumed later, even after a bridge
-            # restart. Best-effort: never let a storage hiccup surface as a turn
-            # failure.
-            self._persist_conversation()
+            self._current_cancel = cancel
+            self._current_task = task
+            try:
+                return await task
+            finally:
+                # Only if it is still ours: a turn that started while this one
+                # was finishing keeps its claim on the cancel handle, so Ctrl+C
+                # cannot end up pointed at a turn that already returned.
+                if self._current_task is task:
+                    self._current_task = None
+                    self._current_cancel = None
+                # Persist the thread so it can be resumed later, even after a
+                # bridge restart. Best-effort: never let a storage hiccup
+                # surface as a turn failure.
+                self._persist_conversation()
 
     async def explain_code(self, *, code: str, path: str = "", language: str = "") -> str:
         """Return a Markdown explanation of a code snippet (one-off model call).
@@ -425,12 +443,21 @@ class CodeAIApplication:
         return deleted
 
     async def _cancel_running_turn(self) -> None:
-        if self._current_task and not self._current_task.done():
-            await self.cancel_current_turn()
-            try:
-                await self._current_task
-            except Exception:  # a cancelled turn may surface as an error; ignore
-                pass
+        """Ask the running turn to stop, and wait a bounded time for it to.
+
+        Cancellation is cooperative: the turn notices at its next checkpoint. A
+        turn that is not looking - stuck in a provider call that ignores it, or
+        a tool that will not come back - would otherwise hold this wait forever,
+        and with it whatever the user asked for (a reset, a conversation load,
+        a clean shutdown). Waiting a while and moving on is the lesser evil.
+        """
+        task = self._current_task
+        if task is None or task.done():
+            return
+        await self.cancel_current_turn()
+        done, _pending = await asyncio.wait({task}, timeout=_TURN_CANCEL_TIMEOUT_S)
+        if task not in done:
+            logger.warning("The running turn did not stop when cancelled; continuing.")
 
     def _persist_conversation(self) -> None:
         """Save the live (non-system) history under the current conversation id."""
@@ -913,9 +940,7 @@ class CodeAIApplication:
                 await self._goal_task
             except BaseException:  # noqa: BLE001 - shutdown must not propagate
                 pass
-        if self._current_task and not self._current_task.done():
-            await self.cancel_current_turn()
-            await self._current_task
+        await self._cancel_running_turn()
         # Let a pending post-turn learning pass finish (bounded) while the
         # provider is still alive; after provider.close() it could not run.
         await self.orchestrator.drain_learning()

@@ -393,3 +393,69 @@ async def test_the_question_cards_can_open_again_after_a_lost_dialog(tmp_path) -
             assert terminal_app._questions_open is True, "the cards never opened again"
     finally:
         await application.close()
+
+
+async def test_two_turns_never_run_at_once_on_the_same_conversation(tmp_path) -> None:
+    # submit_user_message decides between running and queueing by looking at the
+    # running task, and there is a moment where that task is finished but the
+    # coroutine awaiting it has not resumed to clear it. A message landing in
+    # that window used to start a second turn on the same conversation.
+    concurrent = {"now": 0, "peak": 0}
+
+    async def counting_step(request):
+        concurrent["now"] += 1
+        concurrent["peak"] = max(concurrent["peak"], concurrent["now"])
+        await asyncio.sleep(0.05)
+        concurrent["now"] -= 1
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text="ok", finish_reason=FinishReason.STOP),
+        )
+
+    provider = ScriptedProvider(counting_step)
+    application = _app(tmp_path, provider)
+    try:
+        await application.start()
+        await asyncio.gather(
+            *(application.submit_user_message(f"mensagem {index}") for index in range(8))
+        )
+        assert concurrent["peak"] == 1, f"{concurrent['peak']} turns ran at once"
+    finally:
+        await application.close()
+
+
+async def test_shutdown_does_not_wait_forever_on_a_turn_that_ignores_cancel(
+    tmp_path, monkeypatch
+) -> None:
+    # Cancellation is cooperative: a turn stuck in a provider call that is not
+    # looking never stops. Waiting on it without a bound made quitting hang.
+    from code_ai.app import service as service_module
+
+    release = asyncio.Event()
+    started = asyncio.Event()
+
+    async def unstoppable(request):
+        started.set()
+        await release.wait()
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text="tarde", finish_reason=FinishReason.STOP),
+        )
+
+    provider = ScriptedProvider(unstoppable)
+    application = _app(tmp_path, provider)
+    # raising=False so this still means something against a build that never
+    # bounded the wait at all: there, the close simply never returns.
+    monkeypatch.setattr(service_module, "_TURN_CANCEL_TIMEOUT_S", 0.5, raising=False)
+    try:
+        await application.start()
+        turn = asyncio.create_task(application.submit_user_message("tarefa"))
+        await asyncio.wait_for(started.wait(), timeout=5)
+
+        closing = asyncio.create_task(application.close())
+        done, _pending = await asyncio.wait({closing}, timeout=8)
+        assert closing in done, "shutdown hung on a turn that would not stop"
+    finally:
+        release.set()
+        with __import__("contextlib").suppress(BaseException):
+            await asyncio.wait({turn}, timeout=3)
