@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 from functools import partial
 from pathlib import Path
 from time import monotonic
@@ -67,6 +68,8 @@ from code_ai.ui.terminal.widgets import (
     thinking_size_label,
     working_label,
 )
+
+logger = logging.getLogger(__name__)
 
 # Labels shown in the permission-mode dropdown next to the input, mapped to the
 # config values consumed by AppConfig.permission_mode.
@@ -874,6 +877,9 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             # Guards the question dialog against being pushed twice: every event
             # after the turn ends would otherwise see the same pending questions.
             self._questions_open = False
+            # Background tasks this screen started, held so the loop cannot
+            # collect one mid-flight (see _spawn).
+            self._tasks: set[asyncio.Task[Any]] = set()
             # What each status widget is currently showing, keyed by widget.
             # Every event refreshes the whole status area, but a streaming turn
             # emits hundreds of events a second that change none of it: repainting
@@ -1239,7 +1245,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             # neither can ever shadow a command the app owns.
             if self._run_asset_command(text.strip(), images=event.images):
                 return
-            asyncio.create_task(self.controller.submit(text, images=event.images))
+            self._spawn(self.controller.submit(text, images=event.images), "the message")
 
         def _workflows_text(self) -> str:
             """Render the saved workflows, freshly re-read from disk."""
@@ -1298,10 +1304,11 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 self._append_conversation_line(
                     f"command> Running workflow {workflow.name} ({workflow.path})"
                 )
-                asyncio.create_task(
+                self._spawn(
                     self.controller.submit(
                         render_workflow_invocation(workflow, argument), images=images
-                    )
+                    ),
+                    f"workflow {workflow.name}",
                 )
                 return True
 
@@ -1310,7 +1317,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 self._append_conversation_line(
                     f"command> Using skill {skill.name} ({skill.path})"
                 )
-                asyncio.create_task(
+                self._spawn(
                     self.controller.submit(
                         render_skill_invocation(
                             skill,
@@ -1318,7 +1325,8 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                             max_chars=application.session.config.budgets.max_tool_output_chars,
                         ),
                         images=images,
-                    )
+                    ),
+                    f"skill {skill.name}",
                 )
                 return True
             return False
@@ -1346,7 +1354,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             """
             if self.controller.has_active_plan():
                 self._append_conversation_line("command> Executando o plano aprovado…")
-                asyncio.create_task(self.controller.start_plan_execution())
+                self._spawn(self.controller.start_plan_execution(), "starting the plan")
                 return
             await self.controller.set_planner_mode("act")
             self._append_conversation_line(
@@ -1379,7 +1387,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 line = await self.controller.define_goal(argument)
                 self._append_conversation_line(line)
 
-            asyncio.create_task(_define())
+            self._spawn(_define(), "defining the goal")
 
         async def _handle_term_command(self, stripped: str) -> None:
             """Dispatch ``/term`` — the user's keyboard into the shared PTY.
@@ -1431,7 +1439,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                     "nada. Depois use /act para executar."
                 )
                 return
-            asyncio.create_task(self.controller.submit(objective))
+            self._spawn(self.controller.submit(objective), "the deep plan")
 
         async def _dispatch_config(self, stripped: str) -> None:
             """Run a ``/config ...`` line, including its UI side effects.
@@ -1481,7 +1489,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 return
             # No argument to fill — run it right away.
             self._set_command_suggestions("")
-            asyncio.create_task(self._dispatch_config(item.completion_text.strip()))
+            self._spawn(self._dispatch_config(item.completion_text.strip()), "the command")
 
         def get_system_commands(self, screen) -> Any:
             yield from super().get_system_commands(screen)
@@ -1595,6 +1603,36 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             rendered = render_suggestions(text, extra=asset_suggestions())
             suggestions.update(rendered)
             suggestions.display = bool(rendered)
+
+        def _spawn(self, coro, what: str) -> asyncio.Task[Any]:
+            """Run a coroutine in the background, owned and never silent.
+
+            ``asyncio.create_task`` alone was neither: the loop keeps only a
+            weak reference to a task nobody holds, and an exception inside one
+            is reported only when it is garbage collected - to a stderr this app
+            has taken over. So a turn that died on its way to the model took the
+            whole flow with it and left the screen exactly as it was, which is
+            what "it just freezes, for no reason" looked like from the outside.
+
+            Held here until it finishes, and whatever it raises is put in the
+            transcript where the user can read it.
+            """
+            task = asyncio.create_task(coro)
+            self._tasks.add(task)
+
+            def _finished(finished: asyncio.Task[Any]) -> None:
+                self._tasks.discard(finished)
+                if finished.cancelled():
+                    return
+                error = finished.exception()
+                if error is not None:
+                    logger.exception("%s failed", what, exc_info=error)
+                    self._append_conversation_line(
+                        f"error> {what} failed ({type(error).__name__}: {error})"
+                    )
+
+            task.add_done_callback(_finished)
+            return task
 
         def _append_conversation_line(self, text: str) -> None:
             if not text:
