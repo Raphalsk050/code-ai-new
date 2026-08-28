@@ -112,6 +112,17 @@ def render_stream_tail(line: str):
     return render_conversation_line(line)
 
 
+def _rows_signature(rows: list[dict[str, str]]) -> tuple[tuple[tuple[str, str], ...], ...]:
+    """A comparable snapshot of plan steps / sub-agent rows.
+
+    The view model hands out the same dictionaries every time and mutates them
+    in place as work progresses, so a panel cannot tell "unchanged" from
+    "changed" by identity or by comparing the list it kept. Materialising the
+    contents is cheap (a handful of short strings) next to the repaint it saves.
+    """
+    return tuple(tuple(sorted(row.items())) for row in rows)
+
+
 def create_terminal_app(application, *, config_path: Path | None = None):
     from textual.app import App, ComposeResult, SystemCommand
     from textual.command import SimpleCommand
@@ -651,6 +662,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self._steps: list[dict[str, str]] = []
             self._progress = "-"
             self._status = ""
+            self._signature: tuple[object, ...] | None = None
             self._frame = 0
             self._running = False
             self._timer = None
@@ -664,6 +676,14 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self._paint()
 
         def update_plan(self, steps: list[dict[str, str]], progress: str, status: str) -> None:
+            # Every event refreshes the status area, and most of them leave the
+            # checklist exactly as it was: repaint only on a real change, so a
+            # streaming turn cannot drive one repaint per fragment. The spinner
+            # keeps animating from its own timer regardless.
+            signature = (_rows_signature(steps), progress, status)
+            if signature == self._signature:
+                return
+            self._signature = signature
             self._steps = steps
             self._progress = progress
             self._status = status
@@ -751,6 +771,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self._style = style
             self._agents: list[dict[str, str]] = []
             self._cards: dict[str, SubagentCard] = {}
+            self._signature: tuple[object, ...] | None = None
             self._frame = 0
             self._running = False
             self._timer = None
@@ -767,6 +788,13 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self._paint()
 
         def update_agents(self, agents: list[dict[str, str]]) -> None:
+            # The roster's rows are mutated in place as agents work, so identity
+            # says nothing: compare their contents. Unchanged means no repaint,
+            # for the same reason the plan panel skips one.
+            signature = _rows_signature(agents)
+            if signature == self._signature:
+                return
+            self._signature = signature
             self._agents = agents
             self._sync_cards()
             has_running = any(agent.get("status") == "running" for agent in agents)
@@ -846,6 +874,13 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             # Guards the question dialog against being pushed twice: every event
             # after the turn ends would otherwise see the same pending questions.
             self._questions_open = False
+            # What each status widget is currently showing, keyed by widget.
+            # Every event refreshes the whole status area, but a streaming turn
+            # emits hundreds of events a second that change none of it: repainting
+            # them anyway cost six widget updates - and six layout invalidations -
+            # per reasoning fragment, which is what made the terminal stop
+            # responding while the model was thinking.
+            self._painted: dict[str, object] = {}
 
         def compose(self) -> ComposeResult:
             yield Header(show_clock=True)
@@ -1105,12 +1140,14 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                     # Paint the first fragment straight away, so the box opens
                     # with reasoning in it rather than empty for a tick.
                     panel.flush()
-                tail.update("")
+                if self._changed("stream-tail", ""):
+                    tail.update("")
                 return
             if panel.display:
                 panel.display = False
                 panel.reset()
-            tail.update(render_stream_tail(line) if line else "")
+            if self._changed("stream-tail", line):
+                tail.update(render_stream_tail(line) if line else "")
 
         def _trim_and_follow_conversation(self, log: VerticalScroll) -> None:
             excess = len(log.children) - _MAX_CONVERSATION_LINES
@@ -1756,6 +1793,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self.vm.conversation.clear()
             await self.query_one("#conversation", VerticalScroll).remove_children()
             self.query_one("#stream-tail", Static).update("")
+            self._painted.pop("stream-tail", None)
             panel = self.query_one("#thinking-panel", ThinkingPanel)
             panel.display = False
             panel.reset()
@@ -1824,20 +1862,35 @@ def create_terminal_app(application, *, config_path: Path | None = None):
         def _disarm_force_quit(self) -> None:
             self._force_quit_armed = False
 
+        def _changed(self, key: str, value: object) -> bool:
+            """Whether ``key`` is showing something other than ``value`` now.
+
+            Records ``value`` as painted when it differs, so the caller can skip
+            the repaint entirely when it does not. Textual has no such guard of
+            its own: ``Static.update`` rebuilds the visual and invalidates the
+            layout whether or not the content actually changed.
+            """
+            if self._painted.get(key) == value:
+                return False
+            self._painted[key] = value
+            return True
+
         def _refresh_status(self) -> None:
-            self.query_one("#statusline", Static).update(
+            status_line = (
                 f"{self.vm.status} | {self.vm.phase} | {application.session.config.model} | "
                 f"{application.session.config.workspace.name} | perm {self.vm.permission_mode} | "
                 f"plan {self.vm.plan_progress}"
             )
-            self.query_one("#context-meter", Static).update(
-                render_context_meter(
-                    self.vm.context_used,
-                    self.vm.context_budget,
-                    self.vm.context_threshold,
-                )
-            )
-            self.query_one("#session-info", Static).update(self._session_text())
+            if self._changed("statusline", status_line):
+                self.query_one("#statusline", Static).update(status_line)
+            # Keyed on the numbers, not on the rendered meter: building the
+            # renderable is the expensive half, so it is skipped too.
+            meter = (self.vm.context_used, self.vm.context_budget, self.vm.context_threshold)
+            if self._changed("context-meter", meter):
+                self.query_one("#context-meter", Static).update(render_context_meter(*meter))
+            session_text = self._session_text()
+            if self._changed("session-info", session_text):
+                self.query_one("#session-info", Static).update(session_text)
             working = self.vm.status in WORKING_STATES
             self.query_one("#working-indicator", WorkingIndicator).set_running(
                 working, working_label(self.vm.status)
@@ -1852,15 +1905,17 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 self.vm.plan_visible or self.vm.subagents_visible or self.vm.terminal_visible
             )
             if self.vm.terminal_visible:
-                self.query_one("#terminal-body", Static).update(
-                    render_terminal_screen(
-                        self.vm.terminal_session_id,
-                        self.vm.terminal_screen,
-                        self.vm.terminal_rows,
-                        self.vm.terminal_cols,
-                        self.vm.terminal_closed,
-                    )
+                screen = (
+                    self.vm.terminal_session_id,
+                    self.vm.terminal_screen,
+                    self.vm.terminal_rows,
+                    self.vm.terminal_cols,
+                    self.vm.terminal_closed,
                 )
+                if self._changed("terminal-body", screen):
+                    self.query_one("#terminal-body", Static).update(
+                        render_terminal_screen(*screen)
+                    )
             self._refresh_code_window()
             self.query_one("#plan-body", PlanPanel).update_plan(
                 self.vm.plan_steps, self.vm.plan_progress, self.vm.plan_status
