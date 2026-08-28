@@ -655,17 +655,82 @@ def _chip(label: str, color: str) -> Content:
     return Content.styled(f" {label} ", f"bold {_CHIP_TEXT_COLOR} on {color}")
 
 
-def thinking_body(line: str) -> str | None:
+# The model's reasoning is the one trace line with no natural length: a single
+# thinking block can outgrow the whole rest of the transcript. Both places that
+# show it - the live panel and the folded block - render a bounded view of it,
+# newest text first, so a huge block costs a fixed amount of wrapping instead of
+# growing without limit. The untouched text stays in the view model's buffer.
+THINKING_PREFIX = "thinking> "
+
+# What the live panel shows: it is a fixed-height box, so only the newest rows
+# can ever be on screen anyway.
+THINKING_PANEL_MAX_ROWS = 12
+THINKING_PANEL_MAX_CHARS = 3000
+
+# What the folded block keeps once the turn commits it. Generous - a whole
+# ordinary reasoning block fits untouched - but bounded, so expanding a
+# pathological one wraps a known amount of text instead of freezing the UI.
+THINKING_BLOCK_MAX_CHARS = 24000
+
+_TRIMMED_MARKER = "… earlier reasoning trimmed …"
+
+
+def thinking_body(line: str, *, max_chars: int | None = THINKING_BLOCK_MAX_CHARS) -> str | None:
     """Reasoning text for a ``thinking>`` line (blank lines collapsed), else None.
 
     Used to fold the model's reasoning into a collapsible block at commit time,
     mirroring the VS Code extension's hideable "Thinking" section. The live
     streaming tail still shows it inline via :func:`render_conversation_line`.
+
+    Only the newest ``max_chars`` are returned: the widget that renders this has
+    to word-wrap every character it is given the moment the user expands it, and
+    an unbounded block is exactly the case that used to lock the terminal up.
+    Pass ``max_chars=None`` for the whole thing.
     """
-    prefix = "thinking> "
-    if not line.startswith(prefix):
+    if not line.startswith(THINKING_PREFIX):
         return None
-    return _BLANK_RUN.sub("\n", line[len(prefix) :])
+    return _bound_reasoning(_BLANK_RUN.sub("\n", line[len(THINKING_PREFIX) :]), max_chars)
+
+
+def _bound_reasoning(text: str, max_chars: int | None) -> str:
+    """The newest ``max_chars`` of ``text``, marked when anything was dropped."""
+    if max_chars is None or len(text) <= max_chars:
+        return text
+    return f"{_TRIMMED_MARKER}\n{text[-max_chars:]}"
+
+
+def thinking_panel_body(line: str) -> str:
+    """The rows of live reasoning the thinking panel can actually show.
+
+    The panel is a fixed-height box that does not scroll while the model is
+    still streaming into it, so only its newest rows are ever visible. Trimming
+    to them here is what keeps the per-delta word-wrap cost constant no matter
+    how long the model reasons: the alternative (handing the widget the whole
+    block on every delta) is quadratic and is what froze the terminal.
+    """
+    text = line[len(THINKING_PREFIX) :] if line.startswith(THINKING_PREFIX) else line
+    # Characters first: reasoning often arrives as long paragraphs with few
+    # newlines, so a row cap alone would never trim them.
+    if len(text) > THINKING_PANEL_MAX_CHARS:
+        text = text[-THINKING_PANEL_MAX_CHARS:]
+    text = _BLANK_RUN.sub("\n", text)
+    rows = text.split("\n")
+    if len(rows) > THINKING_PANEL_MAX_ROWS:
+        rows = rows[-THINKING_PANEL_MAX_ROWS:]
+    return "\n".join(rows)
+
+
+def thinking_size_label(line: str) -> str:
+    """Compact size of a reasoning block, for the panel's border subtitle.
+
+    The panel only ever shows its newest rows, so without this the user has no
+    idea whether the model has been reasoning for two lines or two pages.
+    """
+    text = line[len(THINKING_PREFIX) :] if line.startswith(THINKING_PREFIX) else line
+    size = len(text)
+    if size < 1000:
+        return f"{size} chars"
+    return f"{size / 1000:.1f}k chars"
 
 
 def conversation_line_class(line: str) -> str:

@@ -1959,3 +1959,104 @@ async def test_bracketed_trace_text_never_raises_markup_error(tmp_path) -> None:
 
         for widget_id in ("#stream-tail", "#statusline", "#session-info", "#command-suggestions"):
             assert terminal_app.query_one(widget_id, Static)._render_markup is False
+
+
+async def test_reasoning_streams_into_its_own_panel_not_loose_on_screen(tmp_path) -> None:
+    # The model's reasoning used to stream straight into the tail strip, which
+    # has no frame: it spilled down the pane at full width and read as if it had
+    # escaped the conversation. It now streams into a contained, titled box, and
+    # only one of the two ever holds it.
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(120, 40)) as pilot:
+        await fake_app.emit("user.message", {"text": "go"})
+        await fake_app.emit("status.changed", {"state": "CALLING_MODEL"})
+        await fake_app.emit("model.thinking.delta", {"text": "weighing the options"})
+        await pilot.pause(0.2)
+
+        panel = terminal_app.query_one("#thinking-panel", Static)
+        assert panel.display is True
+        assert "weighing the options" in str(panel.render())
+        assert panel.border_title == "thinking"
+        # The prefix belongs to the transcript buffer, not to the panel: the
+        # border already says what the box holds.
+        assert "thinking>" not in str(panel.render())
+        # ...and nothing is left loose in the strip below it.
+        assert str(terminal_app.query_one("#stream-tail", Static).render()) == ""
+
+        # The answer is a message, not reasoning: it goes back to the strip and
+        # the box closes, so reasoning is never shown boxed and loose at once.
+        await fake_app.emit("model.stream.delta", {"text": "here is the answer"})
+        await pilot.pause(0.2)
+        assert panel.display is False
+        assert "here is the answer" in str(terminal_app.query_one("#stream-tail", Static).render())
+
+
+async def test_thinking_panel_shows_only_the_rows_it_can_fit(tmp_path) -> None:
+    # A reasoning block has no natural length. The panel is a fixed-height box,
+    # so it renders only its newest rows however long the model reasons — that
+    # bound is what keeps the per-fragment cost constant — while the border
+    # subtitle still reports the size of the whole block.
+    from code_ai.ui.terminal.widgets import (
+        THINKING_PANEL_MAX_CHARS,
+        THINKING_PANEL_MAX_ROWS,
+    )
+
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(120, 40)) as pilot:
+        await fake_app.emit("user.message", {"text": "go"})
+        await fake_app.emit("status.changed", {"state": "CALLING_MODEL"})
+        for index in range(400):
+            await fake_app.emit("model.thinking.delta", {"text": f"line {index} of reasoning\n"})
+        await pilot.pause(0.3)
+
+        panel = terminal_app.query_one("#thinking-panel", Static)
+        body = str(panel.render())
+        assert len(body.splitlines()) <= THINKING_PANEL_MAX_ROWS
+        assert len(body) <= THINKING_PANEL_MAX_CHARS
+        # The newest reasoning is what survives the trim, not the oldest.
+        assert "line 399 of reasoning" in body
+        assert "line 0 of reasoning" not in body
+        # Nothing is lost from the transcript itself.
+        assert "line 0 of reasoning" in terminal_app.vm.conversation[-1]
+        assert "chars" in (panel.border_subtitle or "")
+
+
+def test_committed_reasoning_is_bounded_before_it_reaches_a_widget() -> None:
+    # The folded block has to word-wrap every character it holds the moment the
+    # user expands it, so a pathological block is trimmed to its newest text
+    # rather than handed to the widget whole.
+    from code_ai.ui.terminal.widgets import THINKING_BLOCK_MAX_CHARS, thinking_body
+
+    short = thinking_body("thinking> one\n\n\ntwo")
+    assert short == "one\ntwo"
+
+    huge = "thinking> " + ("x" * 10 + "\n") * 40_000
+    bounded = thinking_body(huge)
+    assert len(bounded) <= THINKING_BLOCK_MAX_CHARS + 40
+    assert bounded.startswith("… earlier reasoning trimmed …")
+    # Asking for the whole thing is still possible, for callers that can take it.
+    assert len(thinking_body(huge, max_chars=None)) > THINKING_BLOCK_MAX_CHARS
+    # A line that is not reasoning is still not claimed by this renderer.
+    assert thinking_body("ai> answer") is None
+
+
+async def test_clearing_the_screen_empties_the_thinking_panel(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(120, 40)) as pilot:
+        await fake_app.emit("user.message", {"text": "go"})
+        await fake_app.emit("status.changed", {"state": "CALLING_MODEL"})
+        await fake_app.emit("model.thinking.delta", {"text": "mid-thought"})
+        await pilot.pause(0.2)
+        assert terminal_app.query_one("#thinking-panel", Static).display is True
+
+        await terminal_app.action_clear()
+        await pilot.pause(0.2)
+        panel = terminal_app.query_one("#thinking-panel", Static)
+        assert panel.display is False
+        assert str(panel.render()) == ""

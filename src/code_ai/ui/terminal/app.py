@@ -40,6 +40,7 @@ from code_ai.ui.terminal.slash_commands import (
 from code_ai.ui.terminal.view_models import TerminalViewModel
 from code_ai.ui.terminal.widgets import (
     CODE_AI_BANNER_FONT_OPTIONS,
+    THINKING_PREFIX,
     WORKING_BASE_COLOR,
     WORKING_IDLE_STYLE,
     WORKING_LABEL_STYLE,
@@ -62,6 +63,8 @@ from code_ai.ui.terminal.widgets import (
     spinner_color,
     subagent_task_preview,
     thinking_body,
+    thinking_panel_body,
+    thinking_size_label,
     working_label,
 )
 
@@ -564,6 +567,74 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 self._lexer = live_code_lexer(tool, path, code, complete)
             return self._lexer
 
+    class ThinkingPanel(Static):
+        """The model's reasoning while it streams, held inside its own box.
+
+        Reasoning used to stream straight into the tail strip, which has no
+        frame: a long block simply spilled down the pane, at full width and at
+        column 0, reading as if it had escaped the conversation. It is the
+        agent's work trace, not a message, so it gets the same quiet round frame
+        a sub-agent card gets - titled ``thinking``, dim inside, sized to the
+        rows it can actually show - instead of the orange accent the code window
+        uses for a write.
+
+        Repaints are rate-limited by a timer rather than following the delta
+        rate (the same trick the code window uses): a reasoning model emits
+        hundreds of fragments a second, and painting each one is what made the
+        terminal stop responding. The panel also only ever renders its newest
+        rows, so the per-paint cost stays constant however long the model
+        reasons; the whole block is still committed to the transcript.
+        """
+
+        TICK = 0.06
+
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__("", markup=False, **kwargs)
+            self._pending: str | None = None
+            self._painted: int | None = None
+            self._timer = None
+
+        def on_mount(self) -> None:
+            self.border_title = "thinking"
+            self._timer = self.set_interval(self.TICK, self._tick, pause=True)
+
+        def update_reasoning(self, line: str) -> None:
+            """Queue the newest reasoning; the timer decides when to paint it."""
+            # Length alone identifies the state: the line only ever grows.
+            if len(line) == self._painted:
+                return
+            self._pending = line
+            if self._timer is not None:
+                self._timer.resume()
+
+        def reset(self) -> None:
+            """Drop the reasoning being shown - the turn moved on without it."""
+            self._pending = None
+            self._painted = None
+            if self._timer is not None:
+                self._timer.pause()
+            self.update("")
+
+        def flush(self) -> None:
+            """Paint whatever is queued right now, without waiting for the tick.
+
+            Used when the panel first opens, so reasoning appears the moment the
+            model starts thinking instead of up to one tick later.
+            """
+            self._tick()
+
+        def _tick(self) -> None:
+            if self._pending is None:
+                # Caught up: stop ticking until the next fragment arrives.
+                if self._timer is not None:
+                    self._timer.pause()
+                return
+            line = self._pending
+            self._pending = None
+            self._painted = len(line)
+            self.border_subtitle = thinking_size_label(line)
+            self.update(thinking_panel_body(line))
+
     class PlanPanel(Static):
         """Checklist of planned steps shown beside the conversation.
 
@@ -824,6 +895,12 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                         # [1/3] ...") would otherwise be parsed as console
                         # markup and raise MarkupError inside the event
                         # subscriber. Styled Content renderables are unaffected.
+                        # The model's reasoning, boxed. Sits between the code
+                        # window and the tail: all three belong to the turn in
+                        # progress rather than to the scrollback behind them.
+                        thinking = ThinkingPanel(id="thinking-panel")
+                        thinking.display = False
+                        yield thinking
                         yield Static("", id="stream-tail", markup=False)
                     with Vertical(id="sidebar"):
                         # Two stacked panels, each scrolls internally when its
@@ -1009,7 +1086,31 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 # both deferred until the freshly mounted widgets are laid out.
                 self.call_after_refresh(self._trim_and_follow_conversation, log)
 
-            tail.update(render_stream_tail(convo[-1]) if held_back else "")
+            self._paint_live_line(convo[-1] if held_back else "", tail)
+
+        def _paint_live_line(self, line: str, tail: Static) -> None:
+            """Show the line that is still streaming, wherever it belongs.
+
+            Reasoning goes into the boxed thinking panel; everything else (the
+            answer, the working channel, live command output) stays in the plain
+            tail strip below it. Only one of the two is ever showing, so the
+            reasoning cannot appear both boxed and loose.
+            """
+            panel = self.query_one("#thinking-panel", ThinkingPanel)
+            if line.startswith(THINKING_PREFIX):
+                opening = not panel.display
+                panel.display = True
+                panel.update_reasoning(line)
+                if opening:
+                    # Paint the first fragment straight away, so the box opens
+                    # with reasoning in it rather than empty for a tick.
+                    panel.flush()
+                tail.update("")
+                return
+            if panel.display:
+                panel.display = False
+                panel.reset()
+            tail.update(render_stream_tail(line) if line else "")
 
         def _trim_and_follow_conversation(self, log: VerticalScroll) -> None:
             excess = len(log.children) - _MAX_CONVERSATION_LINES
@@ -1655,6 +1756,9 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self.vm.conversation.clear()
             await self.query_one("#conversation", VerticalScroll).remove_children()
             self.query_one("#stream-tail", Static).update("")
+            panel = self.query_one("#thinking-panel", ThinkingPanel)
+            panel.display = False
+            panel.reset()
             # The code window belongs to the transcript being wiped: a file
             # written before the clear is no longer on screen to explain it.
             self.vm.clear_code_stream()
