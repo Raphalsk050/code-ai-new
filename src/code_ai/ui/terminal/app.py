@@ -1048,6 +1048,14 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             scrollback first, so closing the dialog leaves something to answer.
             """
 
+            if self._questions_open and not any(
+                isinstance(screen, QuestionnaireModal) for screen in self.screen_stack
+            ):
+                # The dialog is gone but its result callback never ran (it was
+                # torn down, or popped by something else). Without this the
+                # latch stays closed for the rest of the session and no question
+                # ever reaches the cards again.
+                self._questions_open = False
             if self._questions_open or not self.vm.pending_questions:
                 return
             if not self.vm.turn_is_over():

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import difflib
 import json
+import logging
 import re
 
 from rich.console import RenderableType
@@ -15,6 +16,13 @@ from textual.widgets import Button, Input, Static
 
 from code_ai.core.approval import ApprovalDecision, ApprovalRequest
 from code_ai.ui.terminal.code_view import syntax_block
+
+logger = logging.getLogger(__name__)
+
+# How often the gateway checks that the dialog it is waiting on is still on
+# screen. Short enough that a vanished dialog does not read as a hang, long
+# enough to cost nothing while the user reads the diff.
+_DIALOG_PRESENCE_POLL_S = 0.25
 
 # Unified-diff line prefixes mapped to a Claude-Code-style background tint.
 # Context lines (a leading space) and hunk headers fall through to a dim default.
@@ -260,5 +268,34 @@ class TerminalApprovalGateway:
 
         # Read learn live so toggling /config learn applies to the very next prompt.
         modal = ApprovalModal(request, learn_enabled=self._config.learn)
-        self._app.push_screen(modal, _resolve)
-        return await future
+        try:
+            self._app.push_screen(modal, _resolve)
+        except Exception:
+            # No dialog means no way to say yes. Denying keeps the turn moving
+            # and tells the model why; hanging here would stop it dead.
+            logger.exception("Could not open the approval dialog for %s", request.tool_name)
+            return ApprovalDecision.deny("The approval dialog could not be opened.")
+
+        # The decision arrives through the dialog's own callback - unless the
+        # dialog leaves the screen some other way (torn down on shutdown,
+        # popped by another action, lost while mounting). Then the callback
+        # never fires and this await never returns: the agent sits waiting on a
+        # dialog nobody can see, which is indistinguishable from a freeze. Watch
+        # for the dialog going away and treat that as the dismissal it is.
+        watchdog = asyncio.create_task(self._deny_if_dialog_vanishes(modal, _resolve))
+        try:
+            return await future
+        finally:
+            watchdog.cancel()
+
+    async def _deny_if_dialog_vanishes(self, modal, resolve) -> None:
+        """Resolve as a denial once ``modal`` is no longer on the screen stack."""
+        while True:
+            await asyncio.sleep(_DIALOG_PRESENCE_POLL_S)
+            try:
+                on_screen = modal in self._app.screen_stack
+            except Exception:  # pragma: no cover - the app is going away
+                on_screen = False
+            if not on_screen:
+                resolve(None)
+                return
