@@ -113,13 +113,23 @@ Screen {
 }
 
 /* The model's reasoning, folded into a hideable "thinking" block — stripped of
-   the default Collapsible chrome so it sits quietly in the dim trace channel. */
+   the default Collapsible chrome so it sits quietly in the dim trace channel.
+
+   Expanded it takes the same round frame the live thinking panel draws, so the
+   reasoning stays inside a box after the turn commits it instead of spilling
+   back into the transcript. Collapsed it stays a single dim line: a frame
+   around a one-line preview would cost three rows of chrome per block, and a
+   long turn holds a lot of blocks. */
 #conversation .thinking-block {
   margin-left: 3;
   width: 1fr;
   height: auto;
   background: transparent;
-  border-top: none;
+  border: round #2b3440;
+  padding: 0 1;
+}
+#conversation .thinking-block.-collapsed {
+  border: none;
   padding: 0;
 }
 #conversation .thinking-block > CollapsibleTitle {
@@ -162,6 +172,26 @@ Screen {
   height: auto;
   max-height: 16;
   color: #d7dee8;
+}
+
+/* The reasoning the model is producing right now, contained in its own box.
+   Same quiet round frame as a sub-agent card rather than the code window's
+   orange accent: reasoning is subordinate work, so it is framed to keep it
+   tidy, not coloured to pull the eye. Sized to the rows the panel renders
+   (see THINKING_PANEL_MAX_ROWS) plus its border. */
+#thinking-panel {
+  height: auto;
+  max-height: 14;
+  width: 1fr;
+  border: round #2b3440;
+  border-title-color: #6b7280;
+  border-title-style: none;
+  border-title-align: left;
+  border-subtitle-color: #4b5563;
+  padding: 0 1;
+  margin-top: 1;
+  color: #6b7280;
+  overflow-x: hidden;
 }
 
 /* Right sidebar: stacks the PLAN and AGENTS panels. Fixed width; the whole
