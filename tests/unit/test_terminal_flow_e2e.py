@@ -106,13 +106,17 @@ async def test_a_typed_message_reaches_the_model_and_comes_back(tmp_path) -> Non
         async with terminal_app.run_test(size=(120, 40)) as pilot:
             await _type(terminal_app, pilot, "pergunta um")
             assert await _settle(
-                terminal_app, pilot, until=lambda: provider.calls == 1 and terminal_app.vm.status == "READY"
+                terminal_app,
+                pilot,
+                until=lambda: provider.calls == 1 and terminal_app.vm.status == "READY",
             ), "the first turn never came back"
 
             # And the flow survives the hand-back: a second message runs too.
             await _type(terminal_app, pilot, "pergunta dois")
             assert await _settle(
-                terminal_app, pilot, until=lambda: provider.calls == 2 and terminal_app.vm.status == "READY"
+                terminal_app,
+                pilot,
+                until=lambda: provider.calls == 2 and terminal_app.vm.status == "READY",
             ), "the flow died after the first turn settled"
 
             transcript = "\n".join(terminal_app.vm.conversation)
@@ -161,7 +165,9 @@ async def test_the_message_appears_even_when_the_preparation_is_slow(tmp_path) -
 
             slow.set()
             assert await _settle(
-                terminal_app, pilot, until=lambda: provider.calls == 1 and terminal_app.vm.status == "READY"
+                terminal_app,
+                pilot,
+                until=lambda: provider.calls == 1 and terminal_app.vm.status == "READY",
             )
     finally:
         slow.set()
@@ -227,7 +233,9 @@ async def test_the_turn_task_is_held_not_left_to_the_garbage_collector(tmp_path)
             gc.collect()  # exactly where a dropped task disappears
             release.set()
             assert await _settle(
-                terminal_app, pilot, until=lambda: provider.calls == 1 and terminal_app.vm.status == "READY"
+                terminal_app,
+                pilot,
+                until=lambda: provider.calls == 1 and terminal_app.vm.status == "READY",
             ), "the turn was collected mid-flight"
             assert any("ai> tarde" in line for line in terminal_app.vm.conversation)
             # The screen lets go of a task once it is done.
@@ -275,4 +283,44 @@ async def test_a_reflection_that_will_not_stop_does_not_freeze_the_screen(tmp_pa
         release.set()
         learning.cancel()
         await asyncio.wait({learning}, timeout=2)
+        await application.close()
+
+
+async def test_the_transcript_keeps_following_when_the_screen_cannot_draw(tmp_path) -> None:
+    # A render that raises reached the bus, which logs it and moves on: the
+    # transcript stopped following the agent while the runtime kept working,
+    # and nothing on screen said why. The view model must take every event
+    # regardless, and the failure has to be visible.
+    provider = ScriptedProvider(answering("respondido"))
+    application = _app(tmp_path, provider)
+    terminal_app = create_terminal_app(application)
+    try:
+        async with terminal_app.run_test(size=(120, 40)) as pilot:
+            broken = {"count": 0}
+            original = terminal_app._render_event
+
+            def exploding(event) -> None:
+                if event.event_type == "model.stream.delta" and broken["count"] < 1:
+                    broken["count"] += 1
+                    raise RuntimeError("widget tree is broken")
+                original(event)
+
+            terminal_app._render_event = exploding
+
+            await _type(terminal_app, pilot, "pergunta")
+            assert await _settle(
+                terminal_app,
+                pilot,
+                until=lambda: provider.calls == 1 and terminal_app.vm.status == "READY",
+            ), "the turn stalled when a render failed"
+
+            assert broken["count"] == 1
+            # The agent's answer is still in the transcript...
+            assert any("ai> respondido" in line for line in terminal_app.vm.conversation)
+            # ...and the user was told a frame was lost.
+            assert any(
+                line.startswith("warning> the screen could not render")
+                for line in terminal_app.vm.conversation
+            ), terminal_app.vm.conversation
+    finally:
         await application.close()

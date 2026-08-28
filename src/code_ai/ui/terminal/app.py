@@ -1006,9 +1006,38 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self.query_one("#input", MultilineInput).focus()
 
         async def _on_event(self, event) -> None:
+            """Fold one runtime event into the view model and onto the screen.
+
+            Rendering is guarded on its own: the view model must take the event
+            whatever the screen then does with it. A render that raises used to
+            reach the bus, which logs it and moves on - so the transcript simply
+            stopped following the agent, with the runtime still working and
+            nothing on screen saying why. The transcript keeps its line even
+            when the screen cannot draw it, and the failure is reported instead
+            of disappearing.
+            """
             await self.controller.handle_event(event)
-            self._render_event(event)
-            self._open_questions_if_waiting()
+            try:
+                self._render_event(event)
+                self._open_questions_if_waiting()
+            except Exception:
+                if not self.is_running:
+                    # Shutting down: the widgets are already gone, and an event
+                    # arriving mid-teardown has nowhere to land.
+                    return
+                logger.exception("Failed to render %s", event.event_type)
+                self._report_render_failure(event.event_type)
+
+        def _report_render_failure(self, event_type: str) -> None:
+            """Say that an event could not be drawn, without risking a second one."""
+            try:
+                self.vm.conversation.append(
+                    f"warning> the screen could not render {event_type}; "
+                    "the transcript may be missing a line"
+                )
+                self._sync_conversation()
+            except Exception:  # pragma: no cover - the screen is beyond helping
+                logger.exception("Failed to report a render failure.")
 
         def _open_questions_if_waiting(self) -> None:
             """Show the question cards once the turn that asked them has ended.
