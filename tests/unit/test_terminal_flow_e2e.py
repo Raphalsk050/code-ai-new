@@ -324,3 +324,72 @@ async def test_the_transcript_keeps_following_when_the_screen_cannot_draw(tmp_pa
             ), terminal_app.vm.conversation
     finally:
         await application.close()
+
+
+async def test_an_approval_dialog_that_vanishes_denies_instead_of_hanging(tmp_path) -> None:
+    # The agent waits on the dialog's callback. A dialog that leaves the screen
+    # any other way - torn down at shutdown, popped by something else, lost
+    # while mounting - never calls it, and the await never returns: the agent
+    # sits there waiting for a decision on a dialog nobody can see.
+    from code_ai.core.approval import ApprovalRequest
+    from code_ai.ui.terminal.approval import TerminalApprovalGateway
+
+    provider = ScriptedProvider(answering("nada"))
+    application = _app(tmp_path, provider)
+    terminal_app = create_terminal_app(application)
+    try:
+        async with terminal_app.run_test(size=(120, 40)) as pilot:
+            gateway = TerminalApprovalGateway(terminal_app, application.session.config)
+            asked = asyncio.create_task(
+                gateway.request_approval(
+                    ApprovalRequest(
+                        call_id="c1",
+                        tool_name="write_file",
+                        arguments={"path": "a.py", "content": "x"},
+                        signature="write_file:a.py",
+                    )
+                )
+            )
+            assert await _settle(
+                terminal_app, pilot, until=lambda: len(terminal_app.screen_stack) > 1, timeout=5
+            )
+            terminal_app.pop_screen()
+
+            done, _pending = await asyncio.wait({asked}, timeout=5)
+            assert asked in done, "the turn is still waiting on a dialog nobody can see"
+            decision = await asked
+            assert decision.approved is False
+    finally:
+        await application.close()
+
+
+async def test_the_question_cards_can_open_again_after_a_lost_dialog(tmp_path) -> None:
+    # The guard that keeps the cards from opening twice is only cleared by the
+    # dialog's result callback. A dialog that goes away without it left the
+    # latch closed for the rest of the session: no question ever reached the
+    # cards again.
+    provider = ScriptedProvider(answering("nada"))
+    application = _app(tmp_path, provider)
+    terminal_app = create_terminal_app(application)
+    try:
+        async with terminal_app.run_test(size=(120, 40)) as pilot:
+            terminal_app.vm.pending_questions = [
+                {"question": "Qual banco?", "header": "Banco", "options": ["Postgres"]}
+            ]
+            terminal_app.vm.status = "READY"
+            terminal_app._open_questions_if_waiting()
+            await pilot.pause(0.2)
+            assert terminal_app._questions_open is True
+
+            # Gone without the callback ever running.
+            terminal_app.pop_screen()
+            await pilot.pause(0.2)
+
+            terminal_app.vm.pending_questions = [
+                {"question": "E o cache?", "header": "Cache", "options": ["Redis"]}
+            ]
+            terminal_app._open_questions_if_waiting()
+            await pilot.pause(0.2)
+            assert terminal_app._questions_open is True, "the cards never opened again"
+    finally:
+        await application.close()
