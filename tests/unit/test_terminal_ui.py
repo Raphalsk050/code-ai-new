@@ -2060,3 +2060,147 @@ async def test_clearing_the_screen_empties_the_thinking_panel(tmp_path) -> None:
         panel = terminal_app.query_one("#thinking-panel", Static)
         assert panel.display is False
         assert str(panel.render()) == ""
+
+
+async def test_a_reasoning_flood_does_not_repaint_the_status_area(tmp_path) -> None:
+    # The freeze: every event refreshed the whole status area, and a reasoning
+    # model emits hundreds of events a second. Six widgets were rebuilt - and
+    # six layouts invalidated - per fragment, none of them showing anything new.
+    # This is the guard: a flood that changes nothing must repaint nothing.
+    import collections
+
+    counts: collections.Counter[str] = collections.Counter()
+    original = Static.update
+
+    def counting_update(self, renderable="", *args, **kwargs):
+        counts[self.id or type(self).__name__] += 1
+        return original(self, renderable, *args, **kwargs)
+
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(120, 40)) as pilot:
+        await fake_app.emit("user.message", {"text": "go"})
+        await fake_app.emit("status.changed", {"state": "CALLING_MODEL"})
+        await pilot.pause(0.1)
+
+        Static.update = counting_update
+        try:
+            for _ in range(500):
+                await fake_app.emit("model.thinking.delta", {"text": "reasoning on and on, "})
+            await pilot.pause(0.1)
+        finally:
+            Static.update = original
+
+        for widget_id in ("statusline", "context-meter", "session-info", "stream-tail"):
+            assert counts[widget_id] == 0, f"{widget_id} repainted {counts[widget_id]}x"
+        assert counts["plan-body"] == 0
+        # The panel itself is rate-limited by its timer, so it paints a handful
+        # of times per second - never once per fragment.
+        assert counts["thinking-panel"] < 20, counts["thinking-panel"]
+
+        # ...and a real change still repaints, or the guard would be a bug of
+        # its own: nothing on screen would ever update again.
+        Static.update = counting_update
+        try:
+            await fake_app.emit("status.changed", {"state": "READY"})
+            await pilot.pause(0.1)
+        finally:
+            Static.update = original
+        assert counts["statusline"] == 1
+
+
+async def test_status_widgets_still_update_when_their_content_changes(tmp_path) -> None:
+    # Companion to the repaint guard above: skipping unchanged repaints must not
+    # cost the UI a single real update.
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(120, 40)) as pilot:
+        await fake_app.emit(
+            "planning.step.started", {"current_step": "read the parser", "progress": "1/3"}
+        )
+        await pilot.pause(0.1)
+        assert "1/3" in str(terminal_app.query_one("#statusline", Static).render())
+        assert "read the parser" in str(terminal_app.query_one("#session-info", Static).render())
+
+        await fake_app.emit(
+            "planning.step.completed", {"current_step": "write the fix", "progress": "2/3"}
+        )
+        await pilot.pause(0.1)
+        assert "2/3" in str(terminal_app.query_one("#statusline", Static).render())
+        assert "write the fix" in str(terminal_app.query_one("#session-info", Static).render())
+
+        await fake_app.emit(
+            "usage.updated",
+            {"active_context_tokens": 4000, "context_budget": 8000, "context_threshold": 0.82},
+        )
+        await pilot.pause(0.1)
+        assert "50%" in str(terminal_app.query_one("#context-meter", Static).render())
+
+        # The tail only holds a line while the agent is working; committed lines
+        # are never pulled back into it.
+        await fake_app.emit("status.changed", {"state": "CALLING_MODEL"})
+        await fake_app.emit("model.stream.delta", {"text": "an answer"})
+        await pilot.pause(0.1)
+        assert "an answer" in str(terminal_app.query_one("#stream-tail", Static).render())
+
+
+def test_a_streaming_line_grows_in_linear_time() -> None:
+    # ``conversation[-1] += text`` copies the whole line on every fragment: the
+    # cost of a reasoning block grows with the square of its length, so the long
+    # blocks - the ones that hurt - are exactly the ones that stall. Growing the
+    # line in one place instead keeps it linear.
+    import time
+
+    from code_ai.ui.terminal.view_models import TerminalViewModel
+
+    def flood(count: int) -> float:
+        view_model = TerminalViewModel()
+        event = EventEnvelope.create(
+            event_type="model.thinking.delta",
+            session_id="fake-session",
+            sequence=1,
+            payload={"text": "reasoning about the next step in some detail, "},
+            source="test",
+        )
+        start = time.perf_counter()
+        for _ in range(count):
+            view_model.apply(event)
+        return time.perf_counter() - start
+
+    flood(2_000)  # warm up the interpreter, not the measurement
+    small = flood(10_000)
+    large = flood(40_000)
+
+    # Four times the fragments: linear lands near 4x, quadratic near 16x. The
+    # bound is deliberately loose so a busy machine cannot fail it, and still
+    # catches the regression by a wide margin.
+    assert large < small * 8, f"{small:.4f}s -> {large:.4f}s: growth is not linear"
+
+
+async def test_an_expanded_reasoning_block_scrolls_instead_of_unrolling(tmp_path) -> None:
+    # An expanded block used to be as tall as the model was verbose: hundreds of
+    # rows laid out at once, pushing the rest of the turn off screen. It is a
+    # panel now - capped, with the reasoning scrolling inside it.
+    from textual.widgets import Collapsible
+
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(120, 40)) as pilot:
+        await fake_app.emit("user.message", {"text": "go"})
+        await fake_app.emit("status.changed", {"state": "CALLING_MODEL"})
+        for index in range(300):
+            await fake_app.emit("model.thinking.delta", {"text": f"row {index} of reasoning\n"})
+        # The turn ends, so the block is committed to the transcript.
+        await fake_app.emit("status.changed", {"state": "READY"})
+        await pilot.pause(0.2)
+
+        block = terminal_app.query(".thinking-block").first(Collapsible)
+        block.collapsed = False
+        await pilot.pause(0.2)
+
+        contents = block.query_one(Collapsible.Contents)
+        assert contents.size.height <= 18, contents.size.height
+        assert contents.is_vertical_scroll_end is False or contents.max_scroll_y > 0

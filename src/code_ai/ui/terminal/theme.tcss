@@ -140,9 +140,16 @@ Screen {
   color: #9aa4b2;
   background: transparent;
 }
+/* Reasoning scrolls inside its own box rather than unrolling into the
+   transcript: an expanded block used to be as tall as the model was verbose,
+   which pushed the rest of the turn off screen and made Textual lay out
+   hundreds of rows in one go. Capped, it stays a panel. */
 #conversation .thinking-block Contents {
   padding: 0 0 0 2;
   color: #6b7280;
+  max-height: 18;
+  overflow-y: auto;
+  scrollbar-size-vertical: 1;
 }
 
 /* The window a write opens in. It carries the same accent as the approval
