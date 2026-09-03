@@ -3,9 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from code_ai.core.errors import ToolArgumentError
+from code_ai.core.errors import ToolArgumentError, ToolExecutionError
 from code_ai.providers.models import ToolDefinition
 from code_ai.tools.base import BaseTool, ToolCapability, ToolContext
+from code_ai.util.fileio import describe_os_error
 
 
 @dataclass(slots=True)
@@ -70,4 +71,15 @@ class ToolRegistry:
             raise ToolArgumentError(f"Unknown tool: {name}")
         if not isinstance(arguments, dict):
             raise ToolArgumentError("Tool arguments must be a JSON object.")
-        return await tool.execute(arguments, context)
+        try:
+            return await tool.execute(arguments, context)
+        except OSError as exc:
+            # A filesystem saying no is a failed call, not a failed turn. Raw,
+            # an OSError sails past the orchestrator's error handling and ends
+            # the turn; as a tool error the model sees it, and can retry the
+            # write or work around whatever is holding the file.
+            where = getattr(exc, "filename", None)
+            location = f" ({where})" if where else ""
+            raise ToolExecutionError(
+                f"{name} could not use the filesystem: {describe_os_error(exc)}{location}"
+            ) from exc
