@@ -51,16 +51,37 @@ def test_the_windows_codes_other_software_causes_are_transient(code: int) -> Non
     assert is_transient_os_error(windows_error(code)) is True
 
 
+@pytest.fixture(autouse=True)
+def force_the_rename_path(monkeypatch):
+    """Make the simulated locks bite on a real Windows host too.
+
+    The tests here hold a file by patching ``os.replace``. On Windows the write
+    prefers ``ReplaceFileW``, which the patch never reaches, so the lock would
+    be silently ignored on the one platform these tests are about. Turning the
+    fast path off keeps both hosts running the same code.
+    """
+
+    monkeypatch.setattr(fileio, "_replace_file_win", lambda source, target: False)
+
+
 def test_a_real_windows_failure_is_not_retried() -> None:
     # ERROR_FILE_NOT_FOUND: waiting cannot make the path appear.
     assert is_transient_os_error(windows_error(2)) is False
 
 
-def test_access_denied_is_transient_on_windows_but_not_on_posix() -> None:
+def test_access_denied_is_transient_on_windows_but_not_on_posix(monkeypatch) -> None:
     # The same errno means different things: an antivirus holding a handle
     # versus permissions that are genuinely wrong.
     assert is_transient_os_error(windows_error(fileio.ERROR_ACCESS_DENIED)) is True
-    assert is_transient_os_error(OSError(errno.EACCES, "permission denied")) is False
+
+    # A bare EACCES with no Windows code is what ``open()`` raises, because it
+    # goes through the C runtime: on Windows that is a lock, on POSIX it is the
+    # permissions really being wrong.
+    bare = OSError(errno.EACCES, "permission denied")
+    monkeypatch.setattr(os, "name", "posix")
+    assert is_transient_os_error(bare) is False
+    monkeypatch.setattr(os, "name", "nt")
+    assert is_transient_os_error(bare) is True
 
 
 @pytest.mark.parametrize("code", [errno.EAGAIN, errno.EBUSY, errno.EINTR, errno.ETXTBSY])
@@ -229,6 +250,77 @@ def test_the_fallback_can_be_refused(tmp_path, monkeypatch) -> None:
     # Refusing means the file is left exactly as it was, not half-written.
     assert target.read_text(encoding="utf-8") == "old"
     assert [p.name for p in tmp_path.iterdir()] == ["a.txt"]
+
+
+def test_a_lock_on_the_staging_file_still_gets_the_write_through(tmp_path, monkeypatch) -> None:
+    # A scanner watching the directory can hold the temporary file the moment it
+    # appears, which blocks the write before there is anything to swap in.
+    target = tmp_path / "a.txt"
+    target.write_text("old", encoding="utf-8")
+
+    def always_held(*args, **kwargs):
+        raise windows_error(fileio.ERROR_SHARING_VIOLATION)
+
+    monkeypatch.setattr(fileio.tempfile, "mkstemp", always_held)
+
+    outcome = atomic_write_text(target, "new", policy=FAST, allow_non_atomic_fallback=True)
+
+    assert target.read_text(encoding="utf-8") == "new"
+    assert outcome.atomic is False
+    assert [p.name for p in tmp_path.iterdir()] == ["a.txt"]
+
+
+def test_a_lock_on_the_staging_file_is_reported_when_the_fallback_is_refused(
+    tmp_path, monkeypatch
+) -> None:
+    target = tmp_path / "a.txt"
+    target.write_text("old", encoding="utf-8")
+
+    def always_held(*args, **kwargs):
+        raise windows_error(fileio.ERROR_SHARING_VIOLATION)
+
+    monkeypatch.setattr(fileio.tempfile, "mkstemp", always_held)
+
+    with pytest.raises(FileOperationError):
+        atomic_write_text(target, "new", policy=FAST, allow_non_atomic_fallback=False)
+
+    assert target.read_text(encoding="utf-8") == "old"
+
+
+def test_a_lock_with_no_windows_code_is_still_ridden_out(tmp_path, monkeypatch) -> None:
+    """The shape ``open()`` raises on Windows: an errno, and no winerror at all.
+
+    The in-place fallback goes through the C runtime, so the lock that sends it
+    there arrives without the Windows code the classifier normally reads. Left
+    unrecognised it was raised raw, past the retry and past every caller that
+    knows what a :class:`FileOperationError` means.
+    """
+
+    target = tmp_path / "a.txt"
+    target.write_text("old", encoding="utf-8")
+    monkeypatch.setattr(os, "name", "nt")
+
+    def always_held(*args, **kwargs):
+        raise windows_error(fileio.ERROR_SHARING_VIOLATION)
+
+    monkeypatch.setattr(os, "replace", always_held)
+
+    real_rewrite = fileio._rewrite_in_place
+    calls = {"n": 0}
+
+    def guarded(path, data):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise PermissionError(errno.EACCES, "Permission denied")
+        return real_rewrite(path, data)
+
+    monkeypatch.setattr(fileio, "_rewrite_in_place", guarded)
+
+    outcome = atomic_write_text(target, "new", policy=FAST, allow_non_atomic_fallback=True)
+
+    assert target.read_text(encoding="utf-8") == "new"
+    assert outcome.atomic is False
+    assert calls["n"] == 3
 
 
 def test_the_fallback_can_also_create_a_file_that_never_existed(tmp_path, monkeypatch) -> None:

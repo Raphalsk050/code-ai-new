@@ -71,9 +71,14 @@ TRANSIENT_WINDOWS_ERRORS = frozenset(
 
 # POSIX is far more permissive about concurrent access, so this table is short
 # and excludes EACCES: there, a permission error is a real one.
-TRANSIENT_POSIX_ERRNOS = frozenset(
-    {errno.EAGAIN, errno.EBUSY, errno.EINTR, errno.ETXTBSY}
-)
+TRANSIENT_POSIX_ERRNOS = frozenset({errno.EAGAIN, errno.EBUSY, errno.EINTR, errno.ETXTBSY})
+
+# Not every Windows failure carries a Windows error code. ``open()``, ``os.open``
+# and everything built on them go through the C runtime, which sets errno only -
+# a file another process holds arrives as a bare ``EACCES`` with no winerror. On
+# Windows that is a lock, so it belongs here even though the POSIX table leaves
+# EACCES out on purpose.
+TRANSIENT_WINDOWS_ERRNOS = frozenset({errno.EACCES, *TRANSIENT_POSIX_ERRNOS})
 
 _WINDOWS_ERROR_NAMES = {
     ERROR_ACCESS_DENIED: "access denied, usually an antivirus or encryption agent holding it",
@@ -117,6 +122,8 @@ def is_transient_os_error(exc: BaseException) -> bool:
     winerror = getattr(exc, "winerror", None)
     if winerror is not None:
         return int(winerror) in TRANSIENT_WINDOWS_ERRORS
+    if os.name == "nt":
+        return exc.errno in TRANSIENT_WINDOWS_ERRNOS
     return exc.errno in TRANSIENT_POSIX_ERRNOS
 
 
@@ -125,6 +132,8 @@ def describe_os_error(exc: OSError) -> str:
 
     winerror = getattr(exc, "winerror", None)
     if winerror is None:
+        if os.name == "nt" and exc.errno == errno.EACCES:
+            return "access denied, usually another program holding the file open"
         return str(exc)
     known = _WINDOWS_ERROR_NAMES.get(int(winerror))
     if known:
@@ -366,7 +375,15 @@ def atomic_write_bytes(
     parent = path.parent
     if create_parents:
         parent.mkdir(parents=True, exist_ok=True)
-    temp_name = _write_temp_file(parent, path.name, data, policy)
+    try:
+        temp_name = _write_temp_file(parent, path.name, data, policy)
+    except FileOperationError as blocked:
+        # Staging can be blocked as easily as the swap - a scanner watching the
+        # directory holds the new temporary file the moment it appears - and a
+        # write that fails here is just as stuck as one that fails there.
+        if not allow_non_atomic_fallback:
+            raise
+        return _rewrite_after(path, data, policy, blocked)
     try:
         swap = retry_transient(
             lambda: _replace_preserving_metadata(Path(temp_name), path),
@@ -378,21 +395,7 @@ def atomic_write_bytes(
         _discard(temp_name)
         if not allow_non_atomic_fallback:
             raise
-        rewrite = retry_transient(
-            lambda: _rewrite_in_place(path, data),
-            policy=policy,
-            what="write",
-            path=path,
-        )
-        # The tries spent on the swap count too: the write really did take that
-        # long, and a report that hid them would understate the interference.
-        return WriteOutcome(
-            path=path,
-            bytes_written=len(data),
-            attempts=blocked.attempts + rewrite.attempts,
-            waited_s=blocked.waited_s + rewrite.waited_s,
-            atomic=False,
-        )
+        return _rewrite_after(path, data, policy, blocked)
     except BaseException:
         _discard(temp_name)
         raise
@@ -402,6 +405,31 @@ def atomic_write_bytes(
         attempts=swap.attempts,
         waited_s=swap.waited_s,
         atomic=True,
+    )
+
+
+def _rewrite_after(
+    path: Path, data: bytes, policy: RetryPolicy, blocked: FileOperationError
+) -> WriteOutcome:
+    """Give up atomicity after ``blocked``, and rewrite the file where it stands.
+
+    The tries spent before this point are carried into the outcome: the write
+    really did take that long, and a report that hid them would understate the
+    interference.
+    """
+
+    rewrite = retry_transient(
+        lambda: _rewrite_in_place(path, data),
+        policy=policy,
+        what="write",
+        path=path,
+    )
+    return WriteOutcome(
+        path=path,
+        bytes_written=len(data),
+        attempts=blocked.attempts + rewrite.attempts,
+        waited_s=blocked.waited_s + rewrite.waited_s,
+        atomic=False,
     )
 
 

@@ -3,8 +3,11 @@ from __future__ import annotations
 import errno
 import os
 
+import pytest
+
 from code_ai.cli.file_probe import PROBE_FILENAME, probe_directory, run_file_probe
 from code_ai.config.models import AppConfig
+from code_ai.util import fileio
 from code_ai.util.fileio import ERROR_SHARING_VIOLATION, RetryPolicy
 
 FAST = RetryPolicy(attempts=3, initial_delay_s=0.0, max_delay_s=0.0)
@@ -22,6 +25,19 @@ def make_config(tmp_path, **file_io) -> AppConfig:
     return AppConfig.from_mapping(
         {"api_mode": "ollama", "workspace": str(tmp_path), "file_io": settings}
     )
+
+
+@pytest.fixture(autouse=True)
+def force_the_rename_path(monkeypatch):
+    """Make the simulated locks bite on a real Windows host too.
+
+    The tests here hold a file by patching ``os.replace``. On Windows the write
+    prefers ``ReplaceFileW``, which the patch never reaches, so the lock would
+    be silently ignored on the one platform these tests are about. Turning the
+    fast path off keeps both hosts running the same code.
+    """
+
+    monkeypatch.setattr(fileio, "_replace_file_win", lambda source, target: False)
 
 
 def test_a_quiet_host_reports_nothing_wrong(tmp_path) -> None:
