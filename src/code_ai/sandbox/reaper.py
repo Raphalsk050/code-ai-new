@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import os
 import platform
 from dataclasses import dataclass
@@ -19,18 +20,52 @@ def _parse_created_at(value: object) -> datetime | None:
     return None
 
 
+def _windows_process_is_alive(pid: int) -> bool | None:
+    """Ask Windows whether ``pid`` is still running, without touching it.
+
+    Not ``os.kill(pid, 0)``: on Windows CPython implements that with
+    ``TerminateProcess``, so the POSIX idiom for "is it alive" would kill the
+    process it was asking about. ``OpenProcess`` with query-only access is the
+    read-only equivalent.
+    """
+
+    # PROCESS_QUERY_LIMITED_INFORMATION: the least authority that answers this,
+    # and the one that works across integrity levels.
+    access = 0x1000
+    still_active = 259
+    try:
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        handle = kernel32.OpenProcess(access, False, pid)
+        if not handle:
+            # ERROR_INVALID_PARAMETER means no such process; anything else -
+            # access denied, most likely - means it exists but is not ours.
+            return False if kernel32.GetLastError() == 87 else None
+        try:
+            code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return None
+            return code.value == still_active
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        return None
+
+
 def _process_is_alive(pid: object, hostname: object) -> bool | None:
     """Whether the session that owns a sandbox is still running.
 
     ``None`` means "cannot tell", which is the answer whenever the sandbox was
-    written by a different machine or on a platform where a liveness probe is
-    not portable. An unknown answer never justifies deleting anything - the TTL
-    decides those.
+    written by a different machine. An unknown answer never justifies deleting
+    anything - the TTL decides those.
     """
 
     if not isinstance(pid, int) or pid <= 0:
         return None
-    if hostname != platform.node() or os.name != "posix":
+    if hostname != platform.node():
+        return None
+    if os.name == "nt":
+        return _windows_process_is_alive(pid)
+    if os.name != "posix":
         return None
     try:
         os.kill(pid, 0)
