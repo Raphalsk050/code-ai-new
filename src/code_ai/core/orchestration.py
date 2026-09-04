@@ -257,6 +257,10 @@ class _Authorization:
     # True when the user explicitly approved a call the policy would have denied,
     # so the planner must not record it as a policy denial.
     overrode_policy: bool = False
+    # Whether a rejection was a person saying no, as opposed to nobody having
+    # been reachable to ask. Only the first is a decision the model must respect
+    # and the planner should learn from.
+    refused_by_user: bool = True
 
 
 class AgentOrchestrator:
@@ -1952,12 +1956,12 @@ class AgentOrchestrator:
                 )
             # A real person refusing a mutating/process action overrides the
             # surface classifier: the planner stops demanding workspace changes
-            # for the rest of the turn. The DenyAllGateway is not a person -
-            # its denial only means no approver is attached (headless run), so
-            # it must not silently downgrade every gated task to prose.
-            user_refused = not policy_denied and not isinstance(
-                self.approval_gateway, DenyAllGateway
-            )
+            # for the rest of the turn. Only a real person, though - a denial
+            # that only means nobody could be asked (no approver attached, the
+            # dialog never opened or vanished before it was answered) says
+            # nothing about what the user wants, and letting it downgrade the
+            # task to prose is how a UI hiccup ends up looking like a refusal.
+            user_refused = not policy_denied and authorization.refused_by_user
             if (
                 user_refused
                 and self.planner
@@ -1975,7 +1979,20 @@ class AgentOrchestrator:
                 },
                 source="core.orchestrator",
             )
-            prefix = "Tool policy denied" if policy_denied else "Tool execution denied by user"
+            if policy_denied:
+                prefix = "Tool policy denied"
+            elif authorization.refused_by_user:
+                prefix = "Tool execution denied by user"
+            else:
+                # Deliberately not worded as a denial. The model is told that a
+                # denied call is a decision to work around rather than retry,
+                # so calling this one denied turns a transient UI failure into
+                # the agent stopping to ask the user for permission it already
+                # had.
+                prefix = (
+                    "Could not ask for approval (transient, not a refusal - "
+                    "retry the call)"
+                )
             return _ToolOutcome(
                 result=ToolResult(
                     tool_call_id=call.id,
@@ -1984,7 +2001,7 @@ class AgentOrchestrator:
                     is_error=True,
                 ),
                 payload=None,
-                denied=True,
+                denied=authorization.refused_by_user or policy_denied,
             )
 
         await self.event_bus.emit(
@@ -2575,7 +2592,7 @@ class AgentOrchestrator:
         try:
             user_decision = await self.approval_gateway.request_approval(request)
         except Exception as exc:  # pragma: no cover - defensive: never crash a turn on UI errors
-            user_decision = ApprovalDecision.deny(f"Approval prompt failed: {exc}")
+            user_decision = ApprovalDecision.unavailable(f"Approval prompt failed: {exc}")
         await self.event_bus.emit(
             "tool.approval.resolved",
             {
@@ -2590,7 +2607,9 @@ class AgentOrchestrator:
             self._session_allowlist.add(signature)
         if not user_decision.approved:
             return _Authorization(
-                allowed=False, reason=user_decision.reason or "Denied by user."
+                allowed=False,
+                reason=user_decision.reason or "Denied by user.",
+                refused_by_user=user_decision.from_user,
             )
         return _Authorization(allowed=True, overrode_policy=not policy_allowed)
 

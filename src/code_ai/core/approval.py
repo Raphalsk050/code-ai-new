@@ -48,6 +48,17 @@ class ApprovalDecision:
 
     scope: ApprovalScope
     reason: str = ""
+    from_user: bool = True
+    """Whether a person actually made this call.
+
+    A denial can mean two very different things, and conflating them is how a
+    UI hiccup turns into "the user refused to let me write". "No" is a decision:
+    the model must not reissue the call, and the planner stops demanding
+    workspace changes. "I could not ask you" - no approver attached, the dialog
+    never opened, it vanished before it was answered - is a transient failure
+    that says nothing about what the user wants, and the only sane response is
+    to try again.
+    """
 
     @property
     def approved(self) -> bool:
@@ -67,7 +78,15 @@ class ApprovalDecision:
 
     @classmethod
     def deny(cls, reason: str = "") -> ApprovalDecision:
+        """The user said no. Final, and the model must respect it."""
+
         return cls(scope=ApprovalScope.DENY, reason=reason)
+
+    @classmethod
+    def unavailable(cls, reason: str) -> ApprovalDecision:
+        """Nobody could be asked. Not a refusal, and worth retrying."""
+
+        return cls(scope=ApprovalScope.DENY, reason=reason, from_user=False)
 
 
 @runtime_checkable
@@ -91,7 +110,7 @@ class DenyAllGateway:
     """
 
     async def request_approval(self, request: ApprovalRequest) -> ApprovalDecision:
-        return ApprovalDecision.deny(
+        return ApprovalDecision.unavailable(
             "No interactive approver is attached; cannot grant permission."
         )
 

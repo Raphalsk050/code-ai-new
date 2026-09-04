@@ -304,3 +304,52 @@ async def test_deny_all_gateway_blocks_when_no_ui(tmp_path) -> None:
     app = _app(tmp_path, "ask", DenyAllGateway())
     auth = await app.orchestrator._authorize_call(_call(), _DENIED, None)
     assert auth.allowed is False
+
+
+# --------------------------------------------------------------------------- #
+# "The user said no" versus "nobody could be asked"
+# --------------------------------------------------------------------------- #
+async def test_a_refusal_is_recorded_as_the_users_decision(tmp_path) -> None:
+    app = _app(tmp_path, "ask", _StaticGateway(ApprovalDecision.deny("not that file")))
+
+    auth = await app.orchestrator._authorize_call(_call("write_file", path="a.py"), _ALLOWED, None)
+
+    assert auth.allowed is False
+    assert auth.refused_by_user is True
+
+
+async def test_a_dialog_that_never_answered_is_not_a_refusal(tmp_path) -> None:
+    """The bug this all hangs off: a UI failure that read as the user saying no.
+
+    The approval dialog resolves as a denial when it leaves the screen without
+    a choice - torn down, popped by something else, lost while mounting. Told
+    that a denied call is a decision to work around rather than retry, the
+    model would stop and ask the user for permission it had never actually
+    been refused.
+    """
+
+    gateway = _StaticGateway(ApprovalDecision.unavailable("the dialog closed"))
+    app = _app(tmp_path, "ask", gateway)
+
+    auth = await app.orchestrator._authorize_call(_call("write_file", path="a.py"), _ALLOWED, None)
+
+    assert auth.allowed is False  # still not run: nobody approved it
+    assert auth.refused_by_user is False  # but nobody refused it either
+
+
+async def test_no_approver_attached_is_not_a_refusal(tmp_path) -> None:
+    app = _app(tmp_path, "ask", DenyAllGateway())
+
+    auth = await app.orchestrator._authorize_call(_call("write_file", path="a.py"), _ALLOWED, None)
+
+    assert auth.allowed is False
+    assert auth.refused_by_user is False
+
+
+def test_the_decision_flags_say_which_kind_of_no_it_was() -> None:
+    assert ApprovalDecision.deny("no").from_user is True
+    assert ApprovalDecision.unavailable("could not ask").from_user is False
+    # Both still block the call; they differ only in what they mean.
+    assert ApprovalDecision.deny("no").approved is False
+    assert ApprovalDecision.unavailable("could not ask").approved is False
+    assert ApprovalDecision.allow_once().from_user is True

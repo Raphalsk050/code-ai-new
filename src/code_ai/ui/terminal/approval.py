@@ -263,7 +263,9 @@ class TerminalApprovalGateway:
             future.set_result(
                 decision
                 if isinstance(decision, ApprovalDecision)
-                else ApprovalDecision.deny("Dismissed without a choice.")
+                else ApprovalDecision.unavailable(
+                    "The approval dialog closed without a choice being made."
+                )
             )
 
         # Read learn live so toggling /config learn applies to the very next prompt.
@@ -271,10 +273,11 @@ class TerminalApprovalGateway:
         try:
             self._app.push_screen(modal, _resolve)
         except Exception:
-            # No dialog means no way to say yes. Denying keeps the turn moving
-            # and tells the model why; hanging here would stop it dead.
+            # No dialog means no way to ask. Reported as "could not ask" rather
+            # than as a refusal: hanging here would stop the turn dead, but
+            # calling it a denial would tell the model the user said no.
             logger.exception("Could not open the approval dialog for %s", request.tool_name)
-            return ApprovalDecision.deny("The approval dialog could not be opened.")
+            return ApprovalDecision.unavailable("The approval dialog could not be opened.")
 
         # The decision arrives through the dialog's own callback - unless the
         # dialog leaves the screen some other way (torn down on shutdown,
