@@ -44,6 +44,7 @@ from code_ai.prompts import build_failure_lesson_prompt, build_system_prompt
 from code_ai.providers.base import ModelProvider
 from code_ai.providers.factory import create_provider
 from code_ai.providers.models import Message, ModelRequest
+from code_ai.providers.swappable import SwappableProvider
 from code_ai.sandbox.reaper import SandboxReaper
 from code_ai.sandbox.session import SessionSandbox
 from code_ai.tools.agents import DispatchAgentTool
@@ -166,12 +167,14 @@ def build_application(
     # create-rules). Idempotent and best-effort, so it never blocks startup.
     seed_default_skills()
     event_bus = AsyncEventBus()
-    provider = provider or create_provider(config)
+    # Wrapped, not held directly: api_key, base_url and api_mode are consumed
+    # while the client is constructed, so changing one needs a new provider -
+    # and by the end of this function the provider is held in seven places.
+    # Everything below takes the handle, so a swap is one assignment.
+    provider = SwappableProvider(provider or create_provider(config))
     workspace = WorkspacePolicy.from_path(config.workspace)
     sandbox = _build_sandbox(config, session_id=event_bus.session_id)
     registry = build_tool_registry()
-
-    active_provider = provider
 
     async def _generate_lesson(context: str) -> str:
         # Bounded meta-call: distill one sentence, capped tight so the learning
@@ -181,7 +184,7 @@ def build_application(
             messages=[Message(role="user", content=build_failure_lesson_prompt(context))],
             max_output_tokens=256,
         )
-        response = await active_provider.complete(request)
+        response = await provider.complete(request)
         return response.text
 
     memories_dir = Path(config.memories_dir) if config.memories_dir else default_memories_dir()
@@ -219,7 +222,7 @@ def build_application(
             messages=[Message(role="user", content=prompt)],
             max_output_tokens=config.memory.reflection_max_output_tokens,
         )
-        response = await active_provider.complete(request)
+        response = await provider.complete(request)
         return response.text
 
     # Post-turn reflection: distills durable memories automatically after

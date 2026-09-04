@@ -21,6 +21,7 @@ from code_ai.ui.terminal.slash_commands import (
     command_completion,
     handle_config_command,
     help_sections,
+    rebuilds_the_provider,
     render_help,
     render_suggestions,
 )
@@ -51,9 +52,19 @@ class FakeTerminalApplication:
         # exercise them assign real sources before creating the app.
         self.skill_sources = ()
         self.event_bus = SimpleNamespace(emit=self._emit_bus)
+        # The settings that only take effect once something is rebuilt. Recorded
+        # rather than performed, so a test can assert the rebuild was asked for.
+        self.compressor = SimpleNamespace(max_context_tokens=0)
+        self.provider_reloads = 0
 
     async def _emit_bus(self, event_type: str, payload: dict[str, object], source=None) -> None:
         await self.emit(event_type, payload)
+
+    def apply_context_window(self) -> None:
+        self.compressor.max_context_tokens = self.session.config.budgets.max_context_tokens
+
+    async def reload_provider(self) -> None:
+        self.provider_reloads += 1
 
     def get_plan_snapshot(self) -> dict[str, object]:
         return self.plan_snapshot
@@ -1278,9 +1289,79 @@ def test_config_max_context_window_command_persists_and_updates_active_config(
         config_path=config_path,
     )
     saved = json.loads(config_path.read_text(encoding="utf-8"))
-    assert "Restart Code-AI" in result
+    assert "Applied now." in result
     assert fake_app.session.config.budgets.max_context_tokens == 128000
     assert saved["budgets"]["max_context_tokens"] == 128000
+    # The compressor derives its budget from this, so it has to be re-pointed
+    # too - persisting alone would leave the running turn on the old window.
+    assert fake_app.compressor.max_context_tokens == 128000
+
+
+def test_the_provider_settings_apply_without_a_restart(tmp_path) -> None:
+    """api-key, api-mode and base-url are consumed building the client.
+
+    They were the settings that asked for a restart. They are persisted and
+    applied to the live config here; rebuilding the client is the caller's
+    half, and `rebuilds_the_provider` is what tells it to.
+    """
+
+    fake_app = FakeTerminalApplication(tmp_path)
+    config_path = tmp_path / "config.json"
+
+    for command, field, expected in (
+        ("/config base-url http://localhost:1234", "base_url", "http://localhost:1234"),
+        ("/config api-mode completions", "api_mode", "completions"),
+        ("/config api-key sk-secret", "api_key", "sk-secret"),
+    ):
+        result = handle_config_command(fake_app, command, config_path=config_path)
+
+        assert "Restart" not in result, command
+        assert getattr(fake_app.session.config, field) == expected
+        assert rebuilds_the_provider(command) is True
+
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved["api_mode"] == "completions"
+    assert saved["base_url"] == "http://localhost:1234"
+    # Written, but never echoed back into the conversation.
+    assert "sk-secret" not in handle_config_command(fake_app, "/config show", config_path=None)
+
+
+def test_only_the_settings_baked_into_the_client_ask_for_a_rebuild() -> None:
+    assert rebuilds_the_provider("/config model gpt-5") is False
+    assert rebuilds_the_provider("/config language pt-BR") is False
+    assert rebuilds_the_provider("/config max-context-window 128000") is False
+    # No value means nothing was changed, so nothing needs rebuilding.
+    assert rebuilds_the_provider("/config api-mode") is False
+    assert rebuilds_the_provider("/config api-mode ollama") is True
+
+
+async def test_changing_the_base_url_reloads_the_client(tmp_path) -> None:
+    """Driven through the app: the rebuild is the UI's half of the change."""
+
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app, config_path=tmp_path / "config.json")
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "/config base-url http://localhost:9999"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+
+        assert fake_app.provider_reloads == 1
+        assert fake_app.session.config.base_url == "http://localhost:9999"
+
+
+async def test_a_setting_that_is_not_baked_in_does_not_reload_the_client(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app, config_path=tmp_path / "config.json")
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "/config language pt-BR"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+
+        assert fake_app.provider_reloads == 0
 
 
 def test_config_max_context_window_command_rejects_non_integer(tmp_path) -> None:

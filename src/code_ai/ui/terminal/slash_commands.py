@@ -13,6 +13,7 @@ from code_ai.config.models import (
     normalize_api_mode,
 )
 from code_ai.core.workflows import WorkflowRecord
+from code_ai.providers.factory import PROVIDER_BAKED_SETTINGS
 from code_ai.tools.skills.common import SkillRecord
 from code_ai.ui.terminal.widgets import (
     CODE_AI_BANNER_FONT_OPTIONS,
@@ -103,17 +104,17 @@ SLASH_COMMANDS = [
     ),
     SlashCommand(
         "/config api-key <key>",
-        "Persist the provider API key (redacted). Restart required.",
+        "Persist and switch the provider API key (redacted).",
         "/config api-key ",
     ),
     SlashCommand(
         "/config api-mode <responses|completions|ollama>",
-        "Persist API mode. Restart required.",
+        "Persist and switch the API mode.",
         "/config api-mode ",
     ),
     SlashCommand(
         "/config base-url <url>",
-        "Persist provider base URL. Restart required.",
+        "Persist and switch the provider base URL.",
         "/config base-url ",
     ),
     SlashCommand(
@@ -148,7 +149,7 @@ SLASH_COMMANDS = [
     ),
     SlashCommand(
         "/config max-context-window <tokens>",
-        "Persist the max context window size in tokens. Restart required.",
+        "Persist and apply the max context window size in tokens.",
         "/config max-context-window ",
     ),
     SlashCommand(
@@ -162,6 +163,21 @@ SLASH_COMMANDS = [
         "/config live-code ",
     ),
 ]
+
+# The /config actions consumed while the model client is constructed rather than
+# read per request. Changing one is persisted and applied to the live config
+# like any other, but the running client keeps the old value until it is
+# rebuilt - so the caller has to follow up with reload_provider(). Named here
+# rather than matched by prefix at the call site so there is one list to extend.
+PROVIDER_ACTIONS = frozenset(name.replace("_", "-") for name in PROVIDER_BAKED_SETTINGS)
+
+
+def rebuilds_the_provider(command_text: str) -> bool:
+    """Whether running ``command_text`` leaves the model client out of date."""
+
+    parts = command_text.split()
+    return len(parts) >= 3 and parts[0] == "/config" and parts[1] in PROVIDER_ACTIONS
+
 
 API_MODE_SUGGESTIONS = ("responses", "completions", "ollama")
 LANGUAGE_SUGGESTIONS = ("en", "pt", "pt-BR")
@@ -485,9 +501,8 @@ def handle_config_command(application: Any, command_text: str, *, config_path: P
         except Exception as exc:
             return f"command> Config not changed: {exc}"
         config.api_key = key
-        return (
-            "command> Updated api_key=<redacted>. Restart Code-AI to apply this setting."
-        )
+        # The caller rebuilds the client; see PROVIDER_ACTIONS.
+        return "command> Updated api_key=<redacted>. Applied now."
     if action == "api-mode":
         if len(parts) != 3:
             return "command> Usage: /config api-mode <responses|completions|ollama>"
@@ -498,8 +513,8 @@ def handle_config_command(application: Any, command_text: str, *, config_path: P
             application,
             config_path=config_path,
             changes={"api_mode": mode},
-            live_fields=set(),
-            restart_required=True,
+            live_fields={"api_mode"},
+            restart_required=False,
         )
     if action == "base-url":
         if len(parts) != 3:
@@ -508,8 +523,8 @@ def handle_config_command(application: Any, command_text: str, *, config_path: P
             application,
             config_path=config_path,
             changes={"base_url": parts[2]},
-            live_fields=set(),
-            restart_required=True,
+            live_fields={"base_url"},
+            restart_required=False,
         )
     if action == "workspace":
         if len(parts) != 3:
@@ -528,9 +543,8 @@ def handle_config_command(application: Any, command_text: str, *, config_path: P
             tokens = int(parts[2])
         except ValueError:
             return f"command> Invalid token count: {parts[2]}"
-        # max_context_tokens lives under the nested ``budgets`` block. The
-        # ContextCompressor reads it once at bootstrap, so this always
-        # requires a restart to take effect (unlike model/language/effort).
+        # max_context_tokens lives under the nested ``budgets`` block, so this
+        # assigns the block wholesale rather than going through the helper.
         budgets = asdict(config.budgets)
         budgets["max_context_tokens"] = tokens
         try:
@@ -540,10 +554,10 @@ def handle_config_command(application: Any, command_text: str, *, config_path: P
         except Exception as exc:
             return f"command> Config not changed: {exc}"
         config.budgets = validated.budgets
-        return (
-            f"command> Updated max_context_tokens={tokens}. "
-            "Restart Code-AI to apply this setting."
-        )
+        # The compressor recomputes its budget from this on every check, so
+        # re-pointing the number is the whole change.
+        application.apply_context_window()
+        return f"command> Updated max_context_tokens={tokens}. Applied now."
     if action == "learn":
         if len(parts) != 3 or parts[2].strip().lower() not in {"on", "off"}:
             return "command> Usage: /config learn <on|off>"
@@ -657,7 +671,7 @@ def _value_suggestions(prefix: str) -> list[SlashCommand]:
         return [
             SlashCommand(
                 f"/config api-mode {mode}",
-                "Persist API mode. Restart required.",
+                "Persist and switch the API mode.",
             )
             for mode in API_MODE_SUGGESTIONS
             if mode.startswith(value_prefix)
