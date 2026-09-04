@@ -37,6 +37,7 @@ from code_ai.ui.terminal.slash_commands import (
     rebuilds_the_provider,
     render_help,
     render_suggestions,
+    retargets_the_workspace,
     skill_commands,
     workflow_commands,
 )
@@ -1611,9 +1612,24 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 self._refresh_logo()
             if stripped.startswith("/config spinner "):
                 self._refresh_spinner()
-            if rebuilds_the_provider(stripped) and not result.startswith(
-                "command> Config not changed"
-            ):
+            failed = result.startswith("command> Config not changed")
+            if retargets_the_workspace(stripped) and not failed:
+                # Rebuilds the session against the new project: sandbox, rules,
+                # skills, workflows, conversation store, planner and git
+                # baseline are all rooted at the old one and cannot be
+                # re-pointed in place.
+                try:
+                    await application.retarget_workspace(
+                        Path(application.session.config.workspace)
+                    )
+                except Exception as exc:  # noqa: BLE001 - surfaced, not raised
+                    self._append_conversation_line(
+                        f"command> Saved, but the session did not move: {exc}"
+                    )
+                    return
+                self._refresh_status()
+                return
+            if rebuilds_the_provider(stripped) and not failed:
                 # The key, the URL and the API mode are read while the client is
                 # built, so the setting is live but the client is not until it
                 # is replaced. Reported rather than swallowed: a stale client

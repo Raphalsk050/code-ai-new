@@ -119,7 +119,7 @@ SLASH_COMMANDS = [
     ),
     SlashCommand(
         "/config workspace <path>",
-        "Persist workspace path. Restart required.",
+        "Persist and switch the project directory.",
         "/config workspace ",
     ),
     SlashCommand(
@@ -175,8 +175,22 @@ PROVIDER_ACTIONS = frozenset(name.replace("_", "-") for name in PROVIDER_BAKED_S
 def rebuilds_the_provider(command_text: str) -> bool:
     """Whether running ``command_text`` leaves the model client out of date."""
 
+    return _config_action(command_text) in PROVIDER_ACTIONS
+
+
+def retargets_the_workspace(command_text: str) -> bool:
+    """Whether running ``command_text`` leaves the session rooted at the old project."""
+
+    return _config_action(command_text) == "workspace"
+
+
+def _config_action(command_text: str) -> str:
+    """The /config subcommand in ``command_text``, when it carries a value."""
+
     parts = command_text.split()
-    return len(parts) >= 3 and parts[0] == "/config" and parts[1] in PROVIDER_ACTIONS
+    if len(parts) < 3 or parts[0] != "/config":
+        return ""
+    return parts[1]
 
 
 API_MODE_SUGGESTIONS = ("responses", "completions", "ollama")
@@ -533,8 +547,8 @@ def handle_config_command(application: Any, command_text: str, *, config_path: P
             application,
             config_path=config_path,
             changes={"workspace": str(Path(parts[2]).expanduser().resolve())},
-            live_fields=set(),
-            restart_required=True,
+            live_fields={"workspace"},
+            restart_required=False,
         )
     if action == "max-context-window":
         if len(parts) != 3:
