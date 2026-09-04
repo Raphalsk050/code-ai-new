@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -439,6 +440,86 @@ def test_a_permanent_replace_failure_is_not_papered_over_by_the_fallback(
 
     assert caught.value.errno == errno.ENOSPC
     assert [p.name for p in tmp_path.iterdir()] == ["a.txt"]
+
+
+def test_a_blocked_write_stages_one_file_not_one_per_retry(tmp_path, monkeypatch) -> None:
+    """Every retry used to take a fresh mkstemp, and every one was left behind.
+
+    The thing that blocks staging is the thing that blocks removing what was
+    staged, so a write that retried six times could abandon six files in the
+    user's project directory - and nothing ever collected them.
+    """
+
+    target = tmp_path / "a.txt"
+    target.write_text("old", encoding="utf-8")
+    created: list[str] = []
+    real_mkstemp = fileio.tempfile.mkstemp
+
+    def counted(*args, **kwargs):
+        handle_id, name = real_mkstemp(*args, **kwargs)
+        created.append(name)
+        return handle_id, name
+
+    monkeypatch.setattr(fileio.tempfile, "mkstemp", counted)
+    monkeypatch.setattr(os, "replace", lambda *a, **k: (_ for _ in ()).throw(windows_error(32)))
+    # Held hard enough that the cleanup cannot remove it either.
+    monkeypatch.setattr(os, "unlink", lambda *a, **k: (_ for _ in ()).throw(windows_error(32)))
+
+    atomic_write_text(target, "new", policy=FAST, allow_non_atomic_fallback=True)
+
+    assert len(created) == 1
+
+
+def test_the_cleanup_waits_out_a_lock_instead_of_giving_up_at_once(
+    tmp_path, monkeypatch
+) -> None:
+    target = tmp_path / "a.txt"
+    target.write_text("old", encoding="utf-8")
+    real_unlink = os.unlink
+    calls = {"n": 0}
+
+    def held(path, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise windows_error(fileio.ERROR_SHARING_VIOLATION)
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", lambda *a, **k: (_ for _ in ()).throw(windows_error(32)))
+    monkeypatch.setattr(os, "unlink", held)
+
+    atomic_write_text(target, "new", policy=FAST, allow_non_atomic_fallback=True)
+
+    assert target.read_text(encoding="utf-8") == "new"
+    # The staged file goes once the lock lets go, rather than staying forever.
+    assert [p.name for p in tmp_path.iterdir()] == ["a.txt"]
+
+
+def test_a_staged_file_left_by_an_earlier_write_is_collected_later(tmp_path) -> None:
+    abandoned = tmp_path / f".a.txt.{fileio._STAGING_MARKER}old.tmp"
+    abandoned.write_text("litter", encoding="utf-8")
+    stale = time.time() - fileio._STALE_STAGING_AGE_S - 60
+    os.utime(abandoned, (stale, stale))
+
+    atomic_write_text(tmp_path / "a.txt", "new")
+
+    assert not abandoned.exists()
+
+
+def test_the_sweep_leaves_alone_what_it_did_not_write(tmp_path) -> None:
+    stale = time.time() - fileio._STALE_STAGING_AGE_S - 60
+    mine_but_fresh = tmp_path / f".a.txt.{fileio._STAGING_MARKER}fresh.tmp"
+    someone_elses = tmp_path / ".vim.swp.tmp"
+    not_hidden = tmp_path / f"a.txt.{fileio._STAGING_MARKER}visible.tmp"
+    for path in (mine_but_fresh, someone_elses, not_hidden):
+        path.write_text("keep", encoding="utf-8")
+    for path in (someone_elses, not_hidden):
+        os.utime(path, (stale, stale))
+
+    atomic_write_text(tmp_path / "a.txt", "new")
+
+    assert mine_but_fresh.exists()  # ours, but a write could still be using it
+    assert someone_elses.exists()  # not ours to delete
+    assert not_hidden.exists()  # not the name we stage under
 
 
 def test_the_report_stays_quiet_when_nothing_went_wrong(tmp_path) -> None:
