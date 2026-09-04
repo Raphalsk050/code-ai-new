@@ -22,7 +22,10 @@ here do that work:
   That is what keeps an encrypted file encrypted after the agent edits it.
 - The non-atomic fallback rewrites the file in place when a lock outlives every
   retry. It gives up atomicity, and says so in its result, but it goes through
-  when the other process holds the file open without denying writes.
+  when the other process holds the file open without denying writes. It runs on
+  any failure, not only the ones the tables above predicted: those tables are a
+  guess about someone else's software, and a code we guessed wrong about must
+  cost the write an extra attempt rather than cost it the write.
 
 Everything here is synchronous and blocking on purpose: callers on the event
 loop hand it to a worker thread, which keeps a slow network drive from freezing
@@ -72,6 +75,23 @@ TRANSIENT_WINDOWS_ERRORS = frozenset(
 # POSIX is far more permissive about concurrent access, so this table is short
 # and excludes EACCES: there, a permission error is a real one.
 TRANSIENT_POSIX_ERRNOS = frozenset({errno.EAGAIN, errno.EBUSY, errno.EINTR, errno.ETXTBSY})
+
+# Failures that describe the filesystem or the path rather than someone holding
+# the file. Rewriting in place walks into the same wall, so trying it would only
+# spend another attempt and risk reporting success for a disk that is full.
+# Windows reaches these through the C runtime's mapping - ERROR_DISK_FULL
+# arrives as ENOSPC - so one table covers both hosts.
+UNRECOVERABLE_ERRNOS = frozenset(
+    {
+        errno.ENOSPC,
+        errno.EDQUOT,
+        errno.EROFS,
+        errno.ENAMETOOLONG,
+        errno.EISDIR,
+        errno.ENOTDIR,
+        errno.EFBIG,
+    }
+)
 
 # Not every Windows failure carries a Windows error code. ``open()``, ``os.open``
 # and everything built on them go through the C runtime, which sets errno only -
@@ -125,6 +145,25 @@ def is_transient_os_error(exc: BaseException) -> bool:
     if os.name == "nt":
         return exc.errno in TRANSIENT_WINDOWS_ERRNOS
     return exc.errno in TRANSIENT_POSIX_ERRNOS
+
+
+def in_place_rewrite_could_help(exc: BaseException) -> bool:
+    """Whether rewriting the file where it stands could succeed where a swap failed.
+
+    Deliberately generous. The write already failed, so the question is not
+    whether the error was one we predicted - it is whether a second, different
+    approach has any chance. Only a failure of the filesystem itself has none,
+    which is why the answer is yes for every code except
+    :data:`UNRECOVERABLE_ERRNOS`, including codes no table here has ever heard
+    of. Guessing wrong about someone else's filter driver then costs one extra
+    attempt instead of costing the file its contents.
+    """
+
+    if isinstance(exc, FileOperationError):
+        return True
+    if not isinstance(exc, OSError):
+        return False
+    return exc.errno not in UNRECOVERABLE_ERRNOS
 
 
 def describe_os_error(exc: OSError) -> str:
@@ -377,11 +416,16 @@ def atomic_write_bytes(
         parent.mkdir(parents=True, exist_ok=True)
     try:
         temp_name = _write_temp_file(parent, path.name, data, policy)
-    except FileOperationError as blocked:
+    except (FileOperationError, OSError) as blocked:
         # Staging can be blocked as easily as the swap - a scanner watching the
         # directory holds the new temporary file the moment it appears - and a
         # write that fails here is just as stuck as one that fails there.
-        if not allow_non_atomic_fallback:
+        #
+        # A raw OSError arrives here when the code was one the retry classified
+        # as permanent. That classification is a guess about third-party
+        # software, so it decides whether waiting is worth it, never on its own
+        # whether the fallback may run.
+        if not allow_non_atomic_fallback or not in_place_rewrite_could_help(blocked):
             raise
         return _rewrite_after(path, data, policy, blocked)
     try:
@@ -391,9 +435,9 @@ def atomic_write_bytes(
             what="replace",
             path=path,
         )
-    except FileOperationError as blocked:
+    except (FileOperationError, OSError) as blocked:
         _discard(temp_name)
-        if not allow_non_atomic_fallback:
+        if not allow_non_atomic_fallback or not in_place_rewrite_could_help(blocked):
             raise
         return _rewrite_after(path, data, policy, blocked)
     except BaseException:
@@ -409,26 +453,34 @@ def atomic_write_bytes(
 
 
 def _rewrite_after(
-    path: Path, data: bytes, policy: RetryPolicy, blocked: FileOperationError
+    path: Path, data: bytes, policy: RetryPolicy, blocked: Exception
 ) -> WriteOutcome:
     """Give up atomicity after ``blocked``, and rewrite the file where it stands.
 
     The tries spent before this point are carried into the outcome: the write
     really did take that long, and a report that hid them would understate the
-    interference.
+    interference. A ``blocked`` that never reached the retry loop - an error
+    classified as permanent, raised on the first try - spent exactly one.
     """
 
-    rewrite = retry_transient(
-        lambda: _rewrite_in_place(path, data),
-        policy=policy,
-        what="write",
-        path=path,
-    )
+    spent = blocked if isinstance(blocked, FileOperationError) else None
+    try:
+        rewrite = retry_transient(
+            lambda: _rewrite_in_place(path, data),
+            policy=policy,
+            what="write",
+            path=path,
+        )
+    except (FileOperationError, OSError) as failed:
+        # Last resort, so its failure ends the write - but the error that
+        # blocked the staged write is the more diagnostic half of the story and
+        # stays attached rather than being dropped for the second one.
+        raise failed from blocked
     return WriteOutcome(
         path=path,
         bytes_written=len(data),
-        attempts=blocked.attempts + rewrite.attempts,
-        waited_s=blocked.waited_s + rewrite.waited_s,
+        attempts=(spent.attempts if spent else 1) + rewrite.attempts,
+        waited_s=(spent.waited_s if spent else 0.0) + rewrite.waited_s,
         atomic=False,
     )
 
