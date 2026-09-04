@@ -15,6 +15,7 @@ from code_ai.util.fileio import (
     atomic_write_bytes,
     atomic_write_text,
     describe_os_error,
+    in_place_rewrite_could_help,
     is_transient_os_error,
     read_bytes,
     remove_tree,
@@ -332,6 +333,94 @@ def test_the_fallback_can_also_create_a_file_that_never_existed(tmp_path, monkey
     atomic_write_text(tmp_path / "new.txt", "fresh", policy=FAST, allow_non_atomic_fallback=True)
 
     assert (tmp_path / "new.txt").read_text(encoding="utf-8") == "fresh"
+
+
+def test_an_unrecognised_code_still_reaches_the_fallback(tmp_path, monkeypatch) -> None:
+    """The failure that motivated all of this: a code no table here predicted.
+
+    The transient tables are a guess about what someone else's antivirus, sync
+    client or encryption driver raises. Being wrong about a code used to cost
+    the write entirely - the raw OSError went straight past the ``except`` that
+    reaches for the fallback - which is how a host ended up with a staged
+    temporary file and no file.
+    """
+
+    target = tmp_path / "a.txt"
+    target.write_text("old", encoding="utf-8")
+
+    def refused(*args, **kwargs):
+        # ERROR_FILE_ENCRYPTED, one of many codes not in TRANSIENT_WINDOWS_ERRORS.
+        raise windows_error(6002)
+
+    monkeypatch.setattr(fileio.tempfile, "mkstemp", refused)
+
+    outcome = atomic_write_text(target, "new", policy=FAST, allow_non_atomic_fallback=True)
+
+    assert target.read_text(encoding="utf-8") == "new"
+    assert outcome.atomic is False
+
+
+def test_an_unrecognised_code_on_the_swap_reaches_the_fallback_too(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "a.txt"
+    target.write_text("old", encoding="utf-8")
+
+    def refused(*args, **kwargs):
+        raise windows_error(6002)
+
+    monkeypatch.setattr(os, "replace", refused)
+
+    outcome = atomic_write_text(target, "new", policy=FAST, allow_non_atomic_fallback=True)
+
+    assert target.read_text(encoding="utf-8") == "new"
+    assert outcome.atomic is False
+    assert [p.name for p in tmp_path.iterdir()] == ["a.txt"]
+
+
+def test_a_write_blocked_by_an_unrecognised_code_still_fails_when_refused(
+    tmp_path, monkeypatch
+) -> None:
+    target = tmp_path / "a.txt"
+    target.write_text("old", encoding="utf-8")
+
+    def refused(*args, **kwargs):
+        raise windows_error(6002)
+
+    monkeypatch.setattr(fileio.tempfile, "mkstemp", refused)
+
+    with pytest.raises(OSError):
+        atomic_write_text(target, "new", policy=FAST, allow_non_atomic_fallback=False)
+
+    assert target.read_text(encoding="utf-8") == "old"
+
+
+def test_the_error_that_blocked_the_write_survives_a_failed_fallback(tmp_path, monkeypatch) -> None:
+    """Two failures, and the first one is the one that explains the machine."""
+
+    target = tmp_path / "a.txt"
+    target.write_text("old", encoding="utf-8")
+
+    def refused(*args, **kwargs):
+        raise windows_error(fileio.ERROR_SHARING_VIOLATION)
+
+    monkeypatch.setattr(fileio.tempfile, "mkstemp", refused)
+    monkeypatch.setattr(
+        fileio,
+        "_rewrite_in_place",
+        lambda path, data: (_ for _ in ()).throw(OSError(errno.EIO, "the drive gave up")),
+    )
+
+    with pytest.raises(OSError) as caught:
+        atomic_write_text(target, "new", policy=FAST, allow_non_atomic_fallback=True)
+
+    assert caught.value.__cause__ is not None
+    assert "WinError 32" in describe_os_error(caught.value.__cause__.__cause__)
+
+
+@pytest.mark.parametrize("code", sorted(fileio.UNRECOVERABLE_ERRNOS))
+def test_a_filesystem_that_cannot_take_the_write_is_not_worth_a_second_approach(
+    code: int,
+) -> None:
+    assert in_place_rewrite_could_help(OSError(code, "simulated")) is False
 
 
 def test_a_permanent_replace_failure_is_not_papered_over_by_the_fallback(
