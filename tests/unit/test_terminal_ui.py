@@ -5,6 +5,7 @@ import json
 from importlib import resources
 from types import SimpleNamespace
 
+import pytest
 from textual.widgets import Static, TextArea
 from textual.widgets.text_area import Selection
 
@@ -14,7 +15,7 @@ from code_ai.context.compression import CompressionResult
 from code_ai.core.orchestration import TurnResult
 from code_ai.core.state import AgentState
 from code_ai.events.models import EventEnvelope
-from code_ai.ui.terminal.app import create_terminal_app
+from code_ai.ui.terminal.app import _NEWLINE_KEYS, create_terminal_app
 from code_ai.ui.terminal.slash_commands import (
     SLASH_COMMANDS,
     SlashCommand,
@@ -2374,3 +2375,66 @@ async def test_an_expanded_reasoning_block_scrolls_instead_of_unrolling(tmp_path
         contents = block.query_one(Collapsible.Contents)
         assert contents.size.height <= 18, contents.size.height
         assert contents.is_vertical_scroll_end is False or contents.max_scroll_y > 0
+
+
+# --------------------------------------------------------------------------- #
+# Newline versus submit
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("key", sorted(_NEWLINE_KEYS))
+async def test_a_newline_key_breaks_the_line_instead_of_sending(tmp_path, key) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        widget = terminal_app.query_one("#input", TextArea)
+        widget.value = "primeira linha"
+        widget.move_cursor(widget.document.end)
+        await pilot.press(key)
+        await pilot.pause(0.1)
+
+        assert widget.text == "primeira linha\n"
+        assert fake_app.submitted == []
+
+
+async def test_enter_still_sends(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        widget = terminal_app.query_one("#input", TextArea)
+        widget.value = "uma linha"
+        await pilot.press("enter")
+        await pilot.pause(0.1)
+
+        assert fake_app.submitted == ["uma linha"]
+
+
+def test_alt_enter_is_never_offered_as_a_newline_key() -> None:
+    """It arrives as a bare "enter", so offering it would send the message.
+
+    Terminals encode Alt+Enter as ESC+CR and Textual's parser resolves that to
+    plain ``enter``. Anything that reaches the newline handler under that name
+    would have had to be typed as Enter, so listing it promised a line break
+    and delivered a submit.
+    """
+
+    from textual._xterm_parser import XTermParser
+
+    assert "alt+enter" not in _NEWLINE_KEYS
+    parser = XTermParser()
+    # Fed in two goes because an escape sequence is buffered until the parser
+    # knows it is complete; the second feed is what flushes it.
+    keys = [getattr(e, "key", e) for e in parser.feed("\x1b\r")]
+    keys += [getattr(e, "key", e) for e in parser.feed("")]
+    assert keys == ["enter"]
+
+
+def test_ctrl_j_is_offered_because_it_needs_no_terminal_support() -> None:
+    """The fallback that works everywhere: Ctrl+J is a plain LF byte."""
+
+    from textual._xterm_parser import XTermParser
+
+    assert "ctrl+j" in _NEWLINE_KEYS
+    assert [getattr(e, "key", e) for e in XTermParser().feed("\n")] == ["ctrl+j"]
+    # Shift+Enter only reaches an application through the kitty protocol.
+    assert [getattr(e, "key", e) for e in XTermParser().feed("\x1b[13;2u")] == ["shift+enter"]
