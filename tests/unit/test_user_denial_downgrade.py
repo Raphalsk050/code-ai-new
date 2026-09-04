@@ -154,3 +154,76 @@ async def test_headless_denyall_denial_does_not_downgrade(tmp_path) -> None:
     planner = app.orchestrator.planner
     assert planner is not None
     assert planner.user_declined_mutation is False
+
+
+class _UnreachableGateway:
+    """Interactive, but the dialog never produced an answer.
+
+    The shape the terminal gateway returns when its modal leaves the screen
+    without a choice, when it cannot be opened, or when the prompt raises.
+    """
+
+    async def request_approval(self, request: ApprovalRequest) -> ApprovalDecision:
+        return ApprovalDecision.unavailable("The approval dialog closed without a choice.")
+
+
+async def test_a_dialog_that_never_answered_does_not_downgrade_the_task(tmp_path) -> None:
+    """An interactive gateway can fail without the user having refused anything.
+
+    This used to be indistinguishable from a refusal: the check was "is the
+    gateway the DenyAll one", so any other gateway saying no counted as a
+    person saying no. A dialog torn down mid-turn therefore convinced the
+    planner the user had declined, and from there every later write was
+    rejected as an unrequested artifact.
+    """
+
+    provider = MkdirThenProseProvider()
+    app = build_application(config=_config(tmp_path), provider=provider)
+    app.orchestrator.approval_gateway = _UnreachableGateway()
+
+    await app.start()
+    await app.submit_user_message("implemente o modulo de estoque no projeto")
+    await app.close()
+
+    planner = app.orchestrator.planner
+    assert planner is not None
+    assert planner.user_declined_mutation is False
+
+
+async def test_a_refusal_does_not_make_later_writes_look_unrequested(tmp_path) -> None:
+    """The cascade that turned one denial into an agent that keeps asking.
+
+    A refusal rightly stops the runtime demanding a file change. It used to do
+    more than that: the same flag also answered "was this task ever about
+    changing files", so the next write was rejected with "this task was
+    classified as read-only" - which the model reads as a second denial, and
+    the prompt tells it to stop and ask the user what is permitted.
+    """
+
+    app = build_application(config=_config(tmp_path), provider=MkdirThenProseProvider())
+    planner = app.orchestrator.planner
+    assert planner is not None
+    await planner.begin_turn("implemente o modulo de estoque", provider_supports_tools=True)
+
+    await planner.note_user_denial("write_file", "not that file")
+
+    assert planner.user_declined_mutation is True
+    assert planner.requires_tool_for_progress() is False  # demand dropped, as intended
+    # But the task is still a build task, so writing is not an unrequested artifact.
+    gap = planner.precondition_gap("write_file", {"path": "src/stock.py", "content": "x = 1\n"})
+    assert gap is None or "classified as read-only" not in gap
+
+
+async def test_continuing_after_a_refusal_starts_from_a_clean_slate(tmp_path) -> None:
+    """"No" answers one call, not every turn that follows it."""
+
+    app = build_application(config=_config(tmp_path), provider=MkdirThenProseProvider())
+    planner = app.orchestrator.planner
+    assert planner is not None
+    await planner.begin_turn("implemente o modulo de estoque", provider_supports_tools=True)
+    await planner.note_user_denial("write_file", "not that file")
+    assert planner.user_declined_mutation is True
+
+    await planner._resume_turn("continue")
+
+    assert planner.user_declined_mutation is False

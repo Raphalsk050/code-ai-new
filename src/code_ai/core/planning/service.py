@@ -316,6 +316,11 @@ class PlannerService:
         self.no_progress_rounds = 0
         self.double_check_pending = False
         self.accepted_final_text = None
+        # Per-turn like everything above it, and missing here was a trap: a
+        # refusal in the previous turn kept governing this one, so a user who
+        # said "no" once and then "continue" got an agent that still believed
+        # it must not touch files - and said so instead of working.
+        self.user_declined_mutation = False
         self.completion_gate.reset()
         self._verification_debt_nudged = False
         await self._emit_phase(PlanningPhase.EXECUTE)
@@ -494,7 +499,14 @@ class PlannerService:
         artifact_gap = self._precondition_gate.unrequested_artifact_gap(
             tool_name,
             arguments,
-            task_requests_mutation=self._task_produces_workspace_effects(),
+            # Deliberately not _task_produces_workspace_effects(): that answers
+            # "must this task end in a file change", which a user's refusal
+            # rightly turns off. This gate asks something else - "was this task
+            # ever about changing files at all" - and a refusal of one call is
+            # no evidence that it was not. Conflating them meant one denied
+            # write made every later write in the task get rejected as an
+            # unrequested artifact, which the model reads as another denial.
+            task_requests_mutation=self._task_was_classified_as_mutating(),
         )
         if artifact_gap:
             return artifact_gap
@@ -803,10 +815,22 @@ class PlannerService:
         counts too: the classifier was wrong, and the evidence proves it. The
         user's own denial still wins - that is a decision, not a misreading.
         """
-        if self.profile is None:
-            return True  # fail toward the stricter, action-oriented rules
         if self.user_declined_mutation:
             return False
+        return self._task_was_classified_as_mutating()
+
+    def _task_was_classified_as_mutating(self) -> bool:
+        """Whether this task was ever about changing the workspace.
+
+        The same question as :meth:`_task_produces_workspace_effects` minus the
+        user's refusal, because the two are asked for different reasons. Whether
+        the task must *end* in a file change is something a refusal settles;
+        whether it was *ever about* file changes is a fact about the request,
+        and refusing one call does not rewrite it into a question.
+        """
+
+        if self.profile is None:
+            return True  # fail toward the stricter, action-oriented rules
         return (
             self.profile.requires_workspace_mutation
             or self.profile.intent == TaskIntent.COMMAND_EXECUTION
