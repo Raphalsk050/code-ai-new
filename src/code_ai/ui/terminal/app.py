@@ -34,6 +34,7 @@ from code_ai.ui.terminal.slash_commands import (
     config_commands,
     handle_config_command,
     handle_debug_command,
+    render_help,
     render_suggestions,
     skill_commands,
     workflow_commands,
@@ -1266,7 +1267,10 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 return
             if text.strip() == "/help":
                 self._append_conversation_line(
-                    render_suggestions("/", extra=asset_suggestions())
+                    render_help(
+                        workflows=workflow_commands(workflow_records()),
+                        skills=skill_commands(skill_records()),
+                    )
                 )
                 return
             if text.strip() == "/workflows":

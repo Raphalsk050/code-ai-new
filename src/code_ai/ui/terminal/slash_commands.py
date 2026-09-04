@@ -265,6 +265,87 @@ def render_suggestions(prefix: str, *, extra: Sequence[SlashCommand] = ()) -> st
     return "\n".join(f"{item.command:<42} {item.description}" for item in suggestions)
 
 
+# Which section each command belongs to, keyed by the command's first word so a
+# section can never capture a command by accident: "/status" claims "/status",
+# not a "/statusline" someone adds later.
+_HELP_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Session", ("/help", "/doctor", "/status", "/compact", "/clear", "/quit", "/cancel")),
+    ("Planning", ("/auto", "/plan", "/act", "/mode", "/deep-plan", "/plan-status", "/replan")),
+    ("Goals", ("/goal",)),
+    ("Terminal", ("/term",)),
+    ("Workflows and skills", ("/workflows", "/skills")),
+    ("Diagnostics", ("/debug",)),
+    ("Configuration", ("/config",)),
+)
+
+# Where a command lands when no section claims it. It exists so that forgetting
+# to file a new command costs it a good heading rather than costing it its only
+# listing: /help is the answer to "what can I type", so a grouping that could
+# silently drop an entry would be the exact bug this is here to prevent.
+_UNFILED_SECTION = "Other"
+
+
+def _section_for(command: str) -> str:
+    head = command.split()[0]
+    for title, members in _HELP_SECTIONS:
+        if head in members:
+            return title
+    return _UNFILED_SECTION
+
+
+def help_sections(
+    *,
+    workflows: Sequence[SlashCommand] = (),
+    skills: Sequence[SlashCommand] = (),
+) -> list[tuple[str, list[SlashCommand]]]:
+    """Every command there is, grouped, in reading order.
+
+    Workflows and skills come last and separately: they are discovered on disk
+    and differ per project, so they are the part of the list the user is least
+    likely to recognise and most likely to be looking for.
+    """
+
+    grouped: dict[str, list[SlashCommand]] = {title: [] for title, _ in _HELP_SECTIONS}
+    grouped[_UNFILED_SECTION] = []
+    for item in SLASH_COMMANDS:
+        grouped[_section_for(item.command)].append(item)
+
+    sections = [(title, grouped[title]) for title, _ in _HELP_SECTIONS if grouped[title]]
+    if grouped[_UNFILED_SECTION]:
+        sections.append((_UNFILED_SECTION, grouped[_UNFILED_SECTION]))
+    if workflows:
+        sections.append(("Saved workflows", list(workflows)))
+    if skills:
+        sections.append(("Skills", list(skills)))
+    return sections
+
+
+def render_help(
+    *,
+    workflows: Sequence[SlashCommand] = (),
+    skills: Sequence[SlashCommand] = (),
+) -> str:
+    """The full command list, grouped and untruncated.
+
+    Deliberately unlike :func:`render_suggestions`, which caps what it returns
+    because it renders into a popup hovering over the conversation. ``/help`` is
+    the opposite request - the user is asking what exists, not being offered a
+    shortlist - so the cap that makes the popup usable is what made ``/help``
+    wrong, and it has no business here.
+
+    Each section is padded to its own widest command rather than to a shared
+    column, so a long ``/config`` signature cannot push every other section's
+    descriptions out to meet it.
+    """
+
+    blocks: list[str] = []
+    for title, items in help_sections(workflows=workflows, skills=skills):
+        width = max(len(item.command) for item in items)
+        rows = [f"  {item.command:<{width}}  {item.description}" for item in items]
+        blocks.append("\n".join([f"{title}:", *rows]))
+    return "\n\n".join(blocks)
+
+
 def command_completion(prefix: str, *, extra: Sequence[SlashCommand] = ()) -> str | None:
     suggestions = command_suggestions(prefix, limit=1, extra=extra)
     if not suggestions:
