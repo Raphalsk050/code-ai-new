@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from importlib import resources
 from importlib.resources.abc import Traversable
 from pathlib import Path
 
 from code_ai.tools.skills.common import SKILL_ENTRYPOINT, skills_root
 from code_ai.util.fileio import RetryPolicy, atomic_write_text
+
+logger = logging.getLogger(__name__)
 
 # Seeding runs at startup, before any configuration is in hand, so it uses
 # the built-in retry defaults rather than the user's file_io section.
@@ -72,11 +75,23 @@ def seed_default_skills(root: Path | None = None) -> list[str]:
             if dest.exists():
                 continue
             dest_dir.mkdir(parents=True, exist_ok=True)
-            atomic_write_text(dest, entry.read_text(encoding="utf-8"), policy=_POLICY)
+            atomic_write_text(
+                dest,
+                entry.read_text(encoding="utf-8"),
+                policy=_POLICY,
+                allow_non_atomic_fallback=True,
+            )
             seeded.append(name)
 
-        atomic_write_text(marker, BUNDLE_VERSION + "\n", policy=_POLICY)
+        atomic_write_text(
+            marker, BUNDLE_VERSION + "\n", policy=_POLICY, allow_non_atomic_fallback=True
+        )
         return seeded
-    except Exception:  # never let seeding break startup
+    except Exception:
+        # Never block startup over this - but never do it silently either. On a
+        # host where an encryption or DLP agent can refuse the write, swallowing
+        # this meant the default skills were simply absent and nothing anywhere
+        # said why.
+        logger.warning("Could not seed the bundled default skills.", exc_info=True)
         return []
 

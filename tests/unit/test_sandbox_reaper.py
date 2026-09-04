@@ -5,9 +5,11 @@ import os
 import platform
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
+from code_ai.sandbox import reaper as reaper_module
 from code_ai.sandbox.layout import MARKER_FILENAME
-from code_ai.sandbox.reaper import SandboxReaper
+from code_ai.sandbox.reaper import SandboxReaper, _process_is_alive
 from code_ai.sandbox.session import SessionSandbox
 
 
@@ -59,8 +61,6 @@ def test_the_live_session_is_never_reaped(tmp_path) -> None:
 
 
 def test_a_sandbox_whose_owner_died_is_removed_before_its_ttl(tmp_path) -> None:
-    if os.name != "posix":
-        return
     sandbox = make_sandbox(tmp_path, "orphan")
     # A pid that cannot be running: process ids start at 1.
     age(sandbox, hours=0, pid=2**30)
@@ -68,6 +68,78 @@ def test_a_sandbox_whose_owner_died_is_removed_before_its_ttl(tmp_path) -> None:
     removed = reaper(tmp_path).sweep()
 
     assert removed == [sandbox.root]
+
+
+class FakeKernel32:
+    """Just enough of kernel32 to drive the Windows liveness probe on any host."""
+
+    def __init__(self, *, handle: int, exit_code: int, last_error: int = 0) -> None:
+        self.handle = handle
+        self.exit_code = exit_code
+        self.last_error = last_error
+        self.closed: list[int] = []
+
+    def OpenProcess(self, access, inherit, pid):  # noqa: N802 - the Win32 name
+        self.opened = (access, inherit, pid)
+        return self.handle
+
+    def GetLastError(self):  # noqa: N802
+        return self.last_error
+
+    def GetExitCodeProcess(self, handle, out):  # noqa: N802
+        out._obj.value = self.exit_code
+        return 1
+
+    def CloseHandle(self, handle):  # noqa: N802
+        self.closed.append(handle)
+        return 1
+
+
+def use_fake_windows(monkeypatch, kernel32: FakeKernel32) -> None:
+    monkeypatch.setattr(reaper_module.os, "name", "nt")
+    monkeypatch.setattr(
+        reaper_module.ctypes, "windll", SimpleNamespace(kernel32=kernel32), raising=False
+    )
+
+
+def test_the_windows_probe_never_kills_the_process_it_asks_about(monkeypatch) -> None:
+    """os.kill(pid, 0) is not a liveness check on Windows - it terminates.
+
+    CPython implements os.kill there with TerminateProcess, so the POSIX idiom
+    would reap a sandbox by killing the session that owns it. The probe has to
+    go through OpenProcess instead, and this asserts it never reaches os.kill.
+    """
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("os.kill must never be called on Windows")
+
+    monkeypatch.setattr(reaper_module.os, "kill", forbidden)
+    kernel32 = FakeKernel32(handle=1234, exit_code=259)  # STILL_ACTIVE
+    use_fake_windows(monkeypatch, kernel32)
+
+    assert _process_is_alive(4321, platform.node()) is True
+    assert kernel32.closed == [1234]  # and the handle is not leaked
+
+
+def test_a_finished_process_reads_as_gone_on_windows(monkeypatch) -> None:
+    use_fake_windows(monkeypatch, FakeKernel32(handle=1234, exit_code=0))
+
+    assert _process_is_alive(4321, platform.node()) is False
+
+
+def test_a_pid_windows_does_not_know_reads_as_gone(monkeypatch) -> None:
+    # OpenProcess fails with ERROR_INVALID_PARAMETER for a pid that is not there.
+    use_fake_windows(monkeypatch, FakeKernel32(handle=0, exit_code=0, last_error=87))
+
+    assert _process_is_alive(4321, platform.node()) is False
+
+
+def test_a_process_windows_will_not_talk_about_is_left_alone(monkeypatch) -> None:
+    # ERROR_ACCESS_DENIED: it exists, it is just not ours. Unknown, not dead -
+    # deleting on this answer would reap a live session's sandbox.
+    use_fake_windows(monkeypatch, FakeKernel32(handle=0, exit_code=0, last_error=5))
+
+    assert _process_is_alive(4321, platform.node()) is None
 
 
 def test_a_sandbox_owned_by_another_machine_waits_for_its_ttl(tmp_path) -> None:
