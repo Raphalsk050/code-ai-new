@@ -8,6 +8,13 @@ from typing import Any
 from code_ai.config.defaults import DEFAULT_CONFIG, PLACEHOLDER_API_KEY
 from code_ai.config.models import AppConfig
 from code_ai.core.errors import ConfigurationError
+from code_ai.util.fileio import RetryPolicy, atomic_write_text, read_bytes
+
+# The configuration file is read before the user's own file_io settings can be
+# known, and written on the same host those settings exist for. The built-in
+# defaults are what stands in: a locked-down machine must not be unable to read
+# its own config just because the retry policy is still inside it.
+_BOOTSTRAP_POLICY = RetryPolicy()
 
 
 def default_config_path() -> Path:
@@ -20,7 +27,7 @@ def _read_config_file(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        parsed = json.loads(path.read_text(encoding="utf-8"))
+        parsed = json.loads(read_bytes(path, policy=_BOOTSTRAP_POLICY).decode("utf-8"))
     except json.JSONDecodeError as exc:
         raise ConfigurationError(f"Invalid JSON configuration at {path}: {exc}") from exc
     if not isinstance(parsed, dict):
@@ -70,7 +77,12 @@ def config_init(
             if value is not None:
                 data[key] = value
     _ensure_api_key_placeholder(data)
-    target.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    atomic_write_text(
+        target,
+        json.dumps(data, indent=2, sort_keys=True) + "\n",
+        policy=_BOOTSTRAP_POLICY,
+        allow_non_atomic_fallback=True,
+    )
     return target
 
 
@@ -95,7 +107,16 @@ def persist_config_updates(
     validated = AppConfig.from_mapping(data)
     _ensure_api_key_placeholder(data)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    # Through the atomic write, not ``write_text``: the plain one truncates the
+    # file before it writes, so a scanner or encryption agent blocking it
+    # halfway leaves the user with no configuration at all rather than the one
+    # they had. Every /config command lands here.
+    atomic_write_text(
+        target,
+        json.dumps(data, indent=2, sort_keys=True) + "\n",
+        policy=RetryPolicy.from_config(config.file_io),
+        allow_non_atomic_fallback=config.file_io.allow_non_atomic_fallback,
+    )
     return validated
 
 
