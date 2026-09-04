@@ -43,6 +43,7 @@ from code_ai.ui.terminal.slash_commands import (
 from code_ai.ui.terminal.view_models import TerminalViewModel
 from code_ai.ui.terminal.widgets import (
     CODE_AI_BANNER_FONT_OPTIONS,
+    COMMAND_PREFIX,
     THINKING_PREFIX,
     WORKING_BASE_COLOR,
     WORKING_IDLE_STYLE,
@@ -52,6 +53,8 @@ from code_ai.ui.terminal.widgets import (
     WORKING_STATES,
     SpinnerStyle,
     build_plan_steps,
+    command_panel_body,
+    command_size_label,
     conversation_line_class,
     load_code_ai_logo,
     normalize_banner_font,
@@ -676,6 +679,62 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self.border_subtitle = thinking_size_label(line)
             self.update(thinking_panel_body(line))
 
+    class CommandOutputPanel(Static):
+        """What a command the agent is running is printing, in its own box.
+
+        Same problem the reasoning panel solves - unbounded text streaming into
+        an unframed strip, spilling down the pane at column 0 - and the same
+        rate-limited, newest-rows-only treatment.
+
+        Deliberately not the same box, though. Reasoning is the model talking
+        and this is the machine talking, so the frame is green and titled with
+        a shell prompt rather than dim and titled ``thinking``: a reader
+        glancing at the pane can tell which of the two they are looking at
+        without reading a word of it.
+        """
+
+        TICK = 0.06
+
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__("", markup=False, **kwargs)
+            self._pending: str | None = None
+            self._painted: int | None = None
+            self._timer = None
+
+        def on_mount(self) -> None:
+            self.border_title = "$ terminal"
+            self._timer = self.set_interval(self.TICK, self._tick, pause=True)
+
+        def update_output(self, line: str) -> None:
+            """Queue the newest output; the timer decides when to paint it."""
+            if len(line) == self._painted:
+                return
+            self._pending = line
+            if self._timer is not None:
+                self._timer.resume()
+
+        def reset(self) -> None:
+            self._pending = None
+            self._painted = None
+            if self._timer is not None:
+                self._timer.pause()
+            self.update("")
+
+        def flush(self) -> None:
+            """Paint what is queued now, so the box opens with output in it."""
+            self._tick()
+
+        def _tick(self) -> None:
+            if self._pending is None:
+                if self._timer is not None:
+                    self._timer.pause()
+                return
+            line = self._pending
+            self._pending = None
+            self._painted = len(line)
+            self.border_subtitle = command_size_label(line)
+            self.update(command_panel_body(line))
+
     class PlanPanel(Static):
         """Checklist of planned steps shown beside the conversation.
 
@@ -969,6 +1028,12 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                         thinking = ThinkingPanel(id="thinking-panel")
                         thinking.display = False
                         yield thinking
+                        # Same band as the reasoning box, and mutually
+                        # exclusive with it: only one of the two can be the
+                        # thing streaming right now.
+                        command = CommandOutputPanel(id="command-panel")
+                        command.display = False
+                        yield command
                         yield Static("", id="stream-tail", markup=False)
                     with Vertical(id="sidebar"):
                         # Two stacked panels, each scrolls internally when its
@@ -1202,6 +1267,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             reasoning cannot appear both boxed and loose.
             """
             panel = self.query_one("#thinking-panel", ThinkingPanel)
+            command = self.query_one("#command-panel", CommandOutputPanel)
             if line.startswith(THINKING_PREFIX):
                 opening = not panel.display
                 panel.display = True
@@ -1210,14 +1276,31 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                     # Paint the first fragment straight away, so the box opens
                     # with reasoning in it rather than empty for a tick.
                     panel.flush()
+                self._hide(command)
                 if self._changed("stream-tail", ""):
                     tail.update("")
                 return
+            if line.startswith(COMMAND_PREFIX):
+                opening = not command.display
+                command.display = True
+                command.update_output(line)
+                if opening:
+                    command.flush()
+                self._hide(panel)
+                if self._changed("stream-tail", ""):
+                    tail.update("")
+                return
+            self._hide(panel)
+            self._hide(command)
+            if self._changed("stream-tail", line):
+                tail.update(render_stream_tail(line) if line else "")
+
+        @staticmethod
+        def _hide(panel) -> None:
+            """Close a streaming panel that is no longer the live one."""
             if panel.display:
                 panel.display = False
                 panel.reset()
-            if self._changed("stream-tail", line):
-                tail.update(render_stream_tail(line) if line else "")
 
         def _trim_and_follow_conversation(self, log: VerticalScroll) -> None:
             excess = len(log.children) - _MAX_CONVERSATION_LINES

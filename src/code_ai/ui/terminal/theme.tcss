@@ -201,6 +201,27 @@ Screen {
   overflow-x: hidden;
 }
 
+/* Live output of a command the agent is running. Same shape and place as the
+   thinking panel - both are unbounded streams that need a frame - but read as
+   a terminal rather than as reasoning: a green frame and a "$ terminal" title
+   against the thinking box's dim gray, and brighter body text because this is
+   output being scanned for an error, not prose being skimmed. Sized to the
+   rows the panel renders (see COMMAND_PANEL_MAX_ROWS) plus its border. */
+#command-panel {
+  height: auto;
+  max-height: 12;
+  width: 1fr;
+  border: round #2f6b45;
+  border-title-color: #48d17a;
+  border-title-style: bold;
+  border-title-align: left;
+  border-subtitle-color: #3f7d56;
+  padding: 0 1;
+  margin-top: 1;
+  color: #9fb3a6;
+  overflow-x: hidden;
+}
+
 /* Right sidebar: stacks the PLAN and AGENTS panels. Fixed width; the whole
    column is hidden when neither panel has anything to show. */
 #sidebar {
