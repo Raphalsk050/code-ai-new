@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import errno
 import json
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +16,8 @@ from code_ai.config.loader import (
     redacted_config_json,
 )
 from code_ai.core.errors import ConfigurationError
+from code_ai.util import fileio
+from code_ai.util.fileio import FileOperationError
 
 
 def test_default_config_path_is_under_home() -> None:
@@ -305,6 +309,56 @@ def test_persisting_change_keeps_placeholder_when_key_unset(tmp_path) -> None:
     saved = json.loads(config_path.read_text(encoding="utf-8"))
     assert saved["model"] == "other-model"
     assert saved["api_key"] == PLACEHOLDER_API_KEY
+
+
+def test_a_blocked_config_write_does_not_destroy_the_config(tmp_path, monkeypatch) -> None:
+    """The write used to truncate first, so a host that blocked it left nothing.
+
+    ``Path.write_text`` opens the file for truncation before it writes a byte.
+    On a machine where an encryption or DLP agent can refuse the write halfway,
+    that turned "could not save your change" into "you no longer have a
+    configuration". Going through the atomic write means the file the user had
+    survives a write that cannot happen.
+    """
+
+    config_path = tmp_path / "config.json"
+    config_init(config_path, workspace=tmp_path)
+    config = load_config(explicit_path=config_path)
+    before = config_path.read_text(encoding="utf-8")
+
+    def held(*args, **kwargs):
+        exc = OSError(errno.EACCES, "The process cannot access the file")
+        exc.winerror = 32
+        return (_ for _ in ()).throw(exc)
+
+    monkeypatch.setattr(fileio.tempfile, "mkstemp", held)
+    monkeypatch.setattr(fileio, "_rewrite_in_place", held)
+
+    with pytest.raises(FileOperationError):
+        persist_config_updates(config, {"model": "other-model"}, explicit_path=config_path)
+
+    assert config_path.read_text(encoding="utf-8") == before
+    assert json.loads(before)["model"] == config.model
+
+
+def test_a_config_read_waits_out_whatever_is_holding_the_file(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "config.json"
+    config_init(config_path, workspace=tmp_path)
+    real = Path.read_bytes
+    calls = {"n": 0}
+
+    def guarded(self):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            exc = OSError(errno.EACCES, "held")
+            exc.winerror = 32
+            raise exc
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", guarded)
+
+    assert load_config(explicit_path=config_path).workspace == tmp_path
+    assert calls["n"] == 3
 
 
 def test_config_init_accepts_overrides_after_subcommand(tmp_path) -> None:
