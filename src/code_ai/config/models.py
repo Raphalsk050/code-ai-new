@@ -239,6 +239,7 @@ class FileIOConfig:
     retry_initial_delay_ms: int = int(DEFAULT_FILE_IO["retry_initial_delay_ms"])
     retry_max_delay_ms: int = int(DEFAULT_FILE_IO["retry_max_delay_ms"])
     allow_non_atomic_fallback: bool = bool(DEFAULT_FILE_IO["allow_non_atomic_fallback"])
+    windows_in_place_first: bool = bool(DEFAULT_FILE_IO["windows_in_place_first"])
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any] | None) -> FileIOConfig:
@@ -250,6 +251,7 @@ class FileIOConfig:
             retry_initial_delay_ms=int(values["retry_initial_delay_ms"]),
             retry_max_delay_ms=int(values["retry_max_delay_ms"]),
             allow_non_atomic_fallback=bool(values["allow_non_atomic_fallback"]),
+            windows_in_place_first=bool(values["windows_in_place_first"]),
         )
 
     def validate(self) -> None:

@@ -80,6 +80,7 @@ class WriteFileTool:
             data,
             policy=policy,
             allow_non_atomic_fallback=context.config.file_io.allow_non_atomic_fallback,
+            in_place_first=context.config.file_io.windows_in_place_first,
             create_parents=create_dirs,
         )
 
