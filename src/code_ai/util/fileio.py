@@ -35,6 +35,7 @@ the UI as well.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ctypes
 import errno
 import os
@@ -414,6 +415,7 @@ def atomic_write_bytes(
     parent = path.parent
     if create_parents:
         parent.mkdir(parents=True, exist_ok=True)
+    _sweep_abandoned_staging(parent)
     try:
         temp_name = _write_temp_file(parent, path.name, data, policy)
     except (FileOperationError, OSError) as blocked:
@@ -436,12 +438,12 @@ def atomic_write_bytes(
             path=path,
         )
     except (FileOperationError, OSError) as blocked:
-        _discard(temp_name)
+        _discard(temp_name, policy)
         if not allow_non_atomic_fallback or not in_place_rewrite_could_help(blocked):
             raise
         return _rewrite_after(path, data, policy, blocked)
     except BaseException:
-        _discard(temp_name)
+        _discard(temp_name, policy)
         raise
     return WriteOutcome(
         path=path,
@@ -510,22 +512,71 @@ def read_bytes(path: Path, *, policy: RetryPolicy = NO_RETRY) -> bytes:
     return retry_transient(path.read_bytes, policy=policy, what="read", path=path).value
 
 
+# Marks a staged file as this module's, so the sweep below can tell one we
+# abandoned from a .tmp belonging to the user or to another tool entirely.
+_STAGING_MARKER = "code-ai-"
+
+# How long an abandoned staged file sits before it is collected. Comfortably
+# longer than any write, so a staged file another process has in flight right
+# now is never mistaken for litter.
+_STALE_STAGING_AGE_S = 300.0
+
+
+def _sweep_abandoned_staging(parent: Path) -> None:
+    """Collect staged files a previous write could not remove when it gave up.
+
+    A staged file is left behind in exactly one situation: whatever blocked the
+    write also blocked the cleanup. Nothing can be done about it at the time,
+    so the only way to collect it is to come back later - and the natural later
+    is the next write to the same directory, which is here.
+
+    Bounded to a single scan of one directory, and to files this module named,
+    because it deletes without asking.
+    """
+
+    with contextlib.suppress(OSError):
+        cutoff = time.time() - _STALE_STAGING_AGE_S
+        for entry in os.scandir(parent):
+            name = entry.name
+            if not (name.startswith(".") and _STAGING_MARKER in name and name.endswith(".tmp")):
+                continue
+            with contextlib.suppress(OSError):
+                if entry.stat().st_mtime < cutoff:
+                    os.unlink(entry.path)
+
+
 def _write_temp_file(parent: Path, name: str, data: bytes, policy: RetryPolicy) -> str:
-    """Put ``data`` in a fresh file beside the target, retrying a blocked create."""
+    """Put ``data`` in a file beside the target, retrying a blocked write.
+
+    One temporary file serves every attempt. What blocks staging is something
+    watching the directory, and that same something is what stops the failed
+    attempt from being cleaned up - so taking a fresh ``mkstemp`` each time
+    turned a single blocked write into a pile of abandoned files, one per
+    retry, in the directory the user works in.
+    """
+
+    temp_name: str | None = None
 
     def create() -> str:
-        handle_id, temp_name = tempfile.mkstemp(prefix=f".{name}.", suffix=".tmp", dir=str(parent))
-        try:
-            with os.fdopen(handle_id, "wb") as handle:
-                handle.write(data)
-                handle.flush()
-                _best_effort_fsync(handle)
-        except BaseException:
-            _discard(temp_name)
-            raise
+        nonlocal temp_name
+        if temp_name is None:
+            handle_id, created = tempfile.mkstemp(
+                prefix=f".{name}.{_STAGING_MARKER}", suffix=".tmp", dir=str(parent)
+            )
+            os.close(handle_id)
+            temp_name = created
+        with open(temp_name, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            _best_effort_fsync(handle)
         return temp_name
 
-    return retry_transient(create, policy=policy, what="stage a write for", path=parent).value
+    try:
+        return retry_transient(create, policy=policy, what="stage a write for", path=parent).value
+    except BaseException:
+        if temp_name is not None:
+            _discard(temp_name, policy)
+        raise
 
 
 def _rewrite_in_place(path: Path, data: bytes) -> None:
@@ -545,13 +596,34 @@ def _rewrite_in_place(path: Path, data: bytes) -> None:
         _best_effort_fsync(handle)
 
 
-def _discard(temp_name: str) -> None:
-    """Remove a staged temporary file, tolerating one that is already gone or held."""
+def _discard(temp_name: str, policy: RetryPolicy = NO_RETRY) -> None:
+    """Remove a staged temporary file, waiting out whatever is holding it.
 
-    try:
-        os.unlink(temp_name)
-    except OSError:
-        pass
+    Retried, because the reason the write failed is the reason the delete
+    fails: something else has the file. A single attempt left the temporary
+    file sitting in the user's project directory beside the file it was meant
+    to become, and nothing anywhere collects those later - this is the only
+    chance to remove it.
+
+    Still best-effort by contract. The caller is already handling a write that
+    did not happen, and a temporary file that outlives it must not replace that
+    error with a less useful one.
+    """
+
+    path = Path(temp_name)
+
+    def attempt() -> None:
+        try:
+            os.unlink(path)
+        except PermissionError:
+            # Windows will not delete a read-only file, and an encryption or
+            # DLP agent sets that attribute as a matter of course. Clearing it
+            # is what makes the next attempt a different attempt.
+            _clear_readonly(path)
+            raise
+
+    with contextlib.suppress(OSError, FileOperationError):
+        retry_transient(attempt, policy=policy, what="remove", path=path)
 
 
 def remove_tree(path: Path, *, policy: RetryPolicy = NO_RETRY) -> bool:
@@ -587,13 +659,16 @@ def remove_tree(path: Path, *, policy: RetryPolicy = NO_RETRY) -> bool:
     return not path.exists()
 
 
+def _clear_readonly(path: Path) -> None:
+    """Make one file writable, so a delete or a rewrite can proceed."""
+
+    with contextlib.suppress(OSError):
+        path.chmod(path.stat().st_mode | stat.S_IWRITE)
+
+
 def _clear_readonly_flags(root: Path) -> None:
     """Make everything under ``root`` writable, so the next delete can proceed."""
 
     for current, directories, files in os.walk(root):
         for name in (*directories, *files):
-            target = Path(current) / name
-            try:
-                target.chmod(target.stat().st_mode | stat.S_IWRITE)
-            except OSError:
-                continue
+            _clear_readonly(Path(current) / name)
