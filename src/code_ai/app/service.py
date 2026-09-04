@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -550,7 +551,8 @@ class CodeAIApplication:
     # request. They apply live, but only after the client is rebuilt.
     _PROVIDER_SETTINGS = PROVIDER_BAKED_SETTINGS
     # Top-level fields that still need a restart to take effect.
-    _RESTART_SETTINGS = {"workspace"}
+    # Nothing left: every setting the panel offers now applies live.
+    _RESTART_SETTINGS: set[str] = set()
 
     def get_settings(self) -> dict[str, Any]:
         """Snapshot of the user-editable settings for the extension panel.
@@ -624,6 +626,10 @@ class CodeAIApplication:
                     if key in self._RESTART_SETTINGS:
                         restart.append(key)
                         continue
+                    if key == "workspace":
+                        await self.retarget_workspace(Path(str(value)))
+                        applied.append(key)
+                        continue
                     setattr(config, key, getattr(validated, key))
                     applied.append(key)
                     rebuild_provider = rebuild_provider or key in self._PROVIDER_SETTINGS
@@ -677,6 +683,72 @@ class CodeAIApplication:
         from code_ai.providers.factory import create_provider
 
         await self.provider.replace(create_provider(self.session.config))
+
+    async def retarget_workspace(self, workspace: Path) -> None:
+        """Point the whole session at a different project.
+
+        About a dozen things are rooted at the workspace and none of them can
+        simply be told a new path: WorkspacePolicy is frozen, the sandbox owns
+        an on-disk symlink to the project, the planner memoises which build and
+        test commands the project has, and the rules, skills, workflows,
+        conversation and project-memory services each hold a private root. A
+        setter for each is a list that is right the day it is written and
+        forgets one a release later - and forgetting one here means a service
+        quietly reading and writing the previous project.
+
+        So the session is rebuilt rather than re-pointed, and only what the
+        rebuild must not destroy is carried across: the event bus, because
+        clients subscribed to it once; the conversation, because losing the
+        thread on a settings change would be indefensible; the model client,
+        because nothing about it depends on the workspace; and the approval
+        state, which is the subtle one - the gateway and the "always allow"
+        grants live on the orchestrator, so a naive rebuild would silently
+        revert to having no approver and re-ask everything already allowed.
+
+        Interactive terminals do not survive: they are sitting in the old
+        project's directory, and carrying them over would leave the user with a
+        shell whose cwd disagrees with everything else in the session.
+        """
+
+        from code_ai.bootstrap import build_application
+
+        config = self.session.config
+        config.workspace = Path(workspace)
+
+        previous_sandbox = self.sandbox
+        previous_terminals = self.terminal_manager
+        gateway = self.orchestrator.approval_gateway
+        allowlist = set(self.orchestrator._session_allowlist)
+
+        rebuilt = build_application(
+            config=config,
+            provider=self.provider,
+            event_bus=self.event_bus,
+            conversation=self.orchestrator.conversation,
+        )
+
+        self.orchestrator = rebuilt.orchestrator
+        self.orchestrator.approval_gateway = gateway
+        self.orchestrator._session_allowlist.update(allowlist)
+        self.compressor = rebuilt.compressor
+        self.conversation_store = rebuilt.conversation_store
+        self.workflows = rebuilt.workflows
+        self.skill_sources = rebuilt.skill_sources
+        self.sandbox = rebuilt.sandbox
+        self.terminal_manager = rebuilt.terminal_manager
+
+        if previous_terminals is not None and previous_terminals is not self.terminal_manager:
+            with contextlib.suppress(Exception):
+                previous_terminals.close_all()
+        if previous_sandbox is not None and previous_sandbox is not self.sandbox:
+            with contextlib.suppress(OSError):
+                previous_sandbox.cleanup()
+
+        await self.event_bus.emit(
+            "session.workspace.changed",
+            {"workspace": str(config.workspace)},
+            source="app",
+        )
 
     def apply_context_window(self) -> None:
         """Point the compressor at the configured context window.

@@ -161,17 +161,34 @@ def build_application(
     cli_overrides: dict[str, Any] | None = None,
     provider: ModelProvider | None = None,
     failure_memory: FailureMemoryStore | None = None,
+    event_bus: AsyncEventBus | None = None,
+    conversation: ConversationState | None = None,
 ) -> CodeAIApplication:
+    """Assemble a session. Everything rooted at the workspace is built here.
+
+    ``event_bus`` and ``conversation`` exist for :meth:`CodeAIApplication.
+    retarget_workspace`, which rebuilds a session against a different project.
+    Both have to survive that: clients subscribe to the bus once and would stop
+    receiving events if it were replaced under them, and the conversation is
+    the thing the user would be most annoyed to lose. Everything else is
+    rebuilt, which is the point - it is what makes the new root reach the
+    parts of the session no setter could re-point.
+    """
+
     config = config or load_config(explicit_path=config_path, cli_overrides=cli_overrides)
     # First-run seeding of the bundled default skills (architecture guides,
     # create-rules). Idempotent and best-effort, so it never blocks startup.
     seed_default_skills()
-    event_bus = AsyncEventBus()
+    event_bus = event_bus or AsyncEventBus()
     # Wrapped, not held directly: api_key, base_url and api_mode are consumed
     # while the client is constructed, so changing one needs a new provider -
     # and by the end of this function the provider is held in seven places.
     # Everything below takes the handle, so a swap is one assignment.
-    provider = SwappableProvider(provider or create_provider(config))
+    provider = (
+        provider
+        if isinstance(provider, SwappableProvider)
+        else SwappableProvider(provider or create_provider(config))
+    )
     workspace = WorkspacePolicy.from_path(config.workspace)
     sandbox = _build_sandbox(config, session_id=event_bus.session_id)
     registry = build_tool_registry()
@@ -269,7 +286,11 @@ def build_application(
     def _skills_catalog() -> str:
         return render_skills_catalog(session_skill_sources)
 
-    conversation = ConversationState(
+    # A conversation handed in is kept as it stands. Its system prompt names the
+    # old workspace, which would be wrong for about one turn - the orchestrator
+    # rebuilds that prompt at the start of every turn from the live config, so
+    # it corrects itself before the model ever reads it.
+    conversation = conversation or ConversationState(
         messages=[
             Message(
                 role="system",
