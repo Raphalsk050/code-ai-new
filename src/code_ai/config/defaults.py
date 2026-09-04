@@ -330,6 +330,13 @@ DEFAULT_FILE_IO: dict[str, object] = {
     # holds open for reading can still be written this way, and on a locked-down
     # Windows host it is the difference between working and not.
     "allow_non_atomic_fallback": True,
+    # Windows only. Write an existing file where it stands before trying to
+    # swap a replacement in. Staging a replacement is the pair of operations a
+    # disk-encryption or DLP filter driver exists to intercept - a new file in
+    # a directory it watches, then a plaintext file swapped over an encrypted
+    # one - while writing into a file it classified long ago is the one it lets
+    # through. Turn it off to get the strictly atomic write back.
+    "windows_in_place_first": True,
 }
 
 

@@ -522,6 +522,99 @@ def test_the_sweep_leaves_alone_what_it_did_not_write(tmp_path) -> None:
     assert not_hidden.exists()  # not the name we stage under
 
 
+def test_on_windows_an_existing_file_is_written_where_it_stands(tmp_path, monkeypatch) -> None:
+    """The change that matches what every other editor on the platform does.
+
+    Staging a replacement is the pair of operations a filter driver intercepts:
+    a new file in a watched directory, then a plaintext file swapped over an
+    encrypted one. Writing into the existing file avoids both.
+    """
+
+    target = tmp_path / "a.txt"
+    target.write_text("old", encoding="utf-8")
+    identity = target.stat().st_ino
+    staged: list[object] = []
+    monkeypatch.setattr(fileio, "_on_windows", lambda: True)
+    monkeypatch.setattr(fileio.tempfile, "mkstemp", lambda *a, **k: staged.append(1))
+
+    atomic_write_text(target, "new", policy=FAST)
+
+    assert target.read_text(encoding="utf-8") == "new"
+    assert target.stat().st_ino == identity  # same file, not a replacement
+    assert staged == []  # nothing was ever staged
+
+
+def test_writing_in_place_by_choice_is_not_reported_as_a_degraded_write(
+    tmp_path, monkeypatch
+) -> None:
+    target = tmp_path / "a.txt"
+    target.write_text("old", encoding="utf-8")
+    monkeypatch.setattr(fileio, "_on_windows", lambda: True)
+
+    outcome = atomic_write_text(target, "new", policy=FAST)
+
+    assert outcome.atomic is False
+    # Not flagged: the report exists to surface interference, and flagging
+    # every Windows write would teach the reader to ignore it.
+    assert outcome.to_dict() == {}
+
+
+def test_a_file_that_does_not_exist_yet_is_still_staged_and_swapped(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(fileio, "_on_windows", lambda: True)
+
+    outcome = atomic_write_text(tmp_path / "new.txt", "fresh", policy=FAST)
+
+    assert (tmp_path / "new.txt").read_text(encoding="utf-8") == "fresh"
+    assert outcome.atomic is True
+
+
+def test_a_blocked_in_place_write_still_falls_through_to_the_swap(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "a.txt"
+    target.write_text("old", encoding="utf-8")
+    monkeypatch.setattr(fileio, "_on_windows", lambda: True)
+    monkeypatch.setattr(
+        fileio,
+        "_rewrite_in_place",
+        lambda path, data: (_ for _ in ()).throw(windows_error(fileio.ERROR_SHARING_VIOLATION)),
+    )
+
+    outcome = atomic_write_text(target, "new", policy=FAST)
+
+    assert target.read_text(encoding="utf-8") == "new"
+    assert outcome.atomic is True  # the staged swap picked it up
+
+
+def test_posix_keeps_the_staged_write_by_default(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "a.txt"
+    target.write_text("old", encoding="utf-8")
+    monkeypatch.setattr(fileio, "_on_windows", lambda: False)
+
+    assert atomic_write_text(target, "new", policy=FAST).atomic is True
+
+
+def test_windows_prefers_the_in_place_write_by_default(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "a.txt"
+    target.write_text("old", encoding="utf-8")
+    monkeypatch.setattr(fileio, "_on_windows", lambda: True)
+
+    assert atomic_write_text(target, "new", policy=FAST).atomic is False
+
+
+def test_the_flag_turns_the_windows_behaviour_off_but_never_on(tmp_path, monkeypatch) -> None:
+    """It is an opt-out, matching its name: POSIX keeps the atomic swap."""
+
+    target = tmp_path / "a.txt"
+    target.write_text("old", encoding="utf-8")
+
+    monkeypatch.setattr(fileio, "_on_windows", lambda: False)
+    assert atomic_write_text(target, "new", policy=FAST, in_place_first=True).atomic is True
+
+    monkeypatch.setattr(fileio, "_on_windows", lambda: True)
+    assert atomic_write_text(target, "newer", policy=FAST, in_place_first=False).atomic is True
+
+
 def test_the_report_stays_quiet_when_nothing_went_wrong(tmp_path) -> None:
     outcome = atomic_write_bytes(tmp_path / "a.txt", b"x")
 

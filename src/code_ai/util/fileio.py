@@ -378,6 +378,11 @@ class WriteOutcome:
     attempts: int
     waited_s: float
     atomic: bool
+    # Whether atomicity was lost to interference rather than given up by
+    # choice. Only the first is worth reporting: on Windows the in-place write
+    # is the deliberate strategy, and flagging it on every write there would
+    # train the reader to ignore the flag on the writes that did go wrong.
+    degraded: bool = False
 
     def to_dict(self) -> dict[str, object]:
         """The parts worth reporting back, omitting the boring happy path."""
@@ -386,7 +391,7 @@ class WriteOutcome:
         if self.attempts > 1:
             report["write_attempts"] = self.attempts
             report["write_waited_s"] = round(self.waited_s, 3)
-        if not self.atomic:
+        if self.degraded:
             report["atomic"] = False
         return report
 
@@ -398,6 +403,7 @@ def atomic_write_bytes(
     policy: RetryPolicy = NO_RETRY,
     allow_non_atomic_fallback: bool = False,
     create_parents: bool = True,
+    in_place_first: bool | None = None,
 ) -> WriteOutcome:
     """Write ``data`` to ``path``, replacing it as one step where possible.
 
@@ -410,12 +416,20 @@ def atomic_write_bytes(
     the file is rewritten in place instead. That is not atomic, and the returned
     outcome says so, but a file another process holds open without denying
     writes can still be written this way.
+
+    ``in_place_first`` inverts that order for a file that already exists, and
+    defaults to doing so on Windows. See :func:`_writes_in_place_first` for why
+    the platform decides this.
     """
 
     parent = path.parent
     if create_parents:
         parent.mkdir(parents=True, exist_ok=True)
     _sweep_abandoned_staging(parent)
+    if _writes_in_place_first(path, in_place_first):
+        written = _try_in_place(path, data, policy)
+        if written is not None:
+            return written
     try:
         temp_name = _write_temp_file(parent, path.name, data, policy)
     except (FileOperationError, OSError) as blocked:
@@ -454,6 +468,66 @@ def atomic_write_bytes(
     )
 
 
+def _on_windows() -> bool:
+    """Whether this is the host the in-place-first strategy is for.
+
+    A function rather than a module constant so a test can choose the platform
+    without reassigning ``os.name``, which would also change what ``Path``
+    constructs and turn every path in the test into a Windows one.
+    """
+
+    return os.name == "nt"
+
+
+def _writes_in_place_first(path: Path, requested: bool | None) -> bool:
+    """Whether to write the file where it stands before trying to swap one in.
+
+    Windows, and only for a file that already exists. Staging a replacement
+    means creating a new file in a directory a filter driver watches and then
+    swapping a plaintext file over an encrypted one - the two operations a
+    disk-encryption or DLP agent exists to intercept. Writing into a file it
+    classified long ago is the one it is built to let through, and is what
+    every other editor on the platform does, which is why they work on hosts
+    where this agent did not.
+
+    POSIX keeps the staged write: there is no filter driver in the way, and the
+    swap is genuinely atomic, so there is nothing to trade it for.
+    """
+
+    if not _on_windows():
+        # Not an opt-in: the flag turns the Windows behaviour off, never turns
+        # it on elsewhere. POSIX has no filter driver in the way and a rename
+        # really is atomic, so there is nothing here worth trading it for.
+        return False
+    return (True if requested is None else requested) and path.exists()
+
+
+def _try_in_place(path: Path, data: bytes, policy: RetryPolicy) -> WriteOutcome | None:
+    """Rewrite ``path`` where it stands, or return ``None`` to let the swap try.
+
+    Failing here costs an attempt and nothing else: the staged write that
+    follows overwrites whatever this managed to put down, so a write that was
+    refused partway is repaired rather than left torn.
+    """
+
+    try:
+        written = retry_transient(
+            lambda: _rewrite_in_place(path, data),
+            policy=policy,
+            what="write",
+            path=path,
+        )
+    except (FileOperationError, OSError):
+        return None
+    return WriteOutcome(
+        path=path,
+        bytes_written=len(data),
+        attempts=written.attempts,
+        waited_s=written.waited_s,
+        atomic=False,
+    )
+
+
 def _rewrite_after(
     path: Path, data: bytes, policy: RetryPolicy, blocked: Exception
 ) -> WriteOutcome:
@@ -484,6 +558,7 @@ def _rewrite_after(
         attempts=(spent.attempts if spent else 1) + rewrite.attempts,
         waited_s=(spent.waited_s if spent else 0.0) + rewrite.waited_s,
         atomic=False,
+        degraded=True,
     )
 
 
@@ -494,6 +569,7 @@ def atomic_write_text(
     policy: RetryPolicy = NO_RETRY,
     allow_non_atomic_fallback: bool = False,
     create_parents: bool = True,
+    in_place_first: bool | None = None,
 ) -> WriteOutcome:
     """UTF-8 flavour of :func:`atomic_write_bytes`."""
 
@@ -503,6 +579,7 @@ def atomic_write_text(
         policy=policy,
         allow_non_atomic_fallback=allow_non_atomic_fallback,
         create_parents=create_parents,
+        in_place_first=in_place_first,
     )
 
 
