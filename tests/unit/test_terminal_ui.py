@@ -16,8 +16,12 @@ from code_ai.core.state import AgentState
 from code_ai.events.models import EventEnvelope
 from code_ai.ui.terminal.app import create_terminal_app
 from code_ai.ui.terminal.slash_commands import (
+    SLASH_COMMANDS,
+    SlashCommand,
     command_completion,
     handle_config_command,
+    help_sections,
+    render_help,
     render_suggestions,
 )
 
@@ -995,6 +999,91 @@ def test_render_suggestions_lists_config_commands() -> None:
     rendered = render_suggestions("/config")
     assert "/config show" in rendered
     assert "/config api-mode" in rendered
+
+
+async def test_typing_help_prints_the_whole_list(tmp_path) -> None:
+    """Driven through the app, because the bug was in what /help called."""
+
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "/help"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+
+        printed = "\n".join(terminal_app.vm.conversation)
+        missing = [item.command for item in SLASH_COMMANDS if item.command not in printed]
+        assert missing == []
+        assert "Configuration:" in printed
+
+
+def test_help_lists_every_command_there_is() -> None:
+    """The whole point of /help: nothing is left out.
+
+    It used to render through the suggestion popup, which caps itself at eight
+    matches because it hovers over the conversation. That made /help a list of
+    the first eight commands out of more than forty.
+    """
+
+    rendered = render_help()
+
+    missing = [item.command for item in SLASH_COMMANDS if item.command not in rendered]
+    assert missing == []
+
+
+def test_help_files_each_command_under_exactly_one_heading() -> None:
+    listed = [item.command for _, items in help_sections() for item in items]
+
+    assert sorted(listed) == sorted(item.command for item in SLASH_COMMANDS)
+    assert len(listed) == len(set(listed))
+
+
+def test_a_command_no_section_claims_is_still_listed(monkeypatch) -> None:
+    """Forgetting to file a new command must cost it a heading, not its listing."""
+
+    invented = SlashCommand("/telemetry", "Something nobody filed.")
+    monkeypatch.setattr(
+        "code_ai.ui.terminal.slash_commands.SLASH_COMMANDS", [*SLASH_COMMANDS, invented]
+    )
+
+    assert "/telemetry" in render_help()
+    assert ("Other", [invented]) in help_sections()
+
+
+def test_help_lists_workflows_and_skills_under_their_own_headings() -> None:
+    rendered = render_help(
+        workflows=[SlashCommand("/deploy", "Ship the current branch.")],
+        skills=[SlashCommand("/pdf", "Read and write PDF files.")],
+    )
+
+    assert "Saved workflows:" in rendered
+    assert "/deploy" in rendered
+    assert "Skills:" in rendered
+    assert "/pdf" in rendered
+
+
+def test_help_omits_the_asset_headings_when_there_are_none() -> None:
+    rendered = render_help()
+
+    assert "Saved workflows:" not in rendered
+    assert "Skills:" not in rendered
+
+
+def test_a_long_config_signature_does_not_widen_the_other_sections() -> None:
+    """Each section pads to its own widest command, not to a shared column."""
+
+    rendered = render_help()
+    session = rendered.split("Planning:")[0]
+
+    assert "  /help     Show available commands." in session
+
+
+def test_the_suggestion_popup_still_shows_a_shortlist() -> None:
+    # The cap that made /help wrong is the right behaviour for the popup, which
+    # renders over the conversation and must not bury it.
+    assert len(render_suggestions("/").splitlines()) == 8
 
 
 def test_command_completion_completes_config_command_text() -> None:
