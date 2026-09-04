@@ -34,6 +34,7 @@ from code_ai.ui.terminal.slash_commands import (
     config_commands,
     handle_config_command,
     handle_debug_command,
+    rebuilds_the_provider,
     render_help,
     render_suggestions,
     skill_commands,
@@ -1494,15 +1495,30 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             if stripped == "/config models":
                 await self._select_model_interactive()
                 return
-            self._append_conversation_line(
-                handle_config_command(application, stripped, config_path=config_path)
-            )
+            result = handle_config_command(application, stripped, config_path=config_path)
+            self._append_conversation_line(result)
             if stripped.startswith("/config theme "):
                 self._apply_configured_terminal_theme()
             if stripped.startswith("/config banner-font "):
                 self._refresh_logo()
             if stripped.startswith("/config spinner "):
                 self._refresh_spinner()
+            if rebuilds_the_provider(stripped) and not result.startswith(
+                "command> Config not changed"
+            ):
+                # The key, the URL and the API mode are read while the client is
+                # built, so the setting is live but the client is not until it
+                # is replaced. Reported rather than swallowed: a stale client
+                # would keep talking to the old endpoint while /status shows the
+                # new one.
+                try:
+                    await application.reload_provider()
+                except Exception as exc:  # noqa: BLE001 - surfaced, not raised
+                    self._append_conversation_line(
+                        f"command> Saved, but the model client did not reload: {exc}"
+                    )
+                    return
+                self._refresh_status()
 
         def action_config_help(self) -> None:
             """Open a searchable palette of /config commands to pick from."""

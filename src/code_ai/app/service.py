@@ -30,7 +30,9 @@ from code_ai.core.workflows import WorkflowService
 from code_ai.events.bus import AsyncEventBus, EventSubscriber
 from code_ai.events.models import EventEnvelope
 from code_ai.providers.base import ModelProvider
+from code_ai.providers.factory import PROVIDER_BAKED_SETTINGS
 from code_ai.providers.models import ImageContent
+from code_ai.providers.swappable import SwappableProvider
 from code_ai.sandbox.session import SessionSandbox
 from code_ai.tools.skills.common import SkillSource
 from code_ai.tools.terminal.manager import PersistentTerminalManager
@@ -75,7 +77,14 @@ class CodeAIApplication:
         self.session = session
         self.event_bus = event_bus
         self.orchestrator = orchestrator
-        self.provider = provider
+        # Always behind a swappable handle, so the settings that are consumed
+        # when the client is built - the key, the URL, the API mode - can be
+        # changed without restarting. Bootstrap wraps it before handing the
+        # same handle to everything else; this covers the callers that build
+        # the facade directly, and never double-wraps.
+        self.provider = (
+            provider if isinstance(provider, SwappableProvider) else SwappableProvider(provider)
+        )
         self.compressor = compressor
         self.terminal_manager = terminal_manager
         self.conversation_store = conversation_store
@@ -537,8 +546,11 @@ class CodeAIApplication:
         "inline_model",
         "vision_model",
     }
-    # Top-level fields the providers read once at bootstrap; need a restart.
-    _RESTART_SETTINGS = {"api_mode", "base_url", "api_key", "workspace"}
+    # Fields consumed while the model client is built rather than read per
+    # request. They apply live, but only after the client is rebuilt.
+    _PROVIDER_SETTINGS = PROVIDER_BAKED_SETTINGS
+    # Top-level fields that still need a restart to take effect.
+    _RESTART_SETTINGS = {"workspace"}
 
     def get_settings(self) -> dict[str, Any]:
         """Snapshot of the user-editable settings for the extension panel.
@@ -598,21 +610,23 @@ class CodeAIApplication:
         restart: list[str] = []
         errors: dict[str, str] = {}
 
+        known = self._LIVE_SETTINGS | self._PROVIDER_SETTINGS | self._RESTART_SETTINGS
+        rebuild_provider = False
+
         for key, value in updates.items():
             try:
-                if key in self._LIVE_SETTINGS or key in self._RESTART_SETTINGS:
+                if key in known:
                     if key == "workspace":
                         value = str(Path(str(value)).expanduser().resolve())
                     if key == "api_key" and not str(value).strip():
                         continue  # blank means "leave the stored key untouched"
                     validated = persist_config_updates(config, {key: value})
-                    if key in self._LIVE_SETTINGS:
-                        setattr(config, key, getattr(validated, key))
-                        applied.append(key)
-                    else:
-                        if key == "api_key":
-                            config.api_key = str(value)
+                    if key in self._RESTART_SETTINGS:
                         restart.append(key)
+                        continue
+                    setattr(config, key, getattr(validated, key))
+                    applied.append(key)
+                    rebuild_provider = rebuild_provider or key in self._PROVIDER_SETTINGS
                 elif key == "reasoning_effort":
                     sampling = asdict(config.sampling)
                     sampling["reasoning_effort"] = None if value == "none" else value
@@ -622,12 +636,22 @@ class CodeAIApplication:
                 elif key == "max_context_tokens":
                     budgets = asdict(config.budgets)
                     budgets["max_context_tokens"] = int(value)
-                    persist_config_updates(config, {"budgets": budgets})
-                    restart.append(key)
+                    validated = persist_config_updates(config, {"budgets": budgets})
+                    config.budgets = validated.budgets
+                    self.apply_context_window()
+                    applied.append(key)
                 else:
                     errors[key] = "unknown setting"
             except Exception as exc:
                 errors[key] = str(exc) or type(exc).__name__
+
+        if rebuild_provider:
+            try:
+                await self.reload_provider()
+            except Exception as exc:
+                # The settings are written and live; only the client is stale.
+                # Say which it is, rather than reporting the write as failed.
+                errors["provider"] = f"Settings saved, but the client did not reload: {exc}"
 
         if "permission_mode" in applied:
             await self.event_bus.emit(
@@ -639,6 +663,30 @@ class CodeAIApplication:
             "errors": errors,
             "settings": self.get_settings(),
         }
+
+    async def reload_provider(self) -> None:
+        """Rebuild the model client from the configuration in force.
+
+        The API key, the base URL and the API mode are consumed while the
+        client is being constructed, not read per request the way the model
+        name is - which is the whole reason they used to ask for a restart.
+        Everything holds the same swappable handle, so putting a new client
+        behind it is all this has to do.
+        """
+
+        from code_ai.providers.factory import create_provider
+
+        await self.provider.replace(create_provider(self.session.config))
+
+    def apply_context_window(self) -> None:
+        """Point the compressor at the configured context window.
+
+        The compressor derives its budget from this on every check rather than
+        caching it, so re-pointing the number is the whole change - it takes
+        effect on the next turn.
+        """
+
+        self.compressor.max_context_tokens = self.session.config.budgets.max_context_tokens
 
     def has_active_plan(self) -> bool:
         """True when the model authored a plan that is ready to execute."""

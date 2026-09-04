@@ -12,6 +12,7 @@ from textual.widgets import Button, Input, OptionList, Static
 
 from code_ai.config.loader import persist_config_updates
 from code_ai.config.models import AppConfig, normalize_api_mode
+from code_ai.providers.factory import PROVIDER_BAKED_SETTINGS
 from code_ai.providers.model_listing import list_available_models
 from code_ai.ui.terminal.clipboard import paste_from_system_clipboard
 
@@ -110,7 +111,7 @@ class DoctorModal(ModalScreen[None]):
                 "api_mode",
                 _API_MODE_CHOICES,
                 self._config.api_mode,
-                "How Code-AI reaches the model. Restart to apply to the running agent.",
+                "How Code-AI reaches the model. Applied to the running agent on save.",
             )
         if step == "permission":
             return "Permission mode", self._choice_widgets(
@@ -329,7 +330,7 @@ class DoctorModal(ModalScreen[None]):
             self._status(self._apply_effort(value))
         elif field == "api_mode":
             self._status(
-                self._apply({"api_mode": normalize_api_mode(value)}, restart=True)
+                self._apply({"api_mode": normalize_api_mode(value)}, restart=False)
             )
         else:  # permission_mode
             self._status(self._apply({field: value}, restart=False))
@@ -338,11 +339,11 @@ class DoctorModal(ModalScreen[None]):
     def _save_text(self, field: str) -> None:
         value = self.query_one(f"#doctor-input-{field}", Input).value.strip()
         if field == "api_key":
-            self._status(self._apply({"api_key": value}, restart=True, secret=True))
+            self._status(self._apply({"api_key": value}, restart=False, secret=True))
             return
         if field == "workspace":
             value = str(Path(value).expanduser().resolve())
-        restart = field in {"base_url", "workspace"}
+        restart = field == "workspace"
         self._status(self._apply({field: value}, restart=restart))
 
     async def _validate_base_url(self, field: str) -> None:
@@ -437,11 +438,17 @@ class DoctorModal(ModalScreen[None]):
         except Exception as exc:  # noqa: BLE001
             return f"✗ Not saved: {exc}"
         # Apply live so the doctor's own tests (and the next model call) use the
-        # new value; restart-only fields still need a restart for the running
-        # provider, which is noted below.
+        # new value.
         for key in changes:
             if hasattr(config, key):
                 setattr(config, key, getattr(validated, key))
+        # Some of those are read while the model client is constructed, so the
+        # live config would otherwise disagree with the client still in use -
+        # the dialog would report a new base URL while the agent kept calling
+        # the old one. Rebuilding is async and this is not, so it goes through
+        # a worker rather than being dropped.
+        if set(changes) & PROVIDER_BAKED_SETTINGS:
+            self.run_worker(self._application.reload_provider(), exclusive=False)
         if self._on_change is not None:
             self._on_change()
         if secret:
