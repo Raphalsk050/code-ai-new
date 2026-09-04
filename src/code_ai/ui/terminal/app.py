@@ -73,6 +73,17 @@ from code_ai.ui.terminal.widgets import (
 
 logger = logging.getLogger(__name__)
 
+# Keys that insert a newline instead of submitting. Ctrl+J is the one that
+# always arrives - it is a plain LF control character. The other two only exist
+# for an application when the terminal speaks the kitty keyboard protocol, which
+# Textual requests at startup; without it Shift+Enter is byte-identical to
+# Enter and no amount of handling here can separate them.
+#
+# Alt+Enter is not here on purpose: terminals send it as ESC+CR, which Textual's
+# parser resolves to a bare "enter", so accepting it is impossible and promising
+# it submitted the message the user was trying to break in two.
+_NEWLINE_KEYS = frozenset({"ctrl+j", "shift+enter", "ctrl+enter"})
+
 # Labels shown in the permission-mode dropdown next to the input, mapped to the
 # config values consumed by AppConfig.permission_mode.
 _PERMISSION_MODE_OPTIONS = [
@@ -190,11 +201,25 @@ def create_terminal_app(application, *, config_path: Path | None = None):
     class MultilineInput(TextArea):
         """Multi-line prompt with shell-style history recall.
 
-        Enter submits the prompt; Shift+Enter / Ctrl+J / Alt+Enter insert a
+        Enter submits the prompt; Ctrl+J, Shift+Enter and Ctrl+Enter insert a
         newline so a single prompt can span several lines. Submitted prompts
         are pushed onto a history stack walked with Up/Down — but only when the
         cursor sits on the first/last line, so navigating a multi-line draft
         still moves between its lines like any editor.
+
+        Ctrl+J is listed first because it is the only one that always arrives:
+        it is a plain control character (LF). Shift+Enter and Ctrl+Enter reach
+        an application only through the kitty keyboard protocol - Textual asks
+        for it at startup, and Ghostty, Kitty and WezTerm answer, while
+        Terminal.app and stock iTerm2 send Shift+Enter as an ordinary Return
+        the application cannot tell apart. A terminal without the protocol can
+        still get there by binding Shift+Enter to send ``\\n``, which arrives
+        here as Ctrl+J.
+
+        Alt+Enter is deliberately absent even though it looks like it belongs:
+        terminals send it as ESC+CR, and Textual's parser resolves that to a
+        bare ``enter``. Listing it would have promised a newline and submitted
+        the message instead.
 
         Ctrl+V pastes from the OS clipboard, preferring an image rendition:
         a pasted image becomes an ``[Image #N]`` placeholder in the text and
@@ -383,7 +408,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 event.prevent_default()
                 self._paste_from_clipboard(image_only=True)
                 return
-            if key in ("shift+enter", "ctrl+j", "alt+enter"):
+            if key in _NEWLINE_KEYS:
                 event.stop()
                 event.prevent_default()
                 self.insert("\n")
@@ -2058,7 +2083,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 f"state: {application.orchestrator.state.value}\n"
                 f"tools: {tools}\n\n"
                 "keys: Ctrl+C copiar seleção / cancelar | Ctrl+L limpar\n"
-                "input: Enter envia · Shift+Enter/Ctrl+J nova linha\n"
+                "input: Enter envia · Ctrl+J (ou Shift+Enter) nova linha\n"
                 "colar: Ctrl+V texto ou imagem · Alt+V imagem quando o "
                 "terminal fica com o Ctrl+V\n"
                 "copiar: selecione com o mouse, botão direito ou Ctrl+C"
