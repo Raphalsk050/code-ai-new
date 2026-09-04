@@ -26,6 +26,11 @@ from code_ai.ui.terminal.slash_commands import (
     render_help,
     render_suggestions,
 )
+from code_ai.ui.terminal.widgets import (
+    COMMAND_PANEL_MAX_ROWS,
+    COMMAND_PREFIX,
+    command_panel_body,
+)
 
 
 class FakeTerminalApplication:
@@ -2438,3 +2443,88 @@ def test_ctrl_j_is_offered_because_it_needs_no_terminal_support() -> None:
     assert [getattr(e, "key", e) for e in XTermParser().feed("\n")] == ["ctrl+j"]
     # Shift+Enter only reaches an application through the kitty protocol.
     assert [getattr(e, "key", e) for e in XTermParser().feed("\x1b[13;2u")] == ["shift+enter"]
+
+
+# --------------------------------------------------------------------------- #
+# Live command output gets its own box
+# --------------------------------------------------------------------------- #
+async def test_command_output_streams_into_its_own_panel(tmp_path) -> None:
+    """Command output is framed like reasoning, but visibly not reasoning."""
+
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        command = terminal_app.query_one("#command-panel", Static)
+        assert command.display is False  # nothing running yet
+
+        # The live line is only held out of the scrollback while the agent
+        # works, which is the only time either panel is on screen.
+        await fake_app.emit("status.changed", {"state": "EXECUTING_TOOL"})
+        await fake_app.emit("command.output", {"text": "running 3 tests\n"})
+        await fake_app.emit("command.output", {"text": "FAILED test_a\n"})
+        await pilot.pause(0.2)
+
+        assert command.display is True
+        rendered = str(command.content)
+        assert "FAILED test_a" in rendered
+        # Titled and sized so it reads as a terminal, not as thinking.
+        assert command.border_title == "$ terminal"
+        assert "chars" in str(command.border_subtitle)
+
+
+async def test_the_two_streaming_panels_are_never_open_at_once(tmp_path) -> None:
+    """One thing is streaming at a time, so one box is open at a time."""
+
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        thinking = terminal_app.query_one("#thinking-panel", Static)
+        command = terminal_app.query_one("#command-panel", Static)
+        await fake_app.emit("status.changed", {"state": "EXECUTING_TOOL"})
+
+        await fake_app.emit("command.output", {"text": "building...\n"})
+        await pilot.pause(0.2)
+        assert (command.display, thinking.display) == (True, False)
+
+        await fake_app.emit("model.thinking.delta", {"text": "now let me check"})
+        await pilot.pause(0.2)
+        assert (command.display, thinking.display) == (False, True)
+
+
+def test_the_command_panel_shows_only_its_newest_rows() -> None:
+    line = COMMAND_PREFIX + "\n".join(f"line {n}" for n in range(200))
+
+    body = command_panel_body(line)
+
+    assert body.splitlines()[-1] == "line 199"
+    assert len(body.splitlines()) <= COMMAND_PANEL_MAX_ROWS
+    assert "line 0" not in body
+
+
+async def test_the_terminal_panel_does_not_look_like_the_thinking_panel(tmp_path) -> None:
+    """Same frame, different colour: the point is telling them apart at a glance.
+
+    Both are boxes holding an unbounded stream, so they share the round frame.
+    What they hold is different - one is the machine talking, the other the
+    model - so the colour has to say which, without the reader parsing text.
+    """
+
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        await fake_app.emit("status.changed", {"state": "EXECUTING_TOOL"})
+        await fake_app.emit("command.output", {"text": "FAILED test_login\n"})
+        await pilot.pause(0.2)
+
+        command = terminal_app.query_one("#command-panel", Static)
+        thinking = terminal_app.query_one("#thinking-panel", Static)
+
+        # Same shape...
+        assert command.styles.border.top[0] == thinking.styles.border.top[0] == "round"
+        # ...different colour, on the frame and on the title.
+        assert command.styles.border.top[1] != thinking.styles.border.top[1]
+        assert command.styles.border_title_color != thinking.styles.border_title_color
+        assert command.border_title != thinking.border_title

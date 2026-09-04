@@ -733,6 +733,52 @@ def thinking_size_label(line: str) -> str:
     return f"{size / 1000:.1f}k chars"
 
 
+# The live output of a command the agent is running. Boxed like the reasoning
+# for the same reason - it is unbounded text that otherwise spills down the pane
+# at column 0 - but kept visually separate from it, because a command's output
+# is the machine talking and reasoning is the model talking, and a reader
+# glancing at the pane has to be able to tell those apart without reading.
+COMMAND_PREFIX = "cmd~ "
+
+# Fewer rows than reasoning: command output is usually skimmed for its tail
+# (a failing assertion, a compiler error) rather than read as prose.
+COMMAND_PANEL_MAX_ROWS = 10
+COMMAND_PANEL_MAX_CHARS = 3000
+
+
+def command_panel_body(line: str) -> str:
+    """The rows of live command output the terminal panel can actually show.
+
+    Bounded exactly like :func:`thinking_panel_body`, and for the same reason: a
+    build or a test run emits far more than the box can hold, and handing the
+    widget the whole buffer on every chunk is what turns a chatty command into
+    a frozen UI. Blank runs are kept here, unlike in reasoning - the spacing in
+    a compiler's output is part of reading it.
+    """
+
+    text = line[len(COMMAND_PREFIX) :] if line.startswith(COMMAND_PREFIX) else line
+    if len(text) > COMMAND_PANEL_MAX_CHARS:
+        text = text[-COMMAND_PANEL_MAX_CHARS:]
+    rows = text.split("\n")
+    if len(rows) > COMMAND_PANEL_MAX_ROWS:
+        rows = rows[-COMMAND_PANEL_MAX_ROWS:]
+    return "\n".join(rows)
+
+
+def command_size_label(line: str) -> str:
+    """Compact size of the output so far, for the panel's border subtitle.
+
+    The panel shows only its newest rows, so without this there is no way to
+    tell a command that printed three lines from one that printed three pages.
+    """
+
+    text = line[len(COMMAND_PREFIX) :] if line.startswith(COMMAND_PREFIX) else line
+    size = len(text)
+    if size < 1000:
+        return f"{size} chars"
+    return f"{size / 1000:.1f}k chars"
+
+
 def conversation_line_class(line: str) -> str:
     """CSS class for a committed transcript line, driving the spacing hierarchy.
 
