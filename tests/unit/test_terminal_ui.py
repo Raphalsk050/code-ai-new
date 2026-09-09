@@ -149,7 +149,15 @@ async def test_doctor_modal_navigates_menu_and_saves(tmp_path) -> None:
         assert isinstance(modal, DoctorModal)
 
         # The main menu lists every setup topic.
-        for step_id in ("api_mode", "base_url", "api_key", "model", "vision_model", "workspace"):
+        for step_id in (
+            "api_mode",
+            "base_url",
+            "api_key",
+            "model",
+            "vision_model",
+            "embedding_model",
+            "workspace",
+        ):
             modal.query_one(f"#doctor-menu-{step_id}", Button)
 
         # The model step offers list/test/save and reveals the back button.
@@ -191,6 +199,75 @@ async def test_doctor_modal_navigates_menu_and_saves(tmp_path) -> None:
         await pilot.pause(0.1)
         assert fake_app.session.config.language == "pt-BR"
         assert cfg_path.exists()
+
+
+async def test_doctor_configures_embedding_model_and_applies_it_live(tmp_path) -> None:
+    import json
+
+    from textual.widgets import Button, Input
+
+    cfg_path = tmp_path / "config.json"
+    fake_app = FakeTerminalApplication(tmp_path)
+    # A non-default index setting that must survive saving the model: the whole
+    # index object is rewritten on save, so a partial mapping would reset it.
+    fake_app.session.config.index.chunk_lines = 42
+    applied: list[str] = []
+    backfilled: list[bool] = []
+
+    async def set_embedding_model(model: str) -> int:
+        applied.append(model)
+        return 7
+
+    def start_embedding_backfill() -> bool:
+        backfilled.append(True)
+        return True
+
+    fake_app.set_embedding_model = set_embedding_model
+    fake_app.start_embedding_backfill = start_embedding_backfill
+    terminal_app = create_terminal_app(fake_app, config_path=cfg_path)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "/doctor"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        modal = terminal_app.screen
+
+        # The embedding model is a setup topic like any other.
+        menu_button = modal.query_one("#doctor-menu-embedding_model", Button)
+        assert "not set" in str(menu_button.label)
+
+        # It reuses the model-picking tooling: list the catalog, test, save.
+        await modal._set_step("embedding_model")
+        await pilot.pause(0.1)
+        modal.query_one("#doctor-list-embedding_model", Button)
+        modal.query_one("#doctor-test-embedding_model", Button)
+        modal.query_one("#doctor-input-embedding_model", Input).value = "nomic-embed-text"
+        await pilot.click("#doctor-save-embedding_model")
+        await pilot.pause(0.1)
+
+        config = fake_app.session.config
+        assert config.index.embedding_model == "nomic-embed-text"
+        assert config.index.chunk_lines == 42
+        # Applied to the running index, and the outstanding chunks embedded.
+        assert applied == ["nomic-embed-text"]
+        assert backfilled == [True]
+        status = str(modal.query_one("#doctor-status", Static).render())
+        assert "7 chunk(s)" in status
+
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert saved["index"]["embedding_model"] == "nomic-embed-text"
+        assert saved["index"]["chunk_lines"] == 42
+
+        # Clearing it turns semantic retrieval off rather than failing to save.
+        await modal._set_step("embedding_model")
+        await pilot.pause(0.1)
+        modal.query_one("#doctor-input-embedding_model", Input).value = ""
+        await pilot.click("#doctor-save-embedding_model")
+        await pilot.pause(0.1)
+        assert fake_app.session.config.index.embedding_model == ""
+        assert applied == ["nomic-embed-text", ""]
+        assert "lexical" in str(modal.query_one("#doctor-status", Static).render())
 
 
 async def test_subagent_events_populate_agents_panel(tmp_path) -> None:

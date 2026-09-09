@@ -9,12 +9,14 @@ from code_ai.config.defaults import (
     DEFAULT_BUDGETS,
     DEFAULT_FILE_IO,
     DEFAULT_GOAL,
+    DEFAULT_INDEX,
     DEFAULT_MEMORY,
     DEFAULT_PLANNER,
     DEFAULT_SAMPLING,
     DEFAULT_SANDBOX,
     PLACEHOLDER_API_KEY,
     default_sandbox_base_dir,
+    project_index_dir,
 )
 from code_ai.core.errors import ConfigurationError
 from code_ai.util.redaction import redact_mapping
@@ -310,6 +312,94 @@ class SandboxConfig:
             raise ConfigurationError("sandbox max_artifact_bytes must be positive.")
 
 
+SUPPORTED_EMBEDDING_API_MODES = {"", "ollama", "openai"}
+
+
+@dataclass(slots=True)
+class IndexConfig:
+    """The code index: chunked, searchable copy of the workspace's source.
+
+    Retrieval over the index answers "where is X handled" in milliseconds from
+    a local SQLite file, where a fresh grep walks the whole tree every time.
+    Lexical search (FTS5) always works; set ``embedding_model`` to add semantic
+    retrieval through the provider's embeddings endpoint, fused with the
+    lexical ranking so identifier matches and meaning matches both surface.
+    """
+
+    enabled: bool = bool(DEFAULT_INDEX["enabled"])
+    index_dir: str = str(DEFAULT_INDEX["index_dir"])
+    embedding_model: str = str(DEFAULT_INDEX["embedding_model"])
+    embedding_api_mode: str = str(DEFAULT_INDEX["embedding_api_mode"])
+    embedding_base_url: str = str(DEFAULT_INDEX["embedding_base_url"])
+    embedding_batch_size: int = int(DEFAULT_INDEX["embedding_batch_size"])
+    auto_index_touched_files: bool = bool(DEFAULT_INDEX["auto_index_touched_files"])
+    max_file_bytes: int = int(DEFAULT_INDEX["max_file_bytes"])
+    chunk_lines: int = int(DEFAULT_INDEX["chunk_lines"])
+    chunk_overlap_lines: int = int(DEFAULT_INDEX["chunk_overlap_lines"])
+    include_globs: list[str] = field(default_factory=list)
+    exclude_globs: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any] | None) -> IndexConfig:
+        values = dict(DEFAULT_INDEX)
+        if data:
+            values.update(data)
+        return cls(
+            enabled=bool(values["enabled"]),
+            index_dir=str(values["index_dir"] or ""),
+            embedding_model=str(values["embedding_model"] or "").strip(),
+            embedding_api_mode=str(values["embedding_api_mode"] or "").strip().lower(),
+            embedding_base_url=str(values["embedding_base_url"] or "").strip(),
+            embedding_batch_size=int(values["embedding_batch_size"]),
+            auto_index_touched_files=bool(values["auto_index_touched_files"]),
+            max_file_bytes=int(values["max_file_bytes"]),
+            chunk_lines=int(values["chunk_lines"]),
+            chunk_overlap_lines=int(values["chunk_overlap_lines"]),
+            include_globs=_string_list(values.get("include_globs")),
+            exclude_globs=_string_list(values.get("exclude_globs")),
+        )
+
+    def resolved_index_dir(self, workspace: Path | str) -> Path:
+        configured = self.index_dir.strip()
+        if configured:
+            return Path(configured).expanduser()
+        return project_index_dir(workspace)
+
+    @property
+    def semantic_enabled(self) -> bool:
+        return bool(self.embedding_model)
+
+    def validate(self) -> None:
+        if self.embedding_api_mode not in SUPPORTED_EMBEDDING_API_MODES:
+            raise ConfigurationError(
+                "index embedding_api_mode must be empty, 'ollama' or 'openai'."
+            )
+        if self.embedding_batch_size < 1:
+            raise ConfigurationError("index embedding_batch_size must be at least 1.")
+        if self.max_file_bytes <= 0:
+            raise ConfigurationError("index max_file_bytes must be positive.")
+        if self.chunk_lines < 5:
+            raise ConfigurationError("index chunk_lines must be at least 5.")
+        if not 0 <= self.chunk_overlap_lines < self.chunk_lines:
+            raise ConfigurationError(
+                "index chunk_overlap_lines must be zero or positive and below chunk_lines."
+            )
+        if self.embedding_base_url:
+            parsed = urlparse(self.embedding_base_url)
+            if parsed.scheme not in {"http", "https"}:
+                raise ConfigurationError("index embedding_base_url must be an http or https URL.")
+
+
+def _string_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if not isinstance(value, list):
+        raise ConfigurationError("index glob lists must be lists of strings.")
+    return [str(item) for item in value if str(item).strip()]
+
+
 @dataclass(slots=True)
 class GoalConfig:
     """Limits and behavior of the /goal persistent-objective loop."""
@@ -533,6 +623,7 @@ class AppConfig:
     sampling: SamplingConfig = field(default_factory=SamplingConfig)
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     file_io: FileIOConfig = field(default_factory=FileIOConfig)
+    index: IndexConfig = field(default_factory=IndexConfig)
     language: str = "en"
     model: str = "gemma4:31b-cloud"
     # Inline code hints (editor ghost text) in the VSCode extension. Off by
@@ -598,6 +689,9 @@ class AppConfig:
         file_io = FileIOConfig.from_mapping(
             data.get("file_io") if isinstance(data.get("file_io"), dict) else None
         )
+        index = IndexConfig.from_mapping(
+            data.get("index") if isinstance(data.get("index"), dict) else None
+        )
         workspace = Path(str(data.get("workspace", Path.cwd()))).expanduser()
         config = cls(
             api_key=normalize_api_key(str(data.get("api_key", ""))),
@@ -611,6 +705,7 @@ class AppConfig:
             sampling=sampling,
             sandbox=sandbox,
             file_io=file_io,
+            index=index,
             language=str(data.get("language", "en")),
             model=str(data.get("model", "gemma4:31b-cloud")),
             inline_hints_enabled=bool(data.get("inline_hints_enabled", False)),
@@ -662,6 +757,7 @@ class AppConfig:
         self.sampling.validate()
         self.sandbox.validate()
         self.file_io.validate()
+        self.index.validate()
         parsed = urlparse(self.base_url)
         if self.api_mode in {"responses", "completions", "ollama"} and parsed.scheme not in {
             "http",

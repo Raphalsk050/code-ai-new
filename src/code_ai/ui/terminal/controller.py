@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from code_ai.app.service import CodeAIApplication
-from code_ai.core.errors import GoalStateError, TerminalSessionError
+from code_ai.core.errors import ConfigurationError, GoalStateError, TerminalSessionError
 from code_ai.core.interaction import Answer, render_answers
 from code_ai.events.models import EventEnvelope
 from code_ai.providers.models import ImageContent
@@ -48,6 +48,45 @@ class TerminalController:
 
     async def cancel(self) -> None:
         await self.app.cancel_current_turn()
+
+    # -- code index (/index) -------------------------------------------------
+    async def index_refresh(self, *, full: bool = False, subtree: str = "") -> str:
+        try:
+            report = await self.app.refresh_code_index(full=full, subtree=subtree)
+        except ConfigurationError as exc:
+            return f"index> {exc}"
+        scope = f" ({subtree})" if subtree else ""
+        kind = "Rebuilt" if full else "Refreshed"
+        return f"index> {kind} the code index{scope}: {report.summary()}"
+
+    def index_status(self) -> str:
+        status = self.app.code_index_status()
+        if status is None:
+            return "index> The code index is disabled (config: index.enabled)."
+        semantic = (
+            f"{status.embedding_model} ({status.embedded_chunks}/{status.chunks} chunks embedded)"
+            if status.embedding_model
+            else "off (set index.embedding_model to enable)"
+        )
+        lines = [
+            "index> Code index status",
+            f"files: {status.files}",
+            f"chunks: {status.chunks}",
+            f"lexical: {status.lexical_engine}",
+            f"semantic: {semantic}",
+            f"last refresh: {status.last_refresh or 'never'}"
+            + (" (full)" if status.last_refresh_full else ""),
+            f"path: {status.index_path}",
+        ]
+        if status.refreshing:
+            lines.append("refreshing: yes")
+        if status.pending_touches:
+            lines.append(f"pending: {status.pending_touches} file(s) queued")
+        if status.last_error:
+            lines.append(f"last error: {status.last_error}")
+        if status.empty:
+            lines.append("hint: run /index to build it")
+        return "\n".join(lines)
 
     async def set_planner_mode(self, mode: str) -> None:
         await self.app.set_planner_mode(mode)

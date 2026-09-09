@@ -47,6 +47,28 @@ def build_parser() -> argparse.ArgumentParser:
         "memory_id", help="Id prefix as shown by 'code-ai memories list'."
     )
 
+    index_parser = subparsers.add_parser(
+        "index", help="Build, refresh or inspect the code index used by search_index."
+    )
+    index_parser.add_argument(
+        "--full", action="store_true", help="Rebuild the index from scratch."
+    )
+    index_parser.add_argument(
+        "--status", action="store_true", help="Show what the index holds and exit."
+    )
+    index_parser.add_argument(
+        "--path",
+        dest="index_path",
+        default="",
+        help="Workspace-relative subtree to refresh. Defaults to the whole workspace.",
+    )
+    index_parser.add_argument(
+        "--search",
+        dest="index_search",
+        default="",
+        help="Run one query against the index and print the hits.",
+    )
+
     doctor_parser = subparsers.add_parser(
         "doctor", help="Diagnose a host that is getting in the agent's way."
     )
@@ -132,6 +154,12 @@ def main(argv: list[str] | None = None) -> int:
 
             config = load_config(explicit_path=args.config, cli_overrides=_overrides(args))
             return run_file_probe(config, rounds=args.rounds, directory=args.probe_path)
+
+        if args.command == "index":
+            from code_ai.cli.index import run_index_command
+
+            config = load_config(explicit_path=args.config, cli_overrides=_overrides(args))
+            return asyncio.run(run_index_command(config, args))
 
         if args.command == "memories":
             from code_ai.cli.memories import run_memories_command

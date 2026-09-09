@@ -470,7 +470,7 @@ DoctorModal {
 
 /* The fetched model list: hidden until "List models" runs, then capped so it
    scrolls rather than pushing the dialog. */
-#doctor-model-list {
+.doctor-model-list {
   height: auto;
   max-height: 12;
   border: solid #8892a0;

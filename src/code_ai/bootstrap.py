@@ -39,6 +39,7 @@ from code_ai.core.subagents import (
 from code_ai.core.verification import ProjectVerification
 from code_ai.core.workflows import WorkflowService
 from code_ai.events.bus import AsyncEventBus
+from code_ai.index import CodeIndexService, build_code_index
 from code_ai.interop import external_rule_sources, skill_sources, workflow_sources
 from code_ai.prompts import build_failure_lesson_prompt, build_system_prompt
 from code_ai.providers.base import ModelProvider
@@ -85,7 +86,7 @@ from code_ai.tools.review import (
     TestReviewTool,
 )
 from code_ai.tools.rules import CreateRuleTool
-from code_ai.tools.search import SearchCodeTool
+from code_ai.tools.search import IndexWorkspaceTool, SearchCodeTool, SearchIndexTool
 from code_ai.tools.skills import CreateSkillTool, UseSkillTool
 from code_ai.tools.skills.common import render_skills_catalog
 from code_ai.tools.skills.seed import seed_default_skills
@@ -109,6 +110,8 @@ def build_tool_registry() -> ToolRegistry:
     for tool in (
         ListFilesTool(),
         SearchCodeTool(),
+        SearchIndexTool(),
+        IndexWorkspaceTool(),
         ReadFileTool(),
         WriteFileTool(),
         EditCodeTool(),
@@ -163,6 +166,7 @@ def build_application(
     failure_memory: FailureMemoryStore | None = None,
     event_bus: AsyncEventBus | None = None,
     conversation: ConversationState | None = None,
+    code_index: CodeIndexService | None = None,
 ) -> CodeAIApplication:
     """Assemble a session. Everything rooted at the workspace is built here.
 
@@ -192,6 +196,12 @@ def build_application(
     workspace = WorkspacePolicy.from_path(config.workspace)
     sandbox = _build_sandbox(config, session_id=event_bus.session_id)
     registry = build_tool_registry()
+    # The workspace's code index. Built once per session and shared with the
+    # sub-agents; it follows the agent by re-indexing every file a tool touches
+    # (see CodeIndexService.attach) and is refreshed on demand via /index.
+    code_index = code_index if code_index is not None else build_code_index(config)
+    if code_index is not None:
+        code_index.attach(event_bus)
 
     async def _generate_lesson(context: str) -> str:
         # Bounded meta-call: distill one sentence, capped tight so the learning
@@ -371,6 +381,7 @@ def build_application(
         skills_text=_skills_catalog(),
         skill_sources=session_skill_sources,
         workflows=workflows,
+        code_index=code_index,
         review_service_factory=lambda bus: ReviewService(
             provider=provider, config=config, event_bus=bus
         ),
@@ -403,6 +414,7 @@ def build_application(
             subagent_depth=0,
             skill_sources=session_skill_sources,
             workflows=workflows,
+            code_index=code_index,
         )
 
     orchestrator = AgentOrchestrator(
@@ -436,6 +448,7 @@ def build_application(
         workflows=workflows,
         skill_sources=session_skill_sources,
         sandbox=sandbox,
+        code_index=code_index,
     )
 
 

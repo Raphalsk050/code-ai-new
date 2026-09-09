@@ -12,6 +12,7 @@ from textual.widgets import Button, Input, OptionList, Static
 
 from code_ai.config.loader import persist_config_updates
 from code_ai.config.models import AppConfig, normalize_api_mode
+from code_ai.index import build_embedding_client
 from code_ai.providers.factory import PROVIDER_BAKED_SETTINGS
 from code_ai.providers.model_listing import list_available_models
 from code_ai.ui.terminal.clipboard import paste_from_system_clipboard
@@ -25,6 +26,7 @@ _STEPS: tuple[tuple[str, str, str], ...] = (
     ("api_key", "API key", "Provider credential (paste from clipboard)"),
     ("model", "Model", "Pick from the catalog and test it live"),
     ("vision_model", "Vision model", "Reads pasted images for a non-multimodal main model"),
+    ("embedding_model", "Embedding model", "Semantic search over the code index"),
     ("workspace", "Workspace", "The project directory the agent works in"),
     ("language", "Language", "Language the agent replies in"),
     ("permission", "Permission mode", "When the agent must ask before acting"),
@@ -145,6 +147,8 @@ class DoctorModal(ModalScreen[None]):
             return "Model", self._model_widgets("model")
         if step == "vision_model":
             return "Vision model", self._model_widgets("vision_model")
+        if step == "embedding_model":
+            return "Embedding model", self._model_widgets("embedding_model")
         if step == "workspace":
             return "Workspace", self._text_widgets(
                 "workspace",
@@ -190,6 +194,8 @@ class DoctorModal(ModalScreen[None]):
             return config.model
         if step_id == "vision_model":
             return config.vision_model or "not set"
+        if step_id == "embedding_model":
+            return config.index.embedding_model or "not set (lexical only)"
         if step_id == "workspace":
             return str(config.workspace)
         if step_id == "language":
@@ -256,6 +262,16 @@ class DoctorModal(ModalScreen[None]):
                 "pick one. Test runs a quick live call to confirm it responds."
             )
             value = self._config.model
+        elif field == "embedding_model":
+            note = (
+                "Turns on semantic search over the code index: search_index then "
+                "finds code by meaning, not only by the words in it. Pick an "
+                "embedding model your provider serves (e.g. nomic-embed-text, "
+                "mxbai-embed-large, text-embedding-3-small). Test asks it for a "
+                "vector; saving applies right away and embeds the indexed chunks "
+                "in the background. Leave empty and save for lexical search only."
+            )
+            value = self._config.index.embedding_model
         else:  # vision_model
             note = (
                 "Vision sidekick that reads pasted images when the main model is "
@@ -278,7 +294,10 @@ class DoctorModal(ModalScreen[None]):
                 Button("Save", variant="primary", id=f"doctor-save-{field}"),
                 classes="doctor-actions",
             ),
-            OptionList(id=f"doctor-model-list-{field}", classes="doctor-hidden"),
+            OptionList(
+                id=f"doctor-model-list-{field}",
+                classes="doctor-model-list doctor-hidden",
+            ),
         ]
         return widgets
 
@@ -298,7 +317,7 @@ class DoctorModal(ModalScreen[None]):
         elif button_id.startswith("doctor-paste-"):
             self._paste_into(button_id[len("doctor-paste-") :])
         elif button_id.startswith("doctor-save-"):
-            self._save_text(button_id[len("doctor-save-") :])
+            await self._save_text(button_id[len("doctor-save-") :])
         elif button_id.startswith("doctor-validate-"):
             await self._validate_base_url(button_id[len("doctor-validate-") :])
         elif button_id.startswith("doctor-list-"):
@@ -336,8 +355,11 @@ class DoctorModal(ModalScreen[None]):
             self._status(self._apply({field: value}, restart=False))
         await self._set_step(self._step)  # repaint to move the ✓ marker
 
-    def _save_text(self, field: str) -> None:
+    async def _save_text(self, field: str) -> None:
         value = self.query_one(f"#doctor-input-{field}", Input).value.strip()
+        if field == "embedding_model":
+            self._status(await self._apply_embedding_model(value))
+            return
         if field == "api_key":
             self._status(self._apply({"api_key": value}, restart=False, secret=True))
             return
@@ -362,8 +384,14 @@ class DoctorModal(ModalScreen[None]):
         try:
             # Listing only needs the endpoint; the live config already carries a
             # valid main model, so no override (the vision field may be empty,
-            # which AppConfig would reject as a main model).
-            models = await list_available_models(self._candidate_config())
+            # which AppConfig would reject as a main model). Embeddings may be
+            # served somewhere else entirely, so that step asks their endpoint.
+            catalog = (
+                self._embedding_catalog_config()
+                if field == "embedding_model"
+                else self._candidate_config()
+            )
+            models = await list_available_models(catalog)
         except Exception as exc:  # noqa: BLE001
             self._status(f"✗ {exc}")
             return
@@ -377,6 +405,9 @@ class DoctorModal(ModalScreen[None]):
         from code_ai.providers.factory import create_provider
         from code_ai.providers.models import ImageContent, Message, ModelRequest
 
+        if field == "embedding_model":
+            await self._test_embedding_model()
+            return
         fallback = self._config.model if field == "model" else self._config.vision_model
         model = self.query_one(f"#doctor-input-{field}", Input).value.strip() or fallback
         if not model:
@@ -413,6 +444,103 @@ class DoctorModal(ModalScreen[None]):
             return
         reply = (response.text or "").strip().replace("\n", " ")
         self._status(f"✓ {model} responded: {reply[:60] or '[empty reply]'}")
+
+    def _embedding_catalog_config(self) -> AppConfig:
+        """A config pointed at wherever embeddings are served, for listing models.
+
+        Embeddings default to the chat provider's endpoint, so usually this is
+        the live config. When ``index.embedding_base_url`` / ``embedding_api_mode``
+        send them elsewhere, the catalog has to come from there instead - the
+        chat provider may not serve a single embedding model.
+        """
+
+        index = self._config.index
+        overrides: dict[str, Any] = {}
+        if index.embedding_base_url:
+            overrides["base_url"] = index.embedding_base_url
+        if index.embedding_api_mode:
+            overrides["api_mode"] = (
+                "ollama" if index.embedding_api_mode == "ollama" else "completions"
+            )
+        return self._candidate_config(**overrides)
+
+    async def _test_embedding_model(self) -> None:
+        """Ask the model for one vector, which is the only proof that matters.
+
+        A model that answers chat may still have no embeddings endpoint, and one
+        that does may not be served under the name that was typed. The reply is
+        reported with its dimension, because that is what tells the user they
+        got an embedding model rather than something that merely responded.
+        """
+
+        model = self.query_one("#doctor-input-embedding_model", Input).value.strip()
+        if not model:
+            self._status("✗ Type an embedding model name to test.")
+            return
+        self._status(f"Testing {model}…")
+        try:
+            candidate = self._candidate_config(index=self._index_settings(model))
+            client = build_embedding_client(candidate)
+            if client is None:  # pragma: no cover - guarded by the empty check above
+                self._status("✗ No embedding model to test.")
+                return
+            try:
+                vectors = await asyncio.wait_for(
+                    client.embed(["def parse_tool_call(payload): return payload"]),
+                    timeout=min(30.0, candidate.budgets.model_timeout()),
+                )
+            finally:
+                await client.close()
+        except Exception as exc:  # noqa: BLE001 - surfaced to the user verbatim
+            self._status(f"✗ {exc}")
+            return
+        self._status(f"✓ {model} returned a {len(vectors[0])}-dimension vector.")
+
+    def _index_settings(self, model: str) -> dict[str, Any]:
+        """The index config as a full mapping, with the embedding model swapped.
+
+        Persisting has to carry every index key: the saved file replaces the
+        whole ``index`` object, so a partial mapping would silently reset the
+        other index settings to their defaults.
+        """
+
+        settings = asdict(self._config.index)
+        settings["embedding_model"] = model
+        return settings
+
+    async def _apply_embedding_model(self, value: str) -> str:
+        config = self._config
+        try:
+            validated = persist_config_updates(
+                config, {"index": self._index_settings(value)}, explicit_path=self._config_path
+            )
+        except Exception as exc:  # noqa: BLE001
+            return f"✗ Not saved: {exc}"
+        config.index = validated.index
+        if self._on_change is not None:
+            self._on_change()
+        # Applied live: the running index swaps its embedding client, so
+        # search_index answers semantically without restarting the session.
+        apply = getattr(self._application, "set_embedding_model", None)
+        if apply is None:
+            return f"✓ Saved embedding_model={value or 'none'} (restart to apply)"
+        try:
+            pending = await apply(value)
+        except Exception as exc:  # noqa: BLE001
+            return f"✓ Saved embedding_model={value or 'none'} — not applied: {exc}"
+        if not value:
+            return "✓ Saved: semantic search off, search_index stays lexical (applied now)"
+        if pending <= 0:
+            return f"✓ Saved embedding_model={value} — already embedded (applied now)"
+        if not self._application.start_embedding_backfill():
+            return (
+                f"✓ Saved embedding_model={value} (applied now) — "
+                f"{pending} chunk(s) get vectors on the next /index"
+            )
+        return (
+            f"✓ Saved embedding_model={value} (applied now) — embedding "
+            f"{pending} chunk(s) in the background; see /index status"
+        )
 
     # ------------------------------------------------------------------ #
     # Persistence helpers

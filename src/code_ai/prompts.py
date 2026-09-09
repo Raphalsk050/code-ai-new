@@ -488,8 +488,10 @@ create, or refactor requests into read-only explanations.
 """
 
 LOCAL_DISCOVERY_PROMPT = """Inspect the local workspace before planning changes.
-Use list_files, search_code, read_file, system_information, use_skill, ask_user,
-request_external_gap, and finish_discovery only. Do not use web_search unless a
+Use list_files, search_index, search_code, read_file, system_information,
+use_skill, ask_user, request_external_gap, and finish_discovery only. Prefer
+search_index to locate code by meaning or symbol (build it with index_workspace
+when it reports empty); use search_code for exact literals. Do not use web_search unless a
 specific external gap is required, local files are insufficient, and the runtime
 exposes web_search as an allowed tool.
 """

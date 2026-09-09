@@ -64,6 +64,14 @@ SLASH_COMMANDS = [
     SlashCommand("/goal stop", "Stop the goal loop (also cancels the running turn)."),
     SlashCommand("/goal resume", "Resume a blocked goal and restart the loop."),
     SlashCommand("/cancel", "Cancel the active turn."),
+    SlashCommand("/index", "Refresh the code index (incremental) for fast search_index."),
+    SlashCommand("/index full", "Rebuild the code index from scratch."),
+    SlashCommand("/index status", "Show what the code index holds."),
+    SlashCommand(
+        "/index <dir>",
+        "Refresh the code index for one workspace subtree.",
+        "/index ",
+    ),
     SlashCommand(
         "/term <texto>",
         "Type a line into the shared interactive terminal session.",
@@ -303,6 +311,7 @@ _HELP_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Planning", ("/auto", "/plan", "/act", "/mode", "/deep-plan", "/plan-status", "/replan")),
     ("Goals", ("/goal",)),
     ("Terminal", ("/term",)),
+    ("Code index", ("/index",)),
     ("Workflows and skills", ("/workflows", "/skills")),
     ("Diagnostics", ("/debug",)),
     ("Configuration", ("/config",)),

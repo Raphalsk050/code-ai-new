@@ -14,6 +14,7 @@ Code-AI is a terminal-based coding agent with a small application facade, typed 
 - `tools`: schemas and implementations for files, commands, terminals, review, system info, and web search.
 - `interop`: adapters that map other agents' on-disk conventions (rules, skills, workflows) onto Code-AI sources.
 - `sandbox`: the per-session scratch root where builds, generated code, and captured run output live instead of the user's project.
+- `index`: the code index - a chunked, searchable copy of the workspace (SQLite + FTS5, optional embeddings) that answers "where is X" without walking the tree.
 - `config`: defaults, loading, validation, and redacted display.
 
 The CLI and UI do not parse provider SDK objects or execute tools directly. Provider adapters convert SDK-specific responses into normalized internal models at the boundary.
@@ -351,6 +352,10 @@ If the vision call fails, the raw images are attached as before.
 
 ## Available Tools
 
+- `search_index`
+- `index_workspace`
+- `search_code`
+- `list_files`
 - `read_file`
 - `write_file`
 - `edit_code`
@@ -400,6 +405,63 @@ That is never a dead end: the questions are also the turn's final answer in the 
 The answers come back as one message with a line per question, each naming what it answers, and go through the same path a typed reply takes - so the plan the question paused resumes exactly as before.
 
 Options are written as `Label :: why it might be the right call`, a flat list of strings rather than nested objects, because the tool schemas here stay atomic for the sake of small local models.
+
+## The Code Index
+
+Finding code by grepping the tree gets slower with every file, and it only finds the words you already know.
+The code index is a local copy of the workspace's source, cut into chunks on symbol boundaries (Python via `ast`, other languages via their declaration keywords, everything else in overlapping windows) and stored in SQLite under `~/.code-ai/projects/<slug>/index/`.
+Nothing is ever written into the project.
+
+Two tools read and maintain it:
+
+- `search_index`: ranked retrieval for a question or a set of identifiers ("where are tool calls approved", "retry backoff subagent"). Lexical ranking is BM25 over FTS5 and understands split identifiers, so `ToolCall` matches "tool call". Every hit carries the chunk text with its path and line range.
+- `index_workspace`: builds or refreshes the index. Incremental: an unchanged file costs one `stat`, so calling it again is cheap.
+
+The index follows the agent: every file a tool reads, writes, or edits is re-indexed in the background, so what the agent is analysing or modifying is always current (`index.auto_index_touched_files`).
+Sub-agents share the same index.
+
+You trigger it yourself with:
+
+```text
+/index            refresh incrementally
+/index full       rebuild from scratch
+/index status     what is indexed, and whether embeddings are on
+/index src/app    refresh one subtree
+```
+
+or outside a session, e.g. after cloning or from a git hook:
+
+```bash
+code-ai index                 # refresh
+code-ai index --full          # rebuild
+code-ai index --status
+code-ai index --search "approve tool call"
+```
+
+Semantic retrieval is opt-in, and the easiest way to turn it on is `/doctor` → **Embedding model**: it lists the models your provider serves, **Test** asks the chosen one for a vector and reports its dimension, and **Save** applies it to the running session and embeds the already-indexed chunks in the background - no restart, no editing the config by hand.
+Saving an empty value turns semantic retrieval back off and leaves the lexical index answering on its own.
+
+The same thing set by hand is `index.embedding_model` (for example `nomic-embed-text` on Ollama, or any model behind an OpenAI-compatible `/v1/embeddings`): each chunk is embedded during a refresh, and a query then fuses the lexical and vector rankings.
+Embeddings default to the chat provider's endpoint; `index.embedding_api_mode` (`ollama` or `openai`) and `index.embedding_base_url` point them elsewhere, and the setup dialog lists that endpoint's catalog instead.
+If the embedding server is down the index degrades to lexical and says so in `/index status`.
+Changing the embedding model invalidates the stored vectors, which are recomputed on the next refresh.
+
+```json
+{
+  "index": {
+    "enabled": true,
+    "embedding_model": "",
+    "embedding_api_mode": "",
+    "embedding_base_url": "",
+    "auto_index_touched_files": true,
+    "max_file_bytes": 524288,
+    "chunk_lines": 60,
+    "chunk_overlap_lines": 10,
+    "include_globs": [],
+    "exclude_globs": []
+  }
+}
+```
 
 ## The Sandbox
 
