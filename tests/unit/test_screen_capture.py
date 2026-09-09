@@ -206,3 +206,59 @@ def test_an_unknown_coordinate_space_is_rejected_rather_than_assumed() -> None:
     controller = SimpleNamespace(last_capture=_geometry())
     with pytest.raises(ToolArgumentError):
         resolve_point(controller, {"coordinate_space": "pixels"}, 1, 1)
+
+
+# ------------------------------------------------------------------ packaging
+
+
+def _png_header(width: int, height: int) -> bytes:
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + b"\x00" * 8
+        + width.to_bytes(4, "big")
+        + height.to_bytes(4, "big")
+        + b"\x00" * 40
+    )
+
+
+def test_windows_says_it_needs_pillow_rather_than_naming_nothing(monkeypatch) -> None:
+    """Windows has no command-line screenshotter to fall back on.
+
+    The generic message lists the CLI tools that could be installed, and on
+    Windows that list is empty - it used to read "Install one of: ." which
+    tells the reader nothing at all.
+    """
+
+    monkeypatch.setattr(capture.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(capture, "_pillow_installed", lambda: False)
+    _no_backends(monkeypatch)
+
+    with pytest.raises(ToolExecutionError) as caught:
+        capture.capture_screen_png()
+    assert "pillow" in str(caught.value).lower()
+
+
+def test_a_capture_too_big_to_send_is_refused_when_it_cannot_be_shrunk(monkeypatch) -> None:
+    """Sending it would spend the context window the downscale protects.
+
+    Without Pillow the downscale is a no-op, so a full-resolution screenshot
+    would travel as megabytes of base64 on every later request in the
+    conversation - which is far harder to diagnose than a missing package.
+    """
+
+    real_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
+
+    def no_pillow(name, *args, **kwargs):
+        if name.startswith("PIL"):
+            raise ImportError("Pillow is not installed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", no_pillow)
+
+    with pytest.raises(ToolExecutionError) as caught:
+        capture.downscale_png(_png_header(4000, 2000))
+    assert "pillow" in str(caught.value).lower()
+
+    # One that already fits needed nothing from Pillow, so it is left alone.
+    small = _png_header(800, 600)
+    assert capture.downscale_png(small) == small

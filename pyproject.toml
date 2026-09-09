@@ -24,6 +24,11 @@ dependencies = [
 [project.optional-dependencies]
 desktop = [
   "pyautogui>=0.9.54",
+  # Not optional within this extra even though the import is guarded: it is the
+  # only way to capture the screen on Windows, and the only way to shrink a
+  # capture anywhere. Without it a 4K screenshot would travel at full size and
+  # spend the context window it was meant to fit inside.
+  "pillow>=10.0.0",
 ]
 dev = [
   "pytest>=8.0.0",

@@ -297,7 +297,20 @@ def downscale_png(data: bytes, max_edge: int = MAX_IMAGE_EDGE_PX) -> bytes:
 
         from PIL import Image
     except Exception:  # noqa: BLE001 - Pillow is optional
-        return data
+        size = png_size(data)
+        if size is None or max(size) <= max_edge:
+            # Already small enough to send; nothing was needed from Pillow.
+            return data
+        # Refusing is the kind thing here. Sending it would work, in the sense
+        # that the request would be built - a full-resolution screenshot is
+        # megabytes of base64 riding on every later request in the
+        # conversation, which spends the context window the downscale exists to
+        # protect and is far harder to diagnose than a missing package.
+        raise ToolExecutionError(
+            f"Captured a {size[0]}x{size[1]} screen, which is too large to send "
+            f"as-is, and Pillow is not installed to shrink it. Install it with: "
+            f"{_PILLOW_HINT}."
+        )
     try:
         image = Image.open(io.BytesIO(data))
         if max(image.size) <= max_edge:
@@ -314,6 +327,17 @@ def downscale_png(data: bytes, max_edge: int = MAX_IMAGE_EDGE_PX) -> bytes:
         return data
 
 
+def _pillow_installed() -> bool:
+    try:
+        import PIL  # noqa: F401
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
+_PILLOW_HINT = "pip install 'code-ai[desktop]' (or 'pip install pillow')"
+
+
 def _unavailable_message(system: str, backends: tuple[CaptureBackend, ...]) -> str:
     if system not in {"Darwin", "Windows"} and not _has_display():
         return (
@@ -321,6 +345,10 @@ def _unavailable_message(system: str, backends: tuple[CaptureBackend, ...]) -> s
             "is set, so this process is not attached to a screen (a container, "
             "an SSH session without X forwarding, or a headless server)."
         )
+    if system == "Windows" and not _pillow_installed():
+        # Windows has no command-line screenshot tool to fall back on, so this
+        # is the whole story rather than one option among several.
+        return f"Screen capture on Windows needs Pillow. Install it with: {_PILLOW_HINT}."
     installed = [backend.name for backend in backends if backend.available]
     if installed:
         session = "Wayland" if _is_wayland() else "X11"
