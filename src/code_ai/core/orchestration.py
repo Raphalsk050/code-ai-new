@@ -457,7 +457,40 @@ class AgentOrchestrator:
                 rules=rules,
                 skills=skills,
                 workflows=workflows,
+                code_index=self._code_index_summary(),
             )
+        )
+
+    def _code_index_summary(self) -> str:
+        """One line saying whether the index is worth asking, refreshed per turn.
+
+        The index is warmed in the background as the session starts, so at the
+        first turn it may still be filling; describing it once at startup would
+        have said "empty" for the whole session. Reading it here means the model
+        is told what is actually there when it is about to choose a tool.
+        """
+
+        # Read off the tool context rather than held as state: the orchestrator
+        # does not own the index, and the factory is already the one place that
+        # knows what the tools are handed.
+        try:
+            index = self.tool_context_factory(None).code_index
+        except Exception:  # noqa: BLE001 - the prompt must not depend on the index
+            return ""
+        if index is None:
+            return ""
+        try:
+            status = index.status()
+        except Exception:  # noqa: BLE001 - the prompt must not depend on the index
+            return ""
+        if not status.enabled:
+            return ""
+        if status.empty:
+            return "empty - call index_workspace once before searching it."
+        semantic = " with semantic search" if status.semantic_ready else ""
+        return (
+            f"{status.files} file(s), {status.chunks} block(s) indexed{semantic}. "
+            "Ask search_index where something is instead of reading files to find it."
         )
 
     def _sandbox_root(self) -> str:

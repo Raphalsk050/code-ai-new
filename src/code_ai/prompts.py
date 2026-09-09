@@ -62,6 +62,7 @@ def build_system_prompt(
     rules: str = "",
     skills: str = "",
     workflows: str = "",
+    code_index: str = "",
 ) -> str:
     current_date = datetime.now().astimezone().date().isoformat()
     sandbox_section = build_sandbox_section(sandbox_root)
@@ -77,6 +78,11 @@ def build_system_prompt(
     # optional context. They come from ~/.code-ai/rules (global) and the
     # workspace's .code-ai/rules (project), and always apply.
     rules_section = f"\n{rules.strip()}\n\n" if rules.strip() else ""
+    # Stated rather than implied. The routing below tells the model to search
+    # the index first, but a tool it cannot tell is populated reads as a tool
+    # that might waste a call - so the size is given, and it is rebuilt every
+    # turn because the index is warmed in the background while the session runs.
+    index_section = f"\nCode index: {code_index.strip()}\n" if code_index.strip() else ""
     return f"""You are Code-AI, a terminal-based coding agent.
 
 Configured workspace: {workspace}
@@ -91,6 +97,7 @@ For workspace tasks, local files are the source of truth. Inspect the workspace
 before proposing changes, search/read local code before using web_search, and
 follow existing project conventions over generic internet examples.
 
+{index_section}
 To find code, start with search_index. It ranks the indexed workspace against a
 question and returns the matching blocks with their paths and line ranges, which
 is what locating code costs instead of reading files to discover what is in

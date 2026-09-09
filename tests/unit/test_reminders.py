@@ -141,3 +141,42 @@ def test_rounds_since_reports_none_for_unused_tools() -> None:
     engine.observe(_read())
     assert engine.activity.rounds_since("write_file") is None
     assert engine.activity.rounds_since("read_file") == 0
+
+
+def test_reading_files_to_find_things_points_at_the_index() -> None:
+    """The habit the index exists to replace, and the one the model falls into.
+
+    Reading a file already located is right. Reading several to work out which
+    one holds something costs a whole file per guess.
+    """
+
+    engine = ReminderEngine()
+    tools = frozenset({"read_file", "search_index"})
+    note = None
+    for _ in range(4):
+        engine.observe(ToolRound(names=("read_file",), read_only=True, mutating=False, ran_process=False))
+        note = note or engine.due(tools)
+    assert note is not None and "search_index" in note
+
+
+def test_the_index_is_not_suggested_once_it_has_been_asked() -> None:
+    """It was used; reading what it pointed at is exactly the right next move."""
+
+    engine = ReminderEngine()
+    tools = frozenset({"read_file", "search_index"})
+    engine.observe(ToolRound(names=("search_index",), read_only=True, mutating=False, ran_process=False))
+    for _ in range(5):
+        engine.observe(ToolRound(names=("read_file",), read_only=True, mutating=False, ran_process=False))
+        note = engine.due(tools)
+        assert note is None or "search_index" not in note
+
+
+def test_a_session_without_an_index_is_never_told_to_search_one() -> None:
+    """search_index is only registered when the index is enabled."""
+
+    engine = ReminderEngine()
+    tools = frozenset({"read_file"})
+    for _ in range(6):
+        engine.observe(ToolRound(names=("read_file",), read_only=True, mutating=False, ran_process=False))
+        note = engine.due(tools)
+        assert note is None or "search_index" not in note
