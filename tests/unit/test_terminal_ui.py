@@ -1824,8 +1824,10 @@ async def test_term_commands_drive_the_shared_terminal_session(tmp_path) -> None
         )
         assert terminal_app.vm.terminal_visible is True
         assert terminal_app.vm.terminal_screen == "C:\\workspace> _"
-        assert terminal_app.query_one("#terminal").display is True
-        assert terminal_app.query_one("#sidebar").display is True
+        # The shell renders in the main column, not the sidebar: it is 80
+        # columns wide and the sidebar is 38, so it used to wrap every line.
+        assert terminal_app.query_one("#terminal-panel").display is True
+        assert terminal_app.query_one("#sidebar").display is False
 
         # Free text after /term is typed into the session followed by Enter —
         # the user acts on the same PTY the agent drives.
@@ -1847,6 +1849,76 @@ async def test_term_commands_drive_the_shared_terminal_session(tmp_path) -> None
         await pilot.pause(0.2)
         assert manager.killed == ["sess-1234abcd"]
         assert terminal_app.vm.terminal_closed is True
+
+
+async def test_the_keyboard_can_be_handed_to_the_shell_and_taken_back(tmp_path) -> None:
+    """Focus decides who receives a line, and it is decided before /commands.
+
+    A shell takes "/quit" as four characters like any other input, so a chat
+    that intercepted it while the terminal had the keyboard would swallow input
+    meant for the program the user is answering.
+    """
+
+    fake_app = FakeTerminalApplication(tmp_path)
+    manager = FakeUiTerminalManager()
+    fake_app.terminal_manager = manager
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(120, 44)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "/term start"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert terminal_app.vm.terminal_focused is False
+
+        await pilot.press("escape")
+        await pilot.pause(0.1)
+        assert terminal_app.vm.terminal_focused is True
+
+        # A slash command now belongs to the shell, not to the chat.
+        input_widget.value = "/quit"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert manager.sent_text[-1] == ("sess-1234abcd", "/quit")
+
+        await pilot.press("escape")
+        await pilot.pause(0.1)
+        assert terminal_app.vm.terminal_focused is False
+
+
+async def test_a_password_prompt_is_not_echoed_by_the_composer(tmp_path) -> None:
+    """The shell stops echoing at a password prompt; the composer has to too."""
+
+    fake_app = FakeTerminalApplication(tmp_path)
+    manager = FakeUiTerminalManager()
+    manager.screen_text = "[sudo] password for rafael:"
+    fake_app.terminal_manager = manager
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(120, 44)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "/term start"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert terminal_app.vm.terminal_awaiting_secret is True
+
+        await pilot.press("escape")
+        await pilot.pause(0.1)
+        assert input_widget.password_mode is True
+
+        await pilot.press("h", "u", "n", "t", "e", "r")
+        await pilot.pause(0.1)
+        # On screen it is dots; the real characters are held apart from them.
+        assert input_widget.text == "•" * 6
+        assert input_widget.secret_value == "hunter"
+
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert manager.sent_text[-1] == ("sess-1234abcd", "hunter")
+        # Neither the transcript nor the recall history keeps it.
+        assert not any("hunter" in line for line in terminal_app.vm.conversation)
+        assert "hunter" not in input_widget._history
+        assert input_widget.text == ""
 
 
 async def test_term_without_a_manager_degrades_gracefully(tmp_path) -> None:

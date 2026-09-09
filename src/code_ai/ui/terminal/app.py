@@ -66,6 +66,7 @@ from code_ai.ui.terminal.widgets import (
     render_subagent_task,
     render_subagents_summary,
     render_terminal_screen,
+    terminal_panel_title,
     resolve_spinner,
     spinner_color,
     subagent_task_preview,
@@ -253,6 +254,12 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             # Images pasted into the current draft, keyed by the placeholder
             # text standing in for them ("[Image #1]", ...).
             self._images: list[tuple[str, ImageContent]] = []
+            # Set while the shell is asking for something it will not echo. The
+            # document then holds a mask and the real characters live here, so
+            # the secret is never in the attribute everything else reads.
+            self._password_mode = False
+            self._secret = ""
+            self.remember_submissions = True
 
         def attach_image(self, image: ImageContent) -> str:
             placeholder = f"[Image #{len(self._images) + 1}]"
@@ -346,9 +353,48 @@ def create_terminal_app(application, *, config_path: Path | None = None):
 
         def clear_value(self) -> None:
             self.text = ""
+            self._secret = ""
+
+        @property
+        def password_mode(self) -> bool:
+            return self._password_mode
+
+        @password_mode.setter
+        def password_mode(self, enabled: bool) -> None:
+            """Show dots instead of characters while a secret is being typed."""
+
+            enabled = bool(enabled)
+            if enabled == self._password_mode:
+                return
+            self._password_mode = enabled
+            self._secret = ""
+            self.text = ""
+
+        @property
+        def secret_value(self) -> str:
+            return self._secret
+
+        def _type_secret(self, key: str, character: str | None) -> bool:
+            """Apply one keystroke to the masked buffer. False = not handled."""
+
+            if key == "backspace":
+                self._secret = self._secret[:-1]
+            elif character is not None and character.isprintable():
+                self._secret += character
+            else:
+                return False
+            self.text = "•" * len(self._secret)
+            self.move_cursor(self.document.end)
+            return True
 
         def remember(self, text: str) -> None:
             """Record a submitted entry and reset the browse cursor."""
+            if not self.remember_submissions:
+                # A secret recallable with Up is a secret still on screen a
+                # minute later, in front of whoever is next at the keyboard.
+                self._history_index = None
+                self._draft = ""
+                return
             entry = text.rstrip("\n")
             # Skip blanks and consecutive duplicates, like a shell history.
             if entry.strip() and (not self._history or self._history[-1] != entry):
@@ -389,11 +435,22 @@ def create_terminal_app(application, *, config_path: Path | None = None):
 
         async def _on_key(self, event) -> None:
             key = event.key
+            if self._password_mode and key not in {"enter", "escape"}:
+                # Moving the cursor through a mask would desynchronise it from
+                # the secret behind it, so only typing and backspace are
+                # accepted and every other key is swallowed rather than
+                # half-applied to one of the two buffers.
+                event.stop()
+                event.prevent_default()
+                self._type_secret(key, getattr(event, "character", None))
+                return
             if key == "enter":
                 # Enter sends the prompt; a newline needs an explicit modifier.
                 event.stop()
                 event.prevent_default()
-                self.post_message(self.Submitted(self, self.text, self.take_images(self.text)))
+                value = self._secret if self._password_mode else self.text
+                images = [] if self._password_mode else self.take_images(self.text)
+                self.post_message(self.Submitted(self, value, images))
                 return
             if key == "ctrl+v":
                 # Explicit paste reads the OS clipboard directly, so an image
@@ -945,6 +1002,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             ("ctrl+q", "quit", "Quit"),
             ("ctrl+l", "clear", "Clear"),
             ("ctrl+b", "toggle_session", "Session panel"),
+            ("escape", "toggle_terminal_focus", "Type in terminal"),
         ]
 
         def __init__(self) -> None:
@@ -1035,6 +1093,16 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                         command = CommandOutputPanel(id="command-panel")
                         command.display = False
                         yield command
+                        # The interactive shell, in the same band as the two
+                        # boxes above it. It used to live in the 38-column
+                        # sidebar, which is narrower than the 80-column screen
+                        # it renders - so every line wrapped and the one panel
+                        # the user is expected to type into was the hardest to
+                        # read. Unlike those two it is not tied to the current
+                        # turn: it stays up across turns while the shell lives.
+                        terminal = Static("", id="terminal-panel", markup=False)
+                        terminal.display = False
+                        yield terminal
                         yield Static("", id="stream-tail", markup=False)
                     with Vertical(id="sidebar"):
                         # Two stacked panels, each scrolls internally when its
@@ -1054,13 +1122,6 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                                     resolve_spinner(application.session.config.terminal_spinner),
                                     id="subagents-body",
                                 )
-                        # Live viewport of the interactive PTY session (agent-
-                        # or user-driven); appears with the first screen update
-                        # and stays across turns while the session lives.
-                        with Vertical(id="terminal"):
-                            yield Static("TERMINAL", classes="panel-title")
-                            with VerticalScroll(id="terminal-scroll"):
-                                yield Static("", id="terminal-body", markup=False)
                 yield WorkingIndicator(
                     resolve_spinner(application.session.config.terminal_spinner),
                     id="working-indicator",
@@ -1315,6 +1376,15 @@ def create_terminal_app(application, *, config_path: Path | None = None):
 
         async def on_multiline_input_submitted(self, event: MultilineInput.Submitted) -> None:
             text = event.value
+            # While the terminal has focus the line belongs to the shell, and
+            # that is decided before any slash command is looked for: a shell
+            # takes "/etc/passwd" and "/quit" as input like anything else, and
+            # having the chat intercept them would make the focus mode a lie.
+            if self.vm.terminal_focused:
+                event.input.clear_value()
+                self._set_command_suggestions("")
+                await self._send_to_terminal(text)
+                return
             event.input.remember(text)
             event.input.clear_value()
             self._set_command_suggestions("")
@@ -1582,8 +1652,23 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             verbatim followed by Enter.
             """
             argument = stripped[len("/term") :].strip()
-            if argument in {"", "status"}:
+            if argument == "status":
                 self._append_conversation_line(self.controller.terminal_status())
+                return
+            if argument == "":
+                # Bare /term is the way in for anyone who has not found Esc:
+                # it hands the keyboard to the shell rather than reporting on
+                # it, which is what someone typing it in front of a password
+                # prompt is actually after.
+                if not self.vm.terminal_visible or self.vm.terminal_closed:
+                    self._append_conversation_line(self.controller.terminal_status())
+                    return
+                await self.action_toggle_terminal_focus()
+                self._append_conversation_line(
+                    "term> Teclado no shell. Esc volta para a conversa."
+                    if self.vm.terminal_focused
+                    else "term> Teclado de volta na conversa."
+                )
                 return
             if argument == "start" or argument.startswith("start "):
                 command = argument[len("start") :].strip() or None
@@ -2040,6 +2125,43 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             else:
                 await self.action_quit()
 
+        async def action_toggle_terminal_focus(self) -> None:
+            """Point the composer at the shell, or back at the conversation."""
+
+            if not self.vm.terminal_visible or self.vm.terminal_closed:
+                return
+            self.vm.terminal_focused = not self.vm.terminal_focused
+            self._apply_terminal_focus()
+            self._refresh_terminal_panel()
+
+        def _apply_terminal_focus(self) -> None:
+            """Dress the composer for whoever is receiving what is typed.
+
+            The password case is the reason this is not only a label: a shell
+            asking for a secret does not echo it, and a composer that shows it
+            in clear text on screen would undo that. Nothing about the value is
+            remembered either - recallable history is the other way a secret
+            outlives the moment it was typed.
+            """
+
+            composer = self.query_one("#input", MultilineInput)
+            secret = self.vm.terminal_focused and self.vm.terminal_awaiting_secret
+            composer.password_mode = secret
+            composer.remember_submissions = not secret
+
+        async def _send_to_terminal(self, text: str) -> None:
+            """Type one line into the shell, then leave the composer clean."""
+
+            was_secret = self.vm.terminal_awaiting_secret
+            line = await self.controller.terminal_send(text)
+            # A secret is not echoed by the shell and must not be echoed by the
+            # transcript either; the confirmation would otherwise carry it.
+            if was_secret:
+                self._append_conversation_line("term> (senha enviada)")
+            elif line:
+                self._append_conversation_line(line)
+            self._apply_terminal_focus()
+
         async def action_clear(self) -> None:
             self.vm.conversation.clear()
             await self.query_one("#conversation", VerticalScroll).remove_children()
@@ -2151,27 +2273,41 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             # the other, and the column is reclaimed entirely when both are idle.
             self.query_one("#plan").display = self.vm.plan_visible
             self.query_one("#subagents").display = self.vm.subagents_visible
-            self.query_one("#terminal").display = self.vm.terminal_visible
             self.query_one("#sidebar").display = (
-                self.vm.plan_visible or self.vm.subagents_visible or self.vm.terminal_visible
+                self.vm.plan_visible or self.vm.subagents_visible
             )
-            if self.vm.terminal_visible:
-                screen = (
-                    self.vm.terminal_session_id,
-                    self.vm.terminal_screen,
-                    self.vm.terminal_rows,
-                    self.vm.terminal_cols,
-                    self.vm.terminal_closed,
-                )
-                if self._changed("terminal-body", screen):
-                    self.query_one("#terminal-body", Static).update(
-                        render_terminal_screen(*screen)
-                    )
+            self._refresh_terminal_panel()
             self._refresh_code_window()
             self.query_one("#plan-body", PlanPanel).update_plan(
                 self.vm.plan_steps, self.vm.plan_progress, self.vm.plan_status
             )
             self.query_one("#subagents-body", SubagentPanel).update_agents(self.vm.subagents_list())
+
+        def _refresh_terminal_panel(self) -> None:
+            """Draw the shell, and say on its frame where typing currently goes."""
+
+            panel = self.query_one("#terminal-panel", Static)
+            panel.display = self.vm.terminal_visible
+            if not self.vm.terminal_visible:
+                return
+            panel.set_class(self.vm.terminal_focused, "-focused")
+            panel.border_title = terminal_panel_title(
+                self.vm.terminal_session_id,
+                focused=self.vm.terminal_focused,
+                closed=self.vm.terminal_closed,
+            )
+            panel.border_subtitle = (
+                "senha - nao aparece" if self.vm.terminal_awaiting_secret else ""
+            )
+            screen = (
+                self.vm.terminal_session_id,
+                self.vm.terminal_screen,
+                self.vm.terminal_rows,
+                self.vm.terminal_cols,
+                self.vm.terminal_closed,
+            )
+            if self._changed("terminal-panel", screen):
+                panel.update(render_terminal_screen(*screen))
 
         def _refresh_code_window(self) -> None:
             """Show (or hide) the file the model is writing right now."""

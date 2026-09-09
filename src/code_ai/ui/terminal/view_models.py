@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 
 from code_ai.core.interaction import Questionnaire
 from code_ai.events.models import EventEnvelope
-from code_ai.ui.terminal.widgets import build_plan_steps
+from code_ai.ui.terminal.widgets import build_plan_steps, looks_like_secret_prompt
 
 # Character budget for the live "cmd~" line that streams execute_command output.
 # Only the tail matters while it runs; the full stdout/stderr still arrives in
@@ -77,6 +77,10 @@ class TerminalViewModel:
     terminal_rows: int = 24
     terminal_cols: int = 80
     terminal_closed: bool = False
+    # True while the composer is typing into the PTY instead of into the chat.
+    # Held here rather than on the widget so the state survives a repaint and
+    # can be read by anything that renders the panel or the prompt.
+    terminal_focused: bool = False
     # The file the model is writing right now, decoded from its streaming
     # tool-call arguments (see ``tool.call.progress``). Turn-scoped like the
     # plan and sub-agent panels: it stays up after the write lands so the user
@@ -569,6 +573,10 @@ class TerminalViewModel:
             self.terminal_cols = cols
         self.terminal_closed = bool(payload.get("closed"))
         self.terminal_visible = True
+        # A shell that has exited cannot be typed into, so focus is released
+        # rather than left pointing at a dead session.
+        if self.terminal_closed:
+            self.terminal_focused = False
 
     def _apply_subagent_event(self, event: EventEnvelope) -> None:
         """Fold a ``subagent.*`` event into the live AGENTS panel state.
@@ -646,6 +654,16 @@ class TerminalViewModel:
         record["status"] = status
         record["detail"] = detail
         self.subagents_visible = True
+
+    @property
+    def terminal_awaiting_secret(self) -> bool:
+        """True when the shell is prompting for something that must not echo."""
+
+        return (
+            self.terminal_visible
+            and not self.terminal_closed
+            and looks_like_secret_prompt(self.terminal_screen)
+        )
 
     def _apply_index_progress(self, payload: dict) -> None:
         line = render_index_progress(
