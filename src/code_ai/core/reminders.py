@@ -132,6 +132,24 @@ def _change_left_unverified(activity: TurnToolActivity, tools: frozenset[str]) -
     return last_process is None or last_process < activity.last_mutation_round
 
 
+def _reading_to_find_things(activity: TurnToolActivity, tools: frozenset[str]) -> bool:
+    """Files are being read to discover what is in them, with an index sitting there.
+
+    Reading a file you have already located is the right thing to do. Reading
+    several to work out which one holds something is the index's job, and costs
+    a whole file per guess - the one habit the index exists to replace, and the
+    one the model falls back into because read_file is what it has always used.
+
+    ``search_index`` being in ``tools`` is what makes this safe to say: the
+    tool is only registered when the index is enabled, so this never suggests a
+    capability the session does not have.
+    """
+
+    if "search_index" not in tools or activity.used("search_index"):
+        return False
+    return activity.calls_by_tool.get("read_file", 0) >= 3
+
+
 def _mistake_went_unrecorded(activity: TurnToolActivity, tools: frozenset[str]) -> bool:
     """Something failed, the agent worked past it, and nothing was written down.
 
@@ -162,6 +180,19 @@ DEFAULT_REMINDERS: tuple[Reminder, ...] = (
             "'feedback'), phrased as what to do next time rather than what "
             "happened. That is the only way the next session starts already "
             "knowing it. If the failure taught you nothing durable, ignore this."
+        ),
+    ),
+    Reminder(
+        name="search_the_index",
+        applies=_reading_to_find_things,
+        message=(
+            "Several files have been read this turn and the code index has not "
+            "been asked anything. If you are still working out where something "
+            "lives, search_index answers that from the indexed workspace and "
+            "hands back the matching blocks with their paths and line ranges - "
+            "then read only what it points at. Reading files to find out what is "
+            "in them costs one whole file per guess. If you already knew which "
+            "files you needed, ignore this."
         ),
     ),
     Reminder(
