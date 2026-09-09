@@ -650,8 +650,14 @@ def test_a_total_that_is_not_known_yet_does_not_draw_a_full_bar() -> None:
     assert "12 done" in line and "█" not in line and "%" not in line
 
 
-async def test_the_progress_bar_rewrites_one_line_instead_of_scrolling(tmp_path) -> None:
-    """A line per update would push the conversation off screen on a big repo."""
+async def test_the_progress_bar_updates_while_the_refresh_runs(tmp_path) -> None:
+    """It has to move as the walk moves, not appear finished at the end.
+
+    It used to be a conversation line, mutated in place as progress arrived.
+    The transcript is append-only - a line is mounted once and never re-drawn -
+    so every update after the first was invisible and the bar sat at 0% for the
+    whole refresh. It lives in its own widget for that reason.
+    """
 
     from code_ai.ui.terminal.view_models import TerminalViewModel
 
@@ -665,18 +671,23 @@ async def test_the_progress_bar_rewrites_one_line_instead_of_scrolling(tmp_path)
     async def subscriber(event) -> None:
         view_model.apply(event)
         if event.event_type == "index.progress":
-            seen.append(view_model.conversation[view_model.index_progress_line])
+            seen.append(view_model.index_progress)
 
     bus.subscribe(subscriber)
     service = make_service(workspace)
     service.attach(bus)
     try:
         await service.refresh(full=True)
-        assert len(seen) > 1, "the walk reported no progress at all"
-        assert len(view_model.conversation) == 1
-        assert "60/60 files" in view_model.conversation[0]
-        # The refresh is over, so the next run starts a fresh line rather than
-        # overwriting the report this one left behind.
-        assert view_model.index_progress_line is None
+        # More than one distinct reading, and not all of them zero: that is the
+        # difference between a bar that moves and the bug this pins down.
+        assert len(set(seen)) > 1, f"the bar never changed: {set(seen)}"
+        assert seen[0] != seen[-1]
+        assert "0/60" in seen[0] and "60/60" in seen[-1]
+        # Never in the transcript, which cannot redraw it.
+        assert view_model.conversation == []
+        # The refresh is over, so the live bar goes away and the summary that
+        # whoever asked for it appends is what remains.
+        assert view_model.index_progress == ""
+        assert view_model.index_progress_visible is False
     finally:
         await service.close()

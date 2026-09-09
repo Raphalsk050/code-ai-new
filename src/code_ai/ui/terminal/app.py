@@ -1103,6 +1103,13 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                         terminal = Static("", id="terminal-panel", markup=False)
                         terminal.display = False
                         yield terminal
+                        # The /index bar. Its own widget because it is rewritten
+                        # while it is watched, and the transcript below is
+                        # append-only: a line mutated after it was mounted keeps
+                        # showing what it said at 0%.
+                        indexing = Static("", id="index-progress", markup=False)
+                        indexing.display = False
+                        yield indexing
                         yield Static("", id="stream-tail", markup=False)
                     with Vertical(id="sidebar"):
                         # Two stacked panels, each scrolls internally when its
@@ -2277,6 +2284,12 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 self.vm.plan_visible or self.vm.subagents_visible
             )
             self._refresh_terminal_panel()
+            progress = self.query_one("#index-progress", Static)
+            progress.display = self.vm.index_progress_visible
+            if self.vm.index_progress_visible and self._changed(
+                "index-progress", self.vm.index_progress
+            ):
+                progress.update(self.vm.index_progress)
             self._refresh_code_window()
             self.query_one("#plan-body", PlanPanel).update_plan(
                 self.vm.plan_steps, self.vm.plan_progress, self.vm.plan_status
