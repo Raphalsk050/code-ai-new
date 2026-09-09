@@ -59,7 +59,7 @@ from code_ai.providers.tool_recovery import (
     looks_like_attempted_tool_call,
     recover_tool_calls_from_text,
 )
-from code_ai.tools.base import ToolCapability, ToolContext
+from code_ai.tools.base import TOOL_IMAGES_KEY, ToolCapability, ToolContext
 from code_ai.tools.output import bound_text
 from code_ai.tools.registry import ToolRegistry
 from code_ai.util.partial_json import PartialObjectDecoder
@@ -136,6 +136,35 @@ _MUTATION_DENIAL_CAPABILITIES = frozenset(
         ToolCapability.COMPUTER_CONTROL,
     }
 )
+
+
+def _take_tool_images(payload: Any) -> list[ImageContent]:
+    """Remove and return the attachments a tool put on its payload.
+
+    Tools answer with JSON, and a screenshot is not JSON-shaped: base64 in the
+    body would eat the entire tool-output budget and arrive truncated into
+    nonsense. So a tool that produces pixels parks them under this one reserved
+    key and the orchestrator lifts them off before the payload is serialised -
+    the model reads the description in the body and sees the image attached.
+    """
+
+    if not isinstance(payload, dict):
+        return []
+    raw = payload.pop(TOOL_IMAGES_KEY, None)
+    if not isinstance(raw, list):
+        return []
+    images: list[ImageContent] = []
+    for item in raw:
+        if isinstance(item, ImageContent):
+            images.append(item)
+        elif isinstance(item, dict) and item.get("data"):
+            images.append(
+                ImageContent(
+                    data=str(item["data"]),
+                    media_type=str(item.get("media_type") or "image/png"),
+                )
+            )
+    return images
 
 
 def _chunked(items: list[ImageContent], size: int) -> list[list[ImageContent]]:
@@ -622,6 +651,30 @@ class AgentOrchestrator:
             if value > 0
         ]
         return min(limits) if limits else 0
+
+    async def _deliver_tool_images(self, tool_name: str, result: ToolResult) -> None:
+        """Put pixels a tool produced in front of the model.
+
+        They travel as a user message rather than on the tool message itself:
+        role "tool" has no image part in the Chat Completions shape, and the
+        endpoints that accept one do not agree on how. A following user message
+        is the one form every vision endpoint reads.
+
+        The same preparation a pasted image gets applies, so a main model that
+        cannot see gets the screenshot transcribed by the vision model instead
+        of silently receiving nothing.
+        """
+
+        if not result.images or result.is_error:
+            return
+        caption = f"Output of {tool_name} (see the attached image):"
+        prepared = await self._prepare_images(caption, list(result.images))
+        if prepared is None:
+            # Transcribed into the conversation already, or impossible to send.
+            return
+        self.conversation.messages.append(
+            Message(role="user", content=caption, images=prepared)
+        )
 
     async def _prepare_images(
         self, text: str, images: list[ImageContent]
@@ -1818,6 +1871,7 @@ class AgentOrchestrator:
                 self._action_line(call.name, call.arguments, outcome.result.is_error)
             )
             self.conversation.add_tool_result(outcome.result)
+            await self._deliver_tool_images(call.name, outcome.result)
             if (
                 self.planner
                 and self.planner.enabled
@@ -2019,6 +2073,11 @@ class AgentOrchestrator:
                 # On the final step the later planner advance is a deliberate
                 # no-op; the result must say so instead of echoing success.
                 payload = self.planner.annotate_plan_step_payload(payload)
+            # Pixels never go through the JSON body: base64 in ``content``
+            # would be truncated to nothing useful by the output budget and
+            # would cost the whole budget on the way. They are lifted out here
+            # and delivered as an attachment instead.
+            images = _take_tool_images(payload)
             content = bound_text(
                 json.dumps(payload, indent=2, sort_keys=True, default=str),
                 self.config.budgets.max_tool_output_chars,
@@ -2029,7 +2088,9 @@ class AgentOrchestrator:
                 source="core.orchestrator",
             )
             return _ToolOutcome(
-                result=ToolResult(tool_call_id=call.id, name=call.name, content=content),
+                result=ToolResult(
+                    tool_call_id=call.id, name=call.name, content=content, images=images
+                ),
                 payload=payload,
             )
         except CancellationError:
