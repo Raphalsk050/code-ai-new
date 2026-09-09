@@ -60,8 +60,12 @@ class TerminalViewModel:
     plan_visible: bool = False
     plan_status: str = ""
     plan_steps: list[dict[str, str]] = field(default_factory=list)
-    # Which conversation line the /index progress bar is rewriting, if any.
-    index_progress_line: int | None = None
+    # The /index progress bar. Deliberately not a conversation line: the
+    # transcript is append-only, so a line mutated in place after it was
+    # committed keeps showing whatever it said when it was mounted - which is
+    # 0%, for the whole refresh. It lives in its own widget instead, like every
+    # other thing on screen that changes while it is being watched.
+    index_progress: str = ""
     # Live sub-agent activity, keyed by agent_id and kept in dispatch order, so
     # the AGENTS panel can show what each delegated agent is doing right now.
     # Reset at the start of every user turn so a prior turn's agents never linger.
@@ -133,10 +137,9 @@ class TerminalViewModel:
         elif event.event_type == "index.progress":
             self._apply_index_progress(event.payload)
         elif event.event_type in {"index.refreshed", "index.embedded"}:
-            # The summary line is appended by whoever asked for the refresh, so
-            # the bar just stops owning its line and the next run starts a new
-            # one rather than overwriting a finished report.
-            self.index_progress_line = None
+            # The refresh is over and its summary is appended to the transcript
+            # by whoever asked for it, so the live bar has nothing left to show.
+            self.index_progress = ""
         elif event.event_type == "planning.mode.changed":
             self.planner_mode = str(event.payload.get("mode", self.planner_mode))
         elif event.event_type == "planning.phase.changed":
@@ -666,19 +669,15 @@ class TerminalViewModel:
         )
 
     def _apply_index_progress(self, payload: dict) -> None:
-        line = render_index_progress(
+        self.index_progress = render_index_progress(
             str(payload.get("phase") or "indexing"),
             int(payload.get("done") or 0),
             int(payload.get("total") or 0),
         )
-        # The bar owns one line and rewrites it, so a long refresh does not
-        # scroll the conversation it was called from off the screen.
-        position = self.index_progress_line
-        if position is not None and 0 <= position < len(self.conversation):
-            self.conversation[position] = line
-            return
-        self.conversation.append(line)
-        self.index_progress_line = len(self.conversation) - 1
+
+    @property
+    def index_progress_visible(self) -> bool:
+        return bool(self.index_progress)
 
     def _apply_plan_payload(self, payload: dict[object, object]) -> None:
         self.planner_mode = str(payload.get("mode", self.planner_mode))
