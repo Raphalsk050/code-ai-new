@@ -624,3 +624,59 @@ def test_build_code_index_honours_enabled_switch(tmp_path) -> None:
     assert service is not None and service.embedder is None
     assert (tmp_path / "idx" / "code.sqlite").exists()
     service.store.close()
+
+
+# ---------------------------------------------------------------- progress
+
+
+def test_the_progress_bar_shows_the_share_done() -> None:
+    from code_ai.ui.terminal.view_models import render_index_progress
+
+    assert "0/8 files" in render_index_progress("indexing", 0, 8)
+    half = render_index_progress("indexing", 4, 8)
+    assert "50%" in half and "4/8 files" in half
+    assert half.count("█") == half.count("░")
+    assert "100%" in render_index_progress("indexing", 8, 8)
+    # The embedding pass counts chunks, not files.
+    assert "chunks" in render_index_progress("embedding", 1, 2)
+
+
+def test_a_total_that_is_not_known_yet_does_not_draw_a_full_bar() -> None:
+    """A bar with no total would read as finished the moment it appeared."""
+
+    from code_ai.ui.terminal.view_models import render_index_progress
+
+    line = render_index_progress("indexing", 12, 0)
+    assert "12 done" in line and "█" not in line and "%" not in line
+
+
+async def test_the_progress_bar_rewrites_one_line_instead_of_scrolling(tmp_path) -> None:
+    """A line per update would push the conversation off screen on a big repo."""
+
+    from code_ai.ui.terminal.view_models import TerminalViewModel
+
+    workspace = tmp_path / "ws"
+    for number in range(60):
+        _write(workspace, f"pkg/mod{number}.py", PY_SOURCE)
+    bus = AsyncEventBus(session_id="session")
+    view_model = TerminalViewModel()
+    seen: list[str] = []
+
+    async def subscriber(event) -> None:
+        view_model.apply(event)
+        if event.event_type == "index.progress":
+            seen.append(view_model.conversation[view_model.index_progress_line])
+
+    bus.subscribe(subscriber)
+    service = make_service(workspace)
+    service.attach(bus)
+    try:
+        await service.refresh(full=True)
+        assert len(seen) > 1, "the walk reported no progress at all"
+        assert len(view_model.conversation) == 1
+        assert "60/60 files" in view_model.conversation[0]
+        # The refresh is over, so the next run starts a fresh line rather than
+        # overwriting the report this one left behind.
+        assert view_model.index_progress_line is None
+    finally:
+        await service.close()

@@ -15,6 +15,31 @@ _COMMAND_TAIL_MAX_CHARS = 2000
 # window belongs to a write in progress, so it closes on any of them.
 _TURN_OVER_STATES = frozenset({"READY", "FAILED", "CLOSED"})
 
+# Cells in the /index progress bar.
+_INDEX_BAR_CELLS = 24
+
+
+def render_index_progress(phase: str, done: int, total: int) -> str:
+    """One line showing how far an index refresh has got.
+
+    A first index of an unfamiliar repository is a wait with nothing on screen,
+    and the embedding pass is a network round trip per batch - long enough that
+    silence reads as a hang. The share is drawn rather than only counted so the
+    line can be read at a glance while it updates in place.
+    """
+
+    label = phase or "indexing"
+    if total <= 0:
+        # Nothing to do, or a total that is not knowable yet: a full bar would
+        # claim progress that was never made, so say the count plainly instead.
+        return f"index> {label}: {done} done"
+    done = max(0, min(done, total))
+    share = done / total
+    filled = int(share * _INDEX_BAR_CELLS)
+    bar = "█" * filled + "░" * (_INDEX_BAR_CELLS - filled)
+    unit = "chunks" if label.startswith("embed") else "files"
+    return f"index> {label} [{bar}] {share * 100:3.0f}%  {done}/{total} {unit}"
+
 
 @dataclass(slots=True)
 class TerminalViewModel:
@@ -35,6 +60,8 @@ class TerminalViewModel:
     plan_visible: bool = False
     plan_status: str = ""
     plan_steps: list[dict[str, str]] = field(default_factory=list)
+    # Which conversation line the /index progress bar is rewriting, if any.
+    index_progress_line: int | None = None
     # Live sub-agent activity, keyed by agent_id and kept in dispatch order, so
     # the AGENTS panel can show what each delegated agent is doing right now.
     # Reset at the start of every user turn so a prior turn's agents never linger.
@@ -99,6 +126,13 @@ class TerminalViewModel:
                 self.clear_code_stream()
         elif event.event_type == "phase.changed":
             self.phase = str(event.payload.get("phase", self.phase))
+        elif event.event_type == "index.progress":
+            self._apply_index_progress(event.payload)
+        elif event.event_type in {"index.refreshed", "index.embedded"}:
+            # The summary line is appended by whoever asked for the refresh, so
+            # the bar just stops owning its line and the next run starts a new
+            # one rather than overwriting a finished report.
+            self.index_progress_line = None
         elif event.event_type == "planning.mode.changed":
             self.planner_mode = str(event.payload.get("mode", self.planner_mode))
         elif event.event_type == "planning.phase.changed":
@@ -612,6 +646,21 @@ class TerminalViewModel:
         record["status"] = status
         record["detail"] = detail
         self.subagents_visible = True
+
+    def _apply_index_progress(self, payload: dict) -> None:
+        line = render_index_progress(
+            str(payload.get("phase") or "indexing"),
+            int(payload.get("done") or 0),
+            int(payload.get("total") or 0),
+        )
+        # The bar owns one line and rewrites it, so a long refresh does not
+        # scroll the conversation it was called from off the screen.
+        position = self.index_progress_line
+        if position is not None and 0 <= position < len(self.conversation):
+            self.conversation[position] = line
+            return
+        self.conversation.append(line)
+        self.index_progress_line = len(self.conversation) - 1
 
     def _apply_plan_payload(self, payload: dict[object, object]) -> None:
         self.planner_mode = str(payload.get("mode", self.planner_mode))

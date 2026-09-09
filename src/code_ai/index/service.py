@@ -108,6 +108,9 @@ _BINARY_SUFFIXES = frozenset(
 # shared DEFAULT_EXCLUDES (which list_files and search_code also honour).
 _EXCLUDED_DIR_SUFFIXES = (".egg-info", ".dist-info")
 _RRF_K = 60.0
+# Files between progress reports. Every file would emit thousands of events for
+# a bar that only has so many cells; this is often enough to look continuous.
+_PROGRESS_EVERY = 20
 
 
 @dataclass(slots=True)
@@ -200,6 +203,9 @@ class CodeIndexService:
         self.embedder = embedder
         self.event_bus = event_bus
         self._subscription: Any = None
+        # Progress emits are fire-and-forget; holding a reference keeps the loop
+        # from collecting them before they run.
+        self._progress_tasks: set[asyncio.Task[None]] = set()
         self._lock = asyncio.Lock()
         self._pending: set[str] = set()
         self._drain_task: asyncio.Task[None] | None = None
@@ -297,7 +303,9 @@ class CodeIndexService:
         async with self._lock:
             self._refreshing = True
             try:
-                report = await asyncio.to_thread(self._refresh_sync, full, subtree, cancel_event)
+                report = await asyncio.to_thread(
+                    self._refresh_sync, full, subtree, cancel_event, self._reporter("indexing")
+                )
                 if self.embedder is not None and not (cancel_event and cancel_event.is_set()):
                     report.embedded = await self._embed_missing(report, cancel_event)
                 self.store.set_meta("last_refresh", datetime.now(UTC).isoformat(timespec="seconds"))
@@ -311,7 +319,11 @@ class CodeIndexService:
         return report
 
     def _refresh_sync(
-        self, full: bool, subtree: str, cancel_event: asyncio.Event | None
+        self,
+        full: bool,
+        subtree: str,
+        cancel_event: asyncio.Event | None,
+        report_progress: Any = None,
     ) -> RefreshReport:
         started = time.monotonic()
         report = RefreshReport(full=full)
@@ -320,7 +332,14 @@ class CodeIndexService:
             self.store.clear()
         known = self.store.files()
         seen: set[str] = set()
-        for path in self._walk(root):
+        # The walk is materialised rather than streamed so the file count is
+        # known before the work starts: without a total there is no progress to
+        # report, only a rising number, and a first index of an unfamiliar repo
+        # is exactly when the user wants to know how far along it is.
+        paths = list(self._walk(root))
+        if report_progress is not None:
+            report_progress(0, len(paths))
+        for position, path in enumerate(paths, start=1):
             if cancel_event is not None and cancel_event.is_set():
                 report.errors.append("cancelled")
                 break
@@ -341,6 +360,10 @@ class CodeIndexService:
             else:
                 report.indexed += 1
                 report.chunks += outcome
+            if report_progress is not None and (
+                position % _PROGRESS_EVERY == 0 or position == len(paths)
+            ):
+                report_progress(position, len(paths))
         prefix = f"{subtree.strip('/')}/" if subtree else ""
         for relative in known:
             if relative in seen:
@@ -399,6 +422,12 @@ class CodeIndexService:
         model = self.embedder.model
         batch_size = max(1, self.config.embedding_batch_size)
         embedded = 0
+        # Embedding is the slow half - one network round trip per batch against
+        # a walk that is pure local I/O - so this is the phase a progress bar is
+        # actually for. The total is what is missing when the phase starts.
+        _, total_chunks = self.store.counts()
+        outstanding = max(0, total_chunks - self.store.embedded_count(model))
+        self._emit_progress("embedding", 0, outstanding)
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 break
@@ -417,6 +446,7 @@ class CodeIndexService:
                 [(chunk_id, vector) for (chunk_id, _), vector in zip(batch, vectors, strict=True)],
             )
             embedded += len(batch)
+            self._emit_progress("embedding", min(embedded, outstanding), outstanding)
             self._last_error = None
         return embedded
 
@@ -553,6 +583,36 @@ class CodeIndexService:
         path = str(result.get("path") or "")
         if path:
             await self.touch(path)
+
+    def _reporter(self, phase: str) -> Any:
+        """A progress callback usable from the thread doing the indexing.
+
+        The walk runs in a worker thread, so it cannot touch the event bus
+        directly; the callback hops back onto the loop and emits there. It is
+        best effort by design - a session that cannot draw a progress bar is
+        still a session that indexes, so a failure here never reaches the walk.
+        """
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # pragma: no cover - only outside a running loop
+            return None
+
+        def report(done: int, total: int) -> None:
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(self._emit_progress, phase, done, total)
+
+        return report
+
+    def _emit_progress(self, phase: str, done: int, total: int) -> None:
+        if self.event_bus is None:
+            return
+        with contextlib.suppress(RuntimeError):
+            task = asyncio.create_task(
+                self._emit("index.progress", {"phase": phase, "done": done, "total": total})
+            )
+            self._progress_tasks.add(task)
+            task.add_done_callback(self._progress_tasks.discard)
 
     async def _emit(self, event_type: str, payload: dict[str, Any]) -> None:
         if self.event_bus is None:
