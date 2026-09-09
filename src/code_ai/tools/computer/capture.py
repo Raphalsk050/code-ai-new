@@ -25,6 +25,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from code_ai.core.errors import ToolExecutionError
 
@@ -167,21 +168,120 @@ def _try_backend(backend: CaptureBackend, destination: Path) -> bytes | None:
 
 
 def _pillow_capture() -> bytes | None:
-    """Pillow's own grabber, which is what covers Windows and macOS Quartz."""
+    """Pillow's own grabber, which is what covers Windows and macOS Quartz.
+
+    Every monitor, not just the primary one: a capture of the primary screen
+    leaves a window the user dragged onto their second monitor invisible, and
+    the agent has no way to tell that is what happened - it sees a desktop with
+    nothing on it and concludes the application is not running.
+    """
 
     try:
         from PIL import ImageGrab
     except Exception:  # noqa: BLE001 - Pillow is optional
         return None
+    image = None
     try:
-        image = ImageGrab.grab()
-    except Exception:  # noqa: BLE001 - no display, or an unsupported platform
-        return None
+        image = ImageGrab.grab(all_screens=True)
+    except Exception:  # noqa: BLE001 - all_screens is Windows-only
+        try:
+            image = ImageGrab.grab()
+        except Exception:  # noqa: BLE001 - no display, or unsupported platform
+            return None
     import io
 
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     return buffer.getvalue()
+
+
+@dataclass(frozen=True, slots=True)
+class ScreenGeometry:
+    """Where the captured image sits on the desktop, and at what scale.
+
+    Clicking is the reason this exists. The model reads a coordinate off a
+    picture that has been shrunk to fit in a request, while the mouse moves in
+    real desktop pixels whose origin is not necessarily (0, 0) - a monitor
+    placed to the left of the primary one has negative x. Two conversions
+    therefore stand between "the button is here in the image" and a click that
+    lands on it, and getting either wrong puts the pointer somewhere else
+    entirely, on a desktop the agent is allowed to click.
+    """
+
+    # Bounds of the whole virtual desktop, in real screen pixels.
+    left: int
+    top: int
+    width: int
+    height: int
+    # Size of the image actually sent, after downscaling.
+    image_width: int
+    image_height: int
+
+    @property
+    def scale(self) -> float:
+        """Image pixels per screen pixel; 1.0 when it was not shrunk."""
+
+        return (self.image_width / self.width) if self.width else 1.0
+
+    def to_screen(self, x: float, y: float) -> tuple[int, int]:
+        """Turn a point read off the image into one the mouse can be sent to."""
+
+        scale = self.scale or 1.0
+        return (
+            int(round(self.left + x / scale)),
+            int(round(self.top + y / scale)),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "screen": {
+                "left": self.left,
+                "top": self.top,
+                "width": self.width,
+                "height": self.height,
+            },
+            "image": {"width": self.image_width, "height": self.image_height},
+            "scale": round(self.scale, 6),
+        }
+
+
+def _virtual_bounds() -> tuple[int, int, int, int] | None:
+    """The desktop's real bounds, origin included. None when unknowable."""
+
+    try:
+        from PIL import ImageGrab
+
+        image = ImageGrab.grab(all_screens=True)
+    except Exception:  # noqa: BLE001 - not Windows, or no display
+        image = None
+    if image is not None:
+        # Pillow reports the size but not the origin. On Windows the virtual
+        # screen's origin comes from the metrics; elsewhere all_screens is not
+        # supported and this branch is not reached.
+        try:
+            import ctypes
+
+            user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+            left = user32.GetSystemMetrics(76)  # SM_XVIRTUALSCREEN
+            top = user32.GetSystemMetrics(77)  # SM_YVIRTUALSCREEN
+        except Exception:  # noqa: BLE001 - not Windows
+            left, top = 0, 0
+        return left, top, image.width, image.height
+    try:
+        from PIL import ImageGrab
+
+        primary = ImageGrab.grab()
+    except Exception:  # noqa: BLE001
+        return None
+    return 0, 0, primary.width, primary.height
+
+
+def png_size(data: bytes) -> tuple[int, int] | None:
+    """Width and height of a PNG, read from its header without decoding it."""
+
+    if len(data) < 24 or data[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
 
 
 def downscale_png(data: bytes, max_edge: int = MAX_IMAGE_EDGE_PX) -> bytes:
@@ -235,18 +335,29 @@ def _unavailable_message(system: str, backends: tuple[CaptureBackend, ...]) -> s
     return f"No screenshot backend is installed. Install one of: {hints}."
 
 
-def capture_screen_png(max_edge: int = MAX_IMAGE_EDGE_PX) -> bytes:
-    """A PNG of the whole desktop, downscaled. Raises when nothing can do it."""
+def capture_screen_png_raw(
+    max_edge: int = MAX_IMAGE_EDGE_PX,
+) -> tuple[bytes, tuple[int, int] | None]:
+    """The downscaled PNG, plus the size it had before being downscaled.
+
+    The original size is what the desktop's real pixels are counted in, so it
+    is carried out rather than recomputed: it is the denominator of the scale a
+    click is converted through.
+    """
 
     system = platform.system()
     backends = backends_for(system)
+
+    def finish(data: bytes) -> tuple[bytes, tuple[int, int] | None]:
+        return downscale_png(data, max_edge), png_size(data)
+
     # Pillow first on the platforms where it is the native path, and last on
     # Linux, where it goes through X11 and would fail on a Wayland session that
     # a dedicated tool handles fine.
     if system in {"Darwin", "Windows"}:
         data = _pillow_capture()
         if data:
-            return downscale_png(data, max_edge)
+            return finish(data)
     with tempfile.TemporaryDirectory(prefix="code-ai-screen-") as directory:
         destination = Path(directory) / "screen.png"
         for backend in backends:
@@ -254,19 +365,57 @@ def capture_screen_png(max_edge: int = MAX_IMAGE_EDGE_PX) -> bytes:
                 continue
             data = _try_backend(backend, destination)
             if data:
-                return downscale_png(data, max_edge)
+                return finish(data)
             # Each backend gets a clean file: a previous failed run can leave a
             # zero-byte one behind, which the next would read as its own output.
             destination.unlink(missing_ok=True)
     if system not in {"Darwin", "Windows"}:
         data = _pillow_capture()
         if data:
-            return downscale_png(data, max_edge)
+            return finish(data)
     raise ToolExecutionError(_unavailable_message(system, backends))
+
+
+def capture_screen_png(max_edge: int = MAX_IMAGE_EDGE_PX) -> bytes:
+    """A PNG of the whole desktop, downscaled. Raises when nothing can do it."""
+
+    return capture_screen_png_raw(max_edge)[0]
+
+
+def capture_screen(max_edge: int = MAX_IMAGE_EDGE_PX) -> tuple[str, int, ScreenGeometry]:
+    """The desktop as base64 PNG, its byte count, and where its pixels are.
+
+    The geometry is measured from the capture itself rather than asked of the
+    display server separately: a backend that captures one monitor and a
+    metrics call that reports all of them would disagree, and the disagreement
+    would only show up as clicks landing on the wrong window.
+    """
+
+    raw = capture_screen_png_raw(max_edge)
+    data, full_size = raw
+    image_size = png_size(data) or full_size
+    bounds = _virtual_bounds()
+    if bounds is not None and full_size and bounds[2:] != full_size:
+        # The backend captured something other than the whole virtual desktop
+        # (one monitor, typically). Trust the capture: it is what the model is
+        # looking at, and its origin is the only one the coordinates share.
+        bounds = (bounds[0], bounds[1], full_size[0], full_size[1])
+    if bounds is None:
+        width, height = full_size or image_size
+        bounds = (0, 0, width, height)
+    geometry = ScreenGeometry(
+        left=bounds[0],
+        top=bounds[1],
+        width=bounds[2],
+        height=bounds[3],
+        image_width=image_size[0],
+        image_height=image_size[1],
+    )
+    return base64.b64encode(data).decode("ascii"), len(data), geometry
 
 
 def capture_screen_base64(max_edge: int = MAX_IMAGE_EDGE_PX) -> tuple[str, int]:
     """The desktop as base64 PNG, with the byte count of the raw capture."""
 
-    data = capture_screen_png(max_edge)
-    return base64.b64encode(data).decode("ascii"), len(data)
+    encoded, size, _ = capture_screen(max_edge)
+    return encoded, size

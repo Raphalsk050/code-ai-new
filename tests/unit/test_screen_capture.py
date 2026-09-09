@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -141,3 +142,67 @@ def test_a_payload_with_no_attachment_is_left_exactly_as_it_was() -> None:
     assert payload == {"hits": [1, 2, 3]}
     assert _take_tool_images("not a dict") == []
     assert _take_tool_images({TOOL_IMAGES_KEY: "not a list"}) == []
+
+
+# ------------------------------------------------------------------ clicking
+
+
+def _geometry(**overrides):
+    base = dict(left=0, top=0, width=3000, height=1920, image_width=1500, image_height=960)
+    base.update(overrides)
+    return capture.ScreenGeometry(**base)
+
+
+def test_a_point_read_off_the_shrunken_image_maps_back_to_the_real_pixel() -> None:
+    """The image is half-size here, so every coordinate is off by 2x unscaled."""
+
+    geometry = _geometry()
+    assert geometry.scale == 0.5
+    assert geometry.to_screen(0, 0) == (0, 0)
+    assert geometry.to_screen(750, 480) == (1500, 960)
+    assert geometry.to_screen(1500, 960) == (3000, 1920)
+
+
+def test_a_monitor_left_of_the_primary_one_shifts_the_whole_desktop() -> None:
+    """The virtual desktop's origin is negative there, and clicks must follow.
+
+    Without the offset every click on the left-hand monitor lands on the
+    primary one instead - on whatever happens to be at the mirrored position.
+    """
+
+    geometry = _geometry(left=-1920, top=-200)
+    assert geometry.to_screen(0, 0) == (-1920, -200)
+    assert geometry.to_screen(1500, 960) == (1080, 1720)
+
+
+def test_an_image_coordinate_is_converted_before_the_pointer_moves() -> None:
+    from code_ai.tools.computer.common import resolve_point
+
+    controller = SimpleNamespace(last_capture=_geometry())
+    # Declared as image coordinates: scaled and offset on the way through.
+    assert resolve_point(controller, {"coordinate_space": "image"}, 750, 480) == (1500, 960)
+    # Declared as screen coordinates, or not declared: passed straight through,
+    # so an existing caller that already knows real pixels is unaffected.
+    assert resolve_point(controller, {"coordinate_space": "screen"}, 750, 480) == (750, 480)
+    assert resolve_point(controller, {}, 750, 480) == (750, 480)
+
+
+def test_clicking_from_an_image_before_looking_at_one_is_refused() -> None:
+    """Guessing a scale would be a click at a plausible-looking wrong place."""
+
+    from code_ai.core.errors import ToolArgumentError
+    from code_ai.tools.computer.common import resolve_point
+
+    controller = SimpleNamespace(last_capture=None)
+    with pytest.raises(ToolArgumentError) as caught:
+        resolve_point(controller, {"coordinate_space": "image"}, 10, 10)
+    assert "capture_screen" in str(caught.value)
+
+
+def test_an_unknown_coordinate_space_is_rejected_rather_than_assumed() -> None:
+    from code_ai.core.errors import ToolArgumentError
+    from code_ai.tools.computer.common import resolve_point
+
+    controller = SimpleNamespace(last_capture=_geometry())
+    with pytest.raises(ToolArgumentError):
+        resolve_point(controller, {"coordinate_space": "pixels"}, 1, 1)

@@ -44,6 +44,13 @@ class DesktopController:
     instance can be shared across the whole session like the terminal manager.
     """
 
+    # Geometry of the last capture_screen, so a coordinate read off that image
+    # can be converted to a real one. Held on the controller because it is the
+    # thing every pointer tool already has a handle on, and it has to outlive
+    # the call that produced it: the model looks in one turn and clicks in the
+    # next.
+    last_capture: Any = None
+
     @property
     def has_pointer_backend(self) -> bool:
         return _pyautogui is not None
