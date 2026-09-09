@@ -30,6 +30,12 @@ desktop = [
   # spend the context window it was meant to fit inside.
   "pillow>=10.0.0",
 ]
+browser = [
+  # The browser binary is a separate download: `playwright install chromium`.
+  # Nothing here can do that for the user, so the tools say so when it is the
+  # step that is missing rather than reporting a generic startup failure.
+  "playwright>=1.40.0",
+]
 dev = [
   "pytest>=8.0.0",
   "pytest-asyncio>=0.23.0",

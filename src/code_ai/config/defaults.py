@@ -193,6 +193,23 @@ def project_index_dir(workspace: Path | str) -> Path:
     return Path.home() / DEFAULT_CONFIG_DIRNAME / "projects" / slug / "index"
 
 
+def project_browser_dir(workspace: Path | str) -> Path:
+    """Browser profile for one workspace: cookies, storage, saved logins.
+
+    Same slug scheme as the index and memories, and for one extra reason
+    besides tidiness: it is a real browser profile the agent drives, so it must
+    never be the user's own. Pointing a automated browser at the profile
+    someone reads their mail in would put their whole session behind whatever
+    the agent is asked to do next. This one starts empty, and what accumulates
+    in it is only what the agent was walked through logging into.
+    """
+
+    resolved = Path(workspace).expanduser().resolve()
+    digest = hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()[:12]
+    slug = f"{resolved.name or 'root'}-{digest}"
+    return Path.home() / DEFAULT_CONFIG_DIRNAME / "projects" / slug / "browser"
+
+
 def default_sandbox_base_dir() -> Path:
     """Base directory holding one isolated sandbox per session.
 
@@ -372,6 +389,20 @@ DEFAULT_SANDBOX: dict[str, object] = {
 }
 
 
+DEFAULT_BROWSER: dict[str, object] = {
+    # Master switch. Off, the browser tools are still registered but say the
+    # browser is disabled rather than disappearing - a model that cannot see a
+    # tool cannot tell the user why it will not browse.
+    "enabled": True,
+    # Empty resolves to :func:`project_browser_dir` at startup.
+    "profile_dir": "",
+    # Visible by default, and this is not a cosmetic choice: a login handed to
+    # the user has to happen in a window they can see. Headless is for a
+    # machine with no display, where nothing could be handed over anyway.
+    "headless": False,
+    "timeout_ms": 30000,
+}
+
 DEFAULT_INDEX: dict[str, object] = {
     # Master switch for the code index (retrieval over chunked source). Off,
     # the index tools are still registered but report the index as disabled.
@@ -415,6 +446,7 @@ DEFAULT_CONFIG: dict[str, object] = {
     "planner": DEFAULT_PLANNER,
     "sandbox": DEFAULT_SANDBOX,
     "file_io": DEFAULT_FILE_IO,
+    "browser": DEFAULT_BROWSER,
     "index": DEFAULT_INDEX,
     "sampling": DEFAULT_SAMPLING,
     "language": "en",

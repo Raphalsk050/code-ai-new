@@ -59,6 +59,7 @@ class SubagentRuntime:
         skill_sources: Sequence[object] = (),
         workflows: object | None = None,
         code_index: object | None = None,
+        browser: object | None = None,
         review_service_factory: ReviewServiceFactory | None = None,
     ) -> None:
         self._config = config
@@ -80,6 +81,10 @@ class SubagentRuntime:
         # Shared with the parent on purpose: the index is the session's view of
         # the workspace, and a sub-agent's reads and edits keep it current too.
         self._code_index = code_index
+        # Shared for the same reason, plus one of its own: a login the user was
+        # walked through once must not be asked for again by every sub-agent
+        # that happens to open the same site.
+        self._browser = browser
         self._review_service_factory = review_service_factory
 
     def build(self, profile: SubagentProfile) -> BuiltSubagent:
@@ -130,6 +135,7 @@ class SubagentRuntime:
                 skill_sources=self._skill_sources or None,
                 workflows=self._workflows,
                 code_index=self._code_index,
+                browser=self._browser,
             )
 
         orchestrator = AgentOrchestrator(

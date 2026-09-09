@@ -16,7 +16,10 @@ class ReadFileTool:
     description = (
         "Read a UTF-8 text file, optionally bounded to a line range. Reads the "
         "workspace by default; pass location 'sandbox' to read something this "
-        "session produced in its scratch area."
+        "session produced in its scratch area. Use it when you already know "
+        "which file you need. To find out *which* file holds something, use "
+        "search_index instead and read only what it points at - reading files "
+        "to discover what is in them costs a whole file per guess."
     )
     capabilities = frozenset({ToolCapability.LOCAL_READ})
     input_schema = tool_schema(
