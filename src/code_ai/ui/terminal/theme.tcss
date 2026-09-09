@@ -222,6 +222,35 @@ Screen {
   overflow-x: hidden;
 }
 
+/* The interactive shell, in the main column with the other two live boxes and
+   shaped like them - same round frame, same title-on-the-border, same width.
+   It was in the sidebar, which is 38 columns against the 80 the shell renders,
+   so every line wrapped in the one panel the user is meant to type into.
+
+   Taller than the reasoning box because a shell screen is meaningless cropped:
+   the prompt and the answer above it have to be visible together. The frame
+   brightens while it has the keyboard, which is the only difference between
+   typing a message and typing into a root shell. */
+#terminal-panel {
+  height: auto;
+  max-height: 22;
+  width: 1fr;
+  border: round #2f6b45;
+  border-title-color: #48d17a;
+  border-title-style: bold;
+  border-title-align: left;
+  border-subtitle-color: #e0a0a0;
+  padding: 0 1;
+  margin-top: 1;
+  color: #d7dee8;
+  overflow-x: hidden;
+}
+
+#terminal-panel.-focused {
+  border: round #48d17a;
+  background: #0d1512;
+}
+
 /* Right sidebar: stacks the PLAN and AGENTS panels. Fixed width; the whole
    column is hidden when neither panel has anything to show. */
 #sidebar {
@@ -232,19 +261,19 @@ Screen {
 /* Each panel is its own bordered division. When both are visible they split the
    height; when one is hidden the other fills the sidebar. Content that outgrows
    the space scrolls inside the panel rather than pushing the layout around. */
-#plan, #subagents, #terminal {
+#plan, #subagents {
   width: 1fr;
   height: 1fr;
   border: solid #8892a0;
   padding: 1;
 }
 
-#plan-scroll, #subagents-scroll, #terminal-scroll {
+#plan-scroll, #subagents-scroll {
   height: 1fr;
   scrollbar-size-vertical: 1;
 }
 
-#plan-body, #subagents-body, #terminal-body {
+#plan-body, #subagents-body {
   height: auto;
 }
 

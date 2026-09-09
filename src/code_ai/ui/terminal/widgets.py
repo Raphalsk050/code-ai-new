@@ -366,6 +366,50 @@ _TERMINAL_CLOSED_STYLE = "#e0a0a0"
 # How many rows of the emulated screen the panel shows; the newest survive.
 _TERMINAL_PANEL_MAX_ROWS = 18
 
+# What a program asking for a secret looks like on the last line of the screen.
+# sudo, ssh, gpg, git over https and every getpass() caller in Python phrase it
+# differently, but all of them end the line with a colon and never echo what is
+# typed next - which is the whole reason this has to be recognised rather than
+# left to the user to notice: the composer must stop showing the characters.
+_SECRET_PROMPT = re.compile(
+    r"(password|passphrase|passcode|pin|secret|token|otp|verification code|"
+    r"one[- ]time code|senha|contrasena|contraseña|mot de passe)"
+    r"[^\n]{0,40}:\s*$",
+    re.IGNORECASE,
+)
+
+
+def looks_like_secret_prompt(screen: str) -> bool:
+    """True when the terminal is waiting for something that must not be echoed.
+
+    Only the last non-empty row is considered. A password prompt is the line the
+    cursor is sitting on; the same word earlier in the scrollback is history -
+    a printed hint, a log line - and masking on that would hide ordinary typing
+    for the rest of the session.
+    """
+
+    for line in reversed(screen.splitlines()):
+        stripped = line.rstrip()
+        if not stripped.strip():
+            continue
+        return bool(_SECRET_PROMPT.search(stripped))
+    return False
+
+
+def terminal_panel_title(session_id: str, *, focused: bool, closed: bool) -> str:
+    """The panel's border title, which is also where its input state is stated.
+
+    Whether keystrokes reach the shell or the model is the one thing a user
+    cannot guess from the screen contents, and getting it wrong means typing a
+    message into a shell or a command into the chat. So it is named on the
+    frame, where it is visible the whole time the panel is.
+    """
+
+    where = f"$ terminal {session_id[:8]}" if session_id else "$ terminal"
+    if closed:
+        return f"{where} · encerrado"
+    return f"{where} · {'digitando aqui' if focused else 'ESC para digitar'}"
+
 
 def render_terminal_screen(
     session_id: str,
