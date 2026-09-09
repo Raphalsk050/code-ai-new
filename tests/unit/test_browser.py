@@ -248,3 +248,142 @@ async def test_the_browser_tools_say_so_when_it_is_disabled(tmp_path) -> None:
     with pytest.raises(ToolExecutionError) as caught:
         await BrowserReadTool().execute({}, context)
     assert "browser.enabled" in str(caught.value)
+
+
+# ------------------------------------------------------------------ recovery
+
+
+class ClosingPage(FakePage):
+    """A page whose browser dies once, the way a closed window behaves.
+
+    Playwright does not fail at the moment the window goes; it fails on the
+    next call, with the handle still looking alive.
+    """
+
+    def __init__(self, fail_times: int = 1) -> None:
+        super().__init__()
+        self.fail_times = fail_times
+        self.gotos: list[str] = []
+
+    def _maybe_die(self) -> None:
+        # A closed browser fails whatever it is asked, not only navigation.
+        if self.fail_times > 0:
+            self.fail_times -= 1
+            raise RuntimeError("Target page, context or browser has been closed")
+
+    async def goto(self, url, **kwargs):
+        self._maybe_die()
+        self.gotos.append(url)
+        self.url = url
+
+    async def _click(self, x, y):
+        self._maybe_die()
+        await super()._click(x, y)
+
+    async def inner_text(self, selector):
+        self._maybe_die()
+        return await super().inner_text(selector)
+
+
+def _recovering_session(tmp_path: Path, page: ClosingPage) -> BrowserSession:
+    session = BrowserSession(profile_dir=tmp_path / "profile")
+    session._page = page
+    session._context = SimpleNamespace(pages=[page], close=_noop)
+
+    async def restart():
+        # A fresh browser: the same fake, no longer failing.
+        page.fail_times = 0
+        session._context = SimpleNamespace(pages=[page], close=_noop)
+
+    session._start = restart
+    return session
+
+
+async def _noop(*args, **kwargs):
+    return None
+
+
+async def test_a_window_the_user_closed_is_reopened_instead_of_failing(tmp_path) -> None:
+    """Closing the window is a normal thing to do; it must not end the task.
+
+    It used to leave the session holding a dead handle that answered every
+    later call with "target page, context or browser has been closed", so the
+    agent could not browse again for the rest of the session.
+    """
+
+    page = ClosingPage()
+    session = _recovering_session(tmp_path, page)
+
+    result = await session.goto("https://example.com")
+
+    assert result["url"] == "https://example.com"
+    assert page.gotos == ["https://example.com"]
+
+
+async def test_the_rebuilt_browser_goes_back_to_where_it_was(tmp_path) -> None:
+    """A blank tab would answer "nothing here" about a site open a second ago."""
+
+    page = ClosingPage(fail_times=0)
+    session = _recovering_session(tmp_path, page)
+    await session.goto("https://example.com/dashboard")
+
+    page.fail_times = 1  # the user closes the window
+    result = await session.read()
+
+    assert result["url"] == "https://example.com/dashboard"
+    assert page.gotos[-1] == "https://example.com/dashboard"
+
+
+async def test_element_numbers_do_not_survive_a_rebuild(tmp_path) -> None:
+    """They were measured on a page that no longer exists.
+
+    The restored page is the same address but not the same render, so a click
+    on the old coordinates would land somewhere on its replacement without
+    anything saying so. Refusing costs one read; a blind click costs trust.
+    """
+
+    page = ClosingPage(fail_times=0)
+    session = _recovering_session(tmp_path, page)
+    await session.goto("https://example.com")
+    assert session.last_elements  # numbered from the live page
+
+    page.fail_times = 1
+    with pytest.raises(ToolExecutionError) as caught:
+        await session.click_index(0)
+    assert "Read the page first" in str(caught.value)
+
+    # After a fresh read the numbers describe the page that is really there.
+    await session.read()
+    await session.click_index(0)
+    assert page.clicks[-1] == (100, 200)
+
+
+async def test_a_failure_that_is_not_a_closed_browser_is_not_retried(tmp_path) -> None:
+    """Retrying a real error forever would turn a broken page into a hung turn."""
+
+    page = ClosingPage(fail_times=0)
+    attempts: list[str] = []
+
+    async def refuse(url, **kwargs):
+        attempts.append(url)
+        raise RuntimeError("net::ERR_NAME_NOT_RESOLVED")
+
+    page.goto = refuse
+    session = _recovering_session(tmp_path, page)
+
+    with pytest.raises(RuntimeError, match="ERR_NAME_NOT_RESOLVED"):
+        await session.goto("https://nope.invalid")
+    assert len(attempts) == 1
+
+
+def test_the_closed_browser_signatures_are_recognised() -> None:
+    from code_ai.tools.browser.session import _is_closed_error
+
+    for message in (
+        "Target page, context or browser has been closed",
+        "Browser has been closed",
+        "Target closed",
+        "Connection closed while reading from the driver",
+    ):
+        assert _is_closed_error(RuntimeError(message)), message
+    assert not _is_closed_error(RuntimeError("net::ERR_CONNECTION_REFUSED"))
