@@ -84,6 +84,27 @@ _COLLECT_JS = """
 """
 
 
+# Playwright reports a vanished browser through several exception types and
+# spellings depending on which call noticed it first. Matching the text is what
+# covers them all - and being wrong here only costs one extra restart attempt,
+# where being too narrow costs the whole feature the moment a user closes a
+# window.
+_CLOSED_MARKERS = (
+    "has been closed",
+    "target closed",
+    "target page, context or browser has been closed",
+    "browser has been closed",
+    "browser closed",
+    "connection closed",
+    "playwright is not running",
+    "event loop is closed",
+)
+
+
+def _is_closed_error(exc: BaseException) -> bool:
+    return any(marker in str(exc).lower() for marker in _CLOSED_MARKERS)
+
+
 @dataclass
 class BrowserSession:
     """One browser, started on first use and reused for the rest of the session."""
@@ -97,21 +118,86 @@ class BrowserSession:
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     # The elements offered by the last read, so a click can name one by number.
     last_elements: list[dict[str, Any]] = field(default_factory=list)
+    # Where the browser was, so a window the user closed can be reopened there
+    # rather than on a blank page that answers "nothing here" to a question
+    # about a site that was open a second ago.
+    last_url: str = ""
 
     async def page(self) -> Any:
         """The current page, starting the browser the first time it is asked for."""
 
         async with self._lock:
-            if self._page is not None and not self._page.is_closed():
-                return self._page
-            if self._context is None:
-                await self._start()
+            return await self._page_unlocked()
+
+    async def _page_unlocked(self) -> Any:
+        if self._page is not None and not self._page.is_closed():
+            return self._page
+        if self._context is None:
+            await self._start()
+        try:
             # A persistent context opens with one blank page; reuse it rather
             # than leaving an empty window beside the one being driven.
             pages = [page for page in self._context.pages if not page.is_closed()]
             self._page = pages[0] if pages else await self._context.new_page()
-            self._page.set_default_timeout(self.timeout_ms)
-            return self._page
+        except Exception as exc:  # noqa: BLE001
+            if not _is_closed_error(exc):
+                raise
+            # The context object outlives the browser it spoke to, so a window
+            # the user closed leaves a handle that looks alive and answers
+            # every call with "target closed". Throw it away and start again.
+            await self._rebuild()
+        self._page.set_default_timeout(self.timeout_ms)
+        return self._page
+
+    async def _rebuild(self) -> Any:
+        """Start a fresh browser and put it back where the old one was.
+
+        Closing the window is a normal thing for a user to do - it is their
+        screen - so it must cost the agent a moment rather than the rest of the
+        task. Returning to the last address is what makes the recovery
+        invisible: the alternative is a blank page that answers "nothing here"
+        about a site that was open a second ago.
+
+        Every path back from a dead browser goes through here, so none of them
+        can restore the window while forgetting where it was pointed.
+        """
+
+        await self._discard()
+        await self._start()
+        pages = [page for page in self._context.pages if not page.is_closed()]
+        self._page = pages[0] if pages else await self._context.new_page()
+        self._page.set_default_timeout(self.timeout_ms)
+        # The element numbers were measured on a page that no longer exists.
+        # Dropping them makes a stale click an error instead of a click at
+        # whatever coordinates now happen to be there.
+        self.last_elements = []
+        if self.last_url and self.last_url != "about:blank":
+            try:
+                await self._page.goto(
+                    self.last_url, wait_until="domcontentloaded", timeout=self.timeout_ms
+                )
+            except Exception:  # noqa: BLE001 - a page that will not reload is
+                # still better answered by a live browser on a blank tab than by
+                # a dead handle, so the restart stands and the caller reads it.
+                pass
+        return self._page
+
+    async def _recover(self) -> Any:
+        return await self._rebuild()
+
+    async def _discard(self) -> None:
+        """Drop the dead handles without trying to talk to them."""
+
+        for closer in (self._context, self._playwright):
+            if closer is None:
+                continue
+            try:
+                await (closer.close() if closer is self._context else closer.stop())
+            except Exception:  # noqa: BLE001 - it is already gone; that is the point
+                pass
+        self._context = None
+        self._page = None
+        self._playwright = None
 
     async def _start(self) -> None:
         try:
@@ -138,10 +224,31 @@ class BrowserSession:
                 ) from exc
             raise ToolExecutionError(f"Could not start the browser: {message}") from exc
 
+    async def _attempt(self, action: Any) -> Any:
+        """Run one browser action, rebuilding the browser once if it has gone.
+
+        Exactly once: a second failure is not a closed window, it is something
+        that will keep failing, and retrying it forever would turn a broken
+        page into a hung turn.
+        """
+
+        async with self._lock:
+            try:
+                return await action()
+            except Exception as exc:  # noqa: BLE001
+                if not _is_closed_error(exc):
+                    raise
+                await self._recover()
+                return await action()
+
     async def read(self, *, screenshot: bool = False) -> dict[str, Any]:
         """What the page says, what can be clicked on it, and optionally a picture."""
 
-        page = await self.page()
+        return await self._attempt(lambda: self._read_unlocked(screenshot=screenshot))
+
+    async def _read_unlocked(self, *, screenshot: bool = False) -> dict[str, Any]:
+        page = await self._page_unlocked()
+        self.last_url = page.url
         title = await page.title()
         try:
             text = await page.inner_text("body")
@@ -170,8 +277,12 @@ class BrowserSession:
         return [item for item in found if isinstance(item, dict)]
 
     async def goto(self, url: str) -> dict[str, Any]:
-        page = await self.page()
-        await page.goto(url, wait_until="domcontentloaded", timeout=self.timeout_ms)
+        async def navigate() -> None:
+            page = await self._page_unlocked()
+            await page.goto(url, wait_until="domcontentloaded", timeout=self.timeout_ms)
+            self.last_url = url
+
+        await self._attempt(navigate)
         return await self.read()
 
     async def click_index(self, index: int) -> dict[str, Any]:
@@ -182,23 +293,34 @@ class BrowserSession:
         see, and a wrong one either misses or hits something else silently.
         """
 
-        element = self._element_at(index)
-        page = await self.page()
-        # Located again by position rather than held as a handle: anything the
-        # page did since the read may have replaced the node, and a stale
-        # handle throws where a fresh coordinate still lands correctly.
-        await page.mouse.click(element["x"], element["y"])
-        await self._settle(page)
+        async def click() -> None:
+            # The page is secured first and the element looked up second, so a
+            # rebuild in between invalidates the lookup rather than being
+            # overtaken by it. Reversed, the coordinates would come from the
+            # page that just died and the click would land somewhere on its
+            # replacement without anything saying so.
+            page = await self._page_unlocked()
+            element = self._element_at(index)
+            # Located again by position rather than held as a handle: anything
+            # the page did since the read may have replaced the node, and a
+            # stale handle throws where a fresh coordinate still lands.
+            await page.mouse.click(element["x"], element["y"])
+            await self._settle(page)
+
+        await self._attempt(click)
         return await self.read()
 
     async def type_into(self, index: int, text: str, *, submit: bool = False) -> dict[str, Any]:
-        element = self._element_at(index)
-        page = await self.page()
-        await page.mouse.click(element["x"], element["y"])
-        await page.keyboard.type(text)
-        if submit:
-            await page.keyboard.press("Enter")
-            await self._settle(page)
+        async def enter() -> None:
+            page = await self._page_unlocked()
+            element = self._element_at(index)
+            await page.mouse.click(element["x"], element["y"])
+            await page.keyboard.type(text)
+            if submit:
+                await page.keyboard.press("Enter")
+                await self._settle(page)
+
+        await self._attempt(enter)
         return await self.read()
 
     def _element_at(self, index: int) -> dict[str, Any]:
