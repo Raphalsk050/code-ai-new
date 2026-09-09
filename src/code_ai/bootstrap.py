@@ -50,6 +50,14 @@ from code_ai.sandbox.reaper import SandboxReaper
 from code_ai.sandbox.session import SessionSandbox
 from code_ai.tools.agents import DispatchAgentTool
 from code_ai.tools.base import ToolCapability, ToolContext
+from code_ai.tools.browser import (
+    BrowserClickTool,
+    BrowserOpenTool,
+    BrowserReadTool,
+    BrowserRequestLoginTool,
+    BrowserSession,
+    BrowserTypeTool,
+)
 from code_ai.tools.computer import (
     ReadDesktopScreenTool,
     ActivateApplicationTool,
@@ -125,6 +133,11 @@ def build_tool_registry() -> ToolRegistry:
         ReadScreenTool(),
         ScreenInfoTool(),
         ReadDesktopScreenTool(),
+        BrowserOpenTool(),
+        BrowserReadTool(),
+        BrowserClickTool(),
+        BrowserTypeTool(),
+        BrowserRequestLoginTool(),
         MoveMouseTool(),
         ClickMouseTool(),
         DragMouseTool(),
@@ -201,6 +214,15 @@ def build_application(
     # The workspace's code index. Built once per session and shared with the
     # sub-agents; it follows the agent by re-indexing every file a tool touches
     # (see CodeIndexService.attach) and is refreshed on demand via /index.
+    browser = (
+        BrowserSession(
+            profile_dir=config.browser.resolved_profile_dir(config.workspace),
+            headless=config.browser.headless,
+            timeout_ms=config.browser.timeout_ms,
+        )
+        if config.browser.enabled
+        else None
+    )
     code_index = code_index if code_index is not None else build_code_index(config)
     if code_index is not None:
         code_index.attach(event_bus)
@@ -384,6 +406,7 @@ def build_application(
         skill_sources=session_skill_sources,
         workflows=workflows,
         code_index=code_index,
+        browser=browser,
         review_service_factory=lambda bus: ReviewService(
             provider=provider, config=config, event_bus=bus
         ),
@@ -417,6 +440,7 @@ def build_application(
             skill_sources=session_skill_sources,
             workflows=workflows,
             code_index=code_index,
+            browser=browser,
         )
 
     orchestrator = AgentOrchestrator(
@@ -451,6 +475,7 @@ def build_application(
         skill_sources=session_skill_sources,
         sandbox=sandbox,
         code_index=code_index,
+        browser=browser,
     )
 
 

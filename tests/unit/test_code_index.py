@@ -15,6 +15,7 @@ from code_ai.core.errors import (
     WorkspaceBoundaryError,
 )
 from code_ai.events.bus import AsyncEventBus
+from code_ai.app.service import CodeAIApplication
 from code_ai.index import build_code_index
 from code_ai.index.chunking import chunk_file
 from code_ai.index.service import CodeIndexService
@@ -689,5 +690,64 @@ async def test_the_progress_bar_updates_while_the_refresh_runs(tmp_path) -> None
         # whoever asked for it appends is what remains.
         assert view_model.index_progress == ""
         assert view_model.index_progress_visible is False
+    finally:
+        await service.close()
+
+
+# ---------------------------------------------------------------- warm-up
+
+
+async def test_the_index_is_built_at_startup_without_being_asked(tmp_path) -> None:
+    """An index nobody built is worse than no index at all.
+
+    It only ever existed after somebody typed /index. So on any project that
+    had not been indexed by hand, the model asked search_index once, was told
+    it was empty, fell back to reading files - and never asked again. Locating
+    code is only cheaper than reading it if the index is warm before the first
+    question.
+    """
+
+    workspace = tmp_path / "ws"
+    _write(workspace, "pkg/retry.py", PY_SOURCE)
+    service = make_service(workspace)
+    application = SimpleNamespace(
+        code_index=service,
+        _index_warmup_task=None,
+        start_index_warmup=None,
+    )
+    application.start_index_warmup = CodeAIApplication.start_index_warmup.__get__(application)
+    application._warm_index = CodeAIApplication._warm_index.__get__(application)
+    try:
+        assert service.status().empty is True
+
+        assert application.start_index_warmup() is True
+        # A second call while the first is running does not start a rival walk.
+        assert application.start_index_warmup() is False
+        await application._index_warmup_task
+
+        status = service.status()
+        assert status.empty is False and status.files == 1
+    finally:
+        await service.close()
+
+
+async def test_a_warm_up_that_fails_costs_the_index_not_the_session(tmp_path) -> None:
+    """Nobody asked for this, so it must never be the thing that ends a turn."""
+
+    workspace = tmp_path / "ws"
+    _write(workspace, "pkg/retry.py", PY_SOURCE)
+    service = make_service(workspace)
+
+    async def explode(**kwargs):
+        raise OSError("the workspace went away")
+
+    service.refresh = explode
+    application = SimpleNamespace(code_index=service, _index_warmup_task=None)
+    application.start_index_warmup = CodeAIApplication.start_index_warmup.__get__(application)
+    application._warm_index = CodeAIApplication._warm_index.__get__(application)
+    try:
+        assert application.start_index_warmup() is True
+        # Awaiting it must not raise: the session survives a broken warm-up.
+        await application._index_warmup_task
     finally:
         await service.close()

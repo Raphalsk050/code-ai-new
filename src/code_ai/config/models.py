@@ -6,6 +6,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from code_ai.config.defaults import (
+    DEFAULT_BROWSER,
     DEFAULT_BUDGETS,
     DEFAULT_FILE_IO,
     DEFAULT_GOAL,
@@ -16,6 +17,7 @@ from code_ai.config.defaults import (
     DEFAULT_SANDBOX,
     PLACEHOLDER_API_KEY,
     default_sandbox_base_dir,
+    project_browser_dir,
     project_index_dir,
 )
 from code_ai.core.errors import ConfigurationError
@@ -313,6 +315,36 @@ class SandboxConfig:
 
 
 SUPPORTED_EMBEDDING_API_MODES = {"", "ollama", "openai"}
+
+
+@dataclass(slots=True)
+class BrowserConfig:
+    """The browser the agent drives, and the profile it keeps its logins in."""
+
+    enabled: bool = bool(DEFAULT_BROWSER["enabled"])
+    profile_dir: str = str(DEFAULT_BROWSER["profile_dir"])
+    headless: bool = bool(DEFAULT_BROWSER["headless"])
+    timeout_ms: int = int(DEFAULT_BROWSER["timeout_ms"])
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any] | None) -> BrowserConfig:
+        values = {**DEFAULT_BROWSER, **(data or {})}
+        return cls(
+            enabled=bool(values["enabled"]),
+            profile_dir=str(values["profile_dir"] or ""),
+            headless=bool(values["headless"]),
+            timeout_ms=int(values["timeout_ms"]),
+        )
+
+    def resolved_profile_dir(self, workspace: Path | str) -> Path:
+        configured = self.profile_dir.strip()
+        if configured:
+            return Path(configured).expanduser()
+        return project_browser_dir(workspace)
+
+    def validate(self) -> None:
+        if self.timeout_ms < 1000:
+            raise ConfigurationError("browser timeout_ms must be at least 1000.")
 
 
 @dataclass(slots=True)
@@ -623,6 +655,7 @@ class AppConfig:
     sampling: SamplingConfig = field(default_factory=SamplingConfig)
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     file_io: FileIOConfig = field(default_factory=FileIOConfig)
+    browser: BrowserConfig = field(default_factory=BrowserConfig)
     index: IndexConfig = field(default_factory=IndexConfig)
     language: str = "en"
     model: str = "gemma4:31b-cloud"
@@ -689,6 +722,9 @@ class AppConfig:
         file_io = FileIOConfig.from_mapping(
             data.get("file_io") if isinstance(data.get("file_io"), dict) else None
         )
+        browser = BrowserConfig.from_mapping(
+            data.get("browser") if isinstance(data.get("browser"), dict) else None
+        )
         index = IndexConfig.from_mapping(
             data.get("index") if isinstance(data.get("index"), dict) else None
         )
@@ -705,6 +741,7 @@ class AppConfig:
             sampling=sampling,
             sandbox=sandbox,
             file_io=file_io,
+            browser=browser,
             index=index,
             language=str(data.get("language", "en")),
             model=str(data.get("model", "gemma4:31b-cloud")),
@@ -758,6 +795,7 @@ class AppConfig:
         self.sandbox.validate()
         self.file_io.validate()
         self.index.validate()
+        self.browser.validate()
         parsed = urlparse(self.base_url)
         if self.api_mode in {"responses", "completions", "ollama"} and parsed.scheme not in {
             "http",

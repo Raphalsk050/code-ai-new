@@ -81,6 +81,7 @@ class CodeAIApplication:
         skill_sources: Sequence[SkillSource] = (),
         sandbox: SessionSandbox | None = None,
         code_index: CodeIndexService | None = None,
+        browser: Any = None,
     ) -> None:
         self.session = session
         self.event_bus = event_bus
@@ -110,6 +111,9 @@ class CodeAIApplication:
         # The workspace's code index, exposed so clients can trigger a refresh
         # (/index, ``code-ai index``) and show its state. ``None`` when disabled.
         self.code_index = code_index
+        # The agent's browser. Started lazily on first use, so a session that
+        # never browses never pays for a Chromium process.
+        self.browser = browser
         # Id of the conversation currently loaded in the live session. Assigned
         # by the client via reset_conversation/load_conversation; a turn persists
         # under it so the user can resume the thread later.
@@ -131,6 +135,7 @@ class CodeAIApplication:
         self._terminal_poll_task: asyncio.Task[None] | None = None
         # Background pass that gives the indexed chunks vectors after the
         # embedding model changes; exists only while that work is running.
+        self._index_warmup_task: asyncio.Task[None] | None = None
         self._embedding_task: asyncio.Task[Any] | None = None
 
     @property
@@ -153,6 +158,45 @@ class CodeAIApplication:
         await self.event_bus.emit("session.ready", {}, source="app")
         if self.terminal_manager is not None and self._terminal_poll_task is None:
             self._terminal_poll_task = asyncio.create_task(self._poll_terminal_screens())
+        self.start_index_warmup()
+
+    def start_index_warmup(self) -> bool:
+        """Build the index in the background, once, at the start of a session.
+
+        Without this the index only ever existed after somebody typed /index,
+        and an index nobody built is worse than no index at all: the model asks
+        it once, is told it is empty, falls back to reading files and never
+        asks again. The whole point is that locating code should not cost a
+        file read, and that only holds if the index is warm before the first
+        question.
+
+        Incremental, so it is nearly free on a project that has been indexed
+        before: a file whose size and mtime match is trusted unchanged. In the
+        background, because a first index of a large tree takes seconds and the
+        user should be typing during them, not waiting.
+        """
+
+        if self.code_index is None:
+            return False
+        if self._index_warmup_task is not None and not self._index_warmup_task.done():
+            return False
+        self._index_warmup_task = asyncio.create_task(self._warm_index())
+        return True
+
+    async def _warm_index(self) -> None:
+        """Refresh the index, reporting nothing and breaking nothing if it fails.
+
+        Best effort by design: this runs without anyone asking for it, so a
+        workspace it cannot read must cost the index rather than the session.
+        """
+
+        assert self.code_index is not None
+        try:
+            await self.code_index.refresh()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - a warm-up must never end a session
+            logger.warning("code index: startup warm-up failed: %s", exc)
 
     async def _poll_terminal_screens(self) -> None:
         """Push live PTY output to the UI even when no tool call is running.
@@ -774,6 +818,7 @@ class CodeAIApplication:
         previous_sandbox = self.sandbox
         previous_terminals = self.terminal_manager
         previous_index = self.code_index
+        previous_browser = self.browser
         gateway = self.orchestrator.approval_gateway
         allowlist = set(self.orchestrator._session_allowlist)
 
@@ -794,6 +839,7 @@ class CodeAIApplication:
         self.sandbox = rebuilt.sandbox
         self.terminal_manager = rebuilt.terminal_manager
         self.code_index = rebuilt.code_index
+        self.browser = rebuilt.browser
 
         # The index is rooted at the workspace like everything else here, but it
         # is also subscribed to the event bus, which survives the rebuild - so
@@ -802,6 +848,11 @@ class CodeAIApplication:
         if previous_index is not None and previous_index is not self.code_index:
             with contextlib.suppress(Exception):
                 await previous_index.close()
+        # The browser profile is per-workspace too: the old one holds the
+        # previous project's logins and a lock on its profile directory.
+        if previous_browser is not None and previous_browser is not self.browser:
+            with contextlib.suppress(Exception):
+                await previous_browser.close()
         if previous_terminals is not None and previous_terminals is not self.terminal_manager:
             with contextlib.suppress(Exception):
                 previous_terminals.close_all()
@@ -1139,14 +1190,21 @@ class CodeAIApplication:
         if self.terminal_manager:
             self.terminal_manager.close_all()
         self._cleanup_sandbox()
-        if self._embedding_task is not None and not self._embedding_task.done():
-            self._embedding_task.cancel()
-            try:
-                await self._embedding_task
-            except BaseException:  # noqa: BLE001 - shutdown must not propagate
-                pass
+        for background in (self._index_warmup_task, self._embedding_task):
+            if background is not None and not background.done():
+                background.cancel()
+                try:
+                    await background
+                except BaseException:  # noqa: BLE001 - shutdown must not propagate
+                    pass
         if self.code_index is not None:
             await self.code_index.close()
+        if self.browser is not None:
+            # A persistent context holds a real browser process and a profile
+            # lock; leaving it behind would block the next session from
+            # opening the same profile.
+            with contextlib.suppress(Exception):
+                await self.browser.close()
         await self.provider.close()
         self.session.state = AgentState.CLOSED
         await self.event_bus.emit("session.closed", {}, source="app")

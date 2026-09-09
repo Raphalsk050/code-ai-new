@@ -63,6 +63,10 @@ class ToolContext:
     # the session: what the parent indexes, a sub-agent searches. ``None`` when
     # the index is disabled, which makes the index tools report so.
     code_index: Any = None
+    # The agent's own browser (see code_ai.tools.browser), shared by every
+    # agent in the session so a login one of them was walked through is not
+    # asked for again by the next. ``None`` when the browser is disabled.
+    browser: Any = None
 
 
 class BaseTool(Protocol):
