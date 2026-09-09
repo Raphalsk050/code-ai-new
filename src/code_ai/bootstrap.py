@@ -51,6 +51,7 @@ from code_ai.sandbox.session import SessionSandbox
 from code_ai.tools.agents import DispatchAgentTool
 from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.computer import (
+    ReadDesktopScreenTool,
     ActivateApplicationTool,
     ClickMouseTool,
     DesktopController,
@@ -123,6 +124,7 @@ def build_tool_registry() -> ToolRegistry:
         TerminateTerminalTool(),
         ReadScreenTool(),
         ScreenInfoTool(),
+        ReadDesktopScreenTool(),
         MoveMouseTool(),
         ClickMouseTool(),
         DragMouseTool(),

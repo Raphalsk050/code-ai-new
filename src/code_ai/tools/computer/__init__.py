@@ -11,6 +11,7 @@ from code_ai.tools.computer.mouse import (
     MoveMouseTool,
     ScrollMouseTool,
 )
+from code_ai.tools.computer.read_screen import ReadDesktopScreenTool
 from code_ai.tools.computer.screen import ScreenInfoTool
 
 __all__ = [
@@ -22,6 +23,7 @@ __all__ = [
     "MoveMouseTool",
     "OpenApplicationTool",
     "PressKeysTool",
+    "ReadDesktopScreenTool",
     "ScreenInfoTool",
     "ScrollMouseTool",
     "TypeTextTool",

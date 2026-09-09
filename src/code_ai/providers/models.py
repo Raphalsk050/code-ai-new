@@ -131,6 +131,12 @@ class ToolResult:
     name: str
     content: str
     is_error: bool = False
+    # Pixels a tool produced (a screenshot). Deliberately not carried on the
+    # tool message: the Chat Completions shape has no image part for role
+    # "tool", and the servers that do accept one disagree about how. The
+    # orchestrator delivers these as a following user message instead, which
+    # every vision endpoint understands.
+    images: list[ImageContent] = field(default_factory=list)
 
     def to_message(self) -> Message:
         prefix = "ERROR: " if self.is_error else ""

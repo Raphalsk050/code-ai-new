@@ -12,6 +12,12 @@ from code_ai.sandbox.session import SessionSandbox
 from code_ai.util.paths import WorkspacePolicy
 
 
+# Reserved payload key a tool uses to attach pixels to its result. The
+# orchestrator lifts it off before the payload is serialised, so it never
+# reaches the model as JSON - see _take_tool_images.
+TOOL_IMAGES_KEY = "_images"
+
+
 class ToolCapability(StrEnum):
     LOCAL_READ = "local_read"
     LOCAL_WRITE = "local_write"
