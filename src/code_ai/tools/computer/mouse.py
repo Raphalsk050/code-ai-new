@@ -3,7 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 from code_ai.tools.base import ToolCapability, ToolContext
-from code_ai.tools.computer.common import desktop_controller, position_payload
+from code_ai.tools.computer.common import (
+    COORDINATE_SPACE_SCHEMA,
+    desktop_controller,
+    position_payload,
+    resolve_point,
+)
 from code_ai.tools.schema import tool_schema
 
 
@@ -18,6 +23,7 @@ class MoveMouseTool:
         {
             "x": {"type": "integer", "description": "Target X coordinate in pixels."},
             "y": {"type": "integer", "description": "Target Y coordinate in pixels."},
+            "coordinate_space": COORDINATE_SPACE_SCHEMA,
             "duration": {
                 "type": "number",
                 "description": "Seconds to glide the pointer over. Defaults to 0 (instant).",
@@ -29,9 +35,8 @@ class MoveMouseTool:
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         controller = desktop_controller(context)
         duration = float(arguments.get("duration") or 0.0)
-        x, y = await controller.run(
-            controller.move_mouse, int(arguments["x"]), int(arguments["y"]), duration
-        )
+        target = resolve_point(controller, arguments, arguments["x"], arguments["y"])
+        x, y = await controller.run(controller.move_mouse, target[0], target[1], duration)
         return await position_payload(context, controller, "move_mouse", {"x": x, "y": y})
 
 
@@ -47,6 +52,7 @@ class ClickMouseTool:
         {
             "x": {"type": "integer", "description": "X coordinate to click at (pixels)."},
             "y": {"type": "integer", "description": "Y coordinate to click at (pixels)."},
+            "coordinate_space": COORDINATE_SPACE_SCHEMA,
             "button": {
                 "type": "string",
                 "description": "Mouse button: 'left', 'middle', or 'right'. Defaults to left.",
@@ -66,10 +72,11 @@ class ClickMouseTool:
         controller = desktop_controller(context)
         x = arguments.get("x")
         y = arguments.get("y")
+        point = resolve_point(controller, arguments, x, y) if None not in (x, y) else (None, None)
         cx, cy = await controller.run(
             controller.click_mouse,
-            int(x) if x is not None else None,
-            int(y) if y is not None else None,
+            point[0],
+            point[1],
             arguments.get("button") or "left",
             int(arguments.get("clicks") or 1),
             float(arguments.get("interval") or 0.0),
@@ -90,6 +97,7 @@ class DragMouseTool:
             "start_y": {"type": "integer", "description": "Drag origin Y (pixels)."},
             "end_x": {"type": "integer", "description": "Drag destination X (pixels)."},
             "end_y": {"type": "integer", "description": "Drag destination Y (pixels)."},
+            "coordinate_space": COORDINATE_SPACE_SCHEMA,
             "button": {
                 "type": "string",
                 "description": (
@@ -97,6 +105,7 @@ class DragMouseTool:
                     "'right'. Defaults to left."
                 ),
             },
+            "coordinate_space": COORDINATE_SPACE_SCHEMA,
             "duration": {
                 "type": "number",
                 "description": "Seconds the drag should take. Defaults to 0.3.",
@@ -109,12 +118,18 @@ class DragMouseTool:
         controller = desktop_controller(context)
         start_x = arguments.get("start_x")
         start_y = arguments.get("start_y")
+        start = (
+            resolve_point(controller, arguments, start_x, start_y)
+            if None not in (start_x, start_y)
+            else (None, None)
+        )
+        end = resolve_point(controller, arguments, arguments["end_x"], arguments["end_y"])
         x, y = await controller.run(
             controller.drag_mouse,
-            int(start_x) if start_x is not None else None,
-            int(start_y) if start_y is not None else None,
-            int(arguments["end_x"]),
-            int(arguments["end_y"]),
+            start[0],
+            start[1],
+            end[0],
+            end[1],
             arguments.get("button") or "left",
             float(arguments.get("duration") or 0.3),
         )
@@ -144,10 +159,11 @@ class ScrollMouseTool:
         controller = desktop_controller(context)
         x = arguments.get("x")
         y = arguments.get("y")
+        point = resolve_point(controller, arguments, x, y) if None not in (x, y) else (None, None)
         cx, cy = await controller.run(
             controller.scroll_mouse,
             int(arguments["amount"]),
-            int(x) if x is not None else None,
-            int(y) if y is not None else None,
+            point[0],
+            point[1],
         )
         return await position_payload(context, controller, "scroll_mouse", {"x": cx, "y": cy})
