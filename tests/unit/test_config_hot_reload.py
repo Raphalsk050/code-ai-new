@@ -111,6 +111,30 @@ async def test_the_session_moves_to_the_new_project(tmp_path) -> None:
     assert "new" in app.conversation_store._dir.parent.name
 
 
+async def test_the_old_project_index_stops_following_the_session(tmp_path) -> None:
+    """The bus survives the rebuild, so a dropped index would keep listening.
+
+    It subscribes to tool events to re-index whatever the agent touches. Left
+    subscribed after the move, it would write the new project's files into the
+    old project's database - the exact cross-project leak the rebuild exists to
+    prevent.
+    """
+
+    old = project(tmp_path, "old")
+    new = project(tmp_path, "new")
+    app = build_application(config=_config(old), provider=_StubProvider())
+    before = app.code_index
+    if before is None:  # pragma: no cover - only when the index is disabled
+        pytest.skip("the code index is disabled in this configuration")
+
+    await app.retarget_workspace(new)
+
+    assert app.code_index is not None and app.code_index is not before
+    assert app.code_index.workspace == new
+    assert before.event_bus is None
+    assert before._on_event not in app.event_bus._subscribers
+
+
 async def test_the_tools_are_allowed_in_the_new_project_and_not_the_old(tmp_path) -> None:
     """The workspace policy is frozen, so a stale one would reject the new tree."""
 

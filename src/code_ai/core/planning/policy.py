@@ -17,6 +17,8 @@ DEFAULT_CAPABILITIES_BY_NAME: dict[str, frozenset[ToolCapability]] = {
     "read_file": frozenset({ToolCapability.LOCAL_READ}),
     "list_files": frozenset({ToolCapability.LOCAL_READ}),
     "search_code": frozenset({ToolCapability.LOCAL_READ}),
+    "search_index": frozenset({ToolCapability.LOCAL_READ}),
+    "index_workspace": frozenset({ToolCapability.LOCAL_READ}),
     "system_information": frozenset({ToolCapability.LOCAL_READ}),
     "write_file": frozenset({ToolCapability.LOCAL_WRITE}),
     "edit_code": frozenset({ToolCapability.LOCAL_WRITE}),

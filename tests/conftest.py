@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from code_ai import bootstrap
+from code_ai.config import models as config_models
 from code_ai.config.defaults import SANDBOX_DIR_ENV
 
 
@@ -22,6 +23,10 @@ def _isolate_failure_memories(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(bootstrap, "default_memories_dir", lambda: directory)
     monkeypatch.setattr(bootstrap, "global_knowledge_dir", lambda: knowledge)
     monkeypatch.setattr(bootstrap, "project_memories_dir", lambda _workspace: projects)
+    # The code index is one more per-project store under the config dir; a
+    # test that builds an application must not create or reuse a real one.
+    index_dir = tmp_path_factory.mktemp("code_ai_index")
+    monkeypatch.setattr(config_models, "project_index_dir", lambda _workspace: index_dir)
     yield
 
 

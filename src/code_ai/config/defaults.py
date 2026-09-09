@@ -179,6 +179,20 @@ def project_memories_dir(workspace: Path | str) -> Path:
     return Path.home() / DEFAULT_CONFIG_DIRNAME / "projects" / slug / "memories"
 
 
+def project_index_dir(workspace: Path | str) -> Path:
+    """Directory holding the code index (RAG store) for a single workspace.
+
+    Same slug scheme as memories and conversations, so the index lives beside
+    them under the config dir: nothing is written into the user's tree, and
+    two checkouts of the same project never share stale chunks.
+    """
+
+    resolved = Path(workspace).expanduser().resolve()
+    digest = hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()[:12]
+    slug = f"{resolved.name or 'root'}-{digest}"
+    return Path.home() / DEFAULT_CONFIG_DIRNAME / "projects" / slug / "index"
+
+
 def default_sandbox_base_dir() -> Path:
     """Base directory holding one isolated sandbox per session.
 
@@ -358,6 +372,38 @@ DEFAULT_SANDBOX: dict[str, object] = {
 }
 
 
+DEFAULT_INDEX: dict[str, object] = {
+    # Master switch for the code index (retrieval over chunked source). Off,
+    # the index tools are still registered but report the index as disabled.
+    "enabled": True,
+    # Empty resolves to :func:`project_index_dir` at startup.
+    "index_dir": "",
+    # Embedding model for semantic retrieval. Empty keeps the index lexical
+    # only (FTS5/BM25 over identifiers and text), which needs no server and is
+    # already an order of magnitude faster than grepping the tree.
+    "embedding_model": "",
+    # Where embeddings are computed. Empty follows the chat provider's api_mode
+    # and base_url; set them to point a lexical-only chat setup at a separate
+    # embedding server ("ollama" or "openai").
+    "embedding_api_mode": "",
+    "embedding_base_url": "",
+    "embedding_batch_size": 32,
+    # Re-index a file automatically whenever a tool reads, writes or edits it,
+    # so the index follows what the agent is actually working on.
+    "auto_index_touched_files": True,
+    # Files above this size are skipped: they are generated bundles, data
+    # dumps or vendored blobs far more often than source worth retrieving.
+    "max_file_bytes": 524_288,
+    # Fallback chunking for files without recognisable symbol boundaries.
+    "chunk_lines": 60,
+    "chunk_overlap_lines": 10,
+    # Optional glob filters over workspace-relative paths, on top of the
+    # default excludes (.git, node_modules, build output, ...).
+    "include_globs": [],
+    "exclude_globs": [],
+}
+
+
 DEFAULT_CONFIG: dict[str, object] = {
     "api_key": PLACEHOLDER_API_KEY,
     "api_mode": "responses",
@@ -369,6 +415,7 @@ DEFAULT_CONFIG: dict[str, object] = {
     "planner": DEFAULT_PLANNER,
     "sandbox": DEFAULT_SANDBOX,
     "file_io": DEFAULT_FILE_IO,
+    "index": DEFAULT_INDEX,
     "sampling": DEFAULT_SAMPLING,
     "language": "en",
     "model": "gemma4:31b-cloud",

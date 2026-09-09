@@ -766,7 +766,7 @@ class PlannerService:
             return header + (
                 "PLAN MODE — produce a plan, do not change anything.\n"
                 "Rules:\n"
-                "- Investigate first with read-only tools (read_file, search_code, "
+                "- Investigate first with read-only tools (read_file, search_index, search_code, "
                 "list_files) until you genuinely understand the task and the code it "
                 "touches. Do not guess.\n"
                 "- Do NOT call write_file, edit_code, execute_command, or "

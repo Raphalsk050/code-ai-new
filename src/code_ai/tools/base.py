@@ -53,6 +53,10 @@ class ToolContext:
     # ``None`` degrades to Code-AI's own directories.
     skill_sources: Any = None
     workflows: Any = None
+    # The workspace's code index (see code_ai.index), shared by every agent in
+    # the session: what the parent indexes, a sub-agent searches. ``None`` when
+    # the index is disabled, which makes the index tools report so.
+    code_index: Any = None
 
 
 class BaseTool(Protocol):

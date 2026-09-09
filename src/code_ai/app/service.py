@@ -16,7 +16,7 @@ from code_ai.app.conversation_store import ConversationStore
 from code_ai.app.goal_runner import GoalRunner
 from code_ai.app.session import ApplicationSession
 from code_ai.context.compression import CompressionResult, ContextCompressor
-from code_ai.core.errors import GoalStateError
+from code_ai.core.errors import ConfigurationError, GoalStateError
 from code_ai.core.goal import (
     AcceptanceCriterion,
     CriterionKind,
@@ -30,6 +30,12 @@ from code_ai.core.state import AgentState
 from code_ai.core.workflows import WorkflowService
 from code_ai.events.bus import AsyncEventBus, EventSubscriber
 from code_ai.events.models import EventEnvelope
+from code_ai.index import (
+    CodeIndexService,
+    IndexStatus,
+    RefreshReport,
+    build_embedding_client,
+)
 from code_ai.providers.base import ModelProvider
 from code_ai.providers.factory import PROVIDER_BAKED_SETTINGS
 from code_ai.providers.models import ImageContent
@@ -74,6 +80,7 @@ class CodeAIApplication:
         workflows: WorkflowService | None = None,
         skill_sources: Sequence[SkillSource] = (),
         sandbox: SessionSandbox | None = None,
+        code_index: CodeIndexService | None = None,
     ) -> None:
         self.session = session
         self.event_bus = event_bus
@@ -100,6 +107,9 @@ class CodeAIApplication:
         # Skill directories searched this session, for clients that let the user
         # invoke a skill by name instead of waiting for the model to match it.
         self.skill_sources = tuple(skill_sources)
+        # The workspace's code index, exposed so clients can trigger a refresh
+        # (/index, ``code-ai index``) and show its state. ``None`` when disabled.
+        self.code_index = code_index
         # Id of the conversation currently loaded in the live session. Assigned
         # by the client via reset_conversation/load_conversation; a turn persists
         # under it so the user can resume the thread later.
@@ -119,6 +129,9 @@ class CodeAIApplication:
         # Background drain of interactive terminal sessions (see
         # _poll_terminal_screens); exists only while the app is running.
         self._terminal_poll_task: asyncio.Task[None] | None = None
+        # Background pass that gives the indexed chunks vectors after the
+        # embedding model changes; exists only while that work is running.
+        self._embedding_task: asyncio.Task[Any] | None = None
 
     @property
     def conversation_id(self) -> str | None:
@@ -513,6 +526,49 @@ class CodeAIApplication:
         await self.orchestrator.set_state(AgentState.READY, phase="waiting_user")
         return compression
 
+    async def refresh_code_index(self, *, full: bool = False, subtree: str = "") -> RefreshReport:
+        """Bring the code index in line with the workspace (the /index trigger)."""
+
+        if self.code_index is None:
+            raise ConfigurationError("The code index is disabled (config: index.enabled).")
+        return await self.code_index.refresh(full=full, subtree=subtree)
+
+    def code_index_status(self) -> IndexStatus | None:
+        return None if self.code_index is None else self.code_index.status()
+
+    async def set_embedding_model(self, model: str) -> int:
+        """Switch the index's embedding model live; returns chunks left to embed.
+
+        Semantic retrieval is the one index setting a user picks interactively
+        (the setup dialog lists the provider's catalog), so it takes effect in
+        the running session rather than waiting for a restart: the embedding
+        client is rebuilt, vectors from a different model are dropped, and the
+        outstanding chunks are embedded by ``start_embedding_backfill`` or by
+        the next refresh. An empty ``model`` turns semantic retrieval off and
+        leaves the lexical index answering on its own.
+        """
+
+        if self.code_index is None:
+            raise ConfigurationError("The code index is disabled (config: index.enabled).")
+        self.session.config.index.embedding_model = model.strip()
+        self.code_index.config = self.session.config.index
+        embedder = build_embedding_client(self.session.config)
+        return await self.code_index.set_embedder(embedder)
+
+    def start_embedding_backfill(self) -> bool:
+        """Embed the outstanding chunks in the background. False if none/idle.
+
+        Owned by the application rather than by whoever asked for it, so closing
+        the dialog that changed the model does not cancel the work it started.
+        """
+
+        if self.code_index is None or self.code_index.embedder is None:
+            return False
+        if self._embedding_task is not None and not self._embedding_task.done():
+            return False
+        self._embedding_task = asyncio.create_task(self.code_index.embed_pending())
+        return True
+
     async def set_planner_mode(self, mode: str | PlannerMode) -> None:
         if not self.orchestrator.planner:
             raise RuntimeError("Planner is not configured.")
@@ -717,6 +773,7 @@ class CodeAIApplication:
 
         previous_sandbox = self.sandbox
         previous_terminals = self.terminal_manager
+        previous_index = self.code_index
         gateway = self.orchestrator.approval_gateway
         allowlist = set(self.orchestrator._session_allowlist)
 
@@ -736,7 +793,15 @@ class CodeAIApplication:
         self.skill_sources = rebuilt.skill_sources
         self.sandbox = rebuilt.sandbox
         self.terminal_manager = rebuilt.terminal_manager
+        self.code_index = rebuilt.code_index
 
+        # The index is rooted at the workspace like everything else here, but it
+        # is also subscribed to the event bus, which survives the rebuild - so
+        # the old one has to be closed rather than dropped, or it would go on
+        # indexing the new project's files into the previous project's database.
+        if previous_index is not None and previous_index is not self.code_index:
+            with contextlib.suppress(Exception):
+                await previous_index.close()
         if previous_terminals is not None and previous_terminals is not self.terminal_manager:
             with contextlib.suppress(Exception):
                 previous_terminals.close_all()
@@ -1074,6 +1139,14 @@ class CodeAIApplication:
         if self.terminal_manager:
             self.terminal_manager.close_all()
         self._cleanup_sandbox()
+        if self._embedding_task is not None and not self._embedding_task.done():
+            self._embedding_task.cancel()
+            try:
+                await self._embedding_task
+            except BaseException:  # noqa: BLE001 - shutdown must not propagate
+                pass
+        if self.code_index is not None:
+            await self.code_index.close()
         await self.provider.close()
         self.session.state = AgentState.CLOSED
         await self.event_bus.emit("session.closed", {}, source="app")

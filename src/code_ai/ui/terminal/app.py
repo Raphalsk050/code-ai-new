@@ -1358,6 +1358,9 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             if text.strip() == "/cancel":
                 await self.controller.cancel()
                 return
+            if text.strip() == "/index" or text.strip().startswith("/index "):
+                await self._handle_index_command(text.strip())
+                return
             if text.strip() == "/debug" or text.strip().startswith("/debug "):
                 self._append_conversation_line(
                     handle_debug_command(application, text.strip(), config_path=config_path)
@@ -1539,6 +1542,35 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 self._append_conversation_line(line)
 
             self._spawn(_define(), "defining the goal")
+
+        async def _handle_index_command(self, stripped: str) -> None:
+            """Dispatch ``/index`` — the user's trigger for the code index.
+
+            Bare ``/index`` refreshes incrementally (cheap: unchanged files cost
+            one stat), ``/index full`` rebuilds from scratch, ``/index status``
+            reports what is indexed, and ``/index <dir>`` refreshes one subtree.
+            A refresh walks the tree, so it runs as a background task and its
+            summary lands in the transcript when done.
+            """
+            argument = stripped[len("/index") :].strip()
+            if argument == "status":
+                self._append_conversation_line(self.controller.index_status())
+                return
+            full = False
+            subtree = ""
+            if argument == "full":
+                full = True
+            elif argument:
+                subtree = argument
+            self._append_conversation_line(
+                "index> Rebuilding the code index…" if full else "index> Refreshing the code index…"
+            )
+
+            async def _refresh() -> None:
+                line = await self.controller.index_refresh(full=full, subtree=subtree)
+                self._append_conversation_line(line)
+
+            self._spawn(_refresh(), "refreshing the code index")
 
         async def _handle_term_command(self, stripped: str) -> None:
             """Dispatch ``/term`` — the user's keyboard into the shared PTY.

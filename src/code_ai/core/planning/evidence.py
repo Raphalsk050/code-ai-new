@@ -436,8 +436,8 @@ def _records_from_payload(
                 truncated=bool(payload.get("truncated")),
             )
         ]
-    if tool_name == "search_code":
-        matches = payload.get("matches")
+    if tool_name in {"search_code", "search_index"}:
+        matches = payload.get("matches") if tool_name == "search_code" else payload.get("hits")
         match_count = len(matches) if isinstance(matches, list) else 0
         evidence_type = (
             EvidenceType.LOCAL_SEARCH_MATCH if match_count else EvidenceType.LOCAL_SEARCH_COMPLETED
