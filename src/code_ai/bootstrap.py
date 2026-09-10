@@ -49,6 +49,7 @@ from code_ai.providers.swappable import SwappableProvider
 from code_ai.sandbox.reaper import SandboxReaper
 from code_ai.sandbox.session import SessionSandbox
 from code_ai.tools.agents import DispatchAgentTool
+from code_ai.tools.apk import AnalyzeApkTool
 from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.browser import (
     BrowserClickTool,
@@ -59,7 +60,6 @@ from code_ai.tools.browser import (
     BrowserTypeTool,
 )
 from code_ai.tools.computer import (
-    ReadDesktopScreenTool,
     ActivateApplicationTool,
     ClickMouseTool,
     DesktopController,
@@ -68,6 +68,7 @@ from code_ai.tools.computer import (
     MoveMouseTool,
     OpenApplicationTool,
     PressKeysTool,
+    ReadDesktopScreenTool,
     ScreenInfoTool,
     ScrollMouseTool,
     TypeTextTool,
@@ -149,6 +150,7 @@ def build_tool_registry() -> ToolRegistry:
         ListApplicationsTool(),
         SystemInformationTool(),
         AnalyzeLogcatTool(),
+        AnalyzeApkTool(),
         WebSearchTool(),
         UseSkillTool(),
         CreateSkillTool(),
