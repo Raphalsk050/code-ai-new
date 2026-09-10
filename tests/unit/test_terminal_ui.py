@@ -828,14 +828,15 @@ def test_terminal_logo_loads_from_banner_resource() -> None:
 def test_terminal_logo_styles_tarty2_banner_lines() -> None:
     from code_ai.ui.terminal.widgets import (
         CODE_AI_BANNER_FONT_OPTIONS,
-        CODE_AI_LOGO_STYLES,
+        code_ai_logo_styles,
         load_code_ai_logo,
     )
 
+    styles = code_ai_logo_styles()
     rendered = load_code_ai_logo()
     span_styles = [str(span.style) for span in rendered.spans]
 
-    assert span_styles[:2] == [CODE_AI_LOGO_STYLES[1], CODE_AI_LOGO_STYLES[0]]
+    assert span_styles[:2] == [styles[1], styles[0]]
     assert "future_1" in CODE_AI_BANNER_FONT_OPTIONS
     assert "xsansi" in CODE_AI_BANNER_FONT_OPTIONS
 
@@ -855,25 +856,26 @@ def test_trace_lines_are_plain_and_compacted() -> None:
 def test_user_chip_and_answer_chip_and_trace_classes() -> None:
     from textual.content import Content
 
+    from code_ai.ui.terminal.palette import active_palette
     from code_ai.ui.terminal.widgets import (
-        _MODEL_COLOR,
-        _USER_COLOR,
         conversation_line_class,
         render_conversation_line,
     )
+
+    palette = active_palette()
 
     # The user prompt is a green chip inline with the (literal) message.
     you = render_conversation_line("you> ola [x]")
     assert isinstance(you, Content)
     assert you.plain == " you  ola [x]"
-    assert any(f"on {_USER_COLOR}" in str(span.style) for span in you.spans)
+    assert any(f"on {palette.success}" in str(span.style) for span in you.spans)
 
     # The agent's answer carries the orange chip above the formatted Markdown.
     answer = render_conversation_line("ai> the answer", rich_markdown=True, width=60)
     assert isinstance(answer, Content)
     assert answer.plain.startswith(" model ")
     assert "the answer" in answer.plain
-    assert any(f"on {_MODEL_COLOR}" in str(span.style) for span in answer.spans)
+    assert any(f"on {palette.accent}" in str(span.style) for span in answer.spans)
 
     # Messages sit at column 0; every working-trace line shares one indent class.
     assert conversation_line_class("you> ola") == "turn-user"

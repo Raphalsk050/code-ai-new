@@ -459,7 +459,7 @@ DEFAULT_CONFIG: dict[str, object] = {
     "context_compression_target": 0.55,
     "output_token_reserve": 32768,
     "headless_event_format": "text",
-    "terminal_theme": "textual-dark",
+    "terminal_theme": "monokai",
     "terminal_banner_font": "tarty2",
     "terminal_spinner": "ascii",
     "terminal_session_collapsed": False,

@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from textual.app import App
-
 from code_ai.core.interaction import Answer, Question, Questionnaire
 from code_ai.ui.terminal.app import create_terminal_app
+from code_ai.ui.terminal.palette import PaletteApp
 from code_ai.ui.terminal.questions import QuestionCard, QuestionnaireModal
 from tests.unit.test_terminal_ui import FakeTerminalApplication
 
@@ -38,7 +37,7 @@ def question(prompt: str, **overrides) -> Question:
     return Question.from_payload(payload)
 
 
-class Harness(App):
+class Harness(PaletteApp):
     CSS_PATH = str(THEME)
 
     def __init__(self, questionnaire: Questionnaire) -> None:

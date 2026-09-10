@@ -16,6 +16,7 @@ from textual.widgets import Button, Input, Static
 
 from code_ai.core.approval import ApprovalDecision, ApprovalRequest
 from code_ai.ui.terminal.code_view import syntax_block
+from code_ai.ui.terminal.palette import active_palette
 
 logger = logging.getLogger(__name__)
 
@@ -24,16 +25,22 @@ logger = logging.getLogger(__name__)
 # enough to cost nothing while the user reads the diff.
 _DIALOG_PRESENCE_POLL_S = 0.25
 
-# Unified-diff line prefixes mapped to a Claude-Code-style background tint.
-# Context lines (a leading space) and hunk headers fall through to a dim default.
-_DIFF_LINE_STYLES = {
-    "+": Style(color="#a6e3a1", bgcolor="#1d3322"),
-    "-": Style(color="#f38ba8", bgcolor="#3a1620"),
-    "@": Style(color="#7aa2f7", bold=True),
-}
 _DIFF_CONTEXT_LINES = 3
 _HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
-_GUTTER_STYLE = Style(color="#5c6773")
+
+
+def _diff_line_styles() -> dict[str, Style]:
+    """Diff line prefixes mapped to a tinted row, in the theme's own colours.
+
+    Context lines (a leading space) fall through to the dim default the caller
+    supplies, so only additions, removals and hunk headers are coloured.
+    """
+    palette = active_palette()
+    return {
+        "+": Style(color=palette.diff_add_fg, bgcolor=palette.diff_add_bg),
+        "-": Style(color=palette.diff_del_fg, bgcolor=palette.diff_del_bg),
+        "@": Style(color=palette.highlight, bold=True),
+    }
 
 
 def _format_command(arguments: dict[str, object]) -> str:
@@ -53,12 +60,15 @@ def _render_command(command: str) -> Text:
     prompt and a single solid color with no line numbers — visually distinct
     from the line-numbered, multi-color syntax used for code previews.
     """
+    palette = active_palette()
+    prompt_style = Style(color=palette.accent, bold=True)
+    body_style = Style(color=palette.success_bright)
     text = Text(no_wrap=False)
     for index, line in enumerate(command.split("\n")):
         if index:
             text.append("\n")
-        text.append("$ " if index == 0 else "  ", style=Style(color="#ff9f1c", bold=True))
-        text.append(line, style=Style(color="#7ee787"))
+        text.append("$ " if index == 0 else "  ", style=prompt_style)
+        text.append(line, style=body_style)
     return text
 
 
@@ -82,6 +92,9 @@ def _render_diff(old_text: str, new_text: str) -> Text:
     # Drop the "--- "/"+++ " file headers; the dialog already shows the path.
     diff_lines = [line for line in diff_lines if not line.startswith(("--- ", "+++ "))]
 
+    palette = active_palette()
+    line_styles = _diff_line_styles()
+    gutter_style = Style(color=palette.gutter)
     width = max(len(str(len(old_text.splitlines()))), len(str(len(new_text.splitlines()))), 1)
     blank_gutter = " " * (2 * width + 1)
     old_line = new_line = 0
@@ -95,8 +108,8 @@ def _render_diff(old_text: str, new_text: str) -> Text:
             match = _HUNK_HEADER_RE.match(line)
             if match:
                 old_line, new_line = int(match.group(1)), int(match.group(2))
-            text.append(blank_gutter + " ", style=_GUTTER_STYLE)
-            text.append(line, style=_DIFF_LINE_STYLES["@"])
+            text.append(blank_gutter + " ", style=gutter_style)
+            text.append(line, style=line_styles["@"])
             continue
         if marker == "-":
             gutter = f"{old_line:>{width}} {'':>{width}}"
@@ -108,8 +121,8 @@ def _render_diff(old_text: str, new_text: str) -> Text:
             gutter = f"{old_line:>{width}} {new_line:>{width}}"
             old_line += 1
             new_line += 1
-        text.append(gutter + " ", style=_GUTTER_STYLE)
-        text.append(line, style=_DIFF_LINE_STYLES.get(marker, "#9fb3c8"))
+        text.append(gutter + " ", style=gutter_style)
+        text.append(line, style=line_styles.get(marker, palette.muted))
     return text
 
 

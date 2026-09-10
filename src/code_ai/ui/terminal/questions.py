@@ -24,11 +24,23 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Static
 
 from code_ai.core.interaction import Answer, Question, Questionnaire, QuestionOption
+from code_ai.ui.terminal.palette import active_palette
 
-_LABEL_STYLE = Style(color="#d7dee8", bold=True)
-_KEY_STYLE = Style(color="#ff9f1c", bold=True)
-_DESCRIPTION_STYLE = Style(color="#9fb3c8")
-_MARK_STYLE = Style(color="#7ee787", bold=True)
+
+def _label_style() -> Style:
+    return Style(color=active_palette().foreground, bold=True)
+
+
+def _key_style() -> Style:
+    return Style(color=active_palette().accent, bold=True)
+
+
+def _description_style() -> Style:
+    return Style(color=active_palette().muted)
+
+
+def _mark_style() -> Style:
+    return Style(color=active_palette().success_bright, bold=True)
 
 
 class QuestionCard(Vertical):
@@ -66,9 +78,9 @@ class QuestionCard(Vertical):
         # The mark column is always present, selected or not, so choosing an
         # option never shifts the label sideways.
         text = Text(no_wrap=False)
-        text.append("✓ " if self._selected else "  ", style=_MARK_STYLE)
-        text.append(f"[{self._index + 1}] ", style=_KEY_STYLE)
-        text.append(self._option.label, style=_LABEL_STYLE)
+        text.append("✓ " if self._selected else "  ", style=_mark_style())
+        text.append(f"[{self._index + 1}] ", style=_key_style())
+        text.append(self._option.label, style=_label_style())
         return text
 
     def set_selected(self, selected: bool) -> None:
@@ -185,13 +197,13 @@ class QuestionnaireModal(ModalScreen[list[Answer] | None]):
         question = self._question
         text = Text(no_wrap=True)
         if total > 1:
-            text.append(f"Pergunta {self._page + 1} de {total}", style=_KEY_STYLE)
+            text.append(f"Pergunta {self._page + 1} de {total}", style=_key_style())
             if question.header:
-                text.append(f" · {question.header}", style=_LABEL_STYLE)
+                text.append(f" · {question.header}", style=_label_style())
             text.append("   ")
-            text.append(self._progress(), style=_DESCRIPTION_STYLE)
+            text.append(self._progress(), style=_description_style())
         else:
-            text.append(question.header or "Pergunta do agente", style=_KEY_STYLE)
+            text.append(question.header or "Pergunta do agente", style=_key_style())
         return text
 
     def _progress(self) -> str:

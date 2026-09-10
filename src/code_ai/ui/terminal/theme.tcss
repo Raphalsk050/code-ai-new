@@ -1,6 +1,12 @@
+/* Colours are named, never literal. Every $ca-* variable is one slot of the
+   Palette in ui/terminal/palette.py, injected by PaletteApp.get_css_variables:
+   the "monokai" theme declares them (Code-AI's own look) and every other theme
+   derives them from its own colours. A hex written here would be a colour no
+   theme could reach, which is exactly what this replaced. */
+
 Screen {
-  background: #071018;
-  color: #d7dee8;
+  background: $ca-background;
+  color: $ca-foreground;
 }
 
 #root {
@@ -9,26 +15,26 @@ Screen {
 
 #topbar {
   height: 12;
-  border: solid #8892a0;
+  border: solid $ca-border;
   padding: 0 1;
 }
 
 #logo {
-  color: #ff9f1c;
+  color: $ca-accent;
   text-style: bold;
 }
 
 #subtitle {
-  color: #9aa4b2;
+  color: $ca-subtle;
 }
 
 #statusline {
-  color: #48d17a;
+  color: $ca-success;
 }
 
 #context-meter {
   height: 1;
-  color: #d7dee8;
+  color: $ca-foreground;
 }
 
 #main {
@@ -39,7 +45,7 @@ Screen {
   width: 34%;
   min-width: 28;
   max-width: 58;
-  border: solid #8892a0;
+  border: solid $ca-border;
   padding: 1;
 }
 
@@ -58,12 +64,12 @@ Screen {
   height: 1;
   border: none;
   padding: 0;
-  color: #ff9f1c;
+  color: $ca-accent;
   background: transparent;
 }
 
 .collapse-btn:hover {
-  background: #1b2530;
+  background: $ca-hover-background;
 }
 
 /* Collapsed: shrink to a thin strip showing only the expand button. */
@@ -84,7 +90,7 @@ Screen {
 
 #conversation-pane {
   width: 1fr;
-  border: solid #8892a0;
+  border: solid $ca-border;
   padding: 1;
 }
 
@@ -109,7 +115,7 @@ Screen {
 }
 #conversation .turn-trace {
   margin-left: 3;
-  color: #6b7280;
+  color: $ca-trace;
 }
 
 /* The model's reasoning, folded into a hideable "thinking" block — stripped of
@@ -125,7 +131,7 @@ Screen {
   width: 1fr;
   height: auto;
   background: transparent;
-  border: round #2b3440;
+  border: round $ca-border-dim;
   padding: 0 1;
 }
 #conversation .thinking-block.-collapsed {
@@ -134,10 +140,10 @@ Screen {
 }
 #conversation .thinking-block > CollapsibleTitle {
   padding: 0;
-  color: #6b7280;
+  color: $ca-trace;
 }
 #conversation .thinking-block > CollapsibleTitle:hover {
-  color: #9aa4b2;
+  color: $ca-subtle;
   background: transparent;
 }
 /* Reasoning scrolls inside its own box rather than unrolling into the
@@ -146,7 +152,7 @@ Screen {
    hundreds of rows in one go. Capped, it stays a panel. */
 #conversation .thinking-block Contents {
   padding: 0 0 0 2;
-  color: #6b7280;
+  color: $ca-trace;
   max-height: 18;
   overflow-y: auto;
   scrollbar-size-vertical: 1;
@@ -164,12 +170,12 @@ Screen {
 #code-window {
   height: auto;
   max-height: 20;
-  border: round #ff9f1c;
-  border-title-color: #ff9f1c;
+  border: round $ca-accent;
+  border-title-color: $ca-accent;
   border-title-style: bold;
   border-title-align: left;
-  border-subtitle-color: #9fb3c8;
-  background: #111820;
+  border-subtitle-color: $ca-muted;
+  background: $ca-surface;
   padding: 0 1;
   margin-top: 1;
   overflow-x: hidden;
@@ -178,7 +184,7 @@ Screen {
 #stream-tail {
   height: auto;
   max-height: 16;
-  color: #d7dee8;
+  color: $ca-foreground;
 }
 
 /* The reasoning the model is producing right now, contained in its own box.
@@ -190,14 +196,14 @@ Screen {
   height: auto;
   max-height: 14;
   width: 1fr;
-  border: round #2b3440;
-  border-title-color: #6b7280;
+  border: round $ca-border-dim;
+  border-title-color: $ca-trace;
   border-title-style: none;
   border-title-align: left;
-  border-subtitle-color: #4b5563;
+  border-subtitle-color: $ca-faint;
   padding: 0 1;
   margin-top: 1;
-  color: #6b7280;
+  color: $ca-trace;
   overflow-x: hidden;
 }
 
@@ -211,14 +217,14 @@ Screen {
   height: auto;
   max-height: 12;
   width: 1fr;
-  border: round #2f6b45;
-  border-title-color: #48d17a;
+  border: round $ca-success-border;
+  border-title-color: $ca-success;
   border-title-style: bold;
   border-title-align: left;
-  border-subtitle-color: #3f7d56;
+  border-subtitle-color: $ca-success-subtitle;
   padding: 0 1;
   margin-top: 1;
-  color: #9fb3a6;
+  color: $ca-command-text;
   overflow-x: hidden;
 }
 
@@ -235,20 +241,20 @@ Screen {
   height: auto;
   max-height: 22;
   width: 1fr;
-  border: round #2f6b45;
-  border-title-color: #48d17a;
+  border: round $ca-success-border;
+  border-title-color: $ca-success;
   border-title-style: bold;
   border-title-align: left;
-  border-subtitle-color: #e0a0a0;
+  border-subtitle-color: $ca-error-soft;
   padding: 0 1;
   margin-top: 1;
-  color: #d7dee8;
+  color: $ca-foreground;
   overflow-x: hidden;
 }
 
 #terminal-panel.-focused {
-  border: round #48d17a;
-  background: #0d1512;
+  border: round $ca-success;
+  background: $ca-terminal-focus-background;
 }
 
 /* Right sidebar: stacks the PLAN and AGENTS panels. Fixed width; the whole
@@ -264,7 +270,7 @@ Screen {
 #plan, #subagents {
   width: 1fr;
   height: 1fr;
-  border: solid #8892a0;
+  border: solid $ca-border;
   padding: 1;
 }
 
@@ -287,7 +293,7 @@ Screen {
    separate neighbours; extra margin read as too much dead space between cards. */
 #subagents-body .agent-card {
   height: auto;
-  border: round #2b3440;
+  border: round $ca-border-dim;
   padding: 0 1;
 }
 
@@ -302,15 +308,15 @@ Screen {
 }
 #subagents-body .agent-task > CollapsibleTitle {
   padding: 0;
-  color: #6b7280;
+  color: $ca-trace;
 }
 #subagents-body .agent-task > CollapsibleTitle:hover {
-  color: #9aa4b2;
+  color: $ca-subtle;
   background: transparent;
 }
 #subagents-body .agent-task Contents {
   padding: 0 0 0 2;
-  color: #6b7280;
+  color: $ca-trace;
 }
 
 #working-indicator {
@@ -321,9 +327,9 @@ Screen {
 #command-suggestions {
   height: auto;
   max-height: 10;
-  border: solid #8892a0;
-  color: #d7dee8;
-  background: #111820;
+  border: solid $ca-border;
+  color: $ca-foreground;
+  background: $ca-surface;
   padding: 0 1;
 }
 
@@ -338,7 +344,7 @@ Screen {
 }
 
 #mode-select > SelectCurrent {
-  border: solid #ff9f1c;
+  border: solid $ca-accent;
 }
 
 /* Multi-line prompt: starts at one row and grows with the text up to a cap,
@@ -348,12 +354,12 @@ Screen {
   height: auto;
   min-height: 3;
   max-height: 12;
-  border: solid #8892a0;
-  background: #0b141d;
+  border: solid $ca-border;
+  background: $ca-input-background;
 }
 
 .panel-title {
-  color: #ff9f1c;
+  color: $ca-accent;
   text-style: bold;
 }
 
@@ -365,19 +371,19 @@ ApprovalModal {
   width: 85%;
   max-width: 110;
   height: 90%;
-  border: thick #ff9f1c;
-  background: #111820;
+  border: thick $ca-accent;
+  background: $ca-surface;
   padding: 1 2;
 }
 
 #approval-title {
-  color: #ff9f1c;
+  color: $ca-accent;
   text-style: bold;
   padding-bottom: 1;
 }
 
 #approval-meta {
-  color: #9fb3c8;
+  color: $ca-muted;
   padding-bottom: 1;
 }
 
@@ -385,7 +391,7 @@ ApprovalModal {
    it apart from file metadata or code; kept upright (not italic) and bold so the
    reason — the most important line for the decision — reads clearly. */
 #approval-justification {
-  color: #f5c84c;
+  color: $ca-amber;
   text-style: bold;
   padding-bottom: 1;
 }
@@ -396,7 +402,7 @@ ApprovalModal {
   height: 1fr;
   overflow: auto auto;
   scrollbar-size: 1 1;
-  background: #111820;
+  background: $ca-surface;
 }
 
 #approval-code {
@@ -405,12 +411,12 @@ ApprovalModal {
 }
 
 #approval-info {
-  color: #9fb3c8;
+  color: $ca-muted;
   padding-top: 1;
 }
 
 #approval-keys {
-  color: #d7dee8;
+  color: $ca-foreground;
   padding-top: 1;
   padding-bottom: 1;
 }
@@ -440,8 +446,8 @@ DoctorModal {
   width: 80%;
   max-width: 96;
   height: 80%;
-  border: thick #ff9f1c;
-  background: #111820;
+  border: thick $ca-accent;
+  background: $ca-surface;
   padding: 1 2;
 }
 
@@ -453,7 +459,7 @@ DoctorModal {
 #doctor-title {
   width: 1fr;
   content-align: center middle;
-  color: #ff9f1c;
+  color: $ca-accent;
   text-style: bold;
 }
 
@@ -479,7 +485,7 @@ DoctorModal {
 }
 
 .doctor-intro, .doctor-note {
-  color: #9fb3c8;
+  color: $ca-muted;
   padding-bottom: 1;
 }
 
@@ -502,7 +508,7 @@ DoctorModal {
 .doctor-model-list {
   height: auto;
   max-height: 12;
-  border: solid #8892a0;
+  border: solid $ca-border;
 }
 
 .doctor-hidden {
@@ -511,7 +517,7 @@ DoctorModal {
 
 #doctor-status {
   height: auto;
-  color: #d7dee8;
+  color: $ca-foreground;
   padding-top: 1;
 }
 
@@ -531,8 +537,8 @@ QuestionnaireModal {
   max-width: 100;
   height: 26;
   max-height: 92%;
-  border: thick #ff9f1c;
-  background: #111820;
+  border: thick $ca-accent;
+  background: $ca-surface;
   padding: 1 2;
 }
 
@@ -541,12 +547,12 @@ QuestionnaireModal {
 }
 
 #questions-why {
-  color: #f5c84c;
+  color: $ca-amber;
   padding-bottom: 1;
 }
 
 #questions-prompt {
-  color: #d7dee8;
+  color: $ca-foreground;
   text-style: bold;
   padding-bottom: 1;
 }
@@ -562,8 +568,8 @@ QuestionnaireModal {
   width: 1fr;
   padding: 0 1;
   margin-bottom: 1;
-  border: round #2b3a4a;
-  background: #111820;
+  border: round $ca-card-border;
+  background: $ca-surface;
 }
 
 .question-card-label {
@@ -576,20 +582,20 @@ QuestionnaireModal {
   height: auto;
   width: 1fr;
   padding-left: 6;
-  color: #9fb3c8;
+  color: $ca-muted;
 }
 
 .question-card:focus {
-  border: round #ff9f1c;
-  background: #17212c;
+  border: round $ca-accent;
+  background: $ca-surface-highlight;
 }
 
 .question-card:hover {
-  border: round #7aa2f7;
+  border: round $ca-highlight;
 }
 
 .question-card.-selected {
-  border: round #7ee787;
+  border: round $ca-success-bright;
 }
 
 #questions-other {
@@ -597,7 +603,7 @@ QuestionnaireModal {
 }
 
 #questions-keys {
-  color: #9fb3c8;
+  color: $ca-muted;
   padding-bottom: 1;
 }
 

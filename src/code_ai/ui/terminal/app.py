@@ -28,6 +28,7 @@ from code_ai.ui.terminal.code_view import (
     render_live_code,
 )
 from code_ai.ui.terminal.controller import TerminalController
+from code_ai.ui.terminal.palette import PaletteApp
 from code_ai.ui.terminal.slash_commands import (
     SlashCommand,
     command_completion,
@@ -46,9 +47,6 @@ from code_ai.ui.terminal.widgets import (
     CODE_AI_BANNER_FONT_OPTIONS,
     COMMAND_PREFIX,
     THINKING_PREFIX,
-    WORKING_BASE_COLOR,
-    WORKING_IDLE_STYLE,
-    WORKING_LABEL_STYLE,
     WORKING_PULSE_PERIOD,
     WORKING_SPINNERS,
     WORKING_STATES,
@@ -66,14 +64,17 @@ from code_ai.ui.terminal.widgets import (
     render_subagent_task,
     render_subagents_summary,
     render_terminal_screen,
-    terminal_panel_title,
     resolve_spinner,
     spinner_color,
     subagent_task_preview,
+    terminal_panel_title,
     thinking_body,
     thinking_panel_body,
     thinking_size_label,
+    working_base_color,
+    working_idle_style,
     working_label,
+    working_label_style,
 )
 
 logger = logging.getLogger(__name__)
@@ -145,7 +146,7 @@ def _rows_signature(rows: list[dict[str, str]]) -> tuple[tuple[tuple[str, str], 
 
 
 def create_terminal_app(application, *, config_path: Path | None = None):
-    from textual.app import App, ComposeResult, SystemCommand
+    from textual.app import ComposeResult, SystemCommand
     from textual.command import SimpleCommand
     from textual.containers import Container, Horizontal, Vertical, VerticalScroll
     from textual.message import Message
@@ -557,18 +558,18 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             if self._style.pulse:
                 color = spinner_color((now - self._start) / WORKING_PULSE_PERIOD)
             else:
-                color = WORKING_BASE_COLOR
+                color = working_base_color()
             seconds = int(now - self._start)
             text = Text()
             text.append(glyph, style=f"bold {color}")
             text.append(
                 f"  {self._label} ({seconds}s · ctrl+c to interrupt)",
-                style=WORKING_LABEL_STYLE,
+                style=working_label_style(),
             )
             self.update(text)
 
         def _render_idle(self) -> None:
-            self.update(Text(self._style.frames[0], style=WORKING_IDLE_STYLE))
+            self.update(Text(self._style.frames[0], style=working_idle_style()))
 
     class LiveCodePanel(Static):
         """The window a write opens in, filled as the source streams into it.
@@ -856,7 +857,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             if self._style.pulse:
                 color = spinner_color((self._frame * self.TICK) / WORKING_PULSE_PERIOD)
             else:
-                color = WORKING_BASE_COLOR
+                color = working_base_color()
             self.update(render_plan(self._steps, self._progress, self._status, glyph, color))
 
     class SubagentCard(Vertical):
@@ -871,7 +872,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             super().__init__(**kwargs)
             self._agent = dict(agent)
             self._glyph = " "
-            self._color = WORKING_BASE_COLOR
+            self._color = working_base_color()
 
         def compose(self) -> ComposeResult:
             yield Static("", classes="agent-card-header")
@@ -990,12 +991,12 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             if self._style.pulse:
                 color = spinner_color((self._frame * self.TICK) / WORKING_PULSE_PERIOD)
             else:
-                color = WORKING_BASE_COLOR
+                color = working_base_color()
             self.query_one(".agents-summary", Static).update(render_subagents_summary(self._agents))
             for card, agent in zip(self._cards.values(), self._agents, strict=True):
                 card.paint(agent, glyph, color)
 
-    class CodeAITerminalApp(App[None]):
+    class CodeAITerminalApp(PaletteApp[None]):
         CSS_PATH = "theme.tcss"
         BINDINGS = [
             ("ctrl+c", "cancel_or_quit", "Cancel/Quit"),
@@ -1161,7 +1162,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             )
             self._apply_configured_terminal_theme()
             self._apply_session_collapsed(application.session.config.terminal_session_collapsed)
-            self.theme_changed_signal.subscribe(self, self._persist_terminal_theme)
+            self.theme_changed_signal.subscribe(self, self._on_theme_changed)
             await application.start()
             self._refresh_status()
             self.query_one("#input", MultilineInput).focus()
@@ -1945,6 +1946,36 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self.vm.conversation.extend(text.splitlines())
             self._sync_conversation()
             self._refresh_status()
+
+        def _repaint_for_theme(self) -> None:
+            """Redraw the surfaces whose colours were baked in when they were built.
+
+            The stylesheet reapplies itself on a theme change, but the
+            transcript does not: each committed line is a ``Static`` mounted
+            once, holding a ``Content`` with the old palette's colours already
+            in it. The same is true of the status widgets, which are only
+            repainted when their *value* changes. So the scrollback is rebuilt
+            from the view model and the paint cache is dropped, which is what
+            makes a theme switch reach the conversation rather than only the
+            frames around it.
+            """
+            if not self.is_running:
+                return
+            try:
+                self._painted.clear()
+                self._refresh_logo()
+                log = self.query_one("#conversation", VerticalScroll)
+                log.remove_children()
+                self._committed = 0
+                self._sync_conversation()
+                self._refresh_status()
+            except Exception:  # pragma: no cover - a repaint must never kill the app
+                logger.exception("Failed to repaint after a theme change")
+
+        def _on_theme_changed(self, theme) -> None:
+            """Follow a theme switch everywhere: colours first, then the config."""
+            self._repaint_for_theme()
+            self._persist_terminal_theme(theme)
 
         def _apply_configured_terminal_theme(self) -> None:
             theme_name = application.session.config.terminal_theme

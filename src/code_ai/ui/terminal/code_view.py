@@ -9,16 +9,15 @@ reinvented per surface.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from rich.console import Group, RenderableType
 from rich.style import Style
 from rich.syntax import Syntax
 from rich.text import Text
 
-# A dark Pygments theme that blends with the dialog background. The colours are
-# language-agnostic: Pygments ships lexers for every supported language and we
-# let it pick the right one from the file name (or the content itself).
-SYNTAX_THEME = "monokai"
-CODE_BACKGROUND = "#111820"
+from code_ai.ui.terminal.palette import active_palette
+
 MAX_PREVIEW_CHARS = 40000
 
 # How many rows of the live window are kept on screen. The window shows the
@@ -58,14 +57,32 @@ _TOOL_DEFAULT_LEXERS = {
 # per-tool default to go by.
 _CONTENT_GUESS_MIN_CHARS = 200
 
-_LIVE_ACTIVE_STYLE = Style(color="#ff9f1c", bold=True)
-_LIVE_DONE_STYLE = Style(color="#48d17a", bold=True)
-_LIVE_OPERATION_STYLE = Style(color="#9fb3c8")
-_LIVE_TARGET_STYLE = Style(color="#d7dee8")
-_LIVE_DETAIL_STYLE = Style(color="#6b7280")
-# Same amber the approval dialog uses for the model's own explanation.
-_LIVE_REASON_STYLE = Style(color="#f5c84c", bold=True)
 _LIVE_REASON_MAX_CHARS = 220
+
+
+@dataclass(frozen=True, slots=True)
+class _LiveStyles:
+    """The header styles of the live code window, in the active palette."""
+
+    active: Style
+    done: Style
+    operation: Style
+    target: Style
+    detail: Style
+    # Same amber the approval dialog uses for the model's own explanation.
+    reason: Style
+
+
+def _live_styles() -> _LiveStyles:
+    palette = active_palette()
+    return _LiveStyles(
+        active=Style(color=palette.accent, bold=True),
+        done=Style(color=palette.success, bold=True),
+        operation=Style(color=palette.muted),
+        target=Style(color=palette.foreground),
+        detail=Style(color=palette.trace),
+        reason=Style(color=palette.amber, bold=True),
+    )
 
 
 def guess_lexer(path: str, code: str) -> str:
@@ -115,18 +132,26 @@ def syntax_block(
     start_line: int = 1,
     line_range: tuple[int, int] | None = None,
 ) -> Syntax:
-    """Highlight ``code``, capped so a huge file cannot stall the terminal."""
+    """Highlight ``code``, capped so a huge file cannot stall the terminal.
 
+    Both the Pygments style and the page it is painted on come from the active
+    palette, so a preview belongs to whichever terminal theme is on rather than
+    always being a dark box on a light screen. The highlighting itself stays
+    language-agnostic: Pygments ships lexers for every supported language and
+    we let it pick the right one from the file name (or the content itself).
+    """
+
+    palette = active_palette()
     if len(code) > MAX_PREVIEW_CHARS:
         code = code[:MAX_PREVIEW_CHARS] + "\n… (truncated)"
     return Syntax(
         code or "",
         lexer or guess_lexer(path, code),
-        theme=SYNTAX_THEME,
+        theme=palette.syntax_theme,
         line_numbers=True,
         indent_guides=True,
         word_wrap=False,
-        background_color=CODE_BACKGROUND,
+        background_color=palette.surface,
         padding=0,
         start_line=start_line,
         line_range=line_range,
@@ -149,21 +174,22 @@ def live_code_header(
 ) -> Text:
     """The window's caption: which operation is running, on what, how far along."""
 
+    styles = _live_styles()
     text = Text()
     text.append(
         ("✓ " if complete else f"{glyph} "),
-        style=_LIVE_DONE_STYLE if complete else _LIVE_ACTIVE_STYLE,
+        style=styles.done if complete else styles.active,
     )
-    text.append(_OPERATION_LABELS.get(tool, tool or "Write"), style=_LIVE_OPERATION_STYLE)
+    text.append(_OPERATION_LABELS.get(tool, tool or "Write"), style=styles.operation)
     if path:
-        text.append(":  ", style=_LIVE_OPERATION_STYLE)
-        text.append(path, style=_LIVE_TARGET_STYLE)
+        text.append(":  ", style=styles.operation)
+        text.append(path, style=styles.target)
     if code_key == "new_text":
         # Be honest that this is the replacement going in, not the diff the
         # approval dialog will show once both halves of the edit have arrived.
-        text.append("   replacement", style=_LIVE_DETAIL_STYLE)
+        text.append("   replacement", style=styles.detail)
     if lines:
-        text.append(f"   ·   {lines} lines", style=_LIVE_DETAIL_STYLE)
+        text.append(f"   ·   {lines} lines", style=styles.detail)
     return text
 
 
@@ -172,7 +198,8 @@ def live_code_reason(reason: str) -> Text:
     collapsed = " ".join(reason.split())
     if len(collapsed) > _LIVE_REASON_MAX_CHARS:
         collapsed = collapsed[: _LIVE_REASON_MAX_CHARS - 1].rstrip() + "…"
-    return Text("Why: ", style=_LIVE_REASON_STYLE).append(collapsed, style=_LIVE_REASON_STYLE)
+    style = _live_styles().reason
+    return Text("Why: ", style=style).append(collapsed, style=style)
 
 
 def render_live_code(
@@ -218,7 +245,7 @@ def render_live_code(
 
     if not rows:
         parts.append(
-            Text("done" if complete else "receiving…", style=_LIVE_DETAIL_STYLE)
+            Text("done" if complete else "receiving…", style=_live_styles().detail)
         )
         return Group(*parts)
 
