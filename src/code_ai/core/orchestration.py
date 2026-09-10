@@ -191,6 +191,27 @@ class TurnResult:
     wind_down_reason: str | None = None
 
 
+# Step number reported for the landing request, distinct from any real step so
+# telemetry can tell "the turn's closing answer" from ordinary model calls.
+_LANDING_STEP = -1
+
+# What the model is told when the runtime lands a turn that ran out of budget.
+# Deliberately free of budget arithmetic: the model needs to know that the tool
+# phase is over and an answer is due, not how the ceiling is counted.
+_LANDING_NOTE = (
+    "The tool-using phase of this turn is over and no further tool calls are "
+    "available. Answer the user now, using only what the work so far already "
+    "established. Report what you found or changed, and state plainly what is "
+    "still unresolved and what you would do next - do not describe this "
+    "message or any runtime limit."
+)
+
+# Last resort when the landing produced nothing and there is no work to report.
+_NO_ANSWER_TEXT = (
+    "I stopped without reaching an answer for this request. Try again, or "
+    "narrow it to a smaller step."
+)
+
 # Wind-down reasons surfaced through ``TurnResult.wind_down_reason``.
 WIND_DOWN_TIME_BUDGET = "turn_time_budget_exhausted"
 WIND_DOWN_STEP_BUDGET = "model_step_budget_exhausted"
@@ -913,6 +934,13 @@ class AgentOrchestrator:
                     return outcome
                 continue
 
+            if state.tool_calls_executed >= self.config.budgets.max_tool_calls:
+                # Checked here rather than inside the batch so the calls the
+                # ceiling refuses are never written to the transcript: an
+                # assistant message holding tool calls with no results is a
+                # shape strict providers reject, and the landing request below
+                # would inherit it.
+                return await self._wind_down(state, reason=WIND_DOWN_TOOL_BUDGET)
             self.conversation.add_assistant(response.text or "", response.tool_calls)
             outcome = await self._execute_tool_batch(response, state)
             if outcome is not None:
@@ -1861,9 +1889,6 @@ class AgentOrchestrator:
     ) -> TurnResult | None:
         await self.set_state(AgentState.EXECUTING_TOOL, phase="executing_tools")
         calls = response.tool_calls
-
-        if state.tool_calls_executed >= self.config.budgets.max_tool_calls:
-            return await self._wind_down(state, reason=WIND_DOWN_TOOL_BUDGET)
         state.tool_calls_executed += len(calls)
 
         # Evaluate policy for the whole batch against one consistent snapshot so a
@@ -2307,10 +2332,9 @@ class AgentOrchestrator:
             {"reason": reason, "tool_calls_executed": state.tool_calls_executed},
             source="core.orchestrator",
         )
-        text = self._best_effort_text(state) or (
-            "I reached a runtime safety budget for this turn before fully completing the "
-            "request. The work so far is preserved; re-run or narrow the request to continue."
-        )
+        text = await self._land_turn(state) or self._best_effort_text(state)
+        if not text.strip():
+            text = _NO_ANSWER_TEXT
         return await self._finish_turn(
             text,
             state.last_response,
@@ -2318,6 +2342,42 @@ class AgentOrchestrator:
             wind_down_reason=reason,
             announce_final=not state.step_streamed_answer,
         )
+
+    async def _land_turn(self, state: _TurnState) -> str:
+        """Ask the model for its answer once the turn's tool phase is over.
+
+        Running out of turn budget is the runtime's problem to solve, not news
+        to report. Left alone it ended the turn on whatever the model happened
+        to be saying when it was cut off - a dangling "now let me check the
+        config file" - or, with nothing to salvage, on a canned line about a
+        "runtime safety budget", which is internal bookkeeping the user can do
+        nothing with. So the program handles it: one more model call with the
+        tools withheld, asking for the answer the work already supports. What
+        reaches the user is then an answer about their request.
+
+        One attempt, no tools, and every failure is swallowed: this is a
+        courtesy on a turn that is ending either way, so it must never be the
+        thing that breaks it. Returns the model's text, or ``""`` to fall back.
+        """
+        self.conversation.add_user(build_runtime_note(_LANDING_NOTE))
+        request = self._build_request(_LANDING_STEP, [], state)
+        await self.set_state(AgentState.CALLING_MODEL, phase="landing_turn")
+        # The landing answer is this turn's answer: judge announce_final on
+        # whether *it* streamed visibly, not on the step that ran out of budget.
+        state.step_streamed_answer = False
+        try:
+            response = await self._run_model_step(request, state)
+        except CancellationError:
+            raise
+        except Exception:  # noqa: BLE001 - the turn is ending; salvage what exists
+            logger.exception("Failed to land the turn after its budget ran out.")
+            return ""
+        state.last_response = response
+        self.usage.add(response.usage)
+        text = (response.text or "").strip()
+        if text:
+            self.conversation.add_assistant(text, [])
+        return text
 
     async def _suspend_plan_sidebar(self) -> None:
         """Stop the checklist's running step whenever a turn hands control back.

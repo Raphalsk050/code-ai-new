@@ -147,9 +147,10 @@ async def test_headless_denyall_denial_does_not_downgrade(tmp_path) -> None:
     result = await app.submit_user_message("implemente o modulo de estoque no projeto")
     await app.close()
 
-    # The mutation demand stays: the no-tool prose still gets one corrective
-    # nudge, so the provider is called a third time.
-    assert provider.calls == 3
+    # Nothing was declared, so nothing is demanded: the prose ends the turn
+    # without a corrective nudge. What matters here is that the refusal was
+    # not mistaken for the user's decision.
+    assert provider.calls == 2
     assert result.text == PROSE
     planner = app.orchestrator.planner
     assert planner is not None

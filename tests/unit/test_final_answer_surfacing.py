@@ -74,8 +74,40 @@ class ProseOnlyProvider(_BaseProvider):
         )
 
 
+class DeclaresChangeThenProseOnlyProvider(_BaseProvider):
+    """Declares a workspace change in submit_plan, then only ever answers in prose."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        if self.calls == 1:
+            response = ModelResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="p1",
+                        name="submit_plan",
+                        arguments={
+                            "steps": ["Criar config.json"],
+                            "changes_workspace": True,
+                        },
+                    )
+                ],
+                finish_reason=FinishReason.TOOL_CALLS,
+            )
+            yield ProviderEvent(kind="completed", response=response)
+            return
+        text = FIRST_PROSE if self.calls == 2 else FINAL_PROSE
+        yield ProviderEvent(kind="text_delta", text_delta=text)
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text=text, finish_reason=FinishReason.STOP),
+        )
+
+
 async def test_working_channel_prose_is_announced_as_final_answer(tmp_path) -> None:
-    provider = ProseOnlyProvider()
+    provider = DeclaresChangeThenProseOnlyProvider()
     app = build_application(config=_config(tmp_path), provider=provider)
     events: list[EventEnvelope] = []
     app.subscribe(events.append)
@@ -84,8 +116,9 @@ async def test_working_channel_prose_is_announced_as_final_answer(tmp_path) -> N
     result = await app.submit_user_message("crie um arquivo config.json no projeto")
     await app.close()
 
-    # Mutation task: one corrective nudge, then the prose ends the turn.
-    assert provider.calls == 2
+    # The model declared a change, so its prose gets one corrective nudge; the
+    # second prose ends the turn.
+    assert provider.calls == 3
     assert result.text == FINAL_PROSE
 
     # The prose only ever streamed as dim "working" trace...

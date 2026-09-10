@@ -269,36 +269,12 @@ async def test_workspace_listing_alone_does_not_ground_delegation(tmp_path) -> N
 
 
 # ------------------------------------------------------------------ #
-# Unrequested artifacts: a question ends in an answer, not a document
+# Whether a task writes files is the model's call, not the classifier's
 # ------------------------------------------------------------------ #
-def test_unrequested_artifact_write_is_deferred_once(tmp_path) -> None:
-    gate = PreconditionGate(workspace=tmp_path)
-
-    first = gate.unrequested_artifact_gap(
-        "write_file",
-        {"path": "ANALYSIS.md", "content": "findings"},
-        task_requests_mutation=False,
-    )
-    assert first is not None and "chat answer" in first
-
-    # Fail-open: a genuinely required change costs one round-trip at most.
-    second = gate.unrequested_artifact_gap(
-        "write_file",
-        {"path": "ANALYSIS.md", "content": "findings"},
-        task_requests_mutation=False,
-    )
-    assert second is None
-
-
-def test_mutation_tasks_are_never_artifact_gated(tmp_path) -> None:
-    gate = PreconditionGate(workspace=tmp_path)
-    gap = gate.unrequested_artifact_gap(
-        "write_file", {"path": "app.py", "content": "x"}, task_requests_mutation=True
-    )
-    assert gap is None
-
-
-async def test_explanation_question_defers_summary_document(tmp_path) -> None:
+async def test_a_write_on_a_question_is_the_models_call(tmp_path) -> None:
+    # The request reads as a question, the model decides a file is needed. No
+    # gate second-guesses that: the old "this task was classified as read-only"
+    # rejection was a round trip the model kept losing to its own runtime.
     service = _service(tmp_path)
     await service.begin_turn(
         "como funciona a base de codigo desse projeto?", provider_supports_tools=True
@@ -308,43 +284,44 @@ async def test_explanation_question_defers_summary_document(tmp_path) -> None:
     gap = service.precondition_gap(
         "write_file", {"path": "RESUMO.md", "content": "notas"}
     )
-    assert gap is not None and "never asked for" in gap
+    assert gap is None
 
 
-async def test_artifact_nudge_resets_each_turn(tmp_path) -> None:
-    service = _service(tmp_path)
-    await service.begin_turn("como funciona o modulo x?", provider_supports_tools=True)
-    assert service.precondition_gap("write_file", {"path": "a.md"}) is not None
-    assert service.precondition_gap("write_file", {"path": "a.md"}) is None  # fail-open
-
-    # A new question must get its own nudge; the previous turn spent its own.
-    await service.begin_turn("e como funciona o modulo y?", provider_supports_tools=True)
-    assert service.precondition_gap("write_file", {"path": "b.md"}) is not None
-
-
-async def test_mutation_request_is_not_artifact_gated_via_planner(tmp_path) -> None:
-    service = _service(tmp_path)
-    await service.begin_turn("adicione um endpoint em api.py", provider_supports_tools=True)
-    # New file on a mutation task: neither gate should interfere.
-    assert service.precondition_gap("write_file", {"path": "api.py"}) is None
-
-
-async def test_read_only_context_block_says_answer_in_prose(tmp_path) -> None:
+async def test_undeclared_question_context_leaves_the_decision_to_the_model(
+    tmp_path,
+) -> None:
     service = _service(tmp_path)
     await service.begin_turn(
         "como funciona a base de codigo desse projeto?", provider_supports_tools=True
     )
     block = service.task_context_block(recommended_tool_names={"read_file"})
 
+    assert "not declared yet - you decide" in block
+    assert "looks like a question" in block
+    assert "READ-ONLY TASK" not in block
+    assert "call complete_task after verification evidence exists" not in block
+
+
+async def test_declared_read_only_context_block_says_answer_in_prose(tmp_path) -> None:
+    service = _service(tmp_path)
+    await service.begin_turn(
+        "como funciona a base de codigo desse projeto?", provider_supports_tools=True
+    )
+    await service.submit_agent_plan(["Read the code", "Answer"], changes_workspace=False)
+    block = service.task_context_block(recommended_tool_names={"read_file"})
+
     assert "READ-ONLY TASK" in block
+    assert "your declaration" in block
     assert "answer the user directly" in block
     # The mutation-oriented completion rules must not leak into questions:
     # they are what pushed models to fabricate a document as "evidence".
     assert "call complete_task after verification evidence exists" not in block
 
 
-async def test_mutation_context_block_keeps_completion_rules(tmp_path) -> None:
+async def test_declared_mutation_context_block_keeps_completion_rules(tmp_path) -> None:
     service = _service(tmp_path)
     await service.begin_turn("adicione um endpoint em api.py", provider_supports_tools=True)
+    await service.submit_agent_plan(["Add the endpoint"], changes_workspace=True)
     block = service.task_context_block(recommended_tool_names={"write_file"})
+    assert "changes the workspace (your declaration)" in block
     assert "call complete_task after verification evidence exists" in block

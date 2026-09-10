@@ -85,7 +85,7 @@ class CompletionContext:
     has_file_change: bool
     # Any write-shaped action tried this turn, even an unsuccessful one. Its
     # absence is the reclassification signal: the model never treated the task
-    # as a mutation, whatever the surface classifier said.
+    # as a mutation, whatever it declared up front.
     write_attempted: bool
     # Successful knowledge-gathering evidence (reads, listings, searches, web).
     has_analysis_evidence: bool
@@ -167,7 +167,7 @@ class MinimalCompletionPolicy:
 
     def acceptance_note(self, context: CompletionContext) -> str:
         return (
-            "Note: the task was classified as a workspace change, but no change "
+            "Note: the task was declared a workspace change, but no change "
             "was attempted; the summary above stands as the delivered answer."
         )
 
@@ -179,8 +179,8 @@ class StandardCompletionPolicy:
 
     def missing_requirements(self, context: CompletionContext) -> list[str]:
         missing: list[str] = []
-        # A task the surface classifier labelled a mutation must show file-change
-        # evidence before completing. Exception: a mutation whose target lives
+        # A task the model declared a mutation (or already changed) must show
+        # file-change evidence before completing. Exception: a mutation whose target lives
         # *outside* the workspace cannot produce workspace file-change evidence
         # (file tools are workspace-bound), so demanding it only pushes the model
         # to fabricate pointless workspace files. Command/terminal evidence is

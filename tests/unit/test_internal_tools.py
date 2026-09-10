@@ -63,8 +63,11 @@ async def test_submit_plan_returns_cleaned_step_titles(tmp_path) -> None:
     context = make_context(tmp_path)
     tool = SubmitPlanTool()
 
-    assert tool.input_schema["required"] == ["steps"]
+    # Strict-mode schema: every property is listed, the optional declaration
+    # is nullable rather than absent.
+    assert tool.input_schema["required"] == ["steps", "changes_workspace"]
     assert tool.input_schema["properties"]["steps"]["type"] == "array"
+    assert "null" in tool.input_schema["properties"]["changes_workspace"]["type"]
 
     result = await tool.execute(
         {"steps": ["  Read ROADMAP.md ", "", "Implement the section"]}, context
