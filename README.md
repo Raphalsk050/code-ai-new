@@ -363,6 +363,8 @@ If the vision call fails, the raw images are attached as before.
 - `control_terminal`
 - `read_screen`
 - `system_information`
+- `analyze_logcat`
+- `analyze_apk`
 - `web_search`
 - `architecture_review`
 - `code_review`
