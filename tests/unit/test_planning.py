@@ -389,10 +389,10 @@ async def test_final_answer_settles_prose_plan_backed_by_gathered_evidence() -> 
     assert service.agent_plan.status == PlanStatus.COMPLETED
 
 
-async def test_final_answer_without_any_work_leaves_the_plan_paused() -> None:
-    # The pure pause case stays apart: plan submitted, no model-initiated
-    # evidence (the host's automatic listing does not count), prose ending -
-    # the plan is genuinely unfinished and must pause, not complete.
+async def test_final_answer_settles_the_plan_even_without_recorded_work() -> None:
+    # Plan submitted, nothing recorded beyond the host's listing, prose ending:
+    # the answer is still the model's end of the task. Pausing here showed
+    # "paused, waiting for you" after a delivered answer, with nothing pending.
     service = PlannerService(
         config=PlannerConfig(),
         event_bus=AsyncEventBus(session_id="session"),
@@ -412,10 +412,11 @@ async def test_final_answer_without_any_work_leaves_the_plan_paused() -> None:
 
     await service.settle_agent_plan_on_final_answer()
     assert service.agent_plan is not None
-    assert service.agent_plan.status == PlanStatus.ACTIVE
+    assert service.agent_plan.status == PlanStatus.COMPLETED
 
+    # Nothing left to pause: the turn-end suspension is a no-op.
     await service.suspend_agent_plan()
-    assert service.agent_plan.status == PlanStatus.WAITING
+    assert service.agent_plan.status == PlanStatus.COMPLETED
 
 
 async def test_plan_mode_denies_mutating_and_process_tools() -> None:
@@ -573,6 +574,7 @@ async def test_completion_requires_file_change_and_verification_evidence() -> No
         session_id="session",
     )
     await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+    await service.submit_agent_plan(["Write the module"], changes_workspace=True)
 
     rejected = await service.evaluate_completion(
         {
@@ -582,6 +584,23 @@ async def test_completion_requires_file_change_and_verification_evidence() -> No
 
     assert rejected.accepted is False
     assert any("file-change" in item for item in rejected.missing_requirements)
+
+
+async def test_undeclared_task_completes_without_file_change_demands() -> None:
+    # The keyword guess alone never demands file-change evidence: until the
+    # model declares the task a workspace change (or actually changes one),
+    # the request text is only a hint.
+    service = PlannerService(
+        config=PlannerConfig(double_check_completion=False),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+    assert service.profile.requires_workspace_mutation is True
+
+    accepted = await service.evaluate_completion({"summary": "done"})
+
+    assert accepted.accepted is True
 
 
 async def test_completion_requires_verification_once_files_change_even_if_unclassified(
@@ -676,11 +695,10 @@ async def test_low_risk_mutation_completes_without_double_check() -> None:
     assert decision.accepted is True
 
 
-async def test_misclassified_analysis_completes_as_prose_after_one_nudge() -> None:
+async def test_keyword_mutation_guess_never_costs_an_analysis_a_round_trip() -> None:
     # "atualize ..." trips the mutation regex, but the model treats the task as
-    # analysis: it reads files and never attempts a write. The first
-    # complete_task is still nudged toward evidence; insisting without new
-    # evidence releases the turn as a prose answer instead of looping.
+    # analysis: it reads files and never attempts a write. Nothing was declared,
+    # so nothing is demanded: the first complete_task is accepted as is.
     service = PlannerService(
         config=PlannerConfig(),
         event_bus=AsyncEventBus(session_id="session"),
@@ -691,6 +709,33 @@ async def test_misclassified_analysis_completes_as_prose_after_one_nudge() -> No
         provider_supports_tools=True,
     )
     assert service.profile.requires_workspace_mutation is True
+    await service.record_tool_result(
+        tool_call_id="r1",
+        tool_name="read_file",
+        payload={"path": "src/login.py", "sha256": "abc"},
+        success=True,
+    )
+
+    first = await service.evaluate_completion({"summary": "análise entregue"})
+
+    assert first.accepted is True
+    assert "no change was attempted" not in (first.final_text or "")
+
+
+async def test_declared_change_that_never_happened_is_released_after_one_nudge() -> None:
+    # The model itself said the task changes the workspace, then only read
+    # files. Holding it to its own word costs one nudge; insisting without new
+    # evidence releases the turn as a prose answer instead of looping.
+    service = PlannerService(
+        config=PlannerConfig(),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    await service.begin_turn(
+        "atualize sua visao do fluxo de login e me explique os riscos",
+        provider_supports_tools=True,
+    )
+    await service.submit_agent_plan(["Read login.py", "Fix it"], changes_workspace=True)
     await service.record_tool_result(
         tool_call_id="r1",
         tool_name="read_file",
@@ -865,7 +910,9 @@ async def test_completion_reconciles_against_model_plan_not_skeleton() -> None:
         session_id="session",
     )
     await service.begin_turn("Create src/example.py", provider_supports_tools=True)
-    await service.submit_agent_plan(["Read example", "Write module", "Run tests"])
+    await service.submit_agent_plan(
+        ["Read example", "Write module", "Run tests"], changes_workspace=True
+    )
 
     rejected = await service.evaluate_completion({"summary": "done"})
 
@@ -1406,15 +1453,17 @@ async def test_final_answer_settles_undeclared_read_only_plan() -> None:
     assert snapshot["progress"] == "2/2"
 
 
-async def test_final_answer_leaves_undeclared_mutation_plan_active() -> None:
-    # A mutation task stays conservative: an undeclared prose ending is genuinely
-    # unfinished work (its real completion runs through the evidence gate), so the
-    # sidebar must keep showing where it stopped instead of claiming it is done.
+async def test_final_answer_settles_a_declared_mutation_plan_too() -> None:
+    # A change task ending in prose: the verification checkpoint has already
+    # spoken before the answer stands, so the answer completes the checklist
+    # instead of leaving it "paused, waiting for you" with nothing pending.
     bus = AsyncEventBus(session_id="session")
     service = PlannerService(config=PlannerConfig(), event_bus=bus, session_id="session")
     await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+    await service.submit_agent_plan(
+        ["Write the file", "Verify the change"], changes_workspace=True
+    )
     assert service._task_produces_workspace_effects() is True
-    await service.submit_agent_plan(["Write the file", "Verify the change"])
     await service.record_tool_result(
         tool_call_id="step_1",
         tool_name="complete_plan_step",
@@ -1425,8 +1474,8 @@ async def test_final_answer_leaves_undeclared_mutation_plan_active() -> None:
     await service.settle_agent_plan_on_final_answer()
 
     snapshot = service.plan_snapshot()
-    assert snapshot["status"] == "ACTIVE"
-    assert snapshot["progress"] == "1/2"
+    assert snapshot["status"] == "COMPLETED"
+    assert snapshot["progress"] == "2/2"
 
 
 async def test_outside_workspace_mutation_completes_on_command_evidence(tmp_path) -> None:
@@ -1482,6 +1531,7 @@ async def test_outside_workspace_mutation_without_action_evidence_guides_model(
         "edite /etc/hosts e adicione uma entrada", provider_supports_tools=True
     )
     assert service.external_targets == ("/etc/hosts",)
+    await service.submit_agent_plan(["Edit /etc/hosts"], changes_workspace=True)
 
     decision = await service.evaluate_completion({"summary": "Feito."})
 
@@ -1497,6 +1547,7 @@ async def test_workspace_mutation_gate_stays_strict_without_external_targets() -
     bus = AsyncEventBus(session_id="session")
     service = PlannerService(config=PlannerConfig(), event_bus=bus, session_id="session")
     await service.begin_turn("crie src/example.py", provider_supports_tools=True)
+    await service.submit_agent_plan(["Create example.py"], changes_workspace=True)
     assert service.external_targets == ()
 
     await service.record_tool_result(

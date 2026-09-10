@@ -567,9 +567,9 @@ async def test_explanation_question_is_answered_directly_without_nudging(tmp_pat
 
 
 async def test_misclassified_mutation_is_answered_not_forced_into_tools(tmp_path) -> None:
-    # A genuinely mutation-classified request answered only in prose must be
-    # nudged toward tools at most once, then have *its* answer surfaced — not
-    # be spiralled into a system correction delivered to the user as the reply.
+    # A mutation-shaped request answered only in prose: the model never declared
+    # a workspace change, so the keyword guess must not push it into tools. Its
+    # answer is surfaced on the first round, with no corrective nudge at all.
     provider = AnswersInProseProvider()
     app = build_application(config=_config(tmp_path), provider=provider)
 
@@ -579,8 +579,7 @@ async def test_misclassified_mutation_is_answered_not_forced_into_tools(tmp_path
 
     assert result.error is None
     assert result.text == "The adder function returns the sum of its two arguments."
-    # One nudge round, then the model's own answer is accepted (not an endless loop).
-    assert provider.calls == 2
+    assert provider.calls == 1
 
 
 class WritesThenAnswersProvider(_BaseProvider):

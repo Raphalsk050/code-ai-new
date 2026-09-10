@@ -261,6 +261,7 @@ async def test_a_conversation_that_stays_a_conversation_is_left_alone(
 async def test_read_only_task_keeps_its_read_only_rules(tmp_path) -> None:
     service = _planner(tmp_path)
     await service.begin_turn("leia o arquivo config.toml", provider_supports_tools=True)
+    await service.submit_agent_plan(["Read config.toml"], changes_workspace=False)
 
     await service.record_tool_result(
         tool_call_id="r1",

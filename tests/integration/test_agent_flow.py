@@ -244,6 +244,26 @@ class FakeCodeBlockThenToolsProvider:
     async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
         self.calls += 1
         if self.calls == 1:
+            # The model declares the task a workspace change...
+            yield ProviderEvent(
+                kind="completed",
+                response=ModelResponse(
+                    tool_calls=[
+                        ToolCall(
+                            id="plan_1",
+                            name="submit_plan",
+                            arguments={
+                                "steps": ["Write src/example.py", "Test it"],
+                                "changes_workspace": True,
+                            },
+                        )
+                    ],
+                    finish_reason=FinishReason.TOOL_CALLS,
+                ),
+            )
+            return
+        if self.calls == 2:
+            # ...then slips into answering with the code as text.
             text = "```python\ndef answer():\n    return 42\n```"
             yield ProviderEvent(kind="text_delta", text_delta=text)
             yield ProviderEvent(
@@ -251,7 +271,7 @@ class FakeCodeBlockThenToolsProvider:
                 response=ModelResponse(text=text, finish_reason=FinishReason.STOP),
             )
             return
-        if self.calls == 2:
+        if self.calls == 3:
             yield ProviderEvent(
                 kind="completed",
                 response=ModelResponse(
@@ -269,7 +289,7 @@ class FakeCodeBlockThenToolsProvider:
                 ),
             )
             return
-        if self.calls == 3:
+        if self.calls == 4:
             yield ProviderEvent(
                 kind="completed",
                 response=ModelResponse(
@@ -677,10 +697,12 @@ class FakePlanThenBlockingQuestionProvider:
         return None
 
 
-async def test_turn_ending_in_a_question_pauses_the_checklist(tmp_path) -> None:
-    # Regression: the turn ended in waiting_user with the checklist still ACTIVE
-    # and its current step IN_PROGRESS, so the sidebar spinner ran forever while
-    # nothing was executing. Every turn exit must pause an unsettled plan.
+async def test_turn_ending_in_a_prose_question_settles_the_checklist(tmp_path) -> None:
+    # A question asked in prose ends the turn like any other answer: the
+    # checklist completes, and the sidebar never shows "paused, waiting for
+    # you" over a plan the user's reply will replace anyway. (The spinner that
+    # used to run forever here is also gone: nothing is left ACTIVE.) Only a
+    # blocking ask_user, a cancellation or a wind-down still pause a plan.
     config = AppConfig.from_mapping(
         {"api_mode": "ollama", "workspace": str(tmp_path), "model": "fake"}
     )
@@ -696,11 +718,10 @@ async def test_turn_ending_in_a_question_pauses_the_checklist(tmp_path) -> None:
     assert "Which module" in result.text
     planner = app.orchestrator.planner
     assert planner is not None and planner.agent_plan is not None
-    assert planner.agent_plan.status.value == "WAITING"
-    waiting = [e for e in events if e.event_type == "planning.plan.waiting"]
-    assert waiting, "turn end must emit the paused snapshot for the sidebar"
-    assert waiting[-1].payload["status"] == "WAITING"
-    assert waiting[-1].payload["current_step"] == "Inspect the project files"
+    assert planner.agent_plan.status.value == "COMPLETED"
+    event_types = [e.event_type for e in events]
+    assert "planning.plan.completed" in event_types
+    assert "planning.plan.waiting" not in event_types
 
 
 class FakeOutsideWorkspaceEditProvider:
@@ -915,11 +936,12 @@ async def test_blind_overwrite_is_deferred_until_the_file_is_read(tmp_path) -> N
 
 
 class FakeAnswerViaDocumentProvider:
-    """Reads code to answer a question, then tries to write a summary document.
+    """Reads code to answer a question, then writes a document, then answers.
 
-    Reproduces the reported failure: at the end of a read-only question the
-    model manufactures an ANALYSIS.md as "completion evidence" instead of just
-    answering. The runtime must defer that write and accept the prose answer.
+    Whether a question needs a file is the model's call. The runtime used to
+    reject the write with "this task was classified as read-only", which the
+    model retried, and the two then argued over a label neither had chosen.
+    Now the write simply proceeds and the prose answer still ends the turn.
     """
 
     def __init__(self) -> None:
@@ -973,7 +995,7 @@ class FakeAnswerViaDocumentProvider:
         return None
 
 
-async def test_question_is_answered_in_prose_without_creating_documents(tmp_path) -> None:
+async def test_a_write_on_a_question_is_the_models_decision(tmp_path) -> None:
     (tmp_path / "main.py").write_text("print('hello')\n", encoding="utf-8")
     config = AppConfig.from_mapping(
         {
@@ -990,9 +1012,9 @@ async def test_question_is_answered_in_prose_without_creating_documents(tmp_path
     result = await app.submit_user_message("como funciona a base de codigo desse projeto?")
     await app.close()
 
-    # The unrequested document write was deferred with guidance...
-    assert "chat answer" in provider.artifact_result
-    assert not (tmp_path / "ANALYSIS.md").exists()
-    # ...and the prose answer was accepted as the task's completion.
+    # No precondition second-guessed the model's decision to write...
+    assert provider.artifact_result == ""
+    assert (tmp_path / "ANALYSIS.md").read_text(encoding="utf-8") == "# Findings\n"
+    # ...and the prose answer was still accepted as the task's completion.
     assert "main.py" in result.text
     assert result.error is None

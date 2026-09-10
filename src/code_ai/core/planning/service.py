@@ -120,17 +120,21 @@ class PlannerService:
         # reply is recorded as USER_ANSWER evidence at that point.
         self.pending_question: str | None = None
         # Set when the user denies a workspace/command action this turn - the
-        # strongest available signal that the surface classifier's mutation
-        # label is wrong (e.g. a question that merely mentions "implement").
+        # strongest available signal that the task is not the change it was
+        # declared or guessed to be (e.g. a question that mentions "implement").
         # While set, every consumer sees the task as a prose deliverable: no
         # corrective nudges toward write tools, no file-change completion
         # demands, prose streams as the answer. See note_user_denial.
         self.user_declined_mutation = False
-        # Whether the model's own tool calls produced successful evidence this
-        # task (the host's automatic workspace listing does not count). A prose
-        # ending on a prose-deliverable task settles the checklist only when
-        # real work backs it; see settle_agent_plan_on_final_answer.
-        self._gathered_non_host_evidence = False
+        # The model's own decision on whether this task changes the workspace,
+        # declared through submit_plan's changes_workspace. ``None`` until the
+        # model says. The surface classifier only guesses from keywords in the
+        # first message; this is the authority. Every demand the runtime makes
+        # (prose nudges, file-change completion evidence, the mutation rules in
+        # the task context) keys off this declaration or off observed evidence,
+        # never off the keyword guess - a guess the model disagreed with used
+        # to turn into a round of corrections in both directions.
+        self.declared_mutation: bool | None = None
         # Risk-proportional evidence gate for success completion claims.
         self.completion_gate = CompletionGate(
             max_rejections_without_progress=config.max_completion_rejections
@@ -204,7 +208,7 @@ class PlannerService:
         the project's own tests/build (not a trivial command) to prove the change
         works. Stays silent for non-mutation/research tasks.
         """
-        if not (self.profile and self.profile.requires_workspace_mutation):
+        if not (self.profile and self._task_produces_workspace_effects()):
             return ""
         if self.phase not in {
             PlanningPhase.EXECUTE,
@@ -259,9 +263,8 @@ class PlannerService:
         self.accepted_final_text = None
         self.pending_question = None
         self.user_declined_mutation = False
-        self._gathered_non_host_evidence = False
+        self.declared_mutation = None
         self.completion_gate.reset()
-        self._precondition_gate.note_turn_started()
         self._verification_debt_nudged = False
         self._require_tool_calling(provider_supports_tools)
 
@@ -306,8 +309,6 @@ class PlannerService:
                     question=question,
                     answer=answer,
                 )
-                # The user's reply is real task input, not host bookkeeping.
-                self._gathered_non_host_evidence = True
                 await self.event_bus.emit(
                     "planning.evidence.recorded",
                     record.compact(),
@@ -419,7 +420,9 @@ class PlannerService:
         host_initiated: bool = False,
     ) -> list[EvidenceRecord]:
         if tool_name == "submit_plan":
-            await self.submit_agent_plan(payload.get("steps"))
+            await self.submit_agent_plan(
+                payload.get("steps"), changes_workspace=payload.get("changes_workspace")
+            )
             return []
         if tool_name == "complete_plan_step":
             # The model owns its checklist cursor: it advances only when the model
@@ -448,12 +451,6 @@ class PlannerService:
             success=success,
             classify_verification=self._classify_verification,
         )
-        if not host_initiated and any(record.success for record in records):
-            # Work the model itself did (the host's automatic workspace listing
-            # does not count); lets a prose ending settle the checklist even
-            # when the model never declared steps done. See
-            # settle_agent_plan_on_final_answer.
-            self._gathered_non_host_evidence = True
         for record in records:
             if record.success and record.evidence_type in {
                 EvidenceType.FILE_READ,
@@ -494,22 +491,11 @@ class PlannerService:
                 has_local_grounding=self._has_delegation_grounding(),
                 write_agent_types=self._write_agent_types,
             )
-        # Checked first: on a read-only task the write itself is the anomaly,
-        # so "you were not asked to write files" beats "read the file first".
-        artifact_gap = self._precondition_gate.unrequested_artifact_gap(
-            tool_name,
-            arguments,
-            # Deliberately not _task_produces_workspace_effects(): that answers
-            # "must this task end in a file change", which a user's refusal
-            # rightly turns off. This gate asks something else - "was this task
-            # ever about changing files at all" - and a refusal of one call is
-            # no evidence that it was not. Conflating them meant one denied
-            # write made every later write in the task get rejected as an
-            # unrequested artifact, which the model reads as another denial.
-            task_requests_mutation=self._task_was_classified_as_mutating(),
-        )
-        if artifact_gap:
-            return artifact_gap
+        # No gate asks "were you asked to write files": whether a task changes
+        # the workspace is the model's call (submit_plan's changes_workspace, or
+        # simply doing it), not the keyword classifier's. Rejecting a write
+        # because the request text did not look like a mutation was the round
+        # trip the model kept losing to its own runtime.
         unread_gap = self._precondition_gate.unread_mutation_gap(
             tool_name, arguments, known_content_paths=self._known_content_paths
         )
@@ -581,7 +567,11 @@ class PlannerService:
         """
         if not self.enabled or self.user_declined_mutation:
             return
-        if not (self.profile and self._task_produces_workspace_effects()):
+        if not self.profile:
+            return
+        if not (
+            self.profile.requires_workspace_mutation or self._task_changes_workspace()
+        ):
             return
         self.user_declined_mutation = True
         await self.event_bus.emit(
@@ -654,7 +644,14 @@ class PlannerService:
         )
 
     def requires_tool_for_progress(self) -> bool:
-        if not (self.enabled and self.profile and self.profile.requires_workspace_mutation):
+        """Whether a prose-only response is a wrong turn right now.
+
+        Only the model's own declaration creates this demand: it said the task
+        changes the workspace, so answering with the diff as text is a slip
+        worth one correction. A keyword guess never does - a question that
+        happens to mention "implement" must be free to end in prose.
+        """
+        if not (self.enabled and self.profile and self.declared_mutation is True):
             return False
         if self.user_declined_mutation:
             return False
@@ -676,7 +673,7 @@ class PlannerService:
         # runtime state at all.
         if (
             self.profile.intent == TaskIntent.CONVERSATION
-            and not self._has_workspace_change_evidence()
+            and not self._task_changes_workspace()
         ):
             return ""
         profile = self._effective_profile()
@@ -706,9 +703,11 @@ class PlannerService:
             plan_lines = (
                 "Task checklist: not submitted yet.\n"
                 "FIRST ACTION: call submit_plan with the concrete ordered steps you "
-                "will take for this task before any other tool call. The steps are "
-                "shown to the user as the live checklist, so make them specific to "
-                "this request.\n"
+                "will take for this task before any other tool call, and set "
+                "changes_workspace to say whether the task changes files (true) "
+                "or ends in an answer (false) - that decision is yours, not the "
+                "runtime's. The steps are shown to the user as the live "
+                "checklist, so make them specific to this request.\n"
             )
         else:
             agent_current = self.agent_plan.current_step
@@ -782,117 +781,177 @@ class PlannerService:
                 "the plan."
             )
         if self._task_produces_workspace_effects():
+            origin = (
+                "your declaration"
+                if self.declared_mutation is True
+                else "observed: the workspace already changed"
+            )
             return header + (
+                f"Task kind: changes the workspace ({origin}).\n"
                 "Rules: prefer the recommended tools, work on the current step, and do not "
                 "claim completion from prose. For workspace changes, call write_file or "
-                "edit_code; for completion, call complete_task after verification evidence exists."
+                "edit_code; for completion, call complete_task after verification evidence "
+                "exists. If you conclude the task needs no workspace change after all, "
+                "call submit_plan again with changes_workspace=false and answer in the chat."
             )
-        # Read-only task: the completion rules above would misdirect the model.
-        # Told "do not claim completion from prose" while holding only reading
-        # evidence, models invent a deliverable - typically writing an unrequested
-        # notes/summary document at the end just to have "completion evidence".
-        # For a question, the prose answer IS the deliverable.
+        if self.declared_mutation is False or self.user_declined_mutation:
+            # The model said so (or the user refused the change): the prose
+            # answer IS the deliverable. Told "do not claim completion from
+            # prose" while holding only reading evidence, models invent a
+            # deliverable - typically an unrequested notes/summary document
+            # written at the end just to have "completion evidence".
+            origin = (
+                "the user declined the change"
+                if self.user_declined_mutation
+                else "your declaration"
+            )
+            return header + (
+                f"READ-ONLY TASK - the deliverable is your answer in the chat ({origin}).\n"
+                "Rules:\n"
+                "- Gather evidence with the recommended read-only tools and keep the "
+                "analysis internal.\n"
+                "- When you have enough evidence, answer the user directly in the chat. "
+                "Your prose answer completes this task; calling complete_task is not "
+                "required.\n"
+                "- Nobody asked for a document: put notes, summaries or analysis in "
+                "your answer, not in a file. If the task genuinely turns out to need "
+                "a file change, make it - the runtime follows what you do and will "
+                "then expect the change to be verified."
+            )
+        # Undeclared: the keyword guess is shown as a hint, never as a demand.
+        # The model decides; until it does, nothing is required of it beyond
+        # working honestly with the evidence.
+        hint = (
+            "looks like a workspace change"
+            if self.profile.requires_workspace_mutation
+            else "looks like a question"
+        )
         return header + (
-            "READ-ONLY TASK - the user asked for information, not for workspace "
-            "changes.\n"
-            "Rules:\n"
-            "- Gather evidence with the recommended read-only tools and keep the "
-            "analysis internal.\n"
-            "- When you have enough evidence, answer the user directly in the chat. "
-            "Your prose answer completes this task; calling complete_task is not "
-            "required.\n"
-            "- Do NOT create or edit any file. Nobody asked for a document: if you "
-            "are about to write notes, a summary, or an analysis file, put that "
-            "content in your answer instead."
+            "Task kind: not declared yet - you decide. Set changes_workspace in "
+            "submit_plan: true if this task creates or edits files, false if your "
+            "answer in the chat is the deliverable. Surface hint from the request "
+            f"text: {hint} (only a hint).\n"
+            "Rules until you declare: gather evidence with the recommended tools. "
+            "If you change files, verify the change before finishing; if the "
+            "deliverable is an answer, write it in the chat - no completion call "
+            "and no notes file needed."
         )
 
     def _task_produces_workspace_effects(self) -> bool:
-        """Whether this task's deliverable lives in the workspace (or a command).
+        """Whether this task's deliverable lives in the workspace.
 
-        Mutation and command tasks legitimately end in tool actions and a
-        complete_task claim. Everything else (inspection, research, explanation)
-        ends in a chat answer, and the task context must say so explicitly.
-
-        A task that was labelled read-only but has since *changed the workspace*
-        counts too: the classifier was wrong, and the evidence proves it. The
+        A task the model declared as a workspace change (or has already changed)
+        legitimately ends in tool actions and a complete_task claim. Everything
+        else ends in a chat answer, and the task context must say so. The
         user's own denial still wins - that is a decision, not a misreading.
         """
         if self.user_declined_mutation:
             return False
-        return self._task_was_classified_as_mutating()
+        return self._task_changes_workspace()
 
-    def _task_was_classified_as_mutating(self) -> bool:
-        """Whether this task was ever about changing the workspace.
+    def _task_changes_workspace(self) -> bool:
+        """Whether this task is about changing the workspace, per the model.
 
-        The same question as :meth:`_task_produces_workspace_effects` minus the
-        user's refusal, because the two are asked for different reasons. Whether
-        the task must *end* in a file change is something a refusal settles;
-        whether it was *ever about* file changes is a fact about the request,
-        and refusing one call does not rewrite it into a question.
+        Two sources, and only two: the model's declaration through submit_plan,
+        and what the model actually did (a recorded file change, by file tool or
+        by shell). The keyword classifier's guess is deliberately absent - it is
+        a hint for the skeleton and the tool recommendations, never a fact the
+        runtime holds the model to.
         """
-
         if self.profile is None:
             return True  # fail toward the stricter, action-oriented rules
-        return (
-            self.profile.requires_workspace_mutation
-            or self.profile.intent == TaskIntent.COMMAND_EXECUTION
-            or self._has_workspace_change_evidence()
-        )
+        return self.declared_mutation is True or self._has_workspace_change_evidence()
 
     def _effective_profile(self) -> TaskProfile | None:
-        """The task profile with runtime corrections applied.
+        """The task profile as the runtime's demands actually see it.
 
-        The surface classifier reads keywords in the first message; the ledger
-        records what the agent actually did. Where they disagree, the evidence
-        wins, in both directions:
+        The surface classifier reads keywords in the first message; the model
+        declares what the task is, and the ledger records what it did. Where
+        the keyword label disagrees with either, the model wins, in both
+        directions:
 
-        - A user denial mid-turn *downgrades* the mutation label (see
-          :meth:`note_user_denial`) - the strongest possible signal that the
-          label was wrong.
-        - An observed workspace change *upgrades* a task the classifier read as
-          conversation or inspection. Without this, a continuation or a
-          low-level instruction that mutates files runs with none of the
-          mutation discipline the change deserves.
+        - No declaration and no change *downgrades* a keyword mutation label:
+          nothing is demanded of a task the model never said was a change.
+        - A user denial mid-turn downgrades it too (see
+          :meth:`note_user_denial`).
+        - A declared or observed workspace change *upgrades* a task the
+          classifier read as conversation or inspection, so the change gets the
+          verification discipline it deserves.
 
         Every consumer that steers or gates on the label - the task context
         block, the tool policy, the completion gate - sees this corrected view.
+        A declaration also rewrites :attr:`profile` itself (see
+        :meth:`_declare_workspace_mutation`), so the skeleton follows.
         """
         if self.profile is None:
             return None
-        if self.user_declined_mutation:
-            criteria = [
-                criterion
-                for criterion in self.profile.acceptance_criteria
-                if criterion
-                not in {CRITERION_APPLY_VIA_TOOLS, CRITERION_VERIFY_AFTER_MUTATION}
-            ]
-            return self.profile.model_copy(
-                update={
-                    "requires_workspace_mutation": False,
-                    "requires_verification": False,
-                    "acceptance_criteria": criteria,
-                }
-            )
-        if (
-            not self.profile.requires_workspace_mutation
-            and self._has_workspace_change_evidence()
+        wants_mutation = self._task_produces_workspace_effects()
+        if wants_mutation == self.profile.requires_workspace_mutation:
+            return self.profile
+        if wants_mutation:
+            return _profile_with_mutation(self.profile)
+        return _profile_without_mutation(self.profile)
+
+    async def _declare_workspace_mutation(self, changes_workspace: bool) -> None:
+        """Adopt the model's decision on whether this task changes the workspace.
+
+        When the decision contradicts the keyword guess, the profile and the
+        deterministic skeleton are rebuilt around it, and the new skeleton is
+        fast-forwarded through whatever the ledger already proves (a listing or
+        a read settles inspection; a recorded change settles implementation).
+        The evidence ledger and the model-authored checklist are untouched.
+        """
+        self.declared_mutation = changes_workspace
+        if self.profile is None or self.plan is None:
+            return
+        await self.event_bus.emit(
+            "planning.task.declared",
+            {
+                "changes_workspace": changes_workspace,
+                "surface_guess": self.profile.requires_workspace_mutation,
+            },
+            source="core.planner",
+        )
+        if self.profile.requires_workspace_mutation == changes_workspace:
+            return
+        self.profile = (
+            _profile_with_mutation(self.profile)
+            if changes_workspace
+            else _profile_without_mutation(self.profile)
+        )
+        self.plan = ExecutionPlan.for_profile(
+            self.profile, max_steps=self.config.max_plan_steps
+        )
+        await self._emit_phase(
+            PlanningPhase.DISCOVER_LOCAL
+            if self.profile.requires_local_context
+            else PlanningPhase.EXECUTE
+        )
+        await self._mark_current_step_started()
+        await self._fast_forward_skeleton()
+
+    async def _fast_forward_skeleton(self) -> None:
+        """Settle rebuilt skeleton steps the ledger already has evidence for."""
+        if self.plan is None:
+            return
+        if self.ledger.has_success(
+            EvidenceType.WORKSPACE_LISTED,
+            EvidenceType.FILE_READ,
+            EvidenceType.LOCAL_SEARCH_MATCH,
+            EvidenceType.LOCAL_SEARCH_COMPLETED,
+            EvidenceType.DISCOVERY_COMPLETED,
         ):
-            # Upgrading costs nothing the evidence does not already carry: the
-            # change exists, so the file-evidence requirement it switches on is
-            # satisfied by construction, and only the verification demand is new.
-            return self.profile.model_copy(
-                update={
-                    "requires_workspace_mutation": True,
-                    "requires_local_context": True,
-                    "requires_verification": True,
-                    "allows_web_first": False,
-                    "acceptance_criteria": [
-                        *self.profile.acceptance_criteria,
-                        CRITERION_VERIFY_AFTER_MUTATION,
-                    ],
-                }
-            )
-        return self.profile
+            await self._complete_step_if_kind(PlanStepKind.INSPECT_LOCAL)
+        if not self._has_workspace_change_evidence():
+            return
+        if not any(step.kind == PlanStepKind.IMPLEMENT for step in self.plan.steps):
+            return
+        await self._complete_step_by_kind(PlanStepKind.IMPLEMENT)
+        if self.ledger.latest_verification_passed:
+            await self._complete_step_by_kind(PlanStepKind.VERIFY)
+            await self._move_to_step_kind(PlanStepKind.COMPLETE, PlanningPhase.COMPLETE)
+        else:
+            await self._move_to_step_kind(PlanStepKind.VERIFY, PlanningPhase.VERIFY)
 
     def _known_paths_preview(self, *, limit: int = 15) -> str:
         paths = sorted(self._known_content_paths)
@@ -907,9 +966,12 @@ class PlannerService:
             item.value for item in current.required_evidence
         ] if current else []
         return (
-            "Runtime correction: this task requires workspace evidence. Do not provide "
-            "the implementation, diff, or command as chat text. Use the recommended tools "
-            "to satisfy the current step, then verify the result. "
+            "Runtime correction: you declared this task changes the workspace, so its "
+            "deliverable is a change made through tools, not chat text. Do not provide "
+            "the implementation, diff, or command as prose: use the recommended tools "
+            "to satisfy the current step, then verify the result. If you have "
+            "reconsidered and no workspace change is needed, call submit_plan again "
+            "with changes_workspace=false and then answer. "
             f"Phase: {self.phase.value}. "
             f"Current step: {current.title if current else 'none'}. "
             f"Recommended tools: {sorted(recommended_tool_names)}. "
@@ -1228,7 +1290,7 @@ class PlannerService:
         parts: list[str] = []
         if changed:
             parts.append(f"Changed paths: {', '.join(changed)}.")
-        if self.profile.requires_workspace_mutation and not self.user_declined_mutation:
+        if self._task_produces_workspace_effects():
             parts.append(
                 "Verification passed."
                 if self.ledger.latest_verification_passed
@@ -1261,13 +1323,22 @@ class PlannerService:
             data.update(self.agent_plan.snapshot())
         return data
 
-    async def submit_agent_plan(self, steps: object) -> None:
+    async def submit_agent_plan(
+        self, steps: object, *, changes_workspace: object = None
+    ) -> None:
         """Adopt the model-authored steps and reveal the task sidebar.
 
         The first submission emits ``planning.plan.created`` (the panel appears);
         a later submission emits ``planning.plan.revised`` (the model corrected or
         re-scoped its plan). Steps with no usable title are ignored.
+
+        ``changes_workspace`` is the model's decision on the nature of the task
+        and is honoured before the steps: it is what the runtime's demands key
+        off from here on (see :meth:`_declare_workspace_mutation`). Absent, the
+        task stays undeclared and nothing is demanded either way.
         """
+        if isinstance(changes_workspace, bool):
+            await self._declare_workspace_mutation(changes_workspace)
         titles = _coerce_plan_step_titles(steps)
         if not titles:
             return
@@ -1417,57 +1488,24 @@ class PlannerService:
     async def settle_agent_plan_on_final_answer(self) -> None:
         """Complete the checklist when a turn ends cleanly in a final answer.
 
-        ``complete_all`` normally runs only when a ``complete_task`` claim is
-        accepted, but a read-only task legitimately ends in a plain prose answer.
+        ``complete_all`` also runs when a ``complete_task`` claim is accepted,
+        but most turns end the other way: the model stops calling tools and
+        answers. That answer is the end of the task as far as the model is
+        concerned - the same role ``complete_task`` plays - so the checklist
+        settles on it, whatever kind of task it was and however many steps the
+        model remembered to report. Leaving the plan ACTIVE here put the sidebar
+        at "paused, waiting for you" after a delivered answer, with nothing
+        actually pending; models routinely finish without declaring the closing
+        step, and the verification checkpoint has already had its say before the
+        answer stands (see :meth:`note_final_answer_verification_debt`).
 
-        The plan settles on that answer when *either*:
-
-        - the model has already declared the final step done via
-          ``complete_plan_step`` (the answer is that step's execution), or
-        - the task's deliverable *is* prose (inspection / research /
-          conversation) *and* the model has completed at least one checklist
-          step. For those tasks the final answer is the completion signal -
-          exactly the role ``complete_task`` plays for mutation tasks, and what
-          the read-only task context already tells the model ("Your prose answer
-          completes this task"). Requiring a separate ``complete_plan_step`` on
-          the last step otherwise strands genuinely finished work at "waiting
-          for you", since models routinely answer in prose without declaring the
-          closing step (the observed failure: a checklist frozen at 1/N after a
-          full answer was already delivered).
-
-        "Completed at least one step" used to be the only progress signal, but
-        models routinely do the work without ever calling complete_plan_step:
-        the observed failure was a research turn that submitted a plan, ran a
-        web search, delivered the full synthesized answer - and left the
-        sidebar at "0/4, waiting for you" with nothing actually pending. Real
-        gathered evidence (any successful model-initiated tool result, or a
-        recorded user answer; the host's automatic workspace listing does not
-        count) is just as much proof the prose is a worked deliverable, so
-        either signal settles the plan. The pure pause case stays apart: a turn
-        that submits a plan and immediately asks a clarifying question in
-        prose - no declared step, no gathered evidence - is genuinely
-        unfinished, so its plan is left ACTIVE for :meth:`suspend_agent_plan`
-        to pause and the sidebar to show where it stopped.
-
-        Mutation/command tasks stay conservative regardless of progress: their
-        real completion runs through the evidence gate (``complete_task`` ->
-        ``_accept_success_completion``), so an undeclared prose ending is never
-        marked done here without verification.
-
-        This call only fires from the clean no-tool final-answer path; blocking
-        questions raised via ``ask_user``, cancellations and wind-downs suspend
-        the plan instead.
+        Only the clean no-tool final-answer path calls this. A blocking
+        question raised via ``ask_user``, a cancellation or a wind-down suspend
+        the plan instead, and those are the turns that genuinely wait on the
+        user.
         """
         plan = self.agent_plan
         if plan is None or plan.status != PlanStatus.ACTIVE:
-            return
-        completed_steps = sum(
-            1 for step in plan.steps if step.status == PlanStepStatus.COMPLETED
-        )
-        prose_deliverable_done = not self._task_produces_workspace_effects() and (
-            completed_steps > 0 or self._gathered_non_host_evidence
-        )
-        if not (plan.final_step_declared or prose_deliverable_done):
             return
         plan.complete_all()
         await self.event_bus.emit(
@@ -1868,6 +1906,63 @@ def _external_path_targets(text: str, workspace: Path | None) -> tuple[str, ...]
             if cleaned not in targets:
                 targets.append(cleaned)
     return tuple(targets)
+
+
+_MUTATION_INTENTS = frozenset(
+    {TaskIntent.IMPLEMENTATION, TaskIntent.BUG_FIX, TaskIntent.REFACTORING}
+)
+
+
+def _profile_with_mutation(profile: TaskProfile) -> TaskProfile:
+    """The profile as a workspace-change task, whatever the keywords said.
+
+    Upgrading costs nothing the model's decision does not already carry: the
+    change will exist (or does), and the only new demand is verification.
+    """
+    criteria = [
+        criterion
+        for criterion in profile.acceptance_criteria
+        if criterion not in {CRITERION_APPLY_VIA_TOOLS, CRITERION_VERIFY_AFTER_MUTATION}
+    ]
+    return profile.model_copy(
+        update={
+            "intent": (
+                profile.intent
+                if profile.intent in _MUTATION_INTENTS
+                else TaskIntent.IMPLEMENTATION
+            ),
+            "requires_workspace_mutation": True,
+            "requires_local_context": True,
+            "requires_verification": True,
+            "allows_web_first": False,
+            "acceptance_criteria": [
+                *criteria,
+                CRITERION_APPLY_VIA_TOOLS,
+                CRITERION_VERIFY_AFTER_MUTATION,
+            ],
+        }
+    )
+
+
+def _profile_without_mutation(profile: TaskProfile) -> TaskProfile:
+    """The profile as a prose deliverable: nothing in the workspace is owed."""
+    criteria = [
+        criterion
+        for criterion in profile.acceptance_criteria
+        if criterion not in {CRITERION_APPLY_VIA_TOOLS, CRITERION_VERIFY_AFTER_MUTATION}
+    ]
+    return profile.model_copy(
+        update={
+            "intent": (
+                TaskIntent.LOCAL_INSPECTION
+                if profile.intent in _MUTATION_INTENTS
+                else profile.intent
+            ),
+            "requires_workspace_mutation": False,
+            "requires_verification": profile.intent == TaskIntent.COMMAND_EXECUTION,
+            "acceptance_criteria": criteria,
+        }
+    )
 
 
 def _coerce_plan_step_titles(steps: object) -> list[str]:
