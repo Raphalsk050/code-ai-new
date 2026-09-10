@@ -686,7 +686,7 @@ class AppConfig:
     context_compression_target: float = 0.55
     output_token_reserve: int = 32768
     headless_event_format: str = "text"
-    terminal_theme: str = "textual-dark"
+    terminal_theme: str = "monokai"
     terminal_banner_font: str = "tarty2"
     terminal_spinner: str = "ascii"
     terminal_session_collapsed: bool = False
@@ -759,7 +759,7 @@ class AppConfig:
             context_compression_target=float(data.get("context_compression_target", 0.55)),
             output_token_reserve=int(data.get("output_token_reserve", 32768)),
             headless_event_format=str(data.get("headless_event_format", "text")),
-            terminal_theme=str(data.get("terminal_theme", "textual-dark")),
+            terminal_theme=str(data.get("terminal_theme", "monokai")),
             terminal_banner_font=str(data.get("terminal_banner_font", "tarty2")),
             terminal_spinner=str(data.get("terminal_spinner", "ascii")),
             terminal_session_collapsed=bool(data.get("terminal_session_collapsed", False)),

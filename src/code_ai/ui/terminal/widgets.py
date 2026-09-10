@@ -11,6 +11,8 @@ from rich.markdown import Markdown
 from rich.text import Text
 from textual.content import Content
 
+from code_ai.ui.terminal.palette import active_palette
+
 try:
     from art import text2art
 except ImportError:  # pragma: no cover - dependency fallback for incomplete installs.
@@ -57,10 +59,13 @@ CODE_AI_BANNER_FONT_OPTIONS = (
     "monospace",
     "xsansi",
 )
-CODE_AI_LOGO_STYLES = (
-    "bold rgb(255,80,100)",
-    "bold rgb(255,230,90)",
-)
+
+
+def code_ai_logo_styles() -> tuple[str, ...]:
+    """The two-stop gradient the banner is painted with, in theme colours."""
+    palette = active_palette()
+    return (f"bold {palette.logo_start}", f"bold {palette.logo_end}")
+
 
 # --- Working indicator ("the agent is busy" animation) ----------------------
 # AgentState values that mean the agent is actively doing something; the
@@ -75,14 +80,25 @@ _WORKING_LABELS = {
     "CANCELLING": "cancelling",
 }
 
-# Animated glyph color base, the dim label next to it, and the static idle tint.
-WORKING_BASE_COLOR = "#ff9f1c"
-WORKING_LABEL_STYLE = "#6b7280"
-WORKING_IDLE_STYLE = "#3b4654"
-# Seconds for one full color-pulse cycle, and the red->orange->yellow ramp it
-# walks through (matches the CODE.AI banner palette).
+# Seconds for one full color-pulse cycle. The ramp it walks through is the
+# theme's own red->orange->yellow (see Palette.pulse_stops), which is also what
+# the CODE.AI banner is painted with.
 WORKING_PULSE_PERIOD = 2.2
-WORKING_PULSE_STOPS = ((255, 80, 100), (255, 138, 60), (255, 210, 80), (255, 138, 60))
+
+
+def working_base_color() -> str:
+    """The animated glyph's base colour when it is not pulsing."""
+    return active_palette().accent
+
+
+def working_label_style() -> str:
+    """The dim label shown next to the working glyph."""
+    return active_palette().trace
+
+
+def working_idle_style() -> str:
+    """The static tint the indicator falls back to when nothing is running."""
+    return active_palette().idle
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,9 +189,11 @@ def resolve_spinner(spinner: str) -> SpinnerStyle:
     return WORKING_SPINNERS[normalize_spinner(spinner)]
 
 
-def spinner_color(progress: float) -> str:
+def spinner_color(
+    progress: float, stops: tuple[tuple[int, int, int], ...] | None = None
+) -> str:
     """Hex color for a point along the pulse ramp; ``progress`` wraps at 1.0."""
-    stops = WORKING_PULSE_STOPS
+    stops = stops or active_palette().pulse_stops
     count = len(stops)
     position = (progress % 1.0) * count
     index = int(position)
@@ -192,22 +210,28 @@ def spinner_color(progress: float) -> str:
 # Per-step marker glyphs and colors. The running step's glyph is supplied by
 # the live spinner instead of a fixed marker.
 _PLAN_MARKERS = {"done": "✓", "pending": "○", "failed": "✗", "paused": "◌"}
-_PLAN_TITLE_STYLES = {
-    "done": "#7b8493",
-    "running": "bold #d7dee8",
-    "pending": "#9aa4b2",
-    "failed": "#e0a0a0",
-    "paused": "#9aa4b2",
-}
-_PLAN_MARKER_STYLES = {
-    "done": "#48d17a",
-    "pending": "#56606e",
-    "failed": "#e05252",
-    "paused": "#8892a0",
-}
-_PLAN_SUB_STYLE = "#56606e"
-_PLAN_HEADER_STYLE = "#8892a0"
 _PLAN_TITLE_WIDTH = 32
+
+
+def _plan_title_styles() -> dict[str, str]:
+    palette = active_palette()
+    return {
+        "done": palette.done,
+        "running": f"bold {palette.foreground}",
+        "pending": palette.subtle,
+        "failed": palette.error_soft,
+        "paused": palette.subtle,
+    }
+
+
+def _plan_marker_styles() -> dict[str, str]:
+    palette = active_palette()
+    return {
+        "done": palette.success,
+        "pending": palette.faint,
+        "failed": palette.error,
+        "paused": palette.border,
+    }
 
 
 def plan_is_active(payload: dict[object, object]) -> bool:
@@ -258,11 +282,14 @@ def render_plan(
     running_color: str,
 ) -> Text:
     """Render the plan checklist as a Rich Text for the plan panel Static."""
+    palette = active_palette()
+    title_styles = _plan_title_styles()
+    marker_styles = _plan_marker_styles()
     text = Text()
     header = f"{progress}"
     if plan_status:
         header += f" · {plan_status.lower()}"
-    text.append(header + "\n", style=_PLAN_HEADER_STYLE)
+    text.append(header + "\n", style=palette.border)
 
     for index, step in enumerate(steps):
         status = step.get("status", "pending")
@@ -271,13 +298,13 @@ def render_plan(
             marker, marker_style = running_glyph, f"bold {running_color}"
         else:
             marker = _PLAN_MARKERS.get(status, "○")
-            marker_style = _PLAN_MARKER_STYLES.get(status, "#56606e")
+            marker_style = marker_styles.get(status, palette.faint)
         text.append(marker + " ", style=marker_style)
-        text.append(title, style=_PLAN_TITLE_STYLES.get(status, "#9aa4b2"))
+        text.append(title, style=title_styles.get(status, palette.subtle))
         if status == "running":
-            text.append("\n  executando", style=_PLAN_SUB_STYLE)
+            text.append("\n  executando", style=palette.faint)
         elif status == "paused":
-            text.append("\n  aguardando você", style=_PLAN_SUB_STYLE)
+            text.append("\n  aguardando você", style=palette.faint)
         if index < len(steps) - 1:
             text.append("\n")
     return text
@@ -286,20 +313,27 @@ def render_plan(
 # --- Sub-agents panel (live delegated-agent activity, below the plan) --------
 # Terminal-state glyphs; a running agent borrows the live spinner instead.
 _AGENT_MARKERS = {"completed": "✓", "failed": "✗", "rejected": "⊘"}
-_AGENT_MARKER_STYLES = {
-    "completed": "#48d17a",
-    "failed": "#e05252",
-    "rejected": "#e0a0a0",
-    "running": "#ff9f1c",
-}
-_AGENT_TYPE_STYLES = {
-    "running": "bold #d7dee8",
-    "completed": "#7b8493",
-    "failed": "#e0a0a0",
-    "rejected": "#9aa4b2",
-}
-_AGENT_DETAIL_STYLE = "#56606e"
 _AGENT_TASK_WIDTH = 30
+
+
+def _agent_marker_styles() -> dict[str, str]:
+    palette = active_palette()
+    return {
+        "completed": palette.success,
+        "failed": palette.error,
+        "rejected": palette.error_soft,
+        "running": palette.accent,
+    }
+
+
+def _agent_type_styles() -> dict[str, str]:
+    palette = active_palette()
+    return {
+        "running": f"bold {palette.foreground}",
+        "completed": palette.done,
+        "failed": palette.error_soft,
+        "rejected": palette.subtle,
+    }
 
 
 def render_subagents_summary(agents: list[dict[str, str]]) -> Text:
@@ -308,7 +342,7 @@ def render_subagents_summary(agents: list[dict[str, str]]) -> Text:
     header = f"{len(agents)} agent(s)"
     if running:
         header += f" · {running} running"
-    return Text(header, style=_PLAN_HEADER_STYLE)
+    return Text(header, style=active_palette().border)
 
 
 def render_subagent_header(
@@ -321,6 +355,7 @@ def render_subagent_header(
     The marker is the live spinner while the agent runs and a terminal glyph
     (✓ / ✗ / ⊘) once it settles.
     """
+    palette = active_palette()
     text = Text()
     status = agent.get("status", "running")
     agent_type = agent.get("agent_type", "agent")
@@ -329,12 +364,12 @@ def render_subagent_header(
         marker, marker_style = running_glyph, f"bold {running_color}"
     else:
         marker = _AGENT_MARKERS.get(status, "•")
-        marker_style = _AGENT_MARKER_STYLES.get(status, "#56606e")
+        marker_style = _agent_marker_styles().get(status, palette.faint)
     text.append(marker + " ", style=marker_style)
-    text.append(label, style=_AGENT_TYPE_STYLES.get(status, "#9aa4b2"))
+    text.append(label, style=_agent_type_styles().get(status, palette.subtle))
     if agent.get("name"):
         # The type as a dim suffix, so the name reads as the agent's identity.
-        text.append(f"  {agent_type}", style=_AGENT_DETAIL_STYLE)
+        text.append(f"  {agent_type}", style=palette.faint)
     return text
 
 
@@ -350,19 +385,17 @@ def subagent_task_preview(task: str) -> str:
 
 def render_subagent_task(agent: dict[str, str]) -> Text:
     """Expanded card body: the full delegated task plus the latest activity."""
+    detail_style = active_palette().faint
     text = Text()
     task = agent.get("task", "").strip()
     detail = agent.get("detail", "").strip()
-    text.append(task or "(no task)", style=_AGENT_DETAIL_STYLE)
+    text.append(task or "(no task)", style=detail_style)
     if detail:
-        text.append("\n· " + detail, style=_AGENT_DETAIL_STYLE)
+        text.append("\n· " + detail, style=detail_style)
     return text
 
 
 # --- Terminal panel (live interactive PTY screen, below the agents panel) ----
-_TERMINAL_HEADER_STYLE = "#8892a0"
-_TERMINAL_SCREEN_STYLE = "#d7dee8"
-_TERMINAL_CLOSED_STYLE = "#e0a0a0"
 # How many rows of the emulated screen the panel shows; the newest survive.
 _TERMINAL_PANEL_MAX_ROWS = 18
 
@@ -425,16 +458,17 @@ def render_terminal_screen(
     not a scrollback; the model (and the user via /term) can always read the
     full screen through the read_screen tool.
     """
+    palette = active_palette()
     text = Text()
     header = f"{session_id[:8] or '-'} · {cols}x{rows}"
-    text.append(header, style=_TERMINAL_HEADER_STYLE)
+    text.append(header, style=palette.border)
     if closed:
-        text.append("  encerrado", style=_TERMINAL_CLOSED_STYLE)
+        text.append("  encerrado", style=palette.error_soft)
     text.append("\n")
     lines = screen.splitlines()
     if len(lines) > _TERMINAL_PANEL_MAX_ROWS:
         lines = lines[-_TERMINAL_PANEL_MAX_ROWS:]
-    text.append("\n".join(line.rstrip() for line in lines), style=_TERMINAL_SCREEN_STYLE)
+    text.append("\n".join(line.rstrip() for line in lines), style=palette.foreground)
     return text
 
 
@@ -473,8 +507,9 @@ def render_banner_art(source: str, *, font: str = CODE_AI_LOGO_FONT) -> str:
 
 def style_banner_art(
     source: str,
-    styles: tuple[str, ...] = CODE_AI_LOGO_STYLES,
+    styles: tuple[str, ...] | None = None,
 ) -> Text:
+    styles = code_ai_logo_styles() if styles is None else styles
     lines = source.splitlines()
     styled = Text()
     visible_line_count = sum(1 for line in lines if line.strip())
@@ -502,14 +537,9 @@ _CONTEXT_METER_WIDTH = 28
 _CONTEXT_FILLED = "█"
 _CONTEXT_EMPTY = "░"
 _CONTEXT_THRESHOLD_MARK = "┊"
-# Color ramp by fill fraction: calm below 60%, warm as it approaches the
-# auto-compaction threshold, hot once the threshold is reached.
-_CONTEXT_CALM = "#48d17a"
-_CONTEXT_WARN = "#ff9f1c"
-_CONTEXT_HOT = "#e05252"
-_CONTEXT_LABEL_STYLE = "#8892a0"
-_CONTEXT_DETAIL_STYLE = "#9aa4b2"
-_CONTEXT_TRACK_STYLE = "#2b3440"
+# Color ramp by fill fraction: calm below 60% (the theme's success colour),
+# warm as it approaches the auto-compaction threshold (accent), hot once the
+# threshold is reached (error).
 
 
 def _humanize_tokens(value: int) -> str:
@@ -519,11 +549,12 @@ def _humanize_tokens(value: int) -> str:
 
 
 def _context_fill_color(fraction: float, threshold: float) -> str:
+    palette = active_palette()
     if fraction >= threshold:
-        return _CONTEXT_HOT
+        return palette.error
     if fraction >= 0.6:
-        return _CONTEXT_WARN
-    return _CONTEXT_CALM
+        return palette.accent
+    return palette.success
 
 
 def render_context_meter(
@@ -538,10 +569,11 @@ def render_context_meter(
     orchestrator auto-compacts), and marks the threshold column so the user can
     see how much headroom is left before compaction kicks in.
     """
+    palette = active_palette()
     text = Text()
-    text.append("context ", style=_CONTEXT_LABEL_STYLE)
+    text.append("context ", style=palette.border)
     if not used or not budget or budget <= 0:
-        text.append("tokens unavailable", style=_CONTEXT_DETAIL_STYLE)
+        text.append("tokens unavailable", style=palette.subtle)
         return text
 
     fraction = used / budget
@@ -550,20 +582,20 @@ def render_context_meter(
     color = _context_fill_color(fraction, threshold)
     threshold_index = int(threshold * width)
 
-    text.append("[", style=_CONTEXT_TRACK_STYLE)
+    text.append("[", style=palette.border_dim)
     for index in range(width):
         if index < filled:
             text.append(_CONTEXT_FILLED, style=color)
         elif index == threshold_index:
-            text.append(_CONTEXT_THRESHOLD_MARK, style=_CONTEXT_WARN)
+            text.append(_CONTEXT_THRESHOLD_MARK, style=palette.accent)
         else:
-            text.append(_CONTEXT_EMPTY, style=_CONTEXT_TRACK_STYLE)
-    text.append("] ", style=_CONTEXT_TRACK_STYLE)
+            text.append(_CONTEXT_EMPTY, style=palette.border_dim)
+    text.append("] ", style=palette.border_dim)
 
     text.append(f"{round(fraction * 100)}%", style=color)
     text.append(
         f"  {_humanize_tokens(used)}/{_humanize_tokens(budget)}",
-        style=_CONTEXT_DETAIL_STYLE,
+        style=palette.subtle,
     )
     return text
 
@@ -653,15 +685,12 @@ def markdown_to_content(body: str, width: int) -> Content:
 # border, so the chat reads as part of the same palette. Everything else (the
 # model's thinking, tool calls, plans, evidence) is the agent's *work trace*:
 # subordinate, so it is dimmed and indented via "turn-trace" rather than chipped.
-_CHIP_TEXT_COLOR = "#071018"  # the screen background, for contrast on a bright chip
-_USER_COLOR = "#48d17a"  # statusline green
-_MODEL_COLOR = "#ff9f1c"  # permission-button / logo orange
-# Tool calls are actions, not messages: a cool cyan chip carries the tool name so
-# the eye can pick out *which* tool ran, distinct from the green/orange speakers.
-_TOOL_COLOR = "#4fc3dc"
-# Surrounding (non-chip) words on a tool line stay in the dim trace gray so the
-# chip is the only thing that pops, matching the .turn-trace CSS color.
-_TRACE_TEXT_STYLE = "#6b7280"
+# The chip label takes the page colour back (Palette.chip_text) so it stays
+# legible whichever way round the theme runs. The user speaks in the statusline
+# colour and the model in the accent. Tool calls are actions, not messages, so
+# they carry the theme's cool "info" tone instead: the eye can pick out *which*
+# tool ran without confusing it with a speaker. Surrounding (non-chip) words on
+# a tool line stay in the dim trace colour, matching the .turn-trace CSS rule.
 
 # Line prefixes that make up the agent's working trace. warning>/error> are left
 # out on purpose so problems keep full prominence instead of fading into it.
@@ -695,8 +724,8 @@ _TOOL_LINE_PREFIX = "tool> "
 
 
 def _chip(label: str, color: str) -> Content:
-    """A colored speaker chip (dark bold text on a colored background)."""
-    return Content.styled(f" {label} ", f"bold {_CHIP_TEXT_COLOR} on {color}")
+    """A colored speaker chip (page-coloured bold text on a colored fill)."""
+    return Content.styled(f" {label} ", f"bold {active_palette().chip_text} on {color}")
 
 
 # The model's reasoning is the one trace line with no natural length: a single
@@ -853,38 +882,36 @@ def render_conversation_line(
     Every other line — the model's thinking, tool calls, plans — is returned as
     plain text and dimmed/indented by its ``turn-trace`` CSS class.
     """
+    palette = active_palette()
     if rich_markdown and line.startswith(ASSISTANT_LINE_PREFIX):
         body = line[len(ASSISTANT_LINE_PREFIX) :]
         if body.strip():
             answer = markdown_to_content(body, width or _DEFAULT_MARKDOWN_WIDTH)
-            return _chip("model", _MODEL_COLOR).append("\n").append(answer)
+            return _chip("model", palette.accent).append("\n").append(answer)
     if line.startswith("you> "):
         rest = line[len("you> ") :]
-        chip = _chip("you", _USER_COLOR)
-        return chip.append(Content.styled(f" {rest}", _USER_COLOR)) if rest else chip
+        chip = _chip("you", palette.success)
+        return chip.append(Content.styled(f" {rest}", palette.success)) if rest else chip
     request = _TOOL_REQUEST.match(line)
     if request:
         # The model asked to run a tool: keep the dim "model> requested … tool"
         # framing, only the tool name is tinted so the eye lands on which tool.
         return (
-            Content.styled("model> requested ", _TRACE_TEXT_STYLE)
-            .append(Content.styled(request["name"], f"bold {_TOOL_COLOR}"))
-            .append(Content.styled(" tool", _TRACE_TEXT_STYLE))
+            Content.styled("model> requested ", palette.trace)
+            .append(Content.styled(request["name"], f"bold {palette.info}"))
+            .append(Content.styled(" tool", palette.trace))
         )
     if line.startswith(_TOOL_LINE_PREFIX):
         # A tool's lifecycle ("tool> <name> started/completed …"): tint only the
         # tool name, status stays in the dim trace gray.
         rest = line[len(_TOOL_LINE_PREFIX) :]
         name, sep, status = rest.partition(" ")
-        result = Content.styled(_TOOL_LINE_PREFIX, _TRACE_TEXT_STYLE).append(
-            Content.styled(name, f"bold {_TOOL_COLOR}")
+        result = Content.styled(_TOOL_LINE_PREFIX, palette.trace).append(
+            Content.styled(name, f"bold {palette.info}")
         )
         if sep:
-            result = result.append(Content.styled(f" {status}", _TRACE_TEXT_STYLE))
+            result = result.append(Content.styled(f" {status}", palette.trace))
         return result
     if line.startswith(("thinking> ", "working> ")):
         return _BLANK_RUN.sub("\n", line)
     return line
-
-
-CODE_AI_LOGO = load_code_ai_logo()

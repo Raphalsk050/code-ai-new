@@ -142,7 +142,7 @@ SLASH_COMMANDS = [
     ),
     SlashCommand(
         "/config theme <name>",
-        "Persist and switch the terminal theme.",
+        "Recolour the whole terminal (monokai is Code-AI's own palette).",
         "/config theme ",
     ),
     SlashCommand(
@@ -210,12 +210,16 @@ REASONING_EFFORT_SUGGESTIONS = tuple(
     for effort in ("none", "minimal", "low", "medium", "high", "xhigh")
     if effort in SUPPORTED_REASONING_EFFORTS
 )
+# "monokai" first because it is Code-AI's own palette (see
+# ui.terminal.palette): the one theme whose colours are declared rather than
+# derived, and the default. Every other entry recolours the whole UI from that
+# theme's own primary/accent/success/error.
 TERMINAL_THEME_SUGGESTIONS = (
+    "monokai",
     "textual-dark",
     "textual-light",
     "tokyo-night",
     "dracula",
-    "monokai",
     "nord",
     "gruvbox",
     "catppuccin-mocha",
@@ -730,7 +734,11 @@ def _value_suggestions(prefix: str) -> list[SlashCommand]:
         return [
             SlashCommand(
                 f"/config theme {theme}",
-                "Persist and switch the terminal theme.",
+                (
+                    "Code-AI's own palette."
+                    if theme == "monokai"
+                    else f"Recolour the whole terminal from {theme}."
+                ),
             )
             for theme in TERMINAL_THEME_SUGGESTIONS
             if theme.startswith(value_prefix)
