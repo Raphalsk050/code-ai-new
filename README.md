@@ -172,6 +172,10 @@ The defaults are the ones the [Qwen3.8-27B model card](https://huggingface.co/Qw
 recommends for thinking mode, which is on by default for that model. For a
 different model, set its own recommended values here.
 
+`/doctor model` (the **Model** tab of `/doctor`) edits every field below
+without opening the file: each change is saved and used from the next model
+call, with no restart. Leaving a field empty stops sending it.
+
 ```json
 {
   "sampling": {

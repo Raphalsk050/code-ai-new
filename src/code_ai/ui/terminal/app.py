@@ -1447,12 +1447,14 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             if text.strip() == "/status":
                 self._append_conversation_line(self._session_text())
                 return
-            if text.strip() == "/doctor":
+            if text.strip() in {"/doctor", "/doctor model"}:
+                # "/doctor model" opens straight on the sampling controls.
                 self.push_screen(
                     DoctorModal(
                         application,
                         config_path=config_path,
                         on_change=self._refresh_status,
+                        tab="model" if text.strip() == "/doctor model" else "setup",
                     )
                 )
                 return

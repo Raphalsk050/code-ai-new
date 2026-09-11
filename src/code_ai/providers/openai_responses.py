@@ -156,6 +156,16 @@ class OpenAIResponsesProvider:
         self._capabilities.remote_conversation_state = self._remote_state_supported
         return self._capabilities
 
+    def retry_sampling(self) -> None:
+        """Send the sampling controls again after the endpoint refused them once.
+
+        Same reasoning as the Chat Completions provider: a refusal turns them
+        off for the session, which would silently drop values the user has
+        just changed. The next request tries again and falls back if refused.
+        """
+
+        self._sampling_supported = True
+
     async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
         # Closed at every layer: leaving an `async for` early suspends the
         # generator under it rather than closing it, so the HTTP response at the

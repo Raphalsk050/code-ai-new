@@ -270,6 +270,67 @@ async def test_doctor_configures_embedding_model_and_applies_it_live(tmp_path) -
         assert "lexical" in str(modal.query_one("#doctor-status", Static).render())
 
 
+async def test_doctor_model_tab_applies_sampling_live(tmp_path) -> None:
+    from textual.widgets import Button, Input, TabbedContent
+
+    from code_ai.config.defaults import DEFAULT_SAMPLING
+    from code_ai.ui.terminal.doctor import DoctorModal
+
+    cfg_path = tmp_path / "config.json"
+    fake_app = FakeTerminalApplication(tmp_path)
+    retries: list[bool] = []
+    fake_app.provider = SimpleNamespace(retry_sampling=lambda: retries.append(True))
+    terminal_app = create_terminal_app(fake_app, config_path=cfg_path)
+
+    async with terminal_app.run_test(size=(120, 50)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "/doctor model"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        modal = terminal_app.screen
+        assert isinstance(modal, DoctorModal)
+        # /doctor model opens straight on the sampling controls, no menu to walk.
+        assert modal.query_one("#doctor-tabs", TabbedContent).active == "doctor-tab-model"
+        assert modal.query_one("#doctor-back", Button).has_class("doctor-hidden")
+        config = fake_app.session.config
+
+        # Typing is enough: saved once typing pauses, no Save button, no restart.
+        modal.query_one("#doctor-knob-temperature", Input).value = "0.7"
+        await pilot.pause(1.0)
+        assert config.sampling.temperature == 0.7
+        assert json.loads(cfg_path.read_text(encoding="utf-8"))["sampling"]["temperature"] == 0.7
+        # A provider that gave up on sampling is asked to send it again.
+        assert retries
+
+        # The + button steps and applies at once.
+        await pilot.click("#doctor-inc-top_k")
+        await pilot.pause(0.1)
+        assert config.sampling.top_k == DEFAULT_SAMPLING["top_k"] + 5
+
+        # A value the validator refuses is reported and not saved.
+        modal.query_one("#doctor-knob-temperature", Input).value = "5"
+        await pilot.pause(1.0)
+        assert config.sampling.temperature == 0.7
+        assert "✗" in str(modal.query_one("#doctor-status", Static).render())
+
+        # Empty means "let the server decide": the value is not sent at all.
+        modal.query_one("#doctor-knob-temperature", Input).value = ""
+        await pilot.pause(1.0)
+        assert config.sampling.temperature is None
+
+        # Reasoning effort lives on this tab now, as a pick-one row.
+        modal._pick("reasoning_effort-high")
+        assert config.sampling.reasoning_effort == "high"
+
+        # Reset puts every control back to Code-AI's defaults, fields included.
+        modal._reset_sampling()
+        await pilot.pause(0.1)
+        assert config.sampling.temperature == DEFAULT_SAMPLING["temperature"]
+        assert config.sampling.top_k == DEFAULT_SAMPLING["top_k"]
+        assert config.sampling.reasoning_effort is None
+        assert modal.query_one("#doctor-knob-temperature", Input).value == "1"
+
+
 async def test_subagent_events_populate_agents_panel(tmp_path) -> None:
     fake_app = FakeTerminalApplication(tmp_path)
     terminal_app = create_terminal_app(fake_app)
@@ -1173,7 +1234,9 @@ def test_a_long_config_signature_does_not_widen_the_other_sections() -> None:
     rendered = render_help()
     session = rendered.split("Planning:")[0]
 
-    assert "  /help     Show available commands." in session
+    # Session's widest entry is "/doctor model", so that is its column - not
+    # the far longer /config signatures further down.
+    assert "  /help          Show available commands." in session
 
 
 def test_the_suggestion_popup_still_shows_a_shortlist() -> None:
