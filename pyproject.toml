@@ -31,9 +31,9 @@ desktop = [
   "pillow>=10.0.0",
 ]
 browser = [
-  # The browser binary is a separate download: `playwright install chromium`.
-  # Nothing here can do that for the user, so the tools say so when it is the
-  # step that is missing rather than reporting a generic startup failure.
+  # The browser binary is a separate download pip cannot do. The session
+  # fetches it on first use (browser.auto_install), and
+  # `python -m code_ai doctor browser --install` does both steps by hand.
   "playwright>=1.40.0",
 ]
 dev = [

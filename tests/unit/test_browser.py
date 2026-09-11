@@ -279,7 +279,8 @@ def test_the_profile_is_the_agents_own_and_not_the_users(tmp_path) -> None:
 
 
 async def test_without_playwright_the_error_says_how_to_install_it(tmp_path, monkeypatch) -> None:
-    session = BrowserSession(profile_dir=tmp_path / "profile")
+    # Automatic installs off: this is about what is said, not about pip.
+    session = BrowserSession(profile_dir=tmp_path / "profile", auto_install=False)
     monkeypatch.setitem(__import__("sys").modules, "playwright.async_api", None)
 
     with pytest.raises(ToolExecutionError) as caught:

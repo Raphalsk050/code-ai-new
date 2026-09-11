@@ -29,7 +29,24 @@ hiddenimports = []
 # Third-party packages that ship data files and/or rely on dynamic imports
 # PyInstaller cannot see statically (Textual stylesheets, `art` fonts,
 # tiktoken's encodings, pydantic's compiled core).
-for package in ("textual", "rich", "art", "tiktoken", "pydantic"):
+#
+# playwright is among them: the browser tools run its bundled Node driver
+# (node + its JS package, shipped as package data), so the whole package has
+# to travel. Chromium itself is not bundled - hundreds of MB, pinned per
+# Playwright release - the app downloads it into the user's cache on first use.
+#
+# Required, not best-effort: a build environment installed without the
+# `browser` extra used to produce a binary whose browser tools could never
+# start, and nothing at build time said so.
+import importlib.util
+
+if importlib.util.find_spec("playwright") is None:
+    raise SystemExit(
+        "playwright is not installed in the build environment. "
+        "Install the project with its browser extra: pip install \".[browser]\""
+    )
+
+for package in ("textual", "rich", "art", "tiktoken", "pydantic", "playwright"):
     pkg_datas, pkg_binaries, pkg_hidden = collect_all(package)
     datas += pkg_datas
     binaries += pkg_binaries

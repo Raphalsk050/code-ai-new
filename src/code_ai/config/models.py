@@ -317,6 +317,21 @@ class SandboxConfig:
 SUPPORTED_EMBEDDING_API_MODES = {"", "ollama", "openai"}
 
 
+# The installed browsers Playwright can drive in place of its own Chromium.
+BROWSER_CHANNELS = frozenset(
+    {
+        "chrome",
+        "chrome-beta",
+        "chrome-dev",
+        "chrome-canary",
+        "msedge",
+        "msedge-beta",
+        "msedge-dev",
+        "msedge-canary",
+    }
+)
+
+
 @dataclass(slots=True)
 class BrowserConfig:
     """The browser the agent drives, and the profile it keeps its logins in."""
@@ -325,6 +340,8 @@ class BrowserConfig:
     profile_dir: str = str(DEFAULT_BROWSER["profile_dir"])
     headless: bool = bool(DEFAULT_BROWSER["headless"])
     timeout_ms: int = int(DEFAULT_BROWSER["timeout_ms"])
+    channel: str = str(DEFAULT_BROWSER["channel"])
+    auto_install: bool = bool(DEFAULT_BROWSER["auto_install"])
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any] | None) -> BrowserConfig:
@@ -334,6 +351,8 @@ class BrowserConfig:
             profile_dir=str(values["profile_dir"] or ""),
             headless=bool(values["headless"]),
             timeout_ms=int(values["timeout_ms"]),
+            channel=str(values["channel"] or "").strip().lower(),
+            auto_install=bool(values["auto_install"]),
         )
 
     def resolved_profile_dir(self, workspace: Path | str) -> Path:
@@ -345,6 +364,14 @@ class BrowserConfig:
     def validate(self) -> None:
         if self.timeout_ms < 1000:
             raise ConfigurationError("browser timeout_ms must be at least 1000.")
+        # Refused here rather than at the first browser call, where a typo
+        # would read as "that browser is not installed".
+        if self.channel and self.channel not in BROWSER_CHANNELS:
+            raise ConfigurationError(
+                "browser channel must be empty (Playwright's own Chromium) or one of: "
+                + ", ".join(sorted(BROWSER_CHANNELS))
+                + "."
+            )
 
 
 @dataclass(slots=True)
