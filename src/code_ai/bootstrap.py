@@ -53,6 +53,8 @@ from code_ai.tools.apk import AnalyzeApkTool
 from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.browser import (
     BrowserClickTool,
+    BrowserEvaluateTool,
+    BrowserInspectTool,
     BrowserOpenTool,
     BrowserReadTool,
     BrowserRequestLoginTool,
@@ -138,6 +140,8 @@ def build_tool_registry() -> ToolRegistry:
         BrowserReadTool(),
         BrowserClickTool(),
         BrowserTypeTool(),
+        BrowserInspectTool(),
+        BrowserEvaluateTool(),
         BrowserRequestLoginTool(),
         MoveMouseTool(),
         ClickMouseTool(),

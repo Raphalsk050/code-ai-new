@@ -257,9 +257,15 @@ DEFAULT_BUDGETS: dict[str, int] = {
 
 
 DEFAULT_SAMPLING: dict[str, object] = {
+    # Tuned for Qwen3.8-27B in thinking mode, the model's default and the mode
+    # Code-AI runs it in: the model card recommends temperature 1.0, top_p
+    # 0.95, top_k 20, min_p 0.0, presence_penalty 0.0 (repetition_penalty 1.0,
+    # which is every server's default, so it is not sent).
+    # https://huggingface.co/Qwen/Qwen3.8-27B
+    #
     # Standard OpenAI sampling controls. ``None`` means "omit and let the
     # endpoint use its own default".
-    "temperature": 0.6,
+    "temperature": 1.0,
     "top_p": 0.95,
     "presence_penalty": 0.0,
     "frequency_penalty": None,

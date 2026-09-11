@@ -7,6 +7,14 @@ from typing import Any
 
 from code_ai.core.errors import ToolArgumentError, ToolExecutionError
 from code_ai.tools.base import TOOL_IMAGES_KEY, ToolCapability, ToolContext
+from code_ai.tools.browser.devtools import (
+    DEFAULT_DOM_DEPTH,
+    DEFAULT_LOG_LIMIT,
+    INSPECT_ASPECTS,
+    LOG_LEVELS,
+    MAX_DOM_DEPTH,
+    MAX_LOG_ENTRIES,
+)
 from code_ai.tools.schema import tool_schema
 
 # Reading a page is the one browser action worth describing once and reusing:
@@ -239,3 +247,177 @@ class BrowserRequestLoginTool:
                 "browser_read to see where the login left the page."
             ),
         }
+
+
+def _bounded_int(arguments: dict[str, Any], name: str, default: int, low: int, high: int) -> int:
+    raw = arguments.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise ToolArgumentError(f"{name} must be a whole number.") from None
+    return max(low, min(high, value))
+
+
+class BrowserInspectTool:
+    """The browser's developer tools, one panel per call.
+
+    One tool with an ``aspect`` rather than eight tools: they share the page,
+    the selector and the bounds, and a tool list the model has to read every
+    turn is not the place to spell out each panel separately.
+    """
+
+    name = "browser_inspect"
+    description = (
+        "Look at the current page the way the browser's developer tools do, one "
+        "panel per call. Read-only: it changes nothing on the page. aspect picks "
+        "the panel: 'dom' - the element tree (Elements panel), one element per "
+        "line with its id, classes and key attributes; 'html' - the live HTML of "
+        "the page or of one element, as it is now after scripts ran; 'styles' - "
+        "the computed styles, box and matching CSS rules of one element (needs "
+        "selector); 'console' - what the page logged, uncaught errors included; "
+        "'network' - the requests it made, with method, status, type and time; "
+        "'storage' - cookies (names and flags, never values), localStorage, "
+        "sessionStorage, IndexedDB, service workers and caches; 'accessibility' "
+        "- roles and names as a screen reader gets them; 'performance' - load "
+        "timing, paint, the slowest resources and memory. For the readable text "
+        "and the clickable elements, use browser_read."
+    )
+    capabilities = frozenset({ToolCapability.WEB})
+    input_schema = tool_schema(
+        {
+            # Named in the description rather than as an enum: the schemas stay
+            # atomic for weak local models (see test_tool_schemas), and execute
+            # refuses anything else with the list.
+            "aspect": {
+                "type": "string",
+                "description": "Which panel to read: " + ", ".join(INSPECT_ASPECTS) + ".",
+            },
+            "selector": {
+                "type": "string",
+                "description": (
+                    "CSS selector for one element. Narrows dom, html and "
+                    "accessibility to it (default: the whole page); required "
+                    "for styles. The first match is used."
+                ),
+            },
+            "depth": {
+                "type": "integer",
+                "description": (
+                    f"dom only: levels below the root to show "
+                    f"(default {DEFAULT_DOM_DEPTH}, max {MAX_DOM_DEPTH})."
+                ),
+            },
+            "offset": {
+                "type": "integer",
+                "description": "html only: where to continue a long page, from its 'next' hint.",
+            },
+            "include_scripts": {
+                "type": "boolean",
+                "description": (
+                    "html only: keep inline <script> and <style> bodies. Left out "
+                    "by default: they are usually minified bundles."
+                ),
+            },
+            "css_properties": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "styles only: the computed properties to report, instead of "
+                    "the default layout/box/type set."
+                ),
+            },
+            "level": {
+                "type": "string",
+                "description": (
+                    "console only: the least severe level to show, one of "
+                    + ", ".join(LOG_LEVELS)
+                    + " (default log)."
+                ),
+            },
+            "filter": {
+                "type": "string",
+                "description": "network only: keep requests whose URL contains this text.",
+            },
+            "failed_only": {
+                "type": "boolean",
+                "description": "network only: keep failed requests and 4xx/5xx responses.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": (
+                    f"console/network: how many of the newest entries "
+                    f"(default {DEFAULT_LOG_LIMIT}, max {MAX_LOG_ENTRIES})."
+                ),
+            },
+            "clear": {
+                "type": "boolean",
+                "description": (
+                    "console/network: empty the log after reading, so the next "
+                    "read shows only what happened since."
+                ),
+            },
+        },
+        required=("aspect",),
+    )
+
+    async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        aspect = str(arguments.get("aspect") or "").strip().lower()
+        if aspect not in INSPECT_ASPECTS:
+            raise ToolArgumentError(f"aspect must be one of: {', '.join(INSPECT_ASPECTS)}.")
+        session = _session(context)
+        if aspect in {"console", "network"}:
+            level = str(arguments.get("level") or "log").strip().lower()
+            if level not in LOG_LEVELS:
+                raise ToolArgumentError(f"level must be one of: {', '.join(LOG_LEVELS)}.")
+            return await session.inspect(
+                aspect,
+                level=level,
+                contains=str(arguments.get("filter") or "").strip(),
+                failed_only=bool(arguments.get("failed_only")),
+                limit=_bounded_int(arguments, "limit", DEFAULT_LOG_LIMIT, 1, MAX_LOG_ENTRIES),
+                clear=bool(arguments.get("clear")),
+            )
+        selector = str(arguments.get("selector") or "").strip()
+        if aspect == "styles" and not selector:
+            raise ToolArgumentError("styles needs a selector: the element whose styles to show.")
+        properties = arguments.get("css_properties") or []
+        if not isinstance(properties, list):
+            raise ToolArgumentError("css_properties must be a list of CSS property names.")
+        return await session.inspect(
+            aspect,
+            selector=selector,
+            depth=_bounded_int(arguments, "depth", DEFAULT_DOM_DEPTH, 0, MAX_DOM_DEPTH),
+            css_properties=tuple(str(name).strip() for name in properties if str(name).strip()),
+            include_scripts=bool(arguments.get("include_scripts")),
+            offset=_bounded_int(arguments, "offset", 0, 0, 1 << 31),
+        )
+
+
+class BrowserEvaluateTool:
+    """The developer-tools console: run JavaScript in the page, see what it gives back."""
+
+    name = "browser_evaluate"
+    description = (
+        "Run JavaScript in the current page, as if typed into the developer "
+        "tools console, and get back its value and anything it logged. Pass an "
+        "expression (document.title, document.querySelectorAll('a').length) or a "
+        "function for several statements (() => { ...; return result; }); an "
+        "async function is awaited. The value comes back as JSON, so return "
+        "data, not DOM nodes. It runs with the page's full power and can change "
+        "the page: prefer browser_inspect to look and browser_click / "
+        "browser_type to act. Never use it to read or copy cookies, tokens or "
+        "passwords."
+    )
+    capabilities = frozenset({ToolCapability.WEB})
+    input_schema = tool_schema(
+        {"expression": {"type": "string", "description": "The JavaScript to run."}},
+        required=("expression",),
+    )
+
+    async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        expression = str(arguments.get("expression") or "").strip()
+        if not expression:
+            raise ToolArgumentError("expression is required.")
+        return await _session(context).evaluate(expression)

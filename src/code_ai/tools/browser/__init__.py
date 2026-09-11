@@ -1,6 +1,8 @@
 from code_ai.tools.browser.session import BrowserSession
 from code_ai.tools.browser.tools import (
     BrowserClickTool,
+    BrowserEvaluateTool,
+    BrowserInspectTool,
     BrowserOpenTool,
     BrowserReadTool,
     BrowserRequestLoginTool,
@@ -9,6 +11,8 @@ from code_ai.tools.browser.tools import (
 
 __all__ = [
     "BrowserClickTool",
+    "BrowserEvaluateTool",
+    "BrowserInspectTool",
     "BrowserOpenTool",
     "BrowserReadTool",
     "BrowserRequestLoginTool",
