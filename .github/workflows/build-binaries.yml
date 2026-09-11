@@ -7,6 +7,18 @@ name: Build standalone binaries
 # There is no Windows runner, so the Windows .exe is cross-built on Linux by
 # running PyInstaller inside a Wine container (tobix/pywine). The only thing
 # the runner must provide is Docker.
+#
+# The project is installed with its `browser` extra: the binary has to carry
+# Playwright and its Node driver, or the browser tools can never start. The
+# spec refuses to build without it, and `doctor browser --no-launch` checks
+# that the bundled driver actually runs.
+#
+# pip trusts PyPI's hosts without checking their certificates: the company
+# network re-signs TLS with its own certificate, which the containers'
+# certificate stores do not know.
+
+env:
+  PIP_TRUSTED_HOST: "pypi.org files.pythonhosted.org"
 
 on:
   workflow_dispatch:
@@ -32,16 +44,18 @@ jobs:
           docker run --rm \
             --user "$(id -u):$(id -g)" \
             -e HOME=/tmp \
+            -e PIP_TRUSTED_HOST \
             -v "$PWD":/work -w /work \
             python:3.12-bullseye \
             bash -euxc '
               python -m venv /tmp/venv
               . /tmp/venv/bin/activate
               pip install --upgrade pip
-              pip install .
+              pip install ".[browser]"
               pip install "pyinstaller>=6,<7"
               pyinstaller --clean --noconfirm packaging/code-ai.spec
               ./dist/code-ai --help
+              ./dist/code-ai doctor browser --no-launch
             '
 
       - name: Stage artifact
@@ -65,18 +79,20 @@ jobs:
       # PyInstaller has no cross-compiler: to emit a Windows .exe we run it
       # against a real Windows Python interpreter under Wine. pip pulls the
       # Windows wheels of every dependency because the interpreter reports
-      # itself as win32.
+      # itself as win32 - Playwright's included, with its Windows node.exe.
       - name: Build Windows binary inside Wine
         run: |
           docker run --rm \
+            -e PIP_TRUSTED_HOST \
             -v "$PWD":/work -w /work \
             tobix/pywine:3.12 \
             bash -euxc '
               wine python -m pip install --upgrade pip
-              wine python -m pip install .
+              wine python -m pip install ".[browser]"
               wine python -m pip install "pyinstaller>=6,<7"
               wine python -m PyInstaller --clean --noconfirm packaging/code-ai.spec
               wine dist/code-ai.exe --help || echo "wine smoke test non-fatal"
+              wine dist/code-ai.exe doctor browser --no-launch || echo "wine driver check non-fatal"
             '
 
       # The Wine container builds as root; hand the output back to the runner

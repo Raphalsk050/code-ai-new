@@ -15,22 +15,38 @@ ever between the user and the site, and the agent inherits the cookie.
 from __future__ import annotations
 
 import asyncio
+import importlib
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from code_ai.core.errors import ToolExecutionError
 from code_ai.tools.browser.devtools import DevtoolsRecorder, inspect_page, mask, render_value
-
-_INSTALL_HINT = (
-    "Browser control needs Playwright. Install it with: "
-    "pip install 'code-ai[browser]' && playwright install chromium"
+from code_ai.tools.browser.install import (
+    FALLBACK_CHANNELS,
+    MISSING_BROWSER,
+    MISSING_DEPS,
+    NO_DISPLAY,
+    bundled_browser_present,
+    describe_launch_failure,
+    install_browser,
+    install_package,
+    install_system_deps,
+    launch_failure_kind,
+    package_missing_message,
+    prepare_driver,
 )
 
 # How long a navigation or an action may take before it is called a failure.
 # A page that has not settled in this long is either very slow or waiting on
 # something the agent cannot provide, and the turn must not hang on it.
 DEFAULT_TIMEOUT_MS = 30_000
+
+# The least a browser gets to start. The first launch after a download is the
+# slow one - an antivirus scans the new executable before letting it run - and
+# failing it would report a working install as broken.
+_LAUNCH_TIMEOUT_MS = 60_000
 
 # Text pulled off a page is bounded like any other tool output: a long article
 # would otherwise cost the whole turn's context to answer "what is on screen".
@@ -113,6 +129,23 @@ class BrowserSession:
     profile_dir: Path
     headless: bool = False
     timeout_ms: int = DEFAULT_TIMEOUT_MS
+    # A browser already on the machine ("msedge", "chrome") to drive instead of
+    # Playwright's own build. Empty means the bundled Chromium, with Edge or
+    # Chrome standing in by themselves when that build cannot be had.
+    channel: str = ""
+    # Fetch the bundled Chromium on first use when it is missing - which is
+    # also after every Playwright upgrade, since each release pins its own.
+    auto_install: bool = True
+    # Check TLS certificates while downloading Chromium. Off by default, like
+    # the rest of Code-AI (config ssl_verification): a proxy that re-signs TLS
+    # with a company certificate would otherwise fail every download.
+    ssl_verification: bool = False
+    # The browser actually being driven: "chromium", or the channel standing in.
+    browser_name: str = ""
+    # What was already tried installing this session - "package", "browser",
+    # "system" - and what the last failed install said.
+    _installs_attempted: set[str] = field(default_factory=set, repr=False)
+    _install_output: str = field(default="", repr=False)
     _playwright: Any = field(default=None, repr=False)
     _context: Any = field(default=None, repr=False)
     _page: Any = field(default=None, repr=False)
@@ -209,29 +242,138 @@ class BrowserSession:
         self._playwright = None
 
     async def _start(self) -> None:
-        try:
-            from playwright.async_api import async_playwright
-        except Exception as exc:  # noqa: BLE001 - playwright is optional
-            raise ToolExecutionError(_INSTALL_HINT) from exc
-        self.profile_dir.mkdir(parents=True, exist_ok=True)
+        async_playwright = await self._import_playwright()
+        prepare_driver()
         self._playwright = await async_playwright().start()
         try:
-            self._context = await self._playwright.chromium.launch_persistent_context(
-                str(self.profile_dir),
-                headless=self.headless,
-                args=["--no-first-run", "--no-default-browser-check"],
-            )
-        except Exception as exc:  # noqa: BLE001
+            self._context = await self._launch(self._playwright.chromium)
+        except BaseException:
             await self._stop_playwright()
-            message = str(exc)
-            if "executable doesn" in message.lower() or "playwright install" in message.lower():
-                # The package is installed but the browser binary is not, which
-                # is a separate step people miss and a separate thing to say.
-                raise ToolExecutionError(
-                    "Playwright is installed but its browser is not. Run: "
-                    "playwright install chromium"
-                ) from exc
-            raise ToolExecutionError(f"Could not start the browser: {message}") from exc
+            raise
+
+    async def _import_playwright(self) -> Any:
+        """Playwright's entry point, pip-installing it first when running from source.
+
+        A binary carries Playwright or cannot get it - there is no pip inside
+        one - so frozen, a missing package is only ever reported.
+        """
+
+        try:
+            module = importlib.import_module("playwright.async_api")
+        except Exception as exc:  # noqa: BLE001 - playwright is optional
+            if getattr(sys, "frozen", False) or not await self._install("package"):
+                raise ToolExecutionError(package_missing_message(self._install_output)) from exc
+            # A package pip just added is importable in this process only once
+            # the import system forgets it looked before.
+            importlib.invalidate_caches()
+            try:
+                module = importlib.import_module("playwright.async_api")
+            except Exception as retry:  # noqa: BLE001
+                raise ToolExecutionError(package_missing_message()) from retry
+        return module.async_playwright
+
+    async def _launch(self, chromium: Any) -> Any:
+        """Start a browser, installing what it turns out to be missing on the way.
+
+        In order: the bundled Chromium, downloaded first if it is missing;
+        then whatever the launch itself reports missing - the build (the
+        headless shell is a separate one the check above cannot see) or, on
+        Linux, the system libraries it links against - each installed once
+        and the launch tried again; then a Chrome or Edge already on the
+        machine. Each step is there because the one before it fails on real
+        machines: a fresh install, a Playwright upgrade, a proxy that blocks
+        the download.
+        """
+
+        if self.channel:
+            # Chosen in the config: that browser or an error saying so, never
+            # a quiet substitute the user did not ask for.
+            try:
+                return await self._open(chromium, self.channel, self.profile_dir)
+            except Exception as exc:  # noqa: BLE001
+                raise ToolExecutionError(self._failure(exc)) from exc
+        if not bundled_browser_present(chromium):
+            await self._install("browser")
+        try:
+            return await self._open(chromium, "", self.profile_dir)
+        except Exception as exc:  # noqa: BLE001
+            failure = exc
+        # Twice at most: a fresh Linux machine can lack both, the build first
+        # and then the libraries it links against.
+        for _ in range(2):
+            missing = {MISSING_BROWSER: "browser", MISSING_DEPS: "system"}.get(
+                launch_failure_kind(failure)
+            )
+            if missing is None or not await self._install(missing):
+                break
+            try:
+                return await self._open(chromium, "", self.profile_dir)
+            except Exception as exc:  # noqa: BLE001
+                failure = exc
+        if launch_failure_kind(failure) != MISSING_BROWSER:
+            raise ToolExecutionError(self._failure(failure)) from failure
+        for channel in FALLBACK_CHANNELS:
+            # A profile of its own: Chrome and Edge encrypt what they store
+            # with keys the other cannot read, and a browser handed a profile
+            # written by a newer build refuses it.
+            profile = self.profile_dir.with_name(f"{self.profile_dir.name}-{channel}")
+            try:
+                return await self._open(chromium, channel, profile)
+            except Exception:  # noqa: BLE001 - not on this machine either
+                continue
+        raise ToolExecutionError(self._failure(failure)) from failure
+
+    async def _open(self, chromium: Any, channel: str, profile: Path) -> Any:
+        profile.mkdir(parents=True, exist_ok=True)
+        options: dict[str, Any] = {
+            "headless": self.headless,
+            "args": ["--no-first-run", "--no-default-browser-check"],
+            "timeout": max(self.timeout_ms, _LAUNCH_TIMEOUT_MS),
+        }
+        if channel:
+            options["channel"] = channel
+        try:
+            context = await chromium.launch_persistent_context(str(profile), **options)
+        except Exception as exc:  # noqa: BLE001
+            if self.headless or launch_failure_kind(exc) != NO_DISPLAY:
+                raise
+            # Nowhere to show a window: a server, SSH, WSL without a display.
+            # Headless still reads, clicks and types; only the login handover
+            # needs a window, and this machine has none to hand it over in.
+            self.headless = True
+            options["headless"] = True
+            context = await chromium.launch_persistent_context(str(profile), **options)
+        self.browser_name = channel or "chromium"
+        return context
+
+    async def _install(self, what: str) -> bool:
+        """Install one missing piece - "package", "browser" or "system" - once a session.
+
+        Once, because an install that failed - offline, a proxy, a password
+        nobody is there to type - fails the same way on the next call, and
+        paying for it on every browser call would turn one missing piece into
+        a session of slow errors. True when an install ran now and succeeded.
+        """
+
+        if not self.auto_install or what in self._installs_attempted:
+            return False
+        self._installs_attempted.add(what)
+        installer = {
+            "package": install_package,
+            "browser": install_browser,
+            "system": install_system_deps,
+        }[what]
+        result = await installer(verify_ssl=self.ssl_verification)
+        self._install_output = "" if result.ok else result.output
+        return result.ok
+
+    def _failure(self, exc: BaseException) -> str:
+        return describe_launch_failure(
+            exc,
+            channel=self.channel,
+            profile_dir=self.profile_dir,
+            install_output=self._install_output,
+        )
 
     async def _attempt(self, action: Any) -> Any:
         """Run one browser action, rebuilding the browser once if it has gone.

@@ -86,6 +86,25 @@ def build_parser() -> argparse.ArgumentParser:
         dest="probe_path",
         help="Directory to probe. Defaults to the configured workspace.",
     )
+    browser_doctor_parser = doctor_sub.add_parser(
+        "browser",
+        help="Check that the agent's browser starts on this machine, and say what is missing.",
+    )
+    browser_doctor_parser.add_argument(
+        "--install",
+        action="store_true",
+        help="Download Playwright's Chromium first (and, from source, Playwright itself).",
+    )
+    browser_doctor_parser.add_argument(
+        "--with-deps",
+        action="store_true",
+        help="On Linux: install the system libraries Chromium needs (asks for the sudo password).",
+    )
+    browser_doctor_parser.add_argument(
+        "--no-launch",
+        action="store_true",
+        help="Only check that Playwright and its driver work; do not start a browser.",
+    )
 
     config_parser = subparsers.add_parser("config", help="Manage configuration.")
     config_sub = config_parser.add_subparsers(dest="config_command", required=True)
@@ -154,6 +173,14 @@ def main(argv: list[str] | None = None) -> int:
 
             config = load_config(explicit_path=args.config, cli_overrides=_overrides(args))
             return run_file_probe(config, rounds=args.rounds, directory=args.probe_path)
+
+        if args.command == "doctor" and args.doctor_command == "browser":
+            from code_ai.cli.browser_doctor import run_browser_doctor
+
+            config = load_config(explicit_path=args.config, cli_overrides=_overrides(args))
+            return run_browser_doctor(
+                config, install=args.install, with_deps=args.with_deps, launch=not args.no_launch
+            )
 
         if args.command == "index":
             from code_ai.cli.index import run_index_command

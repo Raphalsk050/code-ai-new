@@ -225,6 +225,9 @@ def build_application(
             profile_dir=config.browser.resolved_profile_dir(config.workspace),
             headless=config.browser.headless,
             timeout_ms=config.browser.timeout_ms,
+            channel=config.browser.channel,
+            auto_install=config.browser.auto_install,
+            ssl_verification=config.ssl_verification,
         )
         if config.browser.enabled
         else None

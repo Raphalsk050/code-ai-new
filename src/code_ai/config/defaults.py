@@ -407,6 +407,15 @@ DEFAULT_BROWSER: dict[str, object] = {
     # machine with no display, where nothing could be handed over anyway.
     "headless": False,
     "timeout_ms": 30000,
+    # A browser already installed to drive instead of Playwright's own build:
+    # "msedge" or "chrome" (or their beta/dev/canary). Empty uses the bundled
+    # Chromium, and Edge or Chrome stand in by themselves when that build is
+    # missing and cannot be downloaded.
+    "channel": "",
+    # Download Playwright's Chromium on first use when it is missing - which is
+    # also after every Playwright upgrade, since each release pins its own
+    # build. Off, a missing build is reported with the command that installs it.
+    "auto_install": True,
 }
 
 DEFAULT_INDEX: dict[str, object] = {
