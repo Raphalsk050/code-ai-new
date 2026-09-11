@@ -148,6 +148,17 @@ class OpenAIChatCompletionsProvider:
     def capabilities(self) -> ProviderCapabilities:
         return self._capabilities
 
+    def retry_sampling(self) -> None:
+        """Send the sampling controls again after the endpoint refused them once.
+
+        A refusal switches them off for the rest of the session, which is right
+        for values nobody touched and wrong right after the user changed them:
+        the new values would never reach the endpoint. The next request tries
+        again and, if refused, falls back the same way.
+        """
+
+        self._sampling_supported = True
+
     async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
         # Every layer needs closing, not just the innermost one: leaving an
         # `async for` early suspends the generator under it rather than closing

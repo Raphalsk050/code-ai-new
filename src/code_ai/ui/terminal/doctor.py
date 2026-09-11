@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, OptionList, Static
+from textual.timer import Timer
+from textual.widgets import Button, Input, OptionList, Static, TabbedContent, TabPane
 
+from code_ai.config.defaults import DEFAULT_SAMPLING
 from code_ai.config.loader import persist_config_updates
 from code_ai.config.models import AppConfig, normalize_api_mode
 from code_ai.index import build_embedding_client
@@ -19,7 +22,8 @@ from code_ai.ui.terminal.clipboard import paste_from_system_clipboard
 
 # The setup topics offered on the main menu, in the order a first-time user would
 # naturally work through them: how to reach the provider, then which model, then
-# workspace and preferences. Each id maps to a step builder below.
+# workspace and preferences. Each id maps to a step builder below. How the model
+# writes (sampling, reasoning) is not a setup step: it has the Model tab.
 _STEPS: tuple[tuple[str, str, str], ...] = (
     ("api_mode", "API mode", "How Code-AI talks to the provider"),
     ("base_url", "Base URL", "Where the provider lives (validate reachability)"),
@@ -30,7 +34,6 @@ _STEPS: tuple[tuple[str, str, str], ...] = (
     ("workspace", "Workspace", "The project directory the agent works in"),
     ("language", "Language", "Language the agent replies in"),
     ("permission", "Permission mode", "When the agent must ask before acting"),
-    ("effort", "Reasoning effort", "Thinking budget (OpenAI Responses API)"),
 )
 
 # A 1x1 PNG attached to the vision-model live test, so the test exercises the
@@ -43,17 +46,149 @@ _TEST_IMAGE_B64 = (
 _API_MODE_CHOICES = ("responses", "completions", "ollama")
 _PERMISSION_CHOICES = ("ask", "auto", "bypass")
 _EFFORT_CHOICES = ("none", "minimal", "low", "medium", "high", "xhigh")
+_SUMMARY_CHOICES = ("none", "auto", "concise", "detailed")
 _LANGUAGE_HINTS = ("en", "pt-BR", "pt", "es", "fr")
+
+
+class _Knob(NamedTuple):
+    """One numeric sampling control on the Model tab."""
+
+    field: str
+    label: str
+    integer: bool
+    low: float
+    high: float | None
+    step: float
+    hint: str
+
+
+# The numeric controls on the Model tab, most reached-for first. The bounds
+# mirror SamplingConfig.validate() and only clamp the − / + buttons: a typed
+# value outside them is refused by the validator, with its own message.
+_KNOBS: tuple[_Knob, ...] = (
+    _Knob(
+        "temperature",
+        "Temperature",
+        False,
+        0.0,
+        2.0,
+        0.1,
+        "Randomness: low is focused and repeatable, high is varied. 0 to 2",
+    ),
+    _Knob(
+        "top_p",
+        "Top P",
+        False,
+        0.05,
+        1.0,
+        0.05,
+        "Samples from the likeliest tokens covering this much probability. 0 to 1",
+    ),
+    _Knob(
+        "top_k",
+        "Top K",
+        True,
+        0,
+        None,
+        5,
+        "Samples from the K likeliest tokens only. 0 turns it off",
+    ),
+    _Knob(
+        "min_p",
+        "Min P",
+        False,
+        0.0,
+        1.0,
+        0.01,
+        "Drops tokens less likely than this share of the top one. 0 to 1",
+    ),
+    _Knob(
+        "presence_penalty",
+        "Presence penalty",
+        False,
+        -2.0,
+        2.0,
+        0.1,
+        "Above 0 steers towards new topics and away from loops. -2 to 2",
+    ),
+    _Knob(
+        "frequency_penalty",
+        "Frequency penalty",
+        False,
+        -2.0,
+        2.0,
+        0.1,
+        "Above 0 discourages repeating the same words. -2 to 2",
+    ),
+)
+_KNOB_BY_FIELD = {knob.field: knob for knob in _KNOBS}
+
+# The pick-one controls on the same tab. "none" stands for "not sent".
+_CHOICE_KNOBS: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
+    (
+        "reasoning_effort",
+        "Reasoning effort",
+        _EFFORT_CHOICES,
+        "How hard the model thinks before answering. On many local servers it "
+        "is also the switch that turns thinking on.",
+    ),
+    (
+        "reasoning_summary",
+        "Reasoning summary",
+        _SUMMARY_CHOICES,
+        "Summary of the thinking. Responses API only.",
+    ),
+)
+
+# How long typing has to pause before a Model-tab value is saved.
+_APPLY_DELAY_S = 0.6
+
+
+def _format_knob(value: Any) -> str:
+    """A sampling value as its field shows it; empty means "not sent"."""
+
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        return json.dumps(value) if value else ""
+    if isinstance(value, float):
+        return f"{value:g}"
+    return str(value)
+
+
+def _parse_knob(field: str, raw: str) -> Any:
+    """The typed text as the value the config stores, or ValueError saying why not."""
+
+    if field == "extra_body":
+        if not raw:
+            return {}
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"not valid JSON ({exc.msg})") from None
+        if not isinstance(value, dict):
+            raise ValueError('must be a JSON object, like {"repetition_penalty": 1.05}')
+        return value
+    if not raw:
+        return None
+    knob = _KNOB_BY_FIELD[field]
+    try:
+        return int(raw) if knob.integer else float(raw)
+    except ValueError:
+        kind = "a whole number" if knob.integer else "a number"
+        raise ValueError(f"{raw!r} is not {kind}") from None
 
 
 class DoctorModal(ModalScreen[None]):
     """Step-by-step first-run setup, so nothing has to be edited by hand on disk.
 
-    A single modal with a main menu of setup topics; picking one opens a focused
-    sub-step with a "‹ Menu" button back to the top. Values can be pasted from the
-    system clipboard, the base URL can be checked for reachability, and a chosen
-    model can be tested with a live call - all without leaving the dialog. Each
-    save is persisted to the config file immediately.
+    Two tabs. Setup is a main menu of setup topics; picking one opens a focused
+    sub-step with a "‹ Menu" button back to the top. Values can be pasted from
+    the system clipboard, the base URL can be checked for reachability, and a
+    chosen model can be tested with a live call - all without leaving the
+    dialog. Model holds the sampling controls on one page, each saved and put
+    in force the moment it changes. Every save is persisted to the config file
+    immediately.
     """
 
     BINDINGS = [("escape", "close", "Close")]
@@ -64,6 +199,7 @@ class DoctorModal(ModalScreen[None]):
         *,
         config_path: Path | None = None,
         on_change: Any = None,
+        tab: str = "setup",
     ) -> None:
         super().__init__()
         self._application = application
@@ -72,6 +208,10 @@ class DoctorModal(ModalScreen[None]):
         # status line / logo to reflect the new configuration.
         self._on_change = on_change
         self._step = "menu"
+        self._step_title = "Code-AI setup"
+        self._initial_tab = f"doctor-tab-{tab}"
+        # Model-tab edits waiting for typing to pause, by field.
+        self._pending_knobs: dict[str, Timer] = {}
 
     # ------------------------------------------------------------------ #
     # Layout
@@ -82,7 +222,11 @@ class DoctorModal(ModalScreen[None]):
                 yield Button("‹ Menu", id="doctor-back", classes="doctor-hidden")
                 yield Static("Code-AI setup", id="doctor-title")
                 yield Button("✕", id="doctor-close")
-            yield VerticalScroll(id="doctor-body")
+            with TabbedContent(initial=self._initial_tab, id="doctor-tabs"):
+                with TabPane("Setup", id="doctor-tab-setup"):
+                    yield VerticalScroll(id="doctor-body")
+                with TabPane("Model", id="doctor-tab-model"):
+                    yield VerticalScroll(*self._sampling_widgets(), id="doctor-sampling")
             yield Static("", id="doctor-status")
 
     async def on_mount(self) -> None:
@@ -101,9 +245,25 @@ class DoctorModal(ModalScreen[None]):
         await body.remove_children()
         title, widgets = self._build_step(step)
         await body.mount(*widgets)
-        self.query_one("#doctor-title", Static).update(title)
-        self.query_one("#doctor-back", Button).set_class(step == "menu", "doctor-hidden")
+        self._step_title = title
+        self._sync_header()
         self._status("")
+
+    def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+        self._sync_header()
+
+    def _sync_header(self) -> None:
+        """Title and back button for whichever tab is showing.
+
+        The back button walks the Setup menu, so it has nothing to do on the
+        Model tab, which is a single page.
+        """
+
+        on_setup = self.query_one("#doctor-tabs", TabbedContent).active == "doctor-tab-setup"
+        title = self._step_title if on_setup else "Model behavior"
+        self.query_one("#doctor-title", Static).update(title)
+        hide_back = not on_setup or self._step == "menu"
+        self.query_one("#doctor-back", Button).set_class(hide_back, "doctor-hidden")
 
     def _build_step(self, step: str) -> tuple[str, list[Any]]:
         if step == "menu":
@@ -121,13 +281,6 @@ class DoctorModal(ModalScreen[None]):
                 _PERMISSION_CHOICES,
                 self._config.permission_mode,
                 "ask prompts before write/run tools · auto runs freely · bypass never asks.",
-            )
-        if step == "effort":
-            return "Reasoning effort", self._choice_widgets(
-                "reasoning_effort",
-                _EFFORT_CHOICES,
-                self._config.sampling.reasoning_effort or "none",
-                "Thinking budget for OpenAI Responses reasoning models.",
             )
         if step == "base_url":
             return "Base URL", self._text_widgets(
@@ -170,7 +323,8 @@ class DoctorModal(ModalScreen[None]):
         widgets: list[Any] = [
             Static(
                 "Choose what to configure. Everything is saved straight to your "
-                "config file - no need to edit anything by hand.",
+                "config file - no need to edit anything by hand. Temperature, "
+                "top_k and the other sampling settings are on the Model tab.",
                 classes="doctor-intro",
             )
         ]
@@ -202,8 +356,6 @@ class DoctorModal(ModalScreen[None]):
             return config.language
         if step_id == "permission":
             return config.permission_mode
-        if step_id == "effort":
-            return config.sampling.reasoning_effort or "none"
         return ""
 
     # ------------------------------------------------------------------ #
@@ -302,12 +454,230 @@ class DoctorModal(ModalScreen[None]):
         return widgets
 
     # ------------------------------------------------------------------ #
+    # Model tab (sampling, applied live)
+    # ------------------------------------------------------------------ #
+    def _sampling_widgets(self) -> list[Any]:
+        sampling = self._config.sampling
+        widgets: list[Any] = [
+            Static(
+                "How the model writes. Every change is saved and used from the "
+                "next model call on - no restart, no Save button. Leave a field "
+                "empty to let the server decide; ↺ puts back Code-AI's default "
+                "(tuned for Qwen3.8-27B in thinking mode).",
+                classes="doctor-intro",
+            )
+        ]
+        for knob in _KNOBS:
+            default = Button(
+                "↺", id=f"doctor-default-{knob.field}", classes="doctor-knob-step", compact=True
+            )
+            shown = _format_knob(DEFAULT_SAMPLING.get(knob.field)) or "not sent"
+            default.tooltip = f"Code-AI default: {shown}"
+            widgets.append(
+                Horizontal(
+                    Static(knob.label, classes="doctor-knob-label"),
+                    Button(
+                        "−", id=f"doctor-dec-{knob.field}", classes="doctor-knob-step", compact=True
+                    ),
+                    Input(
+                        value=_format_knob(getattr(sampling, knob.field)),
+                        placeholder="server default",
+                        type="integer" if knob.integer else "number",
+                        valid_empty=True,
+                        id=f"doctor-knob-{knob.field}",
+                        classes="doctor-knob-input",
+                        compact=True,
+                    ),
+                    Button(
+                        "+", id=f"doctor-inc-{knob.field}", classes="doctor-knob-step", compact=True
+                    ),
+                    default,
+                    classes="doctor-knob",
+                )
+            )
+            widgets.append(Static(knob.hint, classes="doctor-knob-hint"))
+        for field, label, choices, hint in _CHOICE_KNOBS:
+            current = getattr(sampling, field) or "none"
+            buttons = [
+                Button(
+                    f"{value} ✓" if value == current else value,
+                    id=f"doctor-pick-{field}-{value}",
+                    classes=f"doctor-pick-{field}",
+                    variant="success" if value == current else "default",
+                    compact=True,
+                )
+                for value in choices
+            ]
+            widgets.append(
+                Horizontal(
+                    Static(label, classes="doctor-knob-label"), *buttons, classes="doctor-knob"
+                )
+            )
+            widgets.append(Static(hint, classes="doctor-knob-hint"))
+        widgets.append(
+            Horizontal(
+                Static("Extra body", classes="doctor-knob-label"),
+                Input(
+                    value=_format_knob(sampling.extra_body),
+                    placeholder='{"repetition_penalty": 1.05}',
+                    id="doctor-knob-extra_body",
+                    classes="doctor-knob-json",
+                    compact=True,
+                ),
+                classes="doctor-knob",
+            )
+        )
+        widgets.append(
+            Static(
+                "Any other server setting, as a JSON object. Sent in completions "
+                "and responses mode; native ollama mode does not read it.",
+                classes="doctor-knob-hint",
+            )
+        )
+        widgets.append(Button("Reset all to Code-AI defaults", id="doctor-sampling-reset"))
+        return widgets
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        field = self._knob_field(event.input)
+        if field is None:
+            return
+        # Typing "0.75" passes through "0" and "0." on the way, and saving each
+        # would put values nobody chose in force. Waiting for typing to pause
+        # saves the one the user settled on; Enter skips the wait.
+        self._cancel_pending(field)
+        self._pending_knobs[field] = self.set_timer(
+            _APPLY_DELAY_S, lambda: self._apply_knob(field)
+        )
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        field = self._knob_field(event.input)
+        if field is not None:
+            self._apply_knob(field)
+
+    @staticmethod
+    def _knob_field(widget: Input) -> str | None:
+        widget_id = widget.id or ""
+        if not widget_id.startswith("doctor-knob-"):
+            return None
+        return widget_id[len("doctor-knob-") :]
+
+    def _cancel_pending(self, field: str) -> None:
+        pending = self._pending_knobs.pop(field, None)
+        if pending is not None:
+            pending.stop()
+
+    def _apply_knob(self, field: str) -> None:
+        """Save what the field holds, if it is a value and a new one."""
+
+        self._cancel_pending(field)
+        raw = self.query_one(f"#doctor-knob-{field}", Input).value.strip()
+        try:
+            value = _parse_knob(field, raw)
+        except ValueError as exc:
+            self._status(f"✗ {field}: {exc}")
+            return
+        if value == getattr(self._config.sampling, field):
+            return
+        self._status(self._apply_sampling({field: value}))
+
+    def _step_knob(self, field: str, direction: int) -> None:
+        knob = _KNOB_BY_FIELD[field]
+        widget = self.query_one(f"#doctor-knob-{field}", Input)
+        try:
+            current = _parse_knob(field, widget.value.strip())
+        except ValueError:
+            current = None
+        if current is None:
+            # Nothing typed: step from the default rather than from zero,
+            # which for top_p is not even a legal value.
+            current = DEFAULT_SAMPLING.get(field)
+        base = float(current) if current is not None else max(knob.low, 0.0)
+        stepped = round(base + direction * knob.step, 4)
+        if knob.high is not None:
+            stepped = min(knob.high, stepped)
+        stepped = max(knob.low, stepped)
+        value: Any = int(stepped) if knob.integer else stepped
+        self._cancel_pending(field)
+        widget.value = _format_knob(value)
+        self._status(self._apply_sampling({field: value}))
+
+    def _default_knob(self, field: str) -> None:
+        value = DEFAULT_SAMPLING.get(field)
+        self._cancel_pending(field)
+        self.query_one(f"#doctor-knob-{field}", Input).value = _format_knob(value)
+        self._status(self._apply_sampling({field: value}))
+
+    def _pick(self, spec: str) -> None:
+        field, _, value = spec.partition("-")
+        self._status(self._apply_sampling({field: None if value == "none" else value}))
+        self._mark_choice(field)
+
+    def _mark_choice(self, field: str) -> None:
+        current = getattr(self._config.sampling, field) or "none"
+        for button in self.query(f".doctor-pick-{field}").results(Button):
+            value = (button.id or "").rpartition("-")[2]
+            button.label = f"{value} ✓" if value == current else value
+            button.variant = "success" if value == current else "default"
+
+    def _reset_sampling(self) -> None:
+        for field in list(self._pending_knobs):
+            self._cancel_pending(field)
+        changes: dict[str, Any] = {knob.field: DEFAULT_SAMPLING.get(knob.field) for knob in _KNOBS}
+        for field, *_ in _CHOICE_KNOBS:
+            changes[field] = DEFAULT_SAMPLING.get(field)
+        changes["extra_body"] = dict(DEFAULT_SAMPLING.get("extra_body") or {})
+        self._status(self._apply_sampling(changes, summary="the Code-AI defaults"))
+        sampling = self._config.sampling
+        for knob in _KNOBS:
+            widget = self.query_one(f"#doctor-knob-{knob.field}", Input)
+            widget.value = _format_knob(getattr(sampling, knob.field))
+        self.query_one("#doctor-knob-extra_body", Input).value = _format_knob(sampling.extra_body)
+        for field, *_ in _CHOICE_KNOBS:
+            self._mark_choice(field)
+
+    def _apply_sampling(self, changes: dict[str, Any], *, summary: str | None = None) -> str:
+        """Persist sampling changes and put them in force for the next model call."""
+
+        config = self._config
+        sampling = asdict(config.sampling)
+        sampling.update(changes)
+        try:
+            validated = persist_config_updates(
+                config, {"sampling": sampling}, explicit_path=self._config_path
+            )
+        except Exception as exc:  # noqa: BLE001
+            return f"✗ Not saved: {exc}"
+        # Nothing to rebuild: every provider reads config.sampling on each
+        # request, so the next call already goes out with these values.
+        config.sampling = validated.sampling
+        self._retry_sampling()
+        if self._on_change is not None:
+            self._on_change()
+        shown = summary or ", ".join(
+            f"{key}={_format_knob(value) or 'not sent'}" for key, value in changes.items()
+        )
+        return f"✓ Saved {shown} (applied from the next model call)"
+
+    def _retry_sampling(self) -> None:
+        """Let a provider that gave up on sampling controls send them again.
+
+        An endpoint that refused them once has the provider stop sending any
+        for the rest of the session, which would quietly drop the values the
+        user just chose. If it refuses again, it falls back the same way.
+        """
+
+        provider = getattr(self._application, "provider", None)
+        retry = getattr(provider, "retry_sampling", None)
+        if retry is not None:
+            retry()
+
+    # ------------------------------------------------------------------ #
     # Button handling
     # ------------------------------------------------------------------ #
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id or ""
         if button_id in {"doctor-close", "doctor-close-2"}:
-            self.dismiss(None)
+            self._close()
         elif button_id == "doctor-back":
             await self._set_step("menu")
         elif button_id.startswith("doctor-menu-"):
@@ -324,6 +694,16 @@ class DoctorModal(ModalScreen[None]):
             await self._list_models(button_id[len("doctor-list-") :])
         elif button_id.startswith("doctor-test-"):
             await self._test_model(button_id[len("doctor-test-") :])
+        elif button_id.startswith("doctor-dec-"):
+            self._step_knob(button_id[len("doctor-dec-") :], -1)
+        elif button_id.startswith("doctor-inc-"):
+            self._step_knob(button_id[len("doctor-inc-") :], 1)
+        elif button_id.startswith("doctor-default-"):
+            self._default_knob(button_id[len("doctor-default-") :])
+        elif button_id.startswith("doctor-pick-"):
+            self._pick(button_id[len("doctor-pick-") :])
+        elif button_id == "doctor-sampling-reset":
+            self._reset_sampling()
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         # Picking a listed model drops its name into the step's input field
@@ -345,9 +725,7 @@ class DoctorModal(ModalScreen[None]):
 
     async def _on_choice(self, spec: str) -> None:
         field, _, value = spec.partition("-")
-        if field == "reasoning_effort":
-            self._status(self._apply_effort(value))
-        elif field == "api_mode":
+        if field == "api_mode":
             self._status(
                 self._apply({"api_mode": normalize_api_mode(value)}, restart=False)
             )
@@ -586,23 +964,16 @@ class DoctorModal(ModalScreen[None]):
         suffix = " (restart to apply to the running agent)" if restart else " (applied now)"
         return f"✓ Saved {shown}{suffix}"
 
-    def _apply_effort(self, value: str) -> str:
-        config = self._config
-        sampling = asdict(config.sampling)
-        sampling["reasoning_effort"] = None if value == "none" else value
-        try:
-            validated = persist_config_updates(
-                config, {"sampling": sampling}, explicit_path=self._config_path
-            )
-        except Exception as exc:  # noqa: BLE001
-            return f"✗ Not saved: {exc}"
-        config.sampling = validated.sampling
-        if self._on_change is not None:
-            self._on_change()
-        return f"✓ Saved reasoning_effort={value} (applied now)"
-
     def _status(self, message: str) -> None:
         self.query_one("#doctor-status", Static).update(message)
 
-    def action_close(self) -> None:
+    def _close(self) -> None:
+        # A value typed just before closing is still waiting for typing to
+        # pause. It was meant, so it is saved rather than dropped with the
+        # dialog.
+        for field in list(self._pending_knobs):
+            self._apply_knob(field)
         self.dismiss(None)
+
+    def action_close(self) -> None:
+        self._close()

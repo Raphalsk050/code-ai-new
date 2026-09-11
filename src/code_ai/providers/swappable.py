@@ -64,6 +64,17 @@ class SwappableProvider:
     def capabilities(self) -> ProviderCapabilities:
         return self._provider.capabilities
 
+    def retry_sampling(self) -> None:
+        """Ask the provider in force to send sampling controls again.
+
+        Only the OpenAI-shaped providers ever give up on them, so the others
+        have nothing to reset and are left alone.
+        """
+
+        retry = getattr(self._provider, "retry_sampling", None)
+        if retry is not None:
+            retry()
+
     def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
         # Not ``async def``: the underlying stream is an async generator, and
         # returning it directly keeps it one - wrapping it in a coroutine here
