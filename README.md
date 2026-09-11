@@ -168,10 +168,14 @@ The optional `sampling` section tunes how the model generates and whether its
 reasoning ("thinking") is captured. Any field left as `null` is omitted from the
 request so the endpoint default applies.
 
+The defaults are the ones the [Qwen3.8-27B model card](https://huggingface.co/Qwen/Qwen3.8-27B)
+recommends for thinking mode, which is on by default for that model. For a
+different model, set its own recommended values here.
+
 ```json
 {
   "sampling": {
-    "temperature": 0.6,
+    "temperature": 1.0,
     "top_p": 0.95,
     "presence_penalty": 0.0,
     "frequency_penalty": null,

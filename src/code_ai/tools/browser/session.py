@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from code_ai.core.errors import ToolExecutionError
+from code_ai.tools.browser.devtools import DevtoolsRecorder, inspect_page, mask, render_value
 
 _INSTALL_HINT = (
     "Browser control needs Playwright. Install it with: "
@@ -122,6 +123,10 @@ class BrowserSession:
     # rather than on a blank page that answers "nothing here" to a question
     # about a site that was open a second ago.
     last_url: str = ""
+    # The console and network logs. They are the two things DevTools shows that
+    # cannot be read after the fact, so every page is listened to from the
+    # moment the session first touches it.
+    devtools: DevtoolsRecorder = field(default_factory=DevtoolsRecorder)
 
     async def page(self) -> Any:
         """The current page, starting the browser the first time it is asked for."""
@@ -131,6 +136,7 @@ class BrowserSession:
 
     async def _page_unlocked(self) -> Any:
         if self._page is not None and not self._page.is_closed():
+            self.devtools.watch(self._page)
             return self._page
         if self._context is None:
             await self._start()
@@ -147,6 +153,7 @@ class BrowserSession:
             # every call with "target closed". Throw it away and start again.
             await self._rebuild()
         self._page.set_default_timeout(self.timeout_ms)
+        self.devtools.watch(self._page)
         return self._page
 
     async def _rebuild(self) -> Any:
@@ -167,6 +174,8 @@ class BrowserSession:
         pages = [page for page in self._context.pages if not page.is_closed()]
         self._page = pages[0] if pages else await self._context.new_page()
         self._page.set_default_timeout(self.timeout_ms)
+        # Before the reload below, so the requests it makes are in the log.
+        self.devtools.watch(self._page)
         # The element numbers were measured on a page that no longer exists.
         # Dropping them makes a stale click an error instead of a click at
         # whatever coordinates now happen to be there.
@@ -275,6 +284,52 @@ class BrowserSession:
         except Exception:  # noqa: BLE001 - a page mid-navigation has no DOM yet
             return []
         return [item for item in found if isinstance(item, dict)]
+
+    async def inspect(self, aspect: str, **options: Any) -> dict[str, Any]:
+        """What one developer-tools panel shows about the page the browser is on."""
+
+        if aspect in {"console", "network"}:
+            # Logs rather than page state: reading them must not start a
+            # browser only to report that nothing has happened yet.
+            return {"url": self.last_url, "aspect": aspect, **self.devtools.read(aspect, **options)}
+
+        async def read_panel() -> dict[str, Any]:
+            page = await self._page_unlocked()
+            self.last_url = page.url
+            panel = await inspect_page(page, self._context, aspect, **options)
+            return {"url": page.url, "aspect": aspect, **panel}
+
+        return await self._attempt(read_panel)
+
+    async def evaluate(self, expression: str) -> dict[str, Any]:
+        """Run JavaScript in the page, the way the developer-tools console does.
+
+        What the script logged comes back with its value, because that is what
+        the console shows too - and a script run to debug something usually
+        answers through console.log as much as through its return value.
+        """
+
+        async def run() -> dict[str, Any]:
+            page = await self._page_unlocked()
+            self.last_url = page.url
+            mark = self.devtools.seq
+            try:
+                value = await page.evaluate(expression)
+            except Exception as exc:  # noqa: BLE001
+                if _is_closed_error(exc):
+                    raise
+                raise ToolExecutionError(f"The script threw: {self._script_error(exc)}") from exc
+            return {"url": page.url, **render_value(value), "console": self.devtools.since(mark)}
+
+        return await self._attempt(run)
+
+    @staticmethod
+    def _script_error(exc: BaseException) -> str:
+        """The JavaScript error itself, without Playwright's call-site prefix and stack."""
+
+        lines = str(exc).strip().splitlines()
+        first = lines[0] if lines else type(exc).__name__
+        return mask(first.removeprefix("Page.evaluate: ").strip())
 
     async def goto(self, url: str) -> dict[str, Any]:
         async def navigate() -> None:
