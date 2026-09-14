@@ -718,7 +718,10 @@ class AgentOrchestrator:
             await self._prepare_step("snapshotting the workspace", self.git_baseline.capture())
         if self.memory is not None:
             state.recall = self._prepare_step_sync(
-                "recalling memories", lambda: MemoryRecall.from_contents(self.memory.recallable())
+                "recalling memories",
+                lambda: MemoryRecall.from_contents(
+                    self.memory.recallable(), surfaced=self._recalled_memories
+                ),
             )
         await self._flush_degradations()
         try:

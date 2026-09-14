@@ -79,3 +79,18 @@ def test_empty_focus_surfaces_nothing() -> None:
 
 def test_no_memories_means_no_recall() -> None:
     assert MemoryRecall.from_contents([]).consider("pytest tests project") is None
+
+
+def test_a_shared_surfaced_set_recalls_a_memory_once_per_session() -> None:
+    """One MemoryRecall per turn; the set the orchestrator shares makes the
+    second turn keep quiet about what the first already said."""
+
+    session: set[str] = set()
+    first = _recall(PYTEST_MEMORY, surfaced=session)
+    assert first.consider("execute_command pytest tests/unit project") is not None
+
+    second = _recall(PYTEST_MEMORY, surfaced=session)
+    assert second.consider("execute_command pytest tests/unit project") is None
+    # The per-turn cap is counted per instance, so another memory still can.
+    third = _recall(PYTEST_MEMORY, MIGRATION_MEMORY, surfaced=session, max_per_turn=1)
+    assert third.consider("alembic migrations directory edited") is not None
