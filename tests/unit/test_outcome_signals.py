@@ -150,7 +150,10 @@ async def test_completion_rejection_records_a_lesson(tmp_path) -> None:
     assert outcome.result.is_error is True
     lessons = orchestrator.failure_memory.lessons()
     assert [entry.trigger for entry in lessons] == ["completion_rejected"]
-    # The lesson is already visible in the refreshed system prompt.
+    # Not rendered into the prompt mid-turn (that would invalidate the engine's
+    # prompt cache for the rest of the turn); it is there at the next rebuild.
+    assert "do not repeat these mistakes" not in orchestrator.conversation.messages[0].content
+    orchestrator._refresh_system_prompt()
     assert "do not repeat these mistakes" in orchestrator.conversation.messages[0].content
 
 
