@@ -97,6 +97,7 @@ class FakePage:
     def __init__(self) -> None:
         self.url = "about:blank"
         self.clicks: list[tuple[int, int]] = []
+        self.click_counts: list[int] = []
         self.typed: list[str] = []
         self.keys: list[str] = []
         self.body = "Sign in to continue"
@@ -141,10 +142,11 @@ class FakePage:
     def locator(self, selector):
         return FakeLocator(self, selector)
 
-    async def _click(self, x, y):
+    async def _click(self, x, y, button="left", click_count=1):
         self.clicks.append((x, y))
+        self.click_counts.append(click_count)
 
-    async def _type(self, text):
+    async def _type(self, text, delay=None):
         self.typed.append(text)
 
     async def _press(self, key):
@@ -310,9 +312,12 @@ async def test_typing_targets_the_field_and_can_submit(tmp_path) -> None:
     await BrowserTypeTool().execute(
         {"element": 0, "text": "someone@example.com", "submit": True}, context
     )
-    done = [(what, detail.get("text") or detail.get("key")) for what, detail in page.actions]
+    done = [(what, detail.get("text")) for what, detail in page.actions]
+    # An <input> takes the keystrokes itself.
     assert ("type", "someone@example.com") in done
-    assert ("press", "Enter") in done
+    # Enter goes to the keyboard: submitting is the form's business, not the
+    # field's, and a form can be submitted from anywhere inside it.
+    assert page.keys[-1] == "Enter"
 
 
 async def test_a_number_that_is_not_on_the_page_is_refused_not_guessed(tmp_path) -> None:
@@ -878,7 +883,12 @@ async def test_replacing_a_field_fills_it_but_an_editor_gets_real_keystrokes(tmp
 
     page.actions.clear()
     await BrowserTypeTool().execute({"element": 1, "text": "Revenue", "replace": True}, context)
-    assert ("type", "Revenue") in [(what, d.get("text")) for what, d in page.actions]
+    # Clicked to put the caret there, then typed at the keyboard rather than at
+    # the element: an editor receives keystrokes wherever the caret went, which
+    # for Google's is a contenteditable it keeps off-screen. Typing at the
+    # element that was clicked would focus it and lose the caret.
+    assert [what for what, _ in page.actions] == ["click"]
+    assert page.typed == ["Revenue"]
     # Selected what was there first, so the typing replaces rather than appends.
     assert page.keys[-1].endswith("+a")
 
@@ -897,13 +907,24 @@ async def test_a_chord_and_a_sequence_of_keys_both_go_through(tmp_path) -> None:
     assert page.keys[-2:] == ["Control+a", "Delete"]
 
 
-async def test_keys_can_be_aimed_at_one_element_rather_than_the_page(tmp_path) -> None:
+async def test_keys_aimed_at_a_field_go_to_it_and_the_rest_go_to_the_caret(tmp_path) -> None:
+    """Pressing at a button would focus it, and the caret is what listens."""
+
     session, page = make_session(tmp_path)
     context = make_context(tmp_path, session)
+    page.elements = [
+        {"ref": 0, "tag": "input", "type": "text", "text": "Search"},
+        {"ref": 1, "tag": "div", "role": "button", "text": "Bold"},
+    ]
     await BrowserReadTool().execute({}, context)
 
-    await BrowserActTool().execute({"action": "press", "keys": "Escape", "element": 1}, context)
-    assert ("press", "Escape") in [(what, d.get("key")) for what, d in page.actions]
+    await BrowserActTool().execute({"action": "press", "keys": "Enter", "element": 0}, context)
+    assert ("press", "Enter") in [(what, d.get("key")) for what, d in page.actions]
+
+    page.actions.clear()
+    await BrowserActTool().execute({"action": "press", "keys": "Control+b", "element": 1}, context)
+    assert [what for what, _ in page.actions] == ["focus"]
+    assert page.keys[-1] == "Control+b"
 
 
 async def test_a_dropdown_is_set_by_value_and_a_checkbox_by_state(tmp_path) -> None:
@@ -1272,7 +1293,8 @@ async def test_a_wait_that_runs_out_of_time_answers_with_the_page(tmp_path) -> N
 
 async def test_a_wait_that_arrives_says_so(tmp_path) -> None:
     session, _ = make_session(tmp_path)
-    result = await BrowserWaitTool().execute({"selector": ".chart"}, make_context(tmp_path, session))
+    context = make_context(tmp_path, session)
+    result = await BrowserWaitTool().execute({"selector": ".chart"}, context)
     assert result["arrived"] is True
     assert "note" not in result
 
@@ -1373,3 +1395,39 @@ async def test_a_closed_browser_is_still_a_restart_not_a_timeout_note(tmp_path) 
         await session.click({"element": 0})
     # It rebuilt rather than shrugging: the numbers went with the old page.
     assert session.last_elements == []
+
+
+async def test_a_point_on_the_page_can_be_clicked_when_nothing_is_listed(tmp_path) -> None:
+    """A shape on a slide is an SVG group with no role: no reading will list it."""
+
+    session, page = make_session(tmp_path)
+    context = make_context(tmp_path, session)
+    await BrowserReadTool().execute({}, context)
+
+    await BrowserClickTool().execute({"x": 480, "y": 300}, context)
+
+    assert page.clicks[-1] == (480.0, 300.0)
+    # Through the mouse, not through a locator: there is no element to wait for.
+    assert "click" not in [what for what, _ in page.actions]
+
+
+async def test_a_point_beats_an_element_number_when_both_are_given(tmp_path) -> None:
+    """Naming a point is the more specific of the two, so it is what was meant."""
+
+    session, page = make_session(tmp_path)
+    context = make_context(tmp_path, session)
+    await BrowserReadTool().execute({}, context)
+
+    await BrowserClickTool().execute({"element": 1, "x": 10, "y": 20}, context)
+    assert page.clicks[-1] == (10.0, 20.0)
+
+
+async def test_a_double_click_on_a_point_still_doubles(tmp_path) -> None:
+    """Double-clicking a shape is what opens it for editing in every editor."""
+
+    session, page = make_session(tmp_path)
+    context = make_context(tmp_path, session)
+    await BrowserReadTool().execute({}, context)
+
+    await BrowserClickTool().execute({"x": 480, "y": 300, "double": True}, context)
+    assert page.click_counts[-1] == 2

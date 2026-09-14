@@ -82,9 +82,13 @@ _TARGET_FIELDS: dict[str, Any] = {
 
 
 def _target(arguments: dict[str, Any], *, required: bool = True) -> dict[str, Any] | None:
-    """Which element the model named, in whichever of the three ways it used."""
+    """Which element the model named, in whichever of the ways it used."""
 
     picked: dict[str, Any] = {}
+    if arguments.get("x") is not None and arguments.get("y") is not None:
+        picked["x"] = _bounded_int(arguments, "x", 0, -20_000, 20_000)
+        picked["y"] = _bounded_int(arguments, "y", 0, -20_000, 20_000)
+        return picked
     if arguments.get("element") is not None:
         picked["element"] = _index(arguments)
     for key in ("selector", "text"):
@@ -202,6 +206,16 @@ class BrowserClickTool:
                     "Alt, Control, Meta, Shift."
                 ),
             },
+            "x": {
+                "type": "integer",
+                "description": (
+                    "Click this point on the page instead of an element - for a "
+                    "shape on a slide or anything else drawn on a canvas, which "
+                    "a reading cannot list. Page pixels, the same ones each "
+                    "element's x and y are given in, not screen pixels."
+                ),
+            },
+            "y": {"type": "integer", "description": "The point's vertical position."},
             "screenshot": _SCREENSHOT_FIELD,
         },
     )
