@@ -7,7 +7,7 @@ import logging
 import random
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from code_ai.config.models import AppConfig
@@ -173,6 +173,42 @@ def _chunked(items: list[ImageContent], size: int) -> list[list[ImageContent]]:
     if size < 1:
         return [list(items)]
     return [items[start : start + size] for start in range(0, len(items), size)]
+
+
+def _evict_stale_images(messages: list[Message], *, keep: int) -> list[Message]:
+    """The request's view of the history: pixels only on the newest ``keep``
+    image-bearing messages, a one-line note on the older ones.
+
+    The history itself is left alone. Every screenshot a desktop or browser
+    task produced used to ride along on every later request, and measured on
+    Ollama that cost two things at once: megabytes re-uploaded per step, and
+    the prompt cache stopping dead at the first image, so everything after it
+    was re-prefilled each step (first token went from under a second to nine
+    over one session). What the model still needs is the picture it is acting
+    on now, which is the newest one or two.
+
+    ``keep`` of 0 means no eviction.
+    """
+
+    if keep <= 0:
+        return messages
+    trimmed = list(messages)
+    remaining = keep
+    for index in range(len(trimmed) - 1, -1, -1):
+        message = trimmed[index]
+        if not message.images:
+            continue
+        if remaining > 0:
+            remaining -= 1
+            continue
+        count = len(message.images)
+        note = f"[{count} image(s) were attached here; no longer sent to save context.]"
+        trimmed[index] = replace(
+            message,
+            images=[],
+            content=f"{message.content}\n\n{note}".strip(),
+        )
+    return trimmed
 
 
 @dataclass(slots=True)
@@ -2662,7 +2698,9 @@ class AgentOrchestrator:
     def _build_request(
         self, step: int, tool_definitions: list, state: _TurnState
     ) -> ModelRequest:
-        messages = self.conversation.snapshot()
+        messages = _evict_stale_images(
+            self.conversation.snapshot(), keep=self.config.image_history_limit
+        )
         runtime_context = "\n\n".join(
             block
             for block in (self._planner_context(), self._git_context(state))

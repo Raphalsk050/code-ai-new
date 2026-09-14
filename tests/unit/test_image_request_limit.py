@@ -67,6 +67,7 @@ class RecordingProvider:
 
     async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
         self.stream_counts.append(sum(len(m.images) for m in request.messages))
+        self.last_request = request
         self._guard(request)
         yield ProviderEvent(kind="text_delta", text_delta="done")
         yield ProviderEvent(
@@ -219,3 +220,48 @@ async def test_no_limit_leaves_a_multimodal_endpoint_alone(tmp_path) -> None:
     # All four travel together, in one request, exactly as before.
     assert provider.complete_counts == []
     assert provider.stream_counts[0] == 4
+
+
+# --------------------------------------------------------------------------- #
+# Keeping old screenshots out of every later request
+# --------------------------------------------------------------------------- #
+async def test_only_the_newest_images_still_travel_as_pixels(tmp_path) -> None:
+    """Three turns with a screenshot each: the request carries the last two."""
+
+    provider = RecordingProvider(limit=99)
+    app = build_application(
+        config=_config(tmp_path, max_images_per_request=0, image_history_limit=2),
+        provider=provider,
+    )
+
+    await app.start()
+    for index in range(3):
+        await app.submit_user_message(f"turn {index}", images=[_IMAGES[index]])
+    await app.close()
+
+    assert provider.stream_counts == [1, 2, 2]
+    # The evicted one is announced where it was, so the model knows a picture
+    # stood there rather than inventing one.
+    evicted = [
+        message
+        for message in provider.last_request.messages
+        if "no longer sent" in message.content
+    ]
+    assert len(evicted) == 1 and evicted[0].content.startswith("turn 0")
+    # The history keeps every picture; only the wire view is trimmed.
+    assert sum(len(m.images) for m in app.orchestrator.conversation.messages) == 3
+
+
+async def test_a_zero_limit_keeps_every_image(tmp_path) -> None:
+    provider = RecordingProvider(limit=99)
+    app = build_application(
+        config=_config(tmp_path, max_images_per_request=0, image_history_limit=0),
+        provider=provider,
+    )
+
+    await app.start()
+    for index in range(3):
+        await app.submit_user_message(f"turn {index}", images=[_IMAGES[index]])
+    await app.close()
+
+    assert provider.stream_counts == [1, 2, 3]
