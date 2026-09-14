@@ -60,6 +60,7 @@ from code_ai.providers.tool_recovery import (
     recover_tool_calls_from_text,
 )
 from code_ai.tools.base import TOOL_IMAGES_KEY, ToolCapability, ToolContext
+from code_ai.tools.groups import group_of
 from code_ai.tools.output import bound_text
 from code_ai.tools.registry import ToolRegistry
 from code_ai.util.partial_json import PartialObjectDecoder
@@ -425,6 +426,10 @@ class AgentOrchestrator:
         # Pre-turn steps that failed synchronously, waiting for the next await
         # to report them (see _prepare_step_sync).
         self._pending_degradations: list[tuple[str, BaseException]] = []
+        # Deferred tool groups this session has brought in (see tools.groups).
+        # A group stays loaded for the session: unloading it again would shift
+        # the tool list, and with it the cached prompt prefix, on every task.
+        self._loaded_tool_groups: set[str] = set()
         self.state = AgentState.STARTING
 
     @property
@@ -2070,6 +2075,9 @@ class AgentOrchestrator:
             {"tool_call_id": call.id, "name": call.name, "arguments": call.arguments},
             source="core.orchestrator",
         )
+        # A deferred tool called by name (remembered from an earlier turn, or
+        # guessed right) is as clear a request for its group as load_tools is.
+        self._note_tool_group_use(call.name)
         # Evidence preconditions run before the approval prompt: a call the
         # planner will defer for missing evidence should never cost the user an
         # approval decision. The gate is advisory (one nudge, then fail-open),
@@ -2169,6 +2177,8 @@ class AgentOrchestrator:
         )
         try:
             payload = await self._guarded_execute(call.name, call.arguments, state)
+            if call.name == "load_tools" and isinstance(payload, dict):
+                self._loaded_tool_groups.add(str(payload.get("group") or ""))
             if self.planner and self.planner.enabled and call.name == "complete_task":
                 rejection = await self._completion_rejection(call, payload)
                 if rejection is not None:
@@ -2822,15 +2832,46 @@ class AgentOrchestrator:
             return False
         return bool(caps) and caps <= frozenset({ToolCapability.LOCAL_READ})
 
+    def _deferred_tool_names(self) -> set[str]:
+        """Tools held back from the request until their group is loaded.
+
+        Nothing is held back from a registry that has no ``load_tools``: a
+        sub-agent's registry is already cut to its role, and hiding tools it
+        has no way to ask for would just be hiding them.
+        """
+
+        if not self.tool_registry.has("load_tools"):
+            return set()
+        return {
+            name
+            for name in self.tool_registry.names()
+            if (group := group_of(name)) is not None
+            and group.name not in self._loaded_tool_groups
+        }
+
+    def _note_tool_group_use(self, name: str) -> None:
+        """A call to a deferred tool loads its group, no ceremony required."""
+
+        group = group_of(name)
+        if group is not None:
+            self._loaded_tool_groups.add(group.name)
+
     def _allowed_tool_names(self) -> set[str] | None:
-        if not (self.planner and self.planner.enabled):
-            return None
-        return self.planner.allowed_tool_names(self.tool_registry)
+        allowed = (
+            self.planner.allowed_tool_names(self.tool_registry)
+            if self.planner and self.planner.enabled
+            else None
+        )
+        deferred = self._deferred_tool_names()
+        if not deferred:
+            return allowed
+        base = allowed if allowed is not None else set(self.tool_registry.names())
+        return base - deferred
 
     def _recommended_tool_names(self) -> set[str]:
         if not (self.planner and self.planner.enabled):
             return set()
-        return self.planner.recommended_tool_names(self.tool_registry)
+        return self.planner.recommended_tool_names(self.tool_registry) - self._deferred_tool_names()
 
     @staticmethod
     def _git_context(state: _TurnState) -> str:
@@ -2857,7 +2898,7 @@ class AgentOrchestrator:
         if not (self.planner and self.planner.enabled):
             return ""
         return self.planner.task_context_block(
-            recommended_tool_names=self.planner.recommended_tool_names(self.tool_registry)
+            recommended_tool_names=self._recommended_tool_names()
         )
 
     def _requires_tool_for_progress(self) -> bool:

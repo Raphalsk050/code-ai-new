@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
+from code_ai.tools.groups import render_catalog as render_tool_groups
+
 # Single source of truth for what "good architecture" means, shared between the
 # implementation system prompt (so the model designs well up front) and the
 # architecture_review tool (so it is judged against the same bar). Language-,
@@ -83,6 +85,7 @@ def build_system_prompt(
     # that might waste a call - so the size is given, and it is rebuilt every
     # turn because the index is warmed in the background while the session runs.
     index_section = f"\nCode index: {code_index.strip()}\n" if code_index.strip() else ""
+    tool_groups = render_tool_groups()
     return f"""You are Code-AI, a terminal-based coding agent.
 
 Configured workspace: {workspace}
@@ -259,8 +262,15 @@ location, use the configured workspace and tool output exactly. Never invent
 Unix placeholder paths such as /home/user when a tool result or configured
 workspace is available.
 
-You can control the user's computer through the desktop tools: screen_info to
-read the screen size and current pointer position, move_mouse/click_mouse/drag_mouse/
+Some tool groups are not in your tool list until you ask for them, so the
+everyday list stays short. Tool groups:
+{tool_groups}
+The moment a task needs one, call load_tools with the group name - in the same
+batch as your other first calls - and its tools are offered from the next step
+on. A task that never needs them never has to look past them.
+
+The desktop group controls the user's computer: screen_info to read the screen
+size and current pointer position, move_mouse/click_mouse/drag_mouse/
 scroll_mouse to drive the pointer, type_text and press_keys for the keyboard, and
 open_application/activate_application/list_applications to manage running apps. Use
 them only when a task genuinely needs GUI interaction outside the terminal. Call

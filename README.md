@@ -386,6 +386,14 @@ If the vision call fails, the raw images are attached as before.
 File and process tools resolve symlinks and enforce that all operations remain inside the configured workspace or this session's sandbox.
 They take an optional `location` (`project` or `sandbox`) that says which of the two a call is addressing; omitted, it is the project.
 
+Four groups of tools are not offered to the model until a task needs them, so the everyday tool list stays short and the cached prompt prefix stays small: `browser` (drive a web page), `desktop` (screen, mouse, keyboard, running applications), `terminal` (an interactive terminal session) and `android` (`analyze_apk`, `analyze_logcat`).
+The model calls `load_tools` with the group name, or simply calls one of the group's tools, and the group stays loaded for the rest of the session.
+Sub-agents see their whole role registry directly.
+
+Screenshots and pasted images stay in the conversation, but only the newest `image_history_limit` image-bearing messages (default 2) still carry their pixels on the wire; older ones are replaced by a one-line note in the request.
+Every image kept in the request is re-uploaded on every step and, on engines that cache the prompt prefix, the cache stops at the first image, so a long desktop session used to re-prefill most of its history on every step.
+Set it to 0 to send every image.
+
 ## Steering A Running Turn
 
 A message sent while a turn is running is queued and joins the conversation at the next model step, rather than starting a turn of its own or waiting for the current one to end. The step already in flight completes first — a request in progress cannot be edited — so a message sent during a tool call is read as soon as that call returns.
