@@ -68,8 +68,12 @@ async def test_recorded_failure_is_injected_into_system_prompt(tmp_path) -> None
         fallback_lesson="Validate command arguments before running.",
     )
 
-    # The just-learned lesson must now be visible in the system prompt, in the
-    # same session — this is the regression the fix targets.
+    # Mid-turn the prompt is left alone (rewriting message 0 would throw away
+    # the engine's prompt cache for the rest of the turn); the lesson reaches
+    # the prompt at the next turn's rebuild, in the same session - that is the
+    # regression this guards.
+    assert "do not repeat these mistakes" not in orchestrator.conversation.messages[0].content
+    orchestrator._refresh_system_prompt()
     system_prompt = orchestrator.conversation.messages[0].content
     assert "do not repeat these mistakes" in system_prompt
     assert "Validate command arguments" in system_prompt
