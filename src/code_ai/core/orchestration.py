@@ -477,9 +477,12 @@ class AgentOrchestrator:
         The system prompt is otherwise built once at startup and frozen for the
         session, which means a lesson recorded mid-session (or a fact just saved
         via ``remember``) would never reach the model until a restart — the
-        original cause of the agent repeating known mistakes. We rebuild in place
-        at well-defined points (turn start, after recording a failure, after a
-        ``remember`` call) rather than every step, to keep disk reads bounded.
+        original cause of the agent repeating known mistakes. Rebuilt at turn
+        start only, never mid-turn: message 0 is the head of the engine's
+        prompt cache, and changing it inside a turn re-prefills the entire
+        history on every following step. Anything learned mid-turn is shown
+        to the model on the spot instead (tool results, lesson warnings) and
+        lands in the prompt at the next turn.
         """
 
         if not self.conversation.messages:
@@ -544,9 +547,12 @@ class AgentOrchestrator:
             return ""
         if status.empty:
             return "empty - call index_workspace once before searching it."
-        semantic = " with semantic search" if status.semantic_ready else ""
+        # No counts: with touched files re-indexed after every edit, a number
+        # here changed the system prompt every turn, and with it the cached
+        # prefix. Whether the index is worth asking is a yes/no fact.
+        semantic = ", with semantic search" if status.semantic_ready else ""
         return (
-            f"{status.files} file(s), {status.chunks} block(s) indexed{semantic}. "
+            f"ready{semantic}. "
             "Ask search_index where something is instead of reading files to find it."
         )
 
@@ -981,9 +987,11 @@ class AgentOrchestrator:
             outcome = await self._execute_tool_batch(response, state)
             if outcome is not None:
                 return outcome
-            # A fact just saved via ``remember`` should inform the very next step.
-            if any(call.name == "remember" for call in response.tool_calls):
-                self._refresh_system_prompt()
+            # A fact saved via ``remember`` is already in front of the model in
+            # the tool result; it joins the system prompt at the next turn.
+            # Rebuilding the prompt here rewrote message 0 mid-turn, and on a
+            # prefix-cached engine that threw away the cache for the whole
+            # history - every later step of the turn paid full prefill for it.
             outcome = await self._note_tool_round(response, state)
             if outcome is not None:
                 return outcome
@@ -1490,9 +1498,11 @@ class AgentOrchestrator:
                 fallback_lesson=fallback_lesson,
                 signature=signature,
             )
-            # Surface the just-learned lesson immediately so a failure that
-            # recurs later in this same turn no longer slips past the model.
-            self._refresh_system_prompt()
+            # Not re-rendered into the system prompt here: within this turn the
+            # lesson reaches the model on the error itself and through
+            # _lesson_warning, and rewriting message 0 mid-turn invalidates the
+            # engine's prompt cache for everything after it. The next turn's
+            # rebuild picks it up.
         except Exception as exc:  # pragma: no cover - defensive
             await self.event_bus.emit(
                 "memory.record.failed",
