@@ -701,13 +701,15 @@ class PlannerService:
             plan_progress = snapshot["progress"]
         if self.agent_plan is None:
             plan_lines = (
-                "Task checklist: not submitted yet.\n"
-                "FIRST ACTION: call submit_plan with the concrete ordered steps you "
-                "will take for this task before any other tool call, and set "
-                "changes_workspace to say whether the task changes files (true) "
-                "or ends in an answer (false) - that decision is yours, not the "
-                "runtime's. The steps are shown to the user as the live "
-                "checklist, so make them specific to this request.\n"
+                "Task checklist: none yet. If this task takes more than two or "
+                "three actions, call submit_plan with the concrete ordered steps "
+                "in the same tool batch as your first real action (it runs "
+                "first); a small task needs no checklist, just do the work. When "
+                "you do submit, set changes_workspace to say whether the task "
+                "changes files (true) or ends in an answer (false) - that "
+                "decision is yours, not the runtime's. The steps are shown to "
+                "the user as the live checklist, so make them specific to this "
+                "request.\n"
             )
         else:
             agent_current = self.agent_plan.current_step
