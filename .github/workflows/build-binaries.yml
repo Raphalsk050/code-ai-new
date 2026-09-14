@@ -21,10 +21,15 @@ name: Build standalone binaries
 env:
   PIP_TRUSTED_HOST: "pypi.org files.pythonhosted.org"
 
+# Every branch, so a binary exists for whatever is being worked on and a
+# packaging break shows up on the push that caused it rather than at release.
+# "**" and not "*": branch names here have slashes in them, and "*" stops at
+# one. The runner is a single machine, so pushes queue; the concurrency group
+# below drops a build the next push to the same branch already replaced.
 on:
   workflow_dispatch:
   push:
-    branches: [feature/chat-improvement]
+    branches: ["**"]
     tags: ["v*"]
 
 concurrency:
