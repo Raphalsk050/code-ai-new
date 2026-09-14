@@ -48,6 +48,10 @@ _MAX_DETAIL_CHARS = 1_500
 
 _BROWSERS_PATH_ENV = "PLAYWRIGHT_BROWSERS_PATH"
 
+# What a one-file binary points at its own unpack directory so it finds the
+# libraries it carries, keeping whatever was there before in <name>_ORIG.
+_LIBRARY_PATH_VARS = ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH")
+
 # apt's own switches for a network that re-signs TLS. Most Ubuntu mirrors are
 # plain HTTP and never read them; an HTTPS mirror behind the proxy needs them.
 _INSECURE_APT = 'Acquire::https::Verify-Peer "false";\nAcquire::https::Verify-Host "false";\n'
@@ -224,6 +228,7 @@ def prepare_driver() -> None:
     """
 
     _pin_browsers_path()
+    _unpoison_library_path()
     _restore_execute_bit()
 
 
@@ -243,6 +248,34 @@ def _pin_browsers_path() -> None:
     if not _frozen() or _BROWSERS_PATH_ENV in os.environ:
         return
     os.environ[_BROWSERS_PATH_ENV] = str(default_browsers_path())
+
+
+def _unpoison_library_path() -> None:
+    """Give the driver's Node the library path this machine has, not the binary's.
+
+    A one-file binary runs with LD_LIBRARY_PATH pointing at its unpack
+    directory, and every child inherits it - Playwright starts its driver with
+    a copy of this environment. Node then loads the libstdc++ and libz that
+    travelled inside Code-AI rather than the system's, finds them built
+    against another version of itself, and dies before printing anything of
+    its own: "error while loading shared libraries", which reads here as
+    Chromium's missing libraries and sends the user to install-deps for a
+    browser that is not what is broken.
+
+    The bootloader keeps what it replaced in <name>_ORIG, and keeps nothing
+    when there was nothing to keep: an absent _ORIG means the variable itself
+    has to go. Only a frozen build has one; from source the environment is the
+    user's own and stays.
+    """
+
+    if not _frozen():
+        return
+    for name in _LIBRARY_PATH_VARS:
+        original = os.environ.get(f"{name}_ORIG")
+        if original is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = original
 
 
 def _restore_execute_bit() -> None:

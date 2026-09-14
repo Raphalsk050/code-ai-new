@@ -433,6 +433,37 @@ def test_from_source_playwrights_own_default_stands(monkeypatch, unset_browsers_
     assert BROWSERS_PATH not in os.environ
 
 
+def test_the_binarys_own_library_path_does_not_follow_its_node(
+    monkeypatch, unset_browsers_path
+) -> None:
+    """Node loading the binary's libstdc++ dies naming a shared library, not itself."""
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/tmp/_MEI4242")
+    monkeypatch.setenv("LD_LIBRARY_PATH_ORIG", "/opt/company/lib")
+    prepare_driver()
+    assert os.environ["LD_LIBRARY_PATH"] == "/opt/company/lib"
+
+
+def test_a_library_path_the_binary_invented_is_taken_back_out(
+    monkeypatch, unset_browsers_path
+) -> None:
+    """Nothing kept in _ORIG means there was nothing there to begin with."""
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/tmp/_MEI4242")
+    monkeypatch.delenv("LD_LIBRARY_PATH_ORIG", raising=False)
+    prepare_driver()
+    assert "LD_LIBRARY_PATH" not in os.environ
+
+
+def test_from_source_the_library_path_is_the_users(monkeypatch, unset_browsers_path) -> None:
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/company/lib")
+    prepare_driver()
+    assert os.environ["LD_LIBRARY_PATH"] == "/opt/company/lib"
+
+
 def test_in_the_binary_the_way_back_in_is_the_binary_itself(monkeypatch) -> None:
     """A frozen build has no ``python -m`` and no pip to point anyone at."""
 
