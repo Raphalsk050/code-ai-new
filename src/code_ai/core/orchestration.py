@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import random
@@ -166,6 +167,13 @@ def _take_tool_images(payload: Any) -> list[ImageContent]:
                 )
             )
     return images
+
+
+def _image_digest(images: list[ImageContent]) -> str:
+    digest = hashlib.sha256()
+    for image in images:
+        digest.update(image.data.encode("utf-8", errors="ignore"))
+    return digest.hexdigest()[:16]
 
 
 def _chunked(items: list[ImageContent], size: int) -> list[list[ImageContent]]:
@@ -2201,11 +2209,19 @@ class AgentOrchestrator:
                 {"tool_call_id": call.id, "name": call.name, "result": payload},
                 source="core.orchestrator",
             )
+            # The planner sees what the screenshot *was*, not just that there
+            # was one: a screen that changed is progress, the same screen twice
+            # is not. Kept off the payload the model reads.
+            planner_payload = (
+                {**payload, "image_digest": _image_digest(images)}
+                if images and isinstance(payload, dict)
+                else payload
+            )
             return _ToolOutcome(
                 result=ToolResult(
                     tool_call_id=call.id, name=call.name, content=content, images=images
                 ),
-                payload=payload,
+                payload=planner_payload,
             )
         except CancellationError:
             raise
