@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 
 from code_ai.bootstrap import build_application, build_tool_registry
 from code_ai.config.models import AppConfig
+from code_ai.core.errors import EnvironmentUnavailableError
 from code_ai.core.subagents.profiles import default_profile_registry
 from code_ai.core.subagents.runtime import SubagentRuntime
 from code_ai.prompts import build_system_prompt
@@ -15,7 +16,9 @@ from code_ai.providers.models import (
     ProviderEvent,
     ToolCall,
 )
+from code_ai.tools.base import ToolCapability
 from code_ai.tools.groups import DEFERRED_TOOL_GROUPS, group_of
+from code_ai.tools.schema import tool_schema
 from code_ai.util.paths import WorkspacePolicy
 
 
@@ -113,9 +116,8 @@ async def test_calling_a_deferred_tool_by_name_loads_its_group(tmp_path) -> None
     await app.close()
 
     assert "analyze_logcat" not in provider.offered[0]
-    # The failed call also triggers the failure-lesson meta-call (no tools);
-    # the next real step is the last request.
-    assert {"analyze_apk", "analyze_logcat"} <= provider.offered[-1]
+    # (A later request with no tools is the post-turn lesson distillation.)
+    assert {"analyze_apk", "analyze_logcat"} <= provider.offered[1]
 
 
 async def test_a_loaded_group_stays_for_the_next_turn(tmp_path) -> None:
@@ -154,3 +156,47 @@ def test_the_prompt_lists_the_groups(tmp_path) -> None:
     assert "load_tools" in prompt
     for group in DEFERRED_TOOL_GROUPS:
         assert f"- {group.name}:" in prompt
+
+
+class _UnavailableApkTool:
+    name = "analyze_apk"
+    description = "stub"
+    capabilities = frozenset({ToolCapability.LOCAL_READ})
+    input_schema = tool_schema({"path": {"type": "string", "description": "apk"}})
+
+    async def execute(self, arguments, context):
+        raise EnvironmentUnavailableError("apktool is not installed on this host.")
+
+
+async def test_an_environment_error_withdraws_the_group_for_the_session(tmp_path) -> None:
+    provider = _ScriptedProvider(
+        [
+            [ToolCall(id="l1", name="load_tools", arguments={"group": "android"})],
+            [ToolCall(id="a1", name="analyze_apk", arguments={"path": "app.apk"})],
+            [ToolCall(id="a2", name="analyze_logcat", arguments={"path": "log.txt"})],
+            [],
+        ]
+    )
+    app = build_application(config=_config(tmp_path), provider=provider)
+    app.orchestrator.tool_registry._tools["analyze_apk"] = _UnavailableApkTool()
+    events: list = []
+    app.subscribe(lambda event: events.append(event))
+
+    await app.start()
+    result = await app.submit_user_message("analise o apk")
+    await app.close()
+
+    assert result.error is None
+    # Loaded on step 1, offered on step 2, withdrawn from step 3 on.
+    assert "analyze_apk" in provider.offered[1]
+    assert not ({"analyze_apk", "analyze_logcat"} & provider.offered[2])
+    assert not ({"analyze_apk", "analyze_logcat"} & provider.offered[3])
+    withdrawn = [e for e in events if e.event_type == "tools.group.withdrawn"]
+    assert [e.payload["group"] for e in withdrawn] == ["android"]
+    # The model is told in the result, and the sibling call is refused the same way.
+    failed = [e.payload["message"] for e in events if e.event_type == "tool.call.failed"]
+    assert any("withdrawn from your tool list" in m for m in failed)
+    assert len(failed) >= 2
+    # A host limitation is not the model's mistake: no lesson, nothing pending.
+    assert app.orchestrator._pending_lessons == []
+    assert app.orchestrator.failure_memory._load("tool_error:analyze_apk") is None

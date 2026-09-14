@@ -26,6 +26,7 @@ from code_ai.core.errors import (
     CancellationError,
     CodeAIError,
     CommandTimeoutError,
+    EnvironmentUnavailableError,
     ImageLimitError,
     ProviderError,
     TransientProviderError,
@@ -61,7 +62,7 @@ from code_ai.providers.tool_recovery import (
     recover_tool_calls_from_text,
 )
 from code_ai.tools.base import TOOL_IMAGES_KEY, ToolCapability, ToolContext
-from code_ai.tools.groups import group_of
+from code_ai.tools.groups import group_named, group_of
 from code_ai.tools.output import bound_text
 from code_ai.tools.registry import ToolRegistry
 from code_ai.util.partial_json import PartialObjectDecoder
@@ -438,6 +439,17 @@ class AgentOrchestrator:
         # A group stays loaded for the session: unloading it again would shift
         # the tool list, and with it the cached prompt prefix, on every task.
         self._loaded_tool_groups: set[str] = set()
+        # Groups the host cannot serve (backend missing, wrong platform), with
+        # the reason. Withdrawn from the request for the session: the same
+        # error came back four times running when the model was left to retry.
+        self._unavailable_tool_groups: dict[str, str] = {}
+        # Memories already resurfaced this session, shared across turns so a
+        # note comes back at most once instead of every turn it matches.
+        self._recalled_memories: set[str] = set()
+        # Failures recorded this turn whose lesson is still to be distilled.
+        # The meta-call runs after the turn, in the learning lane, instead of
+        # holding the model mid-work.
+        self._pending_lessons: list[tuple[str, str, str]] = []
         self.state = AgentState.STARTING
 
     @property
@@ -2086,6 +2098,25 @@ class AgentOrchestrator:
         # A deferred tool called by name (remembered from an earlier turn, or
         # guessed right) is as clear a request for its group as load_tools is.
         self._note_tool_group_use(call.name)
+        withdrawn = self._withdrawn_reason(call)
+        if withdrawn:
+            content = await self._withdraw_tool_group(call, withdrawn)
+            await self.event_bus.emit(
+                "tool.call.failed",
+                {
+                    "tool_call_id": call.id,
+                    "name": call.name,
+                    "message": content,
+                    "type": "EnvironmentUnavailableError",
+                },
+                source="core.orchestrator",
+            )
+            return _ToolOutcome(
+                result=ToolResult(
+                    tool_call_id=call.id, name=call.name, content=content, is_error=True
+                ),
+                payload=None,
+            )
         # Evidence preconditions run before the approval prompt: a call the
         # planner will defer for missing evidence should never cost the user an
         # approval decision. The gate is advisory (one nudge, then fail-open),
@@ -2253,6 +2284,16 @@ class AgentOrchestrator:
                     "(subject to user approval) and confirm the result with a "
                     "read-back command. Do not create or edit workspace files "
                     "just to satisfy completion evidence."
+                )
+            if isinstance(exc, EnvironmentUnavailableError):
+                # Not the model's mistake and not worth a lesson: the host is
+                # missing something, and every retry would say the same.
+                content = await self._withdraw_tool_group(call, str(exc))
+                return _ToolOutcome(
+                    result=ToolResult(
+                        tool_call_id=call.id, name=call.name, content=content, is_error=True
+                    ),
+                    payload=None,
                 )
             signature = f"tool_error:{call.name}"
             # What was already known about this exact failure, captured *before*
@@ -2862,8 +2903,43 @@ class AgentOrchestrator:
             name
             for name in self.tool_registry.names()
             if (group := group_of(name)) is not None
-            and group.name not in self._loaded_tool_groups
+            and (
+                group.name not in self._loaded_tool_groups
+                or group.name in self._unavailable_tool_groups
+            )
         }
+
+    def _group_for_call(self, call: ToolCall):
+        """The deferred group a call is about: its own, or the one it loads."""
+
+        if call.name == "load_tools" and isinstance(call.arguments, dict):
+            return group_named(str(call.arguments.get("group") or ""))
+        return group_of(call.name)
+
+    def _withdrawn_reason(self, call: ToolCall) -> str | None:
+        group = self._group_for_call(call)
+        if group is None:
+            return None
+        return self._unavailable_tool_groups.get(group.name)
+
+    async def _withdraw_tool_group(self, call: ToolCall, reason: str) -> str:
+        """Take a group the host cannot serve out of the session; say so plainly."""
+
+        group = self._group_for_call(call)
+        if group is not None and group.name not in self._unavailable_tool_groups:
+            self._unavailable_tool_groups[group.name] = reason
+            await self.event_bus.emit(
+                "tools.group.withdrawn",
+                {"group": group.name, "reason": reason},
+                source="core.orchestrator",
+            )
+        label = f"The '{group.name}' tool group" if group is not None else "This tool"
+        return (
+            f"{reason}\n{label} cannot work in this session (missing backend or "
+            "unsupported platform) and has been withdrawn from your tool list. "
+            "This is not something a retry fixes: tell the user what is missing "
+            "and carry on with what you can do without it."
+        )
 
     def _note_tool_group_use(self, name: str) -> None:
         """A call to a deferred tool loads its group, no ceremony required."""
