@@ -79,10 +79,16 @@ class FailureMemory:
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> FailureMemory:
+        lesson = str(data.get("lesson", ""))
+        if _is_boilerplate(lesson):
+            # Entries written by earlier versions when the meta-call came back
+            # empty: the generic fallback carried nothing and was warned about
+            # on every use of the tool. Read as "no lesson yet".
+            lesson = ""
         return cls(
             signature=str(data.get("signature", "")),
             trigger=str(data.get("trigger", "")),
-            lesson=str(data.get("lesson", "")),
+            lesson=lesson,
             count=int(data.get("count", 1) or 1),
             first_seen=float(data.get("first_seen", time.time()) or 0.0),
             last_seen=float(data.get("last_seen", time.time()) or 0.0),
@@ -184,28 +190,46 @@ class FailureMemoryStore:
         context: str,
         fallback_lesson: str,
         signature: str | None = None,
+        distill: bool = True,
     ) -> FailureMemory:
         """Record a failure, distilling a lesson on first sight of its signature.
 
         ``signature`` defaults to ``trigger`` so all failures of one class
         collapse into a single lesson; pass a finer key (e.g. ``"tool_error:read_file"``)
         to keep distinct cases separate.
+
+        With ``distill=False`` the failure is counted and saved without a
+        lesson; :meth:`distill` fills it in later. That is how the orchestrator
+        keeps the meta-call out of the turn: on a local model it held the model
+        for as long as a step, in the middle of the work.
         """
 
         sig = signature or trigger
         existing = self._load(sig)
         if existing is not None:
-            # Already learned this lesson — just reinforce it. No model call.
+            # Already learned this lesson — just reinforce it. No model call,
+            # unless the lesson is still missing from an earlier deferral.
             existing.count += 1
             existing.last_seen = time.time()
+            if not existing.lesson and distill:
+                existing.lesson = await self._distill_lesson(context, fallback_lesson)
             self._save(existing)
             return existing
 
-        lesson = await self._distill_lesson(context, fallback_lesson)
+        lesson = await self._distill_lesson(context, fallback_lesson) if distill else ""
         entry = FailureMemory(signature=sig, trigger=trigger, lesson=lesson)
         self._save(entry)
         self._prune()
         return entry
+
+    async def distill(self, signature: str, context: str, fallback_lesson: str) -> None:
+        """Fill in the lesson of an entry recorded with ``distill=False``."""
+
+        entry = self._load(signature)
+        if entry is None or entry.lesson:
+            return
+        entry.lesson = await self._distill_lesson(context, fallback_lesson)
+        self._save(entry)
 
     def remove(self, signature: str) -> bool:
         """Delete a lesson by signature. True when one was actually removed."""
@@ -264,6 +288,12 @@ class FailureMemoryStore:
                 self._path_for(stale.signature).unlink()
             except OSError:
                 continue
+
+
+def _is_boilerplate(lesson: str) -> bool:
+    return lesson.startswith("Before calling '") and (
+        "validate its arguments against the workspace state" in lesson
+    )
 
 
 def _clip(text: str) -> str:

@@ -249,12 +249,15 @@ def build_application(
         code_index.attach(event_bus)
 
     async def _generate_lesson(context: str) -> str:
-        # Bounded meta-call: distill one sentence, capped tight so the learning
-        # path can never itself blow the budget it is trying to teach about.
+        # Bounded meta-call: one sentence, but with room for the hidden
+        # reasoning a thinking model spends first. At 256 tokens the answer
+        # never arrived on such models and every tool-error lesson on disk was
+        # the boilerplate fallback; it runs after the turn now, so the budget
+        # is the reflection's, not the turn's.
         request = ModelRequest(
             model=config.model,
             messages=[Message(role="user", content=build_failure_lesson_prompt(context))],
-            max_output_tokens=256,
+            max_output_tokens=config.memory.reflection_max_output_tokens,
         )
         response = await provider.complete(request)
         return response.text

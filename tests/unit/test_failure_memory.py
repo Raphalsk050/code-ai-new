@@ -11,9 +11,7 @@ def _store(tmp_path, generator=None, **kwargs) -> FailureMemoryStore:
     return FailureMemoryStore(tmp_path / "memories", lesson_generator=generator, **kwargs)
 
 
-def _write_entry(
-    directory, *, signature: str, lesson: str, count: int, age_days: float
-) -> None:
+def _write_entry(directory, *, signature: str, lesson: str, count: int, age_days: float) -> None:
     """Write a lesson file directly, with a controlled age and count.
 
     Uses the store's production naming (hash of the signature) so entries
@@ -32,9 +30,7 @@ def _write_entry(
         last_seen=seen,
     )
     digest = hashlib.sha256(signature.encode("utf-8")).hexdigest()[:16]
-    (directory / f"{digest}.json").write_text(
-        json.dumps(entry.to_dict()), encoding="utf-8"
-    )
+    (directory / f"{digest}.json").write_text(json.dumps(entry.to_dict()), encoding="utf-8")
 
 
 async def test_records_model_generated_lesson(tmp_path) -> None:
@@ -143,9 +139,7 @@ async def test_lessons_survive_a_fresh_store_instance(tmp_path) -> None:
     async def generator(context: str) -> str:
         return "persisted lesson"
 
-    await _store(tmp_path, generator).record(
-        trigger="stall", context="c", fallback_lesson="f"
-    )
+    await _store(tmp_path, generator).record(trigger="stall", context="c", fallback_lesson="f")
 
     # A brand-new store over the same directory recalls what was learned.
     reopened = _store(tmp_path)
@@ -231,3 +225,67 @@ async def test_prune_evicts_weakest_not_merely_oldest(tmp_path) -> None:
     # The cap evicted the weakest entry; the chronic lesson survives even
     # though it is the oldest by recency alone.
     assert {e.signature for e in store.lessons()} == {"chronic", "new"}
+
+
+# --------------------------------------------------------------------------- #
+# Deferred distillation and the boilerplate that used to pass for a lesson
+# --------------------------------------------------------------------------- #
+async def test_a_deferred_record_counts_now_and_learns_later(tmp_path) -> None:
+    calls: list[str] = []
+
+    async def generator(context: str) -> str:
+        calls.append(context)
+        return "Check the path exists before editing."
+
+    store = _store(tmp_path, generator)
+    entry = await store.record(
+        trigger="tool_error",
+        signature="tool_error:edit_code",
+        context="c1",
+        fallback_lesson="",
+        distill=False,
+    )
+
+    # Counted, saved, but no model call yet and nothing to render or warn about.
+    assert entry.lesson == "" and calls == []
+    assert store.lessons() == [] and store.lesson_for("tool_error:edit_code") is None
+
+    await store.distill("tool_error:edit_code", "c1", "")
+    assert calls == ["c1"]
+    assert (
+        store.lesson_for("tool_error:edit_code").lesson == "Check the path exists before editing."
+    )
+    # Filled in once: a second distill is a no-op.
+    await store.distill("tool_error:edit_code", "c1", "")
+    assert calls == ["c1"]
+
+
+async def test_a_repeat_of_an_unlearned_failure_distils_when_allowed(tmp_path) -> None:
+    async def generator(context: str) -> str:
+        return "Use the project's own test command."
+
+    store = _store(tmp_path, generator)
+    await store.record(trigger="stall", context="c", fallback_lesson="", distill=False)
+    entry = await store.record(trigger="stall", context="c", fallback_lesson="")
+
+    assert entry.count == 2
+    assert entry.lesson == "Use the project's own test command."
+
+
+def test_boilerplate_lessons_on_disk_read_as_no_lesson(tmp_path) -> None:
+    store = _store(tmp_path)
+    boilerplate = FailureMemory(
+        signature="tool_error:move_mouse",
+        trigger="tool_error",
+        lesson=(
+            "Before calling 'move_mouse', validate its arguments against the "
+            "workspace state (paths exist, JSON is well-formed) to avoid the error "
+            "seen previously."
+        ),
+        count=2,
+    )
+    store._save(boilerplate)
+
+    assert store.lessons() == []
+    assert store.lesson_for("tool_error:move_mouse") is None
+    assert store.render_for_prompt() == ""
