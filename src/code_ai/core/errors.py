@@ -42,6 +42,15 @@ class ToolExecutionError(CodeAIError):
     """Tool execution failed."""
 
 
+class EnvironmentUnavailableError(ToolExecutionError):
+    """The host lacks what the tool needs (a backend, a platform feature).
+
+    Unlike a bad argument, this fails the same way on every retry for the rest
+    of the session, so the runtime withdraws the tool rather than let the model
+    keep trying.
+    """
+
+
 class WorkspaceBoundaryError(ToolExecutionError):
     """A path or command attempted to escape the configured workspace."""
 

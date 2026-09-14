@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from code_ai.core.errors import ToolArgumentError
+from code_ai.core.errors import EnvironmentUnavailableError, ToolArgumentError
 
 # pyautogui drives mouse/keyboard/screen across platforms. It is an optional
 # dependency: when it is missing the controller degrades to the native macOS
@@ -175,7 +175,7 @@ class DesktopController:
 
     def list_applications(self) -> list[str]:
         if platform.system() != "Darwin":
-            raise ToolArgumentError(
+            raise EnvironmentUnavailableError(
                 "Listing visible applications is only supported on macOS."
             )
         script = (
@@ -195,7 +195,7 @@ class DesktopController:
 
     def _pointer_backend(self) -> Any:
         if _pyautogui is None:
-            raise ToolArgumentError(_INSTALL_HINT)
+            raise EnvironmentUnavailableError(_INSTALL_HINT)
         return _pyautogui
 
     @staticmethod
