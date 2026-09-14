@@ -84,11 +84,17 @@ class MemoryRecall:
         *,
         min_overlap: int = 2,
         max_per_turn: int = 2,
+        surfaced: set[str] | None = None,
     ) -> None:
         self._memories = [memory for memory in memories if memory.terms]
         self._min_overlap = min_overlap
         self._max_per_turn = max_per_turn
-        self._surfaced: set[str] = set()
+        # Shared by the caller across turns when a memory should come back at
+        # most once per session: the same note returning every turn ("save
+        # your progress to memory", five turns running) is what teaches the
+        # model these notes are noise. Per-turn pacing is counted separately.
+        self._surfaced: set[str] = surfaced if surfaced is not None else set()
+        self._surfaced_this_turn = 0
 
     @classmethod
     def from_contents(
@@ -104,7 +110,7 @@ class MemoryRecall:
     def consider(self, focus: str) -> str | None:
         """The memory worth repeating for this piece of work, if any."""
 
-        if len(self._surfaced) >= self._max_per_turn:
+        if self._surfaced_this_turn >= self._max_per_turn:
             return None
         focus_terms = extract_terms(focus)
         if not focus_terms:
@@ -120,6 +126,7 @@ class MemoryRecall:
         if best is None:
             return None
         self._surfaced.add(best.content)
+        self._surfaced_this_turn += 1
         return (
             "Something you recorded earlier applies to what you are doing now:\n"
             f"- {best.content}\n"
