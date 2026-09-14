@@ -707,6 +707,13 @@ class AppConfig:
     # prompt says so when it refuses one, and the limit is learned from there.
     # Set it when the endpoint refuses without naming a number.
     max_images_per_request: int = 0
+    # How many of the most recent image-bearing messages still carry their
+    # pixels in a request; older ones travel as a one-line note. Every
+    # screenshot kept in the history is re-uploaded on every step and, on the
+    # engines that cache the prompt prefix, the cache stops at the first
+    # image - so an hour-long desktop session pays for all of them each step.
+    # 0 keeps every image.
+    image_history_limit: int = 2
     debug: bool = False
     show_ui: bool = True
     ssl_verification: bool = False
@@ -780,6 +787,7 @@ class AppConfig:
             inline_model=str(data.get("inline_model", "")),
             vision_model=str(data.get("vision_model", "")),
             max_images_per_request=int(data.get("max_images_per_request", 0) or 0),
+            image_history_limit=int(data.get("image_history_limit", 2) or 0),
             debug=bool(data.get("debug", False)),
             show_ui=bool(data.get("show_ui", True)),
             ssl_verification=bool(data.get("ssl_verification", False)),
@@ -842,6 +850,8 @@ class AppConfig:
             raise ConfigurationError("output_token_reserve must be positive.")
         if self.max_images_per_request < 0:
             raise ConfigurationError("max_images_per_request must be zero or positive.")
+        if self.image_history_limit < 0:
+            raise ConfigurationError("image_history_limit must be zero or positive.")
         if not self.terminal_theme.strip():
             raise ConfigurationError("terminal_theme must be non-empty.")
         if not self.terminal_banner_font.strip():
