@@ -7,7 +7,9 @@ name: Build standalone binaries
 # label alone: `code-linux` names one machine, and nothing else carries it.
 # It is the only runner there is - GitHub's hosted ones cannot be reached from
 # the company network, so `ubuntu-latest` here means no build at all, not a
-# slower one. There is no Windows runner either, so the Windows .exe is
+# slower one. For the same reason the artifact upload is pinned to v3: v4 is
+# not available there, and an action that cannot resolve fails the job after
+# the binary it was going to upload was already built. There is no Windows runner either, so the Windows .exe is
 # cross-built on Linux by running PyInstaller inside a Wine container
 # (tobix/pywine). The only thing the runner must provide is Docker.
 #
@@ -73,7 +75,7 @@ jobs:
           cp dist/code-ai out/code-ai-linux-x86_64
           chmod +x out/code-ai-linux-x86_64
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v3
         with:
           name: code-ai-linux-x86_64
           path: out/code-ai-linux-x86_64
@@ -117,7 +119,7 @@ jobs:
           mkdir -p out
           cp dist/code-ai.exe out/code-ai-windows-x86_64.exe
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v3
         with:
           name: code-ai-windows-x86_64
           path: out/code-ai-windows-x86_64.exe
