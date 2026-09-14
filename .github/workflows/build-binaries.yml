@@ -1,43 +1,24 @@
 name: Build standalone binaries
 
-# Produces single-file, self-contained executables for Linux and Windows.
-# End users run them without installing Python or any dependency.
+# One-file executables for Linux and Windows. Users run them with no Python
+# installed.
 #
-# Both jobs run on the closed self-hosted Linux runner, asked for by its own
-# label alone: `code-linux` names one machine, and nothing else carries it.
-# It is the only runner there is - GitHub's hosted ones cannot be reached from
-# the company network, so `ubuntu-latest` here means no build at all, not a
-# slower one. For the same reason the artifact upload is pinned to v3: v4 is
-# not available there, and an action that cannot resolve fails the job after
-# the binary it was going to upload was already built. There is no Windows runner either, so the Windows .exe is
-# cross-built on Linux by running PyInstaller inside a Wine container
-# (tobix/pywine). The only thing the runner must provide is Docker.
+# code-linux is the company's only runner: GitHub-hosted ones are unreachable
+# from that network, and upload-artifact is pinned to v3 because v4 does not
+# exist there. Docker is all either job needs from the machine.
 #
-# A plain `pip install .` brings Playwright: the binary has to carry it and
-# its Node driver, or the browser tools can never start, so it is a required
-# dependency rather than an extra this file has to remember to ask for. The
-# spec refuses to build without it, and `doctor browser --no-launch` checks
-# that the bundled driver actually runs.
+# No Windows runner, so the .exe is cross-built under Wine - PyInstaller
+# cannot cross-compile.
 #
-# pip trusts PyPI's hosts without checking their certificates: the company
-# network re-signs TLS with its own certificate, which the containers'
-# certificate stores do not know.
-#
-# Its cache is kept on the runner rather than inside the container, which is
-# thrown away with the build. Most of a run is spent fetching the same wheels
-# - Playwright alone is over a hundred MB - and the runner is one machine that
-# keeps its disk between runs, so there is nothing to upload or restore. The
-# cache is only ever a shortcut: unreadable or gone, pip downloads again and
-# the build is slow, not wrong.
+# PIP_TRUSTED_HOST: the proxy re-signs TLS with a certificate the containers
+# do not have. PIP_CACHE_DIR: mounted off the runner's disk, or every run
+# re-downloads Playwright twice.
 
 env:
   PIP_TRUSTED_HOST: "pypi.org files.pythonhosted.org"
 
-# Every branch, so a binary exists for whatever is being worked on and a
-# packaging break shows up on the push that caused it rather than at release.
-# "**" and not "*": branch names here have slashes in them, and "*" stops at
-# one. The runner is a single machine, so pushes queue; the concurrency group
-# below drops a build the next push to the same branch already replaced.
+# Any branch: a packaging break should surface on the push that caused it, not
+# at the tag. "**" because branch names have slashes.
 on:
   workflow_dispatch:
   push:
@@ -98,14 +79,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # PyInstaller has no cross-compiler: to emit a Windows .exe we run it
-      # against a real Windows Python interpreter under Wine. pip pulls the
-      # Windows wheels of every dependency because the interpreter reports
-      # itself as win32 - Playwright's included, with its Windows node.exe.
-      # Its own cache, not the Linux job's: these are the Windows wheels of the
-      # same dependencies. The path is given the way the interpreter reading it
-      # sees the world - pip here is a Windows program, and Wine's Z: is the
-      # container's root.
+      # The interpreter reports itself as win32, so pip pulls Windows wheels -
+      # Playwright's included, with its node.exe. Separate cache from the Linux
+      # job for that reason, and a Windows path because this pip is a Windows
+      # program (Wine maps Z: to /).
       - name: Build Windows binary inside Wine
         run: |
           cache="$HOME/.cache/code-ai-ci/pip-wine"
@@ -125,10 +102,8 @@ jobs:
               wine dist/code-ai.exe doctor browser --no-launch || echo "wine driver check non-fatal"
             '
 
-      # The Wine container builds as root; hand the output back to the runner
-      # user so later steps and cleanup can touch it. The cache it just wrote
-      # to comes along: it outlives the build, and root-owned files in the
-      # runner's own home are its problem for every run after this one.
+      # Wine builds as root. Hand the output and the cache back, or the next
+      # run cannot write either.
       - name: Fix output ownership
         if: always()
         run: |

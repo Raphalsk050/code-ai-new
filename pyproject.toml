@@ -19,11 +19,9 @@ dependencies = [
   "pywinpty>=2.0.12; platform_system == 'Windows'",
   "ddgs>=9.0.0",
   "pydantic>=2.0.0",
-  # Required, not optional: the browser tools are part of the agent, and the
-  # binary has to carry Playwright and its Node driver or they can never
-  # start. As an extra it was one `pip install .` away from a build that
-  # silently could not browse. The browser itself is still a separate
-  # download, made on first use - see src/code_ai/tools/browser/install.py.
+  # Not an extra: the binary must carry the Node driver, and as an extra it was
+  # one `pip install .` away from a build that could not browse. Chromium is
+  # still fetched on first use - see tools/browser/install.py.
   "playwright>=1.40.0",
 ]
 

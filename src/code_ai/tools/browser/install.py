@@ -48,8 +48,8 @@ _MAX_DETAIL_CHARS = 1_500
 
 _BROWSERS_PATH_ENV = "PLAYWRIGHT_BROWSERS_PATH"
 
-# What a one-file binary points at its own unpack directory so it finds the
-# libraries it carries, keeping whatever was there before in <name>_ORIG.
+# PyInstaller repoints these at its unpack directory, stashing the old value
+# in <name>_ORIG.
 _LIBRARY_PATH_VARS = ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH")
 
 # apt's own switches for a network that re-signs TLS. Most Ubuntu mirrors are
@@ -251,21 +251,12 @@ def _pin_browsers_path() -> None:
 
 
 def _unpoison_library_path() -> None:
-    """Give the driver's Node the library path this machine has, not the binary's.
+    """Give the driver's Node this machine's library path, not the binary's.
 
-    A one-file binary runs with LD_LIBRARY_PATH pointing at its unpack
-    directory, and every child inherits it - Playwright starts its driver with
-    a copy of this environment. Node then loads the libstdc++ and libz that
-    travelled inside Code-AI rather than the system's, finds them built
-    against another version of itself, and dies before printing anything of
-    its own: "error while loading shared libraries", which reads here as
-    Chromium's missing libraries and sends the user to install-deps for a
-    browser that is not what is broken.
-
-    The bootloader keeps what it replaced in <name>_ORIG, and keeps nothing
-    when there was nothing to keep: an absent _ORIG means the variable itself
-    has to go. Only a frozen build has one; from source the environment is the
-    user's own and stays.
+    Playwright spawns the driver with a copy of os.environ, so Node would load
+    the libstdc++ that travelled inside Code-AI and die with "error while
+    loading shared libraries" - which _FAILURE_MARKERS then blames on
+    Chromium. No _ORIG means the bootloader invented the variable, so drop it.
     """
 
     if not _frozen():

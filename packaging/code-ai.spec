@@ -30,15 +30,12 @@ hiddenimports = []
 # PyInstaller cannot see statically (Textual stylesheets, `art` fonts,
 # tiktoken's encodings, pydantic's compiled core).
 #
-# playwright is among them: the browser tools run its bundled Node driver
-# (node + its JS package, shipped as package data), so the whole package has
-# to travel. Chromium itself is not bundled - hundreds of MB, pinned per
-# Playwright release - the app downloads it into the user's cache on first use.
+# playwright ships its Node driver as package data, so the whole package has
+# to travel. Chromium does not - it is downloaded into the user's cache on
+# first use.
 #
-# Required, not best-effort: a build environment without it used to produce a
-# binary whose browser tools could never start, and nothing at build time
-# said so. It is a plain dependency of the project, so the environment that
-# is missing it is one the project was never installed into.
+# Fatal rather than best-effort: a build without it silently produced a binary
+# that could never browse.
 import importlib.util
 
 if importlib.util.find_spec("playwright") is None:
