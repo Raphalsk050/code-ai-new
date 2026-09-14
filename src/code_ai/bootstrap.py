@@ -86,6 +86,7 @@ from code_ai.tools.internal import (
     CompletePlanStepTool,
     CompleteTaskTool,
     FinishDiscoveryTool,
+    LoadToolsTool,
     RequestExternalGapTool,
     SubmitPlanTool,
 )
@@ -179,6 +180,7 @@ def build_tool_registry() -> ToolRegistry:
         SubmitPlanTool(),
         CompletePlanStepTool(),
         FinishDiscoveryTool(),
+        LoadToolsTool(),
         RequestExternalGapTool(),
         CompleteTaskTool(),
     ):
