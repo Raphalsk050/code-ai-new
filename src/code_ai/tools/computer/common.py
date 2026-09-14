@@ -31,8 +31,8 @@ def resolve_point(controller: Any, arguments: dict[str, Any], x: Any, y: Any) ->
     geometry of the capture the model actually saw.
     """
 
-    space = str(arguments.get("coordinate_space") or SCREEN_SPACE).strip().lower()
-    if space not in {SCREEN_SPACE, IMAGE_SPACE}:
+    space = str(arguments.get("coordinate_space") or "").strip().lower()
+    if space and space not in {SCREEN_SPACE, IMAGE_SPACE}:
         raise ToolArgumentError(
             f"coordinate_space must be '{SCREEN_SPACE}' or '{IMAGE_SPACE}', got {space!r}."
         )
@@ -40,15 +40,49 @@ def resolve_point(controller: Any, arguments: dict[str, Any], x: Any, y: Any) ->
         point = (float(x), float(y))
     except (TypeError, ValueError):
         raise ToolArgumentError("Coordinates must be numbers.") from None
-    if space == SCREEN_SPACE:
-        return int(round(point[0])), int(round(point[1]))
     geometry = getattr(controller, "last_capture", None)
+
+    if space == IMAGE_SPACE:
+        if geometry is None:
+            raise ToolArgumentError(
+                "coordinate_space='image' needs a screenshot to measure against: "
+                "call capture_screen first, then give the coordinates you read off it."
+            )
+        return geometry.to_screen(*point)
+    if space == SCREEN_SPACE:
+        if geometry is not None and not geometry.holds_screen_point(*point):
+            raise _off_the_desktop(geometry, point)
+        return int(round(point[0])), int(round(point[1]))
+
+    # Not said. On one monitor whose origin is (0, 0), with a capture that was
+    # not shrunk, the two spaces are the same number and the omission never
+    # showed. They diverge exactly where it matters: a monitor left of the
+    # primary one starts at a negative x, and a capture that had to be shrunk
+    # to fit in a request is at some fraction of the desktop. Deciding by where
+    # the point can possibly be is not a guess - a coordinate inside the
+    # picture that was just sent was read off it.
     if geometry is None:
-        raise ToolArgumentError(
-            "coordinate_space='image' needs a screenshot to measure against: "
-            "call capture_screen first, then give the coordinates you read off it."
-        )
-    return geometry.to_screen(*point)
+        return int(round(point[0])), int(round(point[1]))
+    if geometry.holds_image_point(*point):
+        return geometry.to_screen(*point)
+    if geometry.holds_screen_point(*point):
+        return int(round(point[0])), int(round(point[1]))
+    raise _off_the_desktop(geometry, point)
+
+
+def _off_the_desktop(geometry: Any, point: tuple[float, float]) -> ToolArgumentError:
+    """A point that is on neither the picture nor the desktop it came from."""
+
+    x, y = point
+    as_screen = geometry.to_screen(x, y)
+    return ToolArgumentError(
+        f"({x:.0f}, {y:.0f}) is not on the desktop, which runs from "
+        f"({geometry.left}, {geometry.top}) to "
+        f"({geometry.left + geometry.width}, {geometry.top + geometry.height}), "
+        f"and not on the last capture either ({geometry.image_width}x"
+        f"{geometry.image_height}). Read as a point on that picture it would be "
+        f"{as_screen}. Take a fresh capture_screen and use what you see in it."
+    )
 
 
 # Reused by every tool that takes a pointer coordinate, so the choice is
@@ -59,7 +93,8 @@ COORDINATE_SPACE_SCHEMA = {
         "Which coordinates these are. 'image' means read off the most recent "
         "capture_screen image - use this whenever you are clicking something "
         "you saw in a screenshot, and the scaling and monitor offset are "
-        "applied for you. 'screen' (the default) means real desktop pixels."
+        "applied for you. 'screen' means real desktop pixels. Left out, a "
+        "point that fits on the last capture is taken as being from it."
     ),
 }
 

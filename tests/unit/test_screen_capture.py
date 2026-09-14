@@ -175,18 +175,6 @@ def test_a_monitor_left_of_the_primary_one_shifts_the_whole_desktop() -> None:
     assert geometry.to_screen(1500, 960) == (1080, 1720)
 
 
-def test_an_image_coordinate_is_converted_before_the_pointer_moves() -> None:
-    from code_ai.tools.computer.common import resolve_point
-
-    controller = SimpleNamespace(last_capture=_geometry())
-    # Declared as image coordinates: scaled and offset on the way through.
-    assert resolve_point(controller, {"coordinate_space": "image"}, 750, 480) == (1500, 960)
-    # Declared as screen coordinates, or not declared: passed straight through,
-    # so an existing caller that already knows real pixels is unaffected.
-    assert resolve_point(controller, {"coordinate_space": "screen"}, 750, 480) == (750, 480)
-    assert resolve_point(controller, {}, 750, 480) == (750, 480)
-
-
 def test_clicking_from_an_image_before_looking_at_one_is_refused() -> None:
     """Guessing a scale would be a click at a plausible-looking wrong place."""
 
@@ -262,3 +250,77 @@ def test_a_capture_too_big_to_send_is_refused_when_it_cannot_be_shrunk(monkeypat
     # One that already fits needed nothing from Pillow, so it is left alone.
     small = _png_header(800, 600)
     assert capture.downscale_png(small) == small
+
+
+def test_a_point_that_fits_the_last_capture_is_taken_as_being_from_it() -> None:
+    """Leaving the space out used to mean real pixels, and silently missed.
+
+    On one monitor at (0, 0) with a capture that was not shrunk the two spaces
+    are the same number, so nothing ever showed. They come apart on exactly the
+    setup this is for: a shrunken capture, or a desktop whose origin is not
+    (0, 0). A point that fits inside the picture that was just sent was read
+    off it - that is not a guess about intent, it is where the point can be.
+    """
+
+    from code_ai.tools.computer.common import resolve_point
+
+    controller = SimpleNamespace(last_capture=_geometry())
+    assert resolve_point(controller, {}, 750, 480) == (1500, 960)
+    # Saying so explicitly still wins, both ways.
+    assert resolve_point(controller, {"coordinate_space": "screen"}, 750, 480) == (750, 480)
+    assert resolve_point(controller, {"coordinate_space": "image"}, 750, 480) == (1500, 960)
+
+
+def test_a_point_too_far_right_for_the_picture_is_a_desktop_pixel() -> None:
+    """It cannot have been read off an image that is not that wide."""
+
+    from code_ai.tools.computer.common import resolve_point
+
+    controller = SimpleNamespace(last_capture=_geometry())
+    assert resolve_point(controller, {}, 2400, 1500) == (2400, 1500)
+
+
+def test_a_click_on_the_monitor_left_of_the_primary_one_lands_there() -> None:
+    """The case that started this: the desktop origin is negative.
+
+    Read as desktop pixels, a point from that capture lands on the primary
+    monitor instead, on whatever happens to be at the mirrored position.
+    """
+
+    from code_ai.tools.computer.common import resolve_point
+
+    controller = SimpleNamespace(last_capture=_geometry(left=-1920, top=-200))
+    assert resolve_point(controller, {}, 100, 100) == (-1720, 0)
+
+
+def test_a_point_on_neither_the_picture_nor_the_desktop_says_both(
+) -> None:
+    """Refusing beats clicking somewhere plausible-looking and wrong."""
+
+    from code_ai.core.errors import ToolArgumentError
+    from code_ai.tools.computer.common import resolve_point
+
+    controller = SimpleNamespace(last_capture=_geometry())
+    with pytest.raises(ToolArgumentError) as caught:
+        resolve_point(controller, {}, 9000, 9000)
+    message = str(caught.value)
+    assert "not on the desktop" in message
+    assert "capture_screen" in message
+
+
+def test_screen_coordinates_off_the_desktop_are_refused_too() -> None:
+    """Saying 'screen' does not make a point that is nowhere become somewhere."""
+
+    from code_ai.core.errors import ToolArgumentError
+    from code_ai.tools.computer.common import resolve_point
+
+    controller = SimpleNamespace(last_capture=_geometry())
+    with pytest.raises(ToolArgumentError):
+        resolve_point(controller, {"coordinate_space": "screen"}, 9000, 9000)
+
+
+def test_with_no_capture_yet_a_bare_point_is_still_a_desktop_pixel() -> None:
+    from code_ai.tools.computer.common import resolve_point
+
+    controller = SimpleNamespace(last_capture=None)
+    assert resolve_point(controller, {}, 750, 480) == (750, 480)

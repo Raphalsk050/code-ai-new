@@ -385,6 +385,14 @@ class BrowserSession:
             "args": ["--no-first-run", "--no-default-browser-check"],
             "timeout": max(self.timeout_ms, _LAUNCH_TIMEOUT_MS),
         }
+        if not self.headless:
+            # Let the page be the size of the window it is in. Playwright
+            # otherwise pins it to 1280x720 whatever the screen, which on a
+            # large monitor renders the page into a fraction of the window the
+            # user is watching: they and the agent then disagree about what is
+            # on screen, and everything below the fold needs scrolling to that
+            # a person would not have to scroll to.
+            options["no_viewport"] = True
         if channel:
             options["channel"] = channel
         try:
