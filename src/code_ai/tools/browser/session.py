@@ -88,6 +88,12 @@ def _is_closed_error(exc: BaseException) -> bool:
     return any(marker in str(exc).lower() for marker in _CLOSED_MARKERS)
 
 
+def _is_form_field(record: dict[str, Any]) -> bool:
+    """Whether keystrokes belong to this element itself rather than to the caret."""
+
+    return str(record.get("tag") or "").lower() in {"input", "textarea"}
+
+
 def _is_timeout(exc: BaseException) -> bool:
     """Playwright's timeout, whichever of its two spellings raised it."""
 
@@ -635,13 +641,25 @@ class BrowserSession:
     ) -> dict[str, Any]:
         async def run() -> None:
             page = await self._page_unlocked()
-            locator, _ = await self._locate(page, target)
-            await locator.click(
-                button=button,
-                click_count=max(1, count),
-                modifiers=list(modifiers or []),
-                timeout=self.timeout_ms,
-            )
+            if "x" in target and "y" in target:
+                # A point on the page, for what a reading cannot list: a shape
+                # on a slide, a cell in a diagram, anywhere on a canvas. The
+                # element numbers cover everything with a name; this covers the
+                # rest, and the read gives each element's x and y to aim by.
+                await page.mouse.click(
+                    float(target["x"]),
+                    float(target["y"]),
+                    button=button,
+                    click_count=max(1, count),
+                )
+            else:
+                locator, _ = await self._locate(page, target)
+                await locator.click(
+                    button=button,
+                    click_count=max(1, count),
+                    modifiers=list(modifiers or []),
+                    timeout=self.timeout_ms,
+                )
             await self._settle(page)
 
         return await self._act(run, "The click")
@@ -664,26 +682,33 @@ class BrowserSession:
         replace: bool = False,
         submit: bool = False,
     ) -> dict[str, Any]:
-        """Type into a field, or into whatever a rich editor puts the caret in.
+        """Type into a form field, or into whatever an editor put the caret in.
 
-        `fill` replaces the value in one step and is what a form wants;
-        `press_sequentially` sends real keystrokes, which is what an editor
-        that only listens to keydown - a document, a slide - needs.
+        A field takes the text directly. Everything else is clicked and then
+        typed at through the keyboard, never through the element: an editor
+        like Google's does not receive keystrokes on the thing that was
+        clicked at all - the click moves the caret into a hidden contenteditable
+        it keeps off-screen, and typing at the clicked element focuses that
+        instead and the keystrokes go nowhere. The keyboard goes wherever the
+        focus actually is, which is the whole point of it.
         """
 
         async def run() -> None:
             page = await self._page_unlocked()
             locator, record = await self._locate(page, target)
-            editable = bool(record.get("editable")) or record.get("tag") in {"", None}
-            if replace and not editable:
-                await locator.fill(text, timeout=self.timeout_ms)
+            if _is_form_field(record):
+                if replace:
+                    await locator.fill(text, timeout=self.timeout_ms)
+                else:
+                    await locator.click(timeout=self.timeout_ms)
+                    await locator.press_sequentially(text, delay=15, timeout=self.timeout_ms)
             else:
                 await locator.click(timeout=self.timeout_ms)
                 if replace:
                     await self._select_all(page)
-                await locator.press_sequentially(text, delay=15, timeout=self.timeout_ms)
+                await page.keyboard.type(text, delay=15)
             if submit:
-                await locator.press("Enter", timeout=self.timeout_ms)
+                await page.keyboard.press("Enter")
                 await self._settle(page)
 
         return await self._act(run, "The typing")
@@ -693,6 +718,11 @@ class BrowserSession:
 
         This is how an application is driven where no button exists for what is
         wanted: bold in a document, a slide's next-placeholder, undo.
+
+        Naming a target aims the keys at a form field. Anywhere else the keys
+        go to the keyboard, because an editor listens where the caret is rather
+        than on the element under the pointer - and pressing at that element
+        would move the focus off the caret first.
         """
 
         async def run() -> None:
@@ -700,13 +730,17 @@ class BrowserSession:
             sequence = [part.strip() for part in keys.split(",") if part.strip()]
             if not sequence:
                 raise ToolExecutionError("No keys given to press.")
+            locator = None
             if target:
-                locator, _ = await self._locate(page, target)
-                for key in sequence:
-                    await locator.press(key, timeout=self.timeout_ms)
-            else:
-                for key in sequence:
+                locator, record = await self._locate(page, target)
+                if not _is_form_field(record):
+                    await self._try_focus(locator)
+                    locator = None
+            for key in sequence:
+                if locator is None:
                     await page.keyboard.press(key)
+                else:
+                    await locator.press(key, timeout=self.timeout_ms)
             await self._settle(page)
 
         return await self._act(run, "The key press")
@@ -1081,6 +1115,15 @@ class BrowserSession:
                 ),
             }
         return await self.read()
+
+    @staticmethod
+    async def _try_focus(locator: Any) -> None:
+        """Focus without clicking, and without minding if the element cannot be."""
+
+        try:
+            await locator.focus(timeout=2_000)
+        except Exception:  # noqa: BLE001 - a canvas is not focusable, and that is fine
+            return
 
     @staticmethod
     async def _select_all(page: Any) -> None:
