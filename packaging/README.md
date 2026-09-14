@@ -14,14 +14,14 @@ no install step.
 
 ## CI
 
-`.github/workflows/build-binaries.yml` produces both binaries on the closed
-self-hosted Linux runner (`code-linux`). It runs on `workflow_dispatch`, on
-pushes to `feature/chat-improvement`, and on `v*` tags, uploading two
-artifacts: `code-ai-linux-x86_64` and `code-ai-windows-x86_64`.
+`.github/workflows/build-binaries.yml` produces both binaries on GitHub's own
+Linux runners. It runs on `workflow_dispatch`, on a push to any branch, and on
+`v*` tags, uploading two artifacts: `code-ai-linux-x86_64` and
+`code-ai-windows-x86_64`.
 
-There is no Windows runner, so the Windows `.exe` is **cross-built on Linux**:
-PyInstaller cannot cross-compile, so it is run against a real Windows Python
-interpreter under Wine (the `tobix/pywine` image). The only runner requirement
+The Windows `.exe` is **cross-built on Linux** as well: PyInstaller cannot
+cross-compile, so it is run against a real Windows Python interpreter under
+Wine (the `tobix/pywine` image). The only thing either job asks of the machine
 is Docker.
 
 ## Building locally

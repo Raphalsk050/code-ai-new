@@ -3,10 +3,10 @@ name: Build standalone binaries
 # Produces single-file, self-contained executables for Linux and Windows.
 # End users run them without installing Python or any dependency.
 #
-# Both jobs run on the closed self-hosted Linux runner (label `code-linux`).
-# There is no Windows runner, so the Windows .exe is cross-built on Linux by
-# running PyInstaller inside a Wine container (tobix/pywine). The only thing
-# the runner must provide is Docker.
+# Both jobs run on GitHub's own Linux runners, which come with Docker - the
+# only thing either job asks of the machine. The Windows .exe is cross-built
+# there too: PyInstaller cannot cross-compile, so it runs inside a Wine
+# container (tobix/pywine) against a real Windows Python.
 #
 # A plain `pip install .` brings Playwright: the binary has to carry it and
 # its Node driver, or the browser tools can never start, so it is a required
@@ -39,7 +39,7 @@ concurrency:
 jobs:
   linux:
     name: Linux x86_64
-    runs-on: [self-hosted, code-linux]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -78,7 +78,7 @@ jobs:
 
   windows:
     name: Windows x86_64 (cross-built on Linux via Wine)
-    runs-on: [self-hosted, code-linux]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
