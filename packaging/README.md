@@ -30,7 +30,7 @@ Linux (or any host, native target):
 
 ```bash
 python -m venv .build-venv && . .build-venv/bin/activate
-pip install ".[browser]" "pyinstaller>=6,<7"
+pip install . "pyinstaller>=6,<7"
 pyinstaller --clean --noconfirm packaging/code-ai.spec
 ./dist/code-ai --help
 ./dist/code-ai doctor browser --no-launch
@@ -40,7 +40,7 @@ Windows binary on a Linux host (needs Docker):
 
 ```bash
 docker run --rm -v "$PWD":/work -w /work tobix/pywine:3.12 bash -euxc '
-  wine python -m pip install ".[browser]" "pyinstaller>=6,<7"
+  wine python -m pip install . "pyinstaller>=6,<7"
   wine python -m PyInstaller --clean --noconfirm packaging/code-ai.spec
 '
 # -> dist/code-ai.exe
@@ -48,8 +48,8 @@ docker run --rm -v "$PWD":/work -w /work tobix/pywine:3.12 bash -euxc '
 
 ## The browser
 
-The browser tools need Playwright, so the project is installed with its
-`browser` extra, and the spec refuses to build without it. The binary carries
+The browser tools need Playwright, so it is a required dependency of the
+project and the spec refuses to build without it. The binary carries
 Playwright and its Node driver. It does **not** carry Chromium (hundreds of
 MB, pinned per Playwright release): on first use the app downloads it into
 the user's cache (`%LOCALAPPDATA%\ms-playwright`, `~/.cache/ms-playwright`).

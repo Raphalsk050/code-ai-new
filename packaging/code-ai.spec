@@ -35,15 +35,17 @@ hiddenimports = []
 # to travel. Chromium itself is not bundled - hundreds of MB, pinned per
 # Playwright release - the app downloads it into the user's cache on first use.
 #
-# Required, not best-effort: a build environment installed without the
-# `browser` extra used to produce a binary whose browser tools could never
-# start, and nothing at build time said so.
+# Required, not best-effort: a build environment without it used to produce a
+# binary whose browser tools could never start, and nothing at build time
+# said so. It is a plain dependency of the project, so the environment that
+# is missing it is one the project was never installed into.
 import importlib.util
 
 if importlib.util.find_spec("playwright") is None:
     raise SystemExit(
-        "playwright is not installed in the build environment. "
-        "Install the project with its browser extra: pip install \".[browser]\""
+        "playwright is not installed in the build environment, so the browser "
+        "tools would be missing from the binary. Install the project into it: "
+        "pip install ."
     )
 
 for package in ("textual", "rich", "art", "tiktoken", "pydantic", "playwright"):
