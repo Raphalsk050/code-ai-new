@@ -22,8 +22,11 @@ from code_ai.tools.schema import tool_schema
 # to ask what happened after acting.
 _RESULT_NOTE = (
     "Answers with the page as it now stands: its url and title, its readable "
-    "text, and the elements that can be clicked, each with a number. Use those "
-    "numbers with browser_click and browser_type."
+    "text, and the elements that can be acted on - each with a number, what it "
+    "is, what it says and its state (checked, expanded, the options of a "
+    "dropdown). Use those numbers with browser_click, browser_type and "
+    "browser_act. Also reports where the page is scrolled, any other tab that "
+    "is open, and any dialog that was answered on the way."
 )
 
 
@@ -55,6 +58,44 @@ def _index(arguments: dict[str, Any]) -> int:
         return int(raw)
     except (TypeError, ValueError):
         raise ToolArgumentError("element must be the integer shown next to the element.") from None
+
+
+# What every acting tool takes: a number from the last read, or - for what a
+# read did not list - a CSS selector or a piece of visible text.
+_TARGET_FIELDS: dict[str, Any] = {
+    "element": {
+        "type": "integer",
+        "description": "The number shown beside the element in the last page reading.",
+    },
+    "selector": {
+        "type": "string",
+        "description": (
+            "A CSS selector, for something the reading did not list. Prefer the "
+            "number when there is one: it came from the page as it actually is."
+        ),
+    },
+    "text": {
+        "type": "string",
+        "description": "Visible text to find the element by, when there is no number for it.",
+    },
+}
+
+
+def _target(arguments: dict[str, Any], *, required: bool = True) -> dict[str, Any] | None:
+    """Which element the model named, in whichever of the three ways it used."""
+
+    picked: dict[str, Any] = {}
+    if arguments.get("element") is not None:
+        picked["element"] = _index(arguments)
+    for key in ("selector", "text"):
+        value = str(arguments.get(key) or "").strip()
+        if value:
+            picked[key] = value
+    if picked:
+        return picked
+    if required:
+        raise ToolArgumentError("Name what to act on: element, selector or text.")
+    return None
 
 
 _SCREENSHOT_FIELD = {
@@ -117,63 +158,352 @@ class BrowserReadTool:
 class BrowserClickTool:
     name = "browser_click"
     description = (
-        "Click one of the numbered elements from the last page reading. Identify "
-        "it by that number rather than by a CSS selector: the numbers come from "
-        "the page as it actually is, and a selector written from memory can miss "
-        "or hit the wrong thing without saying so. " + _RESULT_NOTE
+        "Click an element. Name it by the number from the last page reading "
+        "where there is one - the numbers come from the page as it actually is, "
+        "and a selector written from memory can miss or hit the wrong thing "
+        "without saying so. The click scrolls the element into view and waits "
+        "for it to be clickable, so a button below the fold or behind a banner "
+        "that is about to close does not need handling first. " + _RESULT_NOTE
     )
     capabilities = frozenset({ToolCapability.WEB})
     input_schema = tool_schema(
         {
-            "element": {
-                "type": "integer",
-                "description": "The number shown beside the element to click.",
+            **_TARGET_FIELDS,
+            "button": {
+                "type": "string",
+                "description": (
+                    "Which button: left, right or middle. Right opens the context "
+                    "menu. Defaults to left."
+                ),
+            },
+            "double": {
+                "type": "boolean",
+                "description": "Double-click - what selects a word or opens an item.",
+            },
+            "modifiers": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Keys held while clicking, for multi-select and the like: "
+                    "Alt, Control, Meta, Shift."
+                ),
             },
             "screenshot": _SCREENSHOT_FIELD,
         },
-        required=("element",),
     )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         session = _session(context)
-        await session.click_index(_index(arguments))
+        button = str(arguments.get("button") or "left").strip().lower()
+        if button not in {"left", "right", "middle"}:
+            raise ToolArgumentError(f"Unknown button {button!r}: left, right or middle.")
+        await session.click(
+            _target(arguments),
+            button=button,
+            count=2 if arguments.get("double") else 1,
+            modifiers=[str(key) for key in arguments.get("modifiers") or []],
+        )
         return _payload(await session.read(screenshot=bool(arguments.get("screenshot"))))
 
 
 class BrowserTypeTool:
     name = "browser_type"
     description = (
-        "Type into one of the numbered fields from the last page reading, "
-        "optionally pressing Enter afterwards. Never type a password or any "
-        "other credential with this: hand the login to the user instead (see "
-        "browser_request_login), so the secret stays between them and the site. "
-        + _RESULT_NOTE
+        "Type into a field, or into a rich editor - a document, a slide, a "
+        "comment box - by naming the element the text should go into. Set "
+        "replace to put the text in place of what is there; leave it off to add "
+        "to it. Never type a password or any other credential with this: hand "
+        "the login to the user instead (see browser_request_login), so the "
+        "secret stays between them and the site. " + _RESULT_NOTE
     )
     capabilities = frozenset({ToolCapability.WEB})
     input_schema = tool_schema(
         {
-            "element": {
-                "type": "integer",
-                "description": "The number shown beside the field to type into.",
-            },
+            **_TARGET_FIELDS,
             "text": {"type": "string", "description": "What to type."},
+            "replace": {
+                "type": "boolean",
+                "description": "Clear what is there first. Defaults to false, which appends.",
+            },
             "submit": {
                 "type": "boolean",
                 "description": "Press Enter after typing. Defaults to false.",
             },
             "screenshot": _SCREENSHOT_FIELD,
         },
-        required=("element", "text"),
+        required=("text",),
     )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         session = _session(context)
-        await session.type_into(
-            _index(arguments),
+        await session.type_text(
+            _target(arguments),
             str(arguments.get("text") or ""),
+            replace=bool(arguments.get("replace")),
             submit=bool(arguments.get("submit")),
         )
         return _payload(await session.read(screenshot=bool(arguments.get("screenshot"))))
+
+
+class BrowserActTool:
+    """Everything else a pointer and a keyboard do, one action per call.
+
+    One tool rather than nine: they share the way an element is named and they
+    all answer with the page afterwards. The tool list is read every turn, and
+    spelling out hover, drag and check separately costs more than it explains.
+    """
+
+    name = "browser_act"
+    description = (
+        "Act on the page in a way clicking and typing cannot. action picks what: "
+        "'hover' - move the pointer onto something, for a menu that opens on "
+        "hover; 'press' - send keys or a chord ('Enter', 'Control+b', 'Escape', "
+        "'Control+Shift+ArrowRight'), which is how an editor is driven where no "
+        "button exists - bold, undo, next placeholder; 'select' - choose values "
+        "in a dropdown; 'check' / 'uncheck' - set a checkbox, radio or switch; "
+        "'drag' - press the mouse on one thing and release it on another, or "
+        "move it by an offset, for reordering and for moving a shape on a "
+        "slide; 'scroll' - bring something into view, or move the page; "
+        "'upload' - hand files to a file input; 'focus' - put the caret "
+        "somewhere without clicking. " + _RESULT_NOTE
+    )
+    capabilities = frozenset({ToolCapability.WEB})
+    input_schema = tool_schema(
+        {
+            # Named in the description rather than as an enum, like every other
+            # schema here: they stay atomic for weak local models (see
+            # test_tool_schemas), and _run refuses anything else with the list.
+            "action": {
+                "type": "string",
+                "description": (
+                    "What to do: hover, press, select, check, uncheck, drag, "
+                    "scroll, upload or focus."
+                ),
+            },
+            **_TARGET_FIELDS,
+            "keys": {
+                "type": "string",
+                "description": (
+                    "For 'press': the key or chord, or several separated by commas "
+                    "to send in order ('Control+a, Delete')."
+                ),
+            },
+            "values": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "For 'select': the option values or labels to choose.",
+            },
+            "to_element": {
+                "type": "integer",
+                "description": "For 'drag': the number of the element to drop on.",
+            },
+            "to_selector": {
+                "type": "string",
+                "description": "For 'drag': a CSS selector for where to drop.",
+            },
+            "dx": {"type": "integer", "description": "For 'drag' and 'scroll': horizontal amount."},
+            "dy": {"type": "integer", "description": "For 'drag' and 'scroll': vertical amount."},
+            "to": {
+                "type": "string",
+                "description": "For 'scroll': 'top' or 'bottom', to jump to one end of the page.",
+            },
+            "paths": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "For 'upload': the files to hand over.",
+            },
+            "screenshot": _SCREENSHOT_FIELD,
+        },
+        required=("action",),
+    )
+
+    async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        session = _session(context)
+        action = str(arguments.get("action") or "").strip()
+        await self._run(session, action, arguments)
+        return _payload(await session.read(screenshot=bool(arguments.get("screenshot"))))
+
+    async def _run(self, session: Any, action: str, arguments: dict[str, Any]) -> None:
+        if action == "hover":
+            await session.hover(_target(arguments))
+        elif action == "press":
+            keys = str(arguments.get("keys") or "").strip()
+            if not keys:
+                raise ToolArgumentError("press needs keys, like 'Enter' or 'Control+b'.")
+            await session.press(keys, _target(arguments, required=False))
+        elif action == "select":
+            values = [str(value) for value in arguments.get("values") or []]
+            if not values:
+                raise ToolArgumentError("select needs values: what to choose in the dropdown.")
+            await session.select(_target(arguments), values)
+        elif action in {"check", "uncheck"}:
+            await session.set_checked(_target(arguments), action == "check")
+        elif action == "drag":
+            await self._drag(session, arguments)
+        elif action == "scroll":
+            await session.scroll(
+                target=_target(arguments, required=False),
+                dx=_bounded_int(arguments, "dx", 0, -20_000, 20_000),
+                dy=_bounded_int(arguments, "dy", 0, -20_000, 20_000),
+                to=str(arguments.get("to") or ""),
+            )
+        elif action == "upload":
+            paths = [str(path) for path in arguments.get("paths") or []]
+            if not paths:
+                raise ToolArgumentError("upload needs paths: the files to hand over.")
+            await session.upload(_target(arguments), paths)
+        elif action == "focus":
+            await session.focus(_target(arguments))
+        else:
+            raise ToolArgumentError(
+                f"Unknown action {action!r}. One of: hover, press, select, check, "
+                "uncheck, drag, scroll, upload, focus."
+            )
+
+    @staticmethod
+    async def _drag(session: Any, arguments: dict[str, Any]) -> None:
+        destination: dict[str, Any] = {}
+        if arguments.get("to_element") is not None:
+            destination["element"] = _bounded_int(arguments, "to_element", 0, 0, 10_000)
+        selector = str(arguments.get("to_selector") or "").strip()
+        if selector:
+            destination["selector"] = selector
+        offset = (
+            _bounded_int(arguments, "dx", 0, -20_000, 20_000),
+            _bounded_int(arguments, "dy", 0, -20_000, 20_000),
+        )
+        if not destination and offset == (0, 0):
+            raise ToolArgumentError("drag needs somewhere to go: to_element, to_selector or dx/dy.")
+        await session.drag(
+            _target(arguments),
+            destination or None,
+            offset=None if destination else offset,
+        )
+
+
+class BrowserWaitTool:
+    name = "browser_wait"
+    description = (
+        "Wait for the page to get somewhere before reading it again: text to "
+        "appear, an element to exist, the address to change, loading to finish. "
+        "Use this rather than reading in a loop - a slow save, a dialog that "
+        "animates open, a document that renders after its data arrives. "
+        + _RESULT_NOTE
+    )
+    capabilities = frozenset({ToolCapability.WEB})
+    input_schema = tool_schema(
+        {
+            "text": {"type": "string", "description": "Wait until this text is on the page."},
+            "selector": {
+                "type": "string",
+                "description": "Wait until this CSS selector matches something.",
+            },
+            "url": {
+                "type": "string",
+                "description": "Wait until the address matches this, glob allowed.",
+            },
+            "state": {
+                "type": "string",
+                "description": (
+                    "Wait for a loading state: load, domcontentloaded or "
+                    "networkidle. The last suits a page that fetches its data."
+                ),
+            },
+            "seconds": {
+                "type": "number",
+                "description": "Wait a fixed time. The last resort - prefer the others.",
+            },
+            "screenshot": _SCREENSHOT_FIELD,
+        },
+    )
+
+    async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        session = _session(context)
+        try:
+            seconds = float(arguments.get("seconds") or 0)
+        except (TypeError, ValueError):
+            raise ToolArgumentError("seconds must be a number.") from None
+        await session.wait_for(
+            text=str(arguments.get("text") or ""),
+            selector=str(arguments.get("selector") or ""),
+            url=str(arguments.get("url") or ""),
+            state=str(arguments.get("state") or ""),
+            seconds=max(0.0, min(seconds, 60.0)),
+        )
+        return _payload(await session.read(screenshot=bool(arguments.get("screenshot"))))
+
+
+class BrowserPageTool:
+    name = "browser_page"
+    description = (
+        "Move around the browser itself rather than the page: 'back', 'forward' "
+        "and 'reload' for history, and 'tabs', 'switch', 'new_tab', 'close_tab' "
+        "for windows. A link that opens a tab is followed automatically, so this "
+        "is for going back to one the agent left. " + _RESULT_NOTE
+    )
+    capabilities = frozenset({ToolCapability.WEB})
+    input_schema = tool_schema(
+        {
+            "action": {
+                "type": "string",
+                "description": (
+                    "What to do: back, forward, reload, tabs, switch, new_tab "
+                    "or close_tab."
+                ),
+            },
+            "tab": {"type": "integer", "description": "Which tab, for switch and close_tab."},
+            "screenshot": _SCREENSHOT_FIELD,
+        },
+        required=("action",),
+    )
+
+    async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        session = _session(context)
+        action = str(arguments.get("action") or "").strip()
+        tab = _bounded_int(arguments, "tab", 0, 0, 100)
+        if action in {"back", "forward", "reload"}:
+            return _payload(await session.navigate(action))
+        mapped = {
+            "tabs": "list",
+            "switch": "switch",
+            "new_tab": "new",
+            "close_tab": "close",
+        }.get(action)
+        if mapped is None:
+            raise ToolArgumentError(
+                f"Unknown action {action!r}. One of: back, forward, reload, tabs, "
+                "switch, new_tab, close_tab."
+            )
+        return _payload(await session.tabs(mapped, tab))
+
+
+class BrowserScreenshotTool:
+    name = "browser_screenshot"
+    description = (
+        "Take a picture, of the whole page or of one element. This is the visual "
+        "check: whether a layout is right, whether a chart drew, whether a slide "
+        "looks the way it should - things the text of a page cannot answer. "
+        "full_page captures past the bottom of the window."
+    )
+    capabilities = frozenset({ToolCapability.WEB})
+    input_schema = tool_schema(
+        {
+            **_TARGET_FIELDS,
+            "full_page": {
+                "type": "boolean",
+                "description": "Capture the whole document, not just what fits on screen.",
+            },
+        },
+    )
+
+    async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        session = _session(context)
+        return _payload(
+            await session.screenshot(
+                target=_target(arguments, required=False),
+                full_page=bool(arguments.get("full_page")),
+            )
+        )
 
 
 class BrowserRequestLoginTool:
