@@ -325,3 +325,21 @@ async def test_declared_mutation_context_block_keeps_completion_rules(tmp_path) 
     block = service.task_context_block(recommended_tool_names={"write_file"})
     assert "changes the workspace (your declaration)" in block
     assert "call complete_task after verification evidence exists" in block
+
+
+def test_an_edit_anchored_in_old_text_needs_no_prior_read(tmp_path) -> None:
+    # old_text must match the file verbatim or the edit aborts, so the call
+    # is already grounded in the real content; a read first only cost a step.
+    (tmp_path / "app.py").write_text("original = True\n")
+    gate = PreconditionGate(workspace=tmp_path)
+    gap = gate.unread_mutation_gap(
+        "edit_code",
+        {"path": "app.py", "old_text": "original = True", "new_text": "original = False"},
+        known_content_paths=set(),
+    )
+    assert gap is None
+    # Without the anchor the blind-edit nudge still stands.
+    assert (
+        gate.unread_mutation_gap("edit_code", {"path": "app.py"}, known_content_paths=set())
+        is not None
+    )

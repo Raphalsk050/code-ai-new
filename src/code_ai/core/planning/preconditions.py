@@ -47,6 +47,12 @@ class PreconditionGate:
         """
         if tool_name not in _MUTATION_TOOLS or self._workspace is None:
             return None
+        if tool_name == "edit_code" and str(arguments.get("old_text") or "").strip():
+            # The edit names the text it replaces and aborts unless that text
+            # is there verbatim: the call is already anchored in the file's
+            # real content, which is all a prior read would have bought. The
+            # gate only costs a round trip here.
+            return None
         raw_path = str(arguments.get("path") or "").strip()
         if not raw_path:
             return None
