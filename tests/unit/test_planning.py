@@ -1724,3 +1724,41 @@ async def test_suspended_plan_still_advances_after_resume() -> None:
     assert snapshot["status"] == "ACTIVE"
     assert snapshot["completed_steps"] == ["Inspect files"]
     assert snapshot["current_step"] == "Write the module"
+
+
+async def test_a_new_page_or_screen_counts_as_progress() -> None:
+    # Browser and desktop tools produced no evidence, so a turn driving a page
+    # looked stalled to the orchestrator and was nudged, then cut off. What the
+    # tool saw is the progress key: a new page moves it, the same page does not.
+    service = PlannerService(
+        config=PlannerConfig(),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    await service.begin_turn("abra o site e leia a pagina", provider_supports_tools=True)
+
+    start = service.progress_signature()
+    await service.record_tool_result(
+        tool_call_id="b1",
+        tool_name="browser_read",
+        payload={"url": "https://a.test", "text": "home"},
+        success=True,
+    )
+    first = service.progress_signature()
+    assert first != start
+
+    await service.record_tool_result(
+        tool_call_id="b2",
+        tool_name="browser_read",
+        payload={"url": "https://a.test", "text": "home", "duration_s": 0.7},
+        success=True,
+    )
+    assert service.progress_signature() == first
+
+    await service.record_tool_result(
+        tool_call_id="b3",
+        tool_name="browser_read",
+        payload={"url": "https://a.test/about", "text": "about us"},
+        success=True,
+    )
+    assert service.progress_signature() != first

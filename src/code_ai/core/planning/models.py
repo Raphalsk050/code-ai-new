@@ -95,6 +95,9 @@ class EvidenceType(StrEnum):
     USER_ANSWER = "USER_ANSWER"
     DISCOVERY_COMPLETED = "DISCOVERY_COMPLETED"
     COMPLETION_REQUESTED = "COMPLETION_REQUESTED"
+    # A browser page or the desktop as a tool saw it; keyed by content so a
+    # changed page is progress and the same page read twice is not.
+    SURFACE_OBSERVED = "SURFACE_OBSERVED"
 
 
 class TaskProfile(BaseModel):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Callable
@@ -11,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from code_ai.core.planning.models import EvidenceType, ExecutionPlan
 from code_ai.core.verification import CommandKind, strongest_kind
 from code_ai.events.models import utc_now_iso
+from code_ai.tools.groups import group_of
 from code_ai.tools.output import bound_text
 
 # What a command's verification classifier looks like: argv in (list | str |
@@ -177,6 +179,7 @@ class EvidenceLedger:
         self._web_keys: set[str] = set()
         self._command_keys: set[str] = set()
         self._review_keys: set[str] = set()
+        self._observation_keys: set[str] = set()
 
     def record_tool_result(
         self,
@@ -313,6 +316,7 @@ class EvidenceLedger:
             len(self._web_keys),
             len(self._command_keys),
             len(self._review_keys),
+            len(self._observation_keys),
             tuple(sorted(self.changed_hashes.items())),
             self.latest_verification_passed,
             tuple(sorted(self.verification_hashes.items())),
@@ -386,6 +390,37 @@ class EvidenceLedger:
             # gate's fail-open pacing even after the model complied. Keyed by
             # summary so repeating an identical review is not progress.
             self._review_keys.add(record.summary)
+        elif record.evidence_type == EvidenceType.SURFACE_OBSERVED:
+            # Browser and desktop work left the stall detector blind: nothing
+            # they did counted, so a turn driving a page was nudged as stalled
+            # and cut off mid-navigation. Keyed by what the tool saw, a new
+            # page or a new screen is progress and the same one again is not.
+            self._observation_keys.add(record.summary)
+
+
+# Values that differ between two identical observations and say nothing about
+# what was seen; excluded so a repeated look does not read as a new one.
+_VOLATILE_PAYLOAD_KEYS = frozenset(
+    {
+        "duration_s",
+        "duration_ms",
+        "elapsed_s",
+        "elapsed_ms",
+        "timestamp",
+        "captured_at",
+        "took_ms",
+    }
+)
+
+
+def _observation_digest(payload: dict[str, Any]) -> str:
+    """A short stable digest of what a surface tool returned."""
+
+    stable = {
+        key: value for key, value in payload.items() if key not in _VOLATILE_PAYLOAD_KEYS
+    }
+    encoded = json.dumps(stable, sort_keys=True, default=str, ensure_ascii=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
 
 
 def _records_from_payload(
@@ -601,6 +636,16 @@ def _records_from_payload(
             payload=payload,
             classify_verification=classify_verification,
         )
+    group = group_of(tool_name)
+    if group is not None and group.name in {"browser", "desktop"}:
+        return [
+            EvidenceRecord(
+                **common,
+                evidence_type=EvidenceType.SURFACE_OBSERVED,
+                summary=f"{tool_name}:{_observation_digest(payload)}",
+                metadata={"group": group.name},
+            )
+        ]
     return []
 
 
