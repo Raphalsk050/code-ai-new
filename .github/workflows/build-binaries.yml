@@ -22,6 +22,13 @@ name: Build standalone binaries
 # pip trusts PyPI's hosts without checking their certificates: the company
 # network re-signs TLS with its own certificate, which the containers'
 # certificate stores do not know.
+#
+# Its cache is kept on the runner rather than inside the container, which is
+# thrown away with the build. Most of a run is spent fetching the same wheels
+# - Playwright alone is over a hundred MB - and the runner is one machine that
+# keeps its disk between runs, so there is nothing to upload or restore. The
+# cache is only ever a shortcut: unreadable or gone, pip downloads again and
+# the build is slow, not wrong.
 
 env:
   PIP_TRUSTED_HOST: "pypi.org files.pythonhosted.org"
@@ -52,10 +59,14 @@ jobs:
       # binary runs on a wide range of older Linux distributions too.
       - name: Build Linux binary
         run: |
+          cache="$HOME/.cache/code-ai-ci/pip-linux"
+          mkdir -p "$cache"
           docker run --rm \
             --user "$(id -u):$(id -g)" \
             -e HOME=/tmp \
             -e PIP_TRUSTED_HOST \
+            -e PIP_CACHE_DIR=/pip-cache \
+            -v "$cache":/pip-cache \
             -v "$PWD":/work -w /work \
             python:3.12-bullseye \
             bash -euxc '
@@ -91,10 +102,18 @@ jobs:
       # against a real Windows Python interpreter under Wine. pip pulls the
       # Windows wheels of every dependency because the interpreter reports
       # itself as win32 - Playwright's included, with its Windows node.exe.
+      # Its own cache, not the Linux job's: these are the Windows wheels of the
+      # same dependencies. The path is given the way the interpreter reading it
+      # sees the world - pip here is a Windows program, and Wine's Z: is the
+      # container's root.
       - name: Build Windows binary inside Wine
         run: |
+          cache="$HOME/.cache/code-ai-ci/pip-wine"
+          mkdir -p "$cache"
           docker run --rm \
             -e PIP_TRUSTED_HOST \
+            -e 'PIP_CACHE_DIR=Z:\pip-cache' \
+            -v "$cache":/pip-cache \
             -v "$PWD":/work -w /work \
             tobix/pywine:3.12 \
             bash -euxc '
@@ -107,12 +126,17 @@ jobs:
             '
 
       # The Wine container builds as root; hand the output back to the runner
-      # user so later steps and cleanup can touch it.
+      # user so later steps and cleanup can touch it. The cache it just wrote
+      # to comes along: it outlives the build, and root-owned files in the
+      # runner's own home are its problem for every run after this one.
       - name: Fix output ownership
         if: always()
         run: |
-          docker run --rm -v "$PWD":/work alpine \
-            sh -c 'chown -R '"$(id -u):$(id -g)"' /work/dist /work/build 2>/dev/null || true'
+          docker run --rm \
+            -v "$PWD":/work \
+            -v "$HOME/.cache/code-ai-ci/pip-wine":/pip-cache \
+            alpine \
+            sh -c 'chown -R '"$(id -u):$(id -g)"' /work/dist /work/build /pip-cache 2>/dev/null || true'
 
       - name: Stage artifact
         run: |
