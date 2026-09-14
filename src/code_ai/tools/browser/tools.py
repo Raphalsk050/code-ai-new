@@ -98,6 +98,20 @@ def _target(arguments: dict[str, Any], *, required: bool = True) -> dict[str, An
     return None
 
 
+async def _answer(
+    session: Any, result: dict[str, Any], arguments: dict[str, Any]
+) -> dict[str, Any]:
+    """What the action reported, with a picture when one was asked for.
+
+    The action already comes back with the page it left behind - and with why
+    it did not go through, when it did not. Reading again here would drop that.
+    """
+
+    if arguments.get("screenshot"):
+        result["screenshot_png"] = (await session.screenshot()).get("screenshot_png")
+    return _payload(result)
+
+
 _SCREENSHOT_FIELD = {
     "type": "boolean",
     "description": (
@@ -197,13 +211,13 @@ class BrowserClickTool:
         button = str(arguments.get("button") or "left").strip().lower()
         if button not in {"left", "right", "middle"}:
             raise ToolArgumentError(f"Unknown button {button!r}: left, right or middle.")
-        await session.click(
+        result = await session.click(
             _target(arguments),
             button=button,
             count=2 if arguments.get("double") else 1,
             modifiers=[str(key) for key in arguments.get("modifiers") or []],
         )
-        return _payload(await session.read(screenshot=bool(arguments.get("screenshot"))))
+        return await _answer(session, result, arguments)
 
 
 class BrowserTypeTool:
@@ -236,13 +250,13 @@ class BrowserTypeTool:
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         session = _session(context)
-        await session.type_text(
+        result = await session.type_text(
             _target(arguments),
             str(arguments.get("text") or ""),
             replace=bool(arguments.get("replace")),
             submit=bool(arguments.get("submit")),
         )
-        return _payload(await session.read(screenshot=bool(arguments.get("screenshot"))))
+        return await _answer(session, result, arguments)
 
 
 class BrowserActTool:
@@ -320,48 +334,49 @@ class BrowserActTool:
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         session = _session(context)
         action = str(arguments.get("action") or "").strip()
-        await self._run(session, action, arguments)
-        return _payload(await session.read(screenshot=bool(arguments.get("screenshot"))))
+        result = await self._run(session, action, arguments)
+        return await _answer(session, result, arguments)
 
-    async def _run(self, session: Any, action: str, arguments: dict[str, Any]) -> None:
+    async def _run(
+        self, session: Any, action: str, arguments: dict[str, Any]
+    ) -> dict[str, Any]:
         if action == "hover":
-            await session.hover(_target(arguments))
-        elif action == "press":
+            return await session.hover(_target(arguments))
+        if action == "press":
             keys = str(arguments.get("keys") or "").strip()
             if not keys:
                 raise ToolArgumentError("press needs keys, like 'Enter' or 'Control+b'.")
-            await session.press(keys, _target(arguments, required=False))
-        elif action == "select":
+            return await session.press(keys, _target(arguments, required=False))
+        if action == "select":
             values = [str(value) for value in arguments.get("values") or []]
             if not values:
                 raise ToolArgumentError("select needs values: what to choose in the dropdown.")
-            await session.select(_target(arguments), values)
-        elif action in {"check", "uncheck"}:
-            await session.set_checked(_target(arguments), action == "check")
-        elif action == "drag":
-            await self._drag(session, arguments)
-        elif action == "scroll":
-            await session.scroll(
+            return await session.select(_target(arguments), values)
+        if action in {"check", "uncheck"}:
+            return await session.set_checked(_target(arguments), action == "check")
+        if action == "drag":
+            return await self._drag(session, arguments)
+        if action == "scroll":
+            return await session.scroll(
                 target=_target(arguments, required=False),
                 dx=_bounded_int(arguments, "dx", 0, -20_000, 20_000),
                 dy=_bounded_int(arguments, "dy", 0, -20_000, 20_000),
                 to=str(arguments.get("to") or ""),
             )
-        elif action == "upload":
+        if action == "upload":
             paths = [str(path) for path in arguments.get("paths") or []]
             if not paths:
                 raise ToolArgumentError("upload needs paths: the files to hand over.")
-            await session.upload(_target(arguments), paths)
-        elif action == "focus":
-            await session.focus(_target(arguments))
-        else:
-            raise ToolArgumentError(
-                f"Unknown action {action!r}. One of: hover, press, select, check, "
-                "uncheck, drag, scroll, upload, focus."
-            )
+            return await session.upload(_target(arguments), paths)
+        if action == "focus":
+            return await session.focus(_target(arguments))
+        raise ToolArgumentError(
+            f"Unknown action {action!r}. One of: hover, press, select, check, "
+            "uncheck, drag, scroll, upload, focus."
+        )
 
     @staticmethod
-    async def _drag(session: Any, arguments: dict[str, Any]) -> None:
+    async def _drag(session: Any, arguments: dict[str, Any]) -> dict[str, Any]:
         destination: dict[str, Any] = {}
         if arguments.get("to_element") is not None:
             destination["element"] = _bounded_int(arguments, "to_element", 0, 0, 10_000)
@@ -374,7 +389,7 @@ class BrowserActTool:
         )
         if not destination and offset == (0, 0):
             raise ToolArgumentError("drag needs somewhere to go: to_element, to_selector or dx/dy.")
-        await session.drag(
+        return await session.drag(
             _target(arguments),
             destination or None,
             offset=None if destination else offset,
@@ -423,14 +438,16 @@ class BrowserWaitTool:
             seconds = float(arguments.get("seconds") or 0)
         except (TypeError, ValueError):
             raise ToolArgumentError("seconds must be a number.") from None
-        await session.wait_for(
-            text=str(arguments.get("text") or ""),
-            selector=str(arguments.get("selector") or ""),
-            url=str(arguments.get("url") or ""),
-            state=str(arguments.get("state") or ""),
-            seconds=max(0.0, min(seconds, 60.0)),
+        return _payload(
+            await session.wait_for(
+                text=str(arguments.get("text") or ""),
+                selector=str(arguments.get("selector") or ""),
+                url=str(arguments.get("url") or ""),
+                state=str(arguments.get("state") or ""),
+                seconds=max(0.0, min(seconds, 60.0)),
+                screenshot=bool(arguments.get("screenshot")),
+            )
         )
-        return _payload(await session.read(screenshot=bool(arguments.get("screenshot"))))
 
 
 class BrowserPageTool:
