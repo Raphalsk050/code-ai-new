@@ -52,14 +52,18 @@ from code_ai.tools.agents import DispatchAgentTool
 from code_ai.tools.apk import AnalyzeApkTool
 from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.browser import (
+    BrowserActTool,
     BrowserClickTool,
     BrowserEvaluateTool,
     BrowserInspectTool,
     BrowserOpenTool,
+    BrowserPageTool,
     BrowserReadTool,
     BrowserRequestLoginTool,
+    BrowserScreenshotTool,
     BrowserSession,
     BrowserTypeTool,
+    BrowserWaitTool,
 )
 from code_ai.tools.computer import (
     ActivateApplicationTool,
@@ -140,6 +144,10 @@ def build_tool_registry() -> ToolRegistry:
         BrowserReadTool(),
         BrowserClickTool(),
         BrowserTypeTool(),
+        BrowserActTool(),
+        BrowserWaitTool(),
+        BrowserPageTool(),
+        BrowserScreenshotTool(),
         BrowserInspectTool(),
         BrowserEvaluateTool(),
         BrowserRequestLoginTool(),
@@ -227,6 +235,8 @@ def build_application(
             timeout_ms=config.browser.timeout_ms,
             channel=config.browser.channel,
             auto_install=config.browser.auto_install,
+            dialog_policy=config.browser.dialog_policy,
+            download_dir=Path(config.workspace) / "downloads",
             ssl_verification=config.ssl_verification,
         )
         if config.browser.enabled

@@ -11,21 +11,27 @@ from code_ai.core.errors import ToolArgumentError, ToolExecutionError
 from code_ai.events.bus import AsyncEventBus
 from code_ai.tools.base import TOOL_IMAGES_KEY, ToolContext
 from code_ai.tools.browser import (
+    BrowserActTool,
     BrowserClickTool,
     BrowserEvaluateTool,
     BrowserInspectTool,
     BrowserOpenTool,
+    BrowserPageTool,
     BrowserReadTool,
     BrowserRequestLoginTool,
+    BrowserScreenshotTool,
     BrowserSession,
     BrowserTypeTool,
+    BrowserWaitTool,
 )
 from code_ai.tools.browser.devtools import MAX_DOM_DEPTH, MAX_HTML_CHARS, mask
-from code_ai.tools.browser.session import _COLLECT_JS
+from code_ai.tools.browser.dom import COLLECT_JS, STAMP, VIEWPORT_JS
 from code_ai.util.paths import WorkspacePolicy
 
 
 class FakeLocator:
+    """Records what was asked of it, so a test can assert on the action itself."""
+
     def __init__(self, page, selector) -> None:
         self.page = page
         self.selector = selector
@@ -35,10 +41,54 @@ class FakeLocator:
         return self
 
     async def count(self):
-        return 0 if self.selector == "#missing" else 1
+        if self.selector == "#missing":
+            return 0
+        return 0 if self.selector in self.page.absent else 1
 
     async def aria_snapshot(self):
         return self.page.aria
+
+    def _record(self, what, **detail):
+        self.page.actions.append((what, {"selector": self.selector, **detail}))
+
+    async def click(self, **kwargs):
+        self._record("click", **kwargs)
+
+    async def hover(self, **kwargs):
+        self._record("hover")
+
+    async def focus(self, **kwargs):
+        self._record("focus")
+
+    async def fill(self, text, **kwargs):
+        self._record("fill", text=text)
+
+    async def press(self, key, **kwargs):
+        self._record("press", key=key)
+
+    async def press_sequentially(self, text, **kwargs):
+        self._record("type", text=text)
+
+    async def select_option(self, values, **kwargs):
+        if self.page.select_error is not None:
+            raise self.page.select_error
+        self._record("select", values=values)
+
+    async def set_checked(self, checked, **kwargs):
+        self._record("set_checked", checked=checked)
+
+    async def set_input_files(self, paths, **kwargs):
+        self._record("upload", paths=paths)
+
+    async def scroll_into_view_if_needed(self, **kwargs):
+        self._record("scroll_into_view")
+
+    async def bounding_box(self):
+        return self.page.boxes.get(self.selector, {"x": 10, "y": 20, "width": 40, "height": 10})
+
+    async def screenshot(self, **kwargs):
+        self._record("screenshot")
+        return b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
 
 
 class FakePage:
@@ -51,11 +101,26 @@ class FakePage:
         self.keys: list[str] = []
         self.body = "Sign in to continue"
         self.elements = [
-            {"index": 0, "tag": "input", "type": "email", "text": "Email", "x": 100, "y": 200},
-            {"index": 1, "tag": "button", "type": "", "text": "Sign in", "x": 100, "y": 260},
+            {"ref": 0, "tag": "input", "type": "email", "text": "Email", "x": 100, "y": 200},
+            {"ref": 1, "tag": "button", "type": "", "text": "Sign in", "x": 100, "y": 260},
         ]
-        self.mouse = SimpleNamespace(click=self._click)
+        # What locators were asked to do, in order: (action, detail).
+        self.actions: list[tuple[str, dict]] = []
+        # Selectors that match nothing, so a test can make a lookup fail.
+        self.absent: set[str] = set()
+        self.boxes: dict[str, dict] = {}
+        self.select_error: Exception | None = None
+        self.mouse = SimpleNamespace(
+            click=self._click,
+            move=self._move,
+            down=self._down,
+            up=self._up,
+            wheel=self._wheel,
+        )
         self.keyboard = SimpleNamespace(type=self._type, press=self._press)
+        # A page is its own main frame here: one document, no iframes.
+        self.frames = [self]
+        self.main_frame = self
         # The listeners the session attached, so a test can fire page events.
         self.handlers: dict[str, list] = {}
         # What any script but the element listing gets back: a value, a
@@ -83,7 +148,22 @@ class FakePage:
     async def _press(self, key):
         self.keys.append(key)
 
+    async def _move(self, x, y, steps=1):
+        self.actions.append(("move", {"x": x, "y": y, "steps": steps}))
+
+    async def _down(self):
+        self.actions.append(("mouse_down", {}))
+
+    async def _up(self):
+        self.actions.append(("mouse_up", {}))
+
+    async def _wheel(self, dx, dy):
+        self.actions.append(("wheel", {"dx": dx, "dy": dy}))
+
     def is_closed(self):
+        return False
+
+    def is_detached(self):
         return False
 
     def set_default_timeout(self, ms):
@@ -96,8 +176,10 @@ class FakePage:
         return self.body
 
     async def evaluate(self, script, args=None):
-        if script == _COLLECT_JS:
+        if script == COLLECT_JS:
             return self.elements
+        if script == VIEWPORT_JS:
+            return {"scroll_y": 0, "page_height": 2000, "at_bottom": False}
         self.evaluated.append((script, args))
         if isinstance(self.eval_result, Exception):
             raise self.eval_result
@@ -108,10 +190,35 @@ class FakePage:
     async def goto(self, url, **kwargs):
         self.url = url
 
+    async def go_back(self, **kwargs):
+        self.actions.append(("back", {}))
+
+    async def go_forward(self, **kwargs):
+        self.actions.append(("forward", {}))
+
+    async def reload(self, **kwargs):
+        self.actions.append(("reload", {}))
+
     async def wait_for_load_state(self, state, timeout=None):
         return None
 
-    async def screenshot(self, type="png"):
+    async def wait_for_selector(self, selector, timeout=None):
+        self.actions.append(("wait_selector", {"selector": selector}))
+
+    async def wait_for_url(self, url, timeout=None):
+        self.actions.append(("wait_url", {"url": url}))
+
+    async def wait_for_timeout(self, ms):
+        return None
+
+    async def bring_to_front(self):
+        self.actions.append(("front", {}))
+
+    async def close(self):
+        return None
+
+    async def screenshot(self, type="png", full_page=False):
+        self.actions.append(("page_screenshot", {"full_page": full_page}))
         return b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 
 
@@ -139,7 +246,8 @@ def make_context(tmp_path: Path, session) -> ToolContext:
 
 async def test_a_page_comes_back_with_its_text_and_what_can_be_clicked(tmp_path) -> None:
     session, page = make_session(tmp_path)
-    result = await BrowserOpenTool().execute({"url": "example.com"}, make_context(tmp_path, session))
+    context = make_context(tmp_path, session)
+    result = await BrowserOpenTool().execute({"url": "example.com"}, context)
 
     # A bare host is not a URL; a browser would treat it as a search term.
     assert page.url == "https://example.com"
@@ -183,7 +291,10 @@ async def test_an_element_is_clicked_by_its_number_from_the_listing(tmp_path) ->
     await BrowserReadTool().execute({}, context)
 
     await BrowserClickTool().execute({"element": 1}, context)
-    assert page.clicks[-1] == (100, 260)
+    action, detail = page.actions[-1]
+    assert action == "click"
+    # The stamp the read put on that element, not the coordinates beside it.
+    assert detail["selector"] == f"[{STAMP}='1']"
 
 
 async def test_typing_targets_the_field_and_can_submit(tmp_path) -> None:
@@ -194,9 +305,9 @@ async def test_typing_targets_the_field_and_can_submit(tmp_path) -> None:
     await BrowserTypeTool().execute(
         {"element": 0, "text": "someone@example.com", "submit": True}, context
     )
-    assert page.clicks[-1] == (100, 200)
-    assert page.typed == ["someone@example.com"]
-    assert page.keys == ["Enter"]
+    done = [(what, detail.get("text") or detail.get("key")) for what, detail in page.actions]
+    assert ("type", "someone@example.com") in done
+    assert ("press", "Enter") in done
 
 
 async def test_a_number_that_is_not_on_the_page_is_refused_not_guessed(tmp_path) -> None:
@@ -329,6 +440,17 @@ class ClosingPage(FakePage):
         self._maybe_die()
         return await super().inner_text(selector)
 
+    def locator(self, selector):
+        return ClosingLocator(self, selector)
+
+
+class ClosingLocator(FakeLocator):
+    """Acting on an element of a dead page fails the same way the page does."""
+
+    async def click(self, **kwargs):
+        self.page._maybe_die()
+        await super().click(**kwargs)
+
 
 def _recovering_session(tmp_path: Path, page: ClosingPage) -> BrowserSession:
     session = BrowserSession(profile_dir=tmp_path / "profile")
@@ -380,11 +502,10 @@ async def test_the_rebuilt_browser_goes_back_to_where_it_was(tmp_path) -> None:
 
 
 async def test_element_numbers_do_not_survive_a_rebuild(tmp_path) -> None:
-    """They were measured on a page that no longer exists.
+    """The stamps went with the DOM that carried them.
 
-    The restored page is the same address but not the same render, so a click
-    on the old coordinates would land somewhere on its replacement without
-    anything saying so. Refusing costs one read; a blind click costs trust.
+    The restored page is the same address but not the same render, so number 0
+    means nothing on it. Refusing costs one read; acting blind costs trust.
     """
 
     page = ClosingPage(fail_times=0)
@@ -394,13 +515,13 @@ async def test_element_numbers_do_not_survive_a_rebuild(tmp_path) -> None:
 
     page.fail_times = 1
     with pytest.raises(ToolExecutionError) as caught:
-        await session.click_index(0)
+        await session.click({"element": 0})
     assert "Read the page first" in str(caught.value)
 
     # After a fresh read the numbers describe the page that is really there.
     await session.read()
-    await session.click_index(0)
-    assert page.clicks[-1] == (100, 200)
+    await session.click({"element": 0})
+    assert page.actions[-1][0] == "click"
 
 
 async def test_a_failure_that_is_not_a_closed_browser_is_not_retried(tmp_path) -> None:
@@ -712,3 +833,416 @@ async def test_a_script_that_throws_says_what_it_threw(tmp_path) -> None:
         await BrowserEvaluateTool().execute({"expression": "nope"}, make_context(tmp_path, session))
     assert "The script threw: ReferenceError: nope is not defined" in str(caught.value)
     assert "at eval" not in str(caught.value)
+
+
+# ------------------------------------------------- pointing, typing, dragging
+
+
+async def test_a_click_carries_the_button_and_the_keys_held_with_it(tmp_path) -> None:
+    """Right-click opens a context menu; a held key is what multi-select is."""
+
+    session, page = make_session(tmp_path)
+    context = make_context(tmp_path, session)
+    await BrowserReadTool().execute({}, context)
+
+    await BrowserClickTool().execute(
+        {"element": 1, "button": "right", "modifiers": ["Shift"]}, context
+    )
+    what, detail = page.actions[-1]
+    assert what == "click"
+    assert detail["button"] == "right"
+    assert detail["modifiers"] == ["Shift"]
+
+    await BrowserClickTool().execute({"element": 1, "double": True}, context)
+    assert page.actions[-1][1]["click_count"] == 2
+
+
+async def test_replacing_a_field_fills_it_but_an_editor_gets_real_keystrokes(tmp_path) -> None:
+    """A document listens to keydown; fill would change the value behind its back."""
+
+    session, page = make_session(tmp_path)
+    context = make_context(tmp_path, session)
+    page.elements = [
+        {"ref": 0, "tag": "input", "type": "text", "text": "Title", "x": 1, "y": 1},
+        {"ref": 1, "tag": "div", "text": "Slide body", "editable": True, "x": 1, "y": 1},
+    ]
+    await BrowserReadTool().execute({}, context)
+
+    await BrowserTypeTool().execute({"element": 0, "text": "Q3", "replace": True}, context)
+    assert ("fill", "Q3") in [(what, d.get("text")) for what, d in page.actions]
+
+    page.actions.clear()
+    await BrowserTypeTool().execute({"element": 1, "text": "Revenue", "replace": True}, context)
+    assert ("type", "Revenue") in [(what, d.get("text")) for what, d in page.actions]
+    # Selected what was there first, so the typing replaces rather than appends.
+    assert page.keys[-1].endswith("+a")
+
+
+async def test_a_chord_and_a_sequence_of_keys_both_go_through(tmp_path) -> None:
+    """Bold in a document is Control+b, and there is no button to click for it."""
+
+    session, page = make_session(tmp_path)
+    context = make_context(tmp_path, session)
+    await BrowserReadTool().execute({}, context)
+
+    await BrowserActTool().execute({"action": "press", "keys": "Control+b"}, context)
+    assert page.keys[-1] == "Control+b"
+
+    await BrowserActTool().execute({"action": "press", "keys": "Control+a, Delete"}, context)
+    assert page.keys[-2:] == ["Control+a", "Delete"]
+
+
+async def test_keys_can_be_aimed_at_one_element_rather_than_the_page(tmp_path) -> None:
+    session, page = make_session(tmp_path)
+    context = make_context(tmp_path, session)
+    await BrowserReadTool().execute({}, context)
+
+    await BrowserActTool().execute({"action": "press", "keys": "Escape", "element": 1}, context)
+    assert ("press", "Escape") in [(what, d.get("key")) for what, d in page.actions]
+
+
+async def test_a_dropdown_is_set_by_value_and_a_checkbox_by_state(tmp_path) -> None:
+    session, page = make_session(tmp_path)
+    context = make_context(tmp_path, session)
+    page.elements = [
+        {"ref": 0, "tag": "select", "text": "Theme", "x": 1, "y": 1},
+        {"ref": 1, "tag": "input", "type": "checkbox", "text": "Notify", "checked": False},
+    ]
+    await BrowserReadTool().execute({}, context)
+
+    await BrowserActTool().execute({"action": "select", "element": 0, "values": ["dark"]}, context)
+    assert ("select", ["dark"]) in [(what, d.get("values")) for what, d in page.actions]
+
+    await BrowserActTool().execute({"action": "check", "element": 1}, context)
+    assert ("set_checked", True) in [(what, d.get("checked")) for what, d in page.actions]
+
+    await BrowserActTool().execute({"action": "uncheck", "element": 1}, context)
+    assert ("set_checked", False) in [(what, d.get("checked")) for what, d in page.actions]
+
+
+async def test_a_dropdown_that_is_not_a_select_says_to_click_the_option(tmp_path) -> None:
+    """Half the dropdowns on the web are divs, and select_option cannot see them."""
+
+    session, page = make_session(tmp_path)
+    context = make_context(tmp_path, session)
+    page.select_error = RuntimeError("Element is not a <select> element")
+    await BrowserReadTool().execute({}, context)
+
+    with pytest.raises(ToolExecutionError) as caught:
+        await BrowserActTool().execute(
+            {"action": "select", "element": 0, "values": ["dark"]}, context
+        )
+    assert "click the option instead" in str(caught.value)
+
+
+async def test_a_drag_presses_moves_in_steps_and_releases(tmp_path) -> None:
+    """A shape on a slide moves because of the moves in between, not the ends."""
+
+    session, page = make_session(tmp_path)
+    context = make_context(tmp_path, session)
+    await BrowserReadTool().execute({}, context)
+
+    await BrowserActTool().execute({"action": "drag", "element": 0, "to_element": 1}, context)
+    order = [what for what, _ in page.actions if what in {"move", "mouse_down", "mouse_up"}]
+    assert order[0] == "move"
+    assert order[1] == "mouse_down"
+    assert order[-1] == "mouse_up"
+    stepped = [detail for what, detail in page.actions if what == "move" and detail["steps"] > 1]
+    assert stepped, "the drag must move in steps, or nothing watching mousemove reacts"
+
+
+async def test_a_drag_can_go_by_an_offset_when_there_is_nothing_to_drop_on(tmp_path) -> None:
+    session, page = make_session(tmp_path)
+    context = make_context(tmp_path, session)
+    await BrowserReadTool().execute({}, context)
+
+    await BrowserActTool().execute({"action": "drag", "element": 0, "dx": 120, "dy": -40}, context)
+    moves = [detail for what, detail in page.actions if what == "move"]
+    # From the middle of the box the locator reported, by the offset asked for.
+    assert (moves[-1]["x"], moves[-1]["y"]) == (30 + 120, 25 - 40)
+
+
+async def test_a_drag_with_nowhere_to_go_is_refused(tmp_path) -> None:
+    session, _ = make_session(tmp_path)
+    context = make_context(tmp_path, session)
+    await BrowserReadTool().execute({}, context)
+
+    with pytest.raises(ToolArgumentError):
+        await BrowserActTool().execute({"action": "drag", "element": 0}, context)
+
+
+async def test_scrolling_reaches_an_element_a_wheel_or_the_bottom(tmp_path) -> None:
+    session, page = make_session(tmp_path)
+    context = make_context(tmp_path, session)
+    await BrowserReadTool().execute({}, context)
+
+    await BrowserActTool().execute({"action": "scroll", "element": 1}, context)
+    assert "scroll_into_view" in [what for what, _ in page.actions]
+
+    await BrowserActTool().execute({"action": "scroll", "dy": 600}, context)
+    assert ("wheel", 600) in [(what, d.get("dy")) for what, d in page.actions]
+
+    page.evaluated.clear()
+    await BrowserActTool().execute({"action": "scroll", "to": "bottom"}, context)
+    assert any("scrollHeight" in str(script) for script, _ in page.evaluated)
+
+
+async def test_files_are_handed_to_the_input_not_typed_into_it(tmp_path) -> None:
+    session, page = make_session(tmp_path)
+    context = make_context(tmp_path, session)
+    page.elements = [{"ref": 0, "tag": "input", "type": "file", "accepts_files": True}]
+    await BrowserReadTool().execute({}, context)
+
+    await BrowserActTool().execute(
+        {"action": "upload", "element": 0, "paths": ["deck.pptx"]}, context
+    )
+    assert ("upload", ["deck.pptx"]) in [(what, d.get("paths")) for what, d in page.actions]
+
+
+# -------------------------------------------------------------- moving around
+
+
+async def test_history_and_reload_go_through_the_page_itself(tmp_path) -> None:
+    session, page = make_session(tmp_path)
+    context = make_context(tmp_path, session)
+
+    for action in ("back", "forward", "reload"):
+        await BrowserPageTool().execute({"action": action}, context)
+        assert action in [what for what, _ in page.actions]
+
+
+async def test_waiting_is_for_a_thing_happening_not_for_a_number_of_seconds(tmp_path) -> None:
+    session, page = make_session(tmp_path)
+    context = make_context(tmp_path, session)
+
+    await BrowserWaitTool().execute({"text": "Saved"}, context)
+    waited = [(what, d.get("selector")) for what, d in page.actions]
+    assert ("wait_selector", "text=Saved") in waited
+
+    await BrowserWaitTool().execute({"selector": ".chart"}, context)
+    assert ("wait_selector", ".chart") in [(what, d.get("selector")) for what, d in page.actions]
+
+    await BrowserWaitTool().execute({"url": "**/done"}, context)
+    assert ("wait_url", "**/done") in [(what, d.get("url")) for what, d in page.actions]
+
+
+async def test_waiting_for_nothing_in_particular_is_refused(tmp_path) -> None:
+    session, _ = make_session(tmp_path)
+    with pytest.raises(ToolExecutionError):
+        await BrowserWaitTool().execute({}, make_context(tmp_path, session))
+
+
+async def test_a_picture_can_be_of_one_element_rather_than_the_page(tmp_path) -> None:
+    """Checking a chart drew is a question about the chart, not about the page."""
+
+    session, page = make_session(tmp_path)
+    context = make_context(tmp_path, session)
+    await BrowserReadTool().execute({}, context)
+
+    result = await BrowserScreenshotTool().execute({"element": 1}, context)
+    assert result[TOOL_IMAGES_KEY][0]["media_type"] == "image/png"
+    assert "Sign in" in result["of"]
+    assert "screenshot" in [what for what, _ in page.actions]
+
+    whole = await BrowserScreenshotTool().execute({"full_page": True}, context)
+    assert whole["of"] == "page"
+    assert ("page_screenshot", True) in [(what, d.get("full_page")) for what, d in page.actions]
+
+
+# -------------------------------------------------------- what a page throws up
+
+
+async def test_a_dialog_is_answered_and_then_reported(tmp_path) -> None:
+    """Nothing else would answer it, and the page stops dead until something does."""
+
+    session, page = make_session(tmp_path)
+    context = make_context(tmp_path, session)
+    await BrowserReadTool().execute({}, context)
+
+    answered: list[str] = []
+
+    async def accept():
+        answered.append("accept")
+
+    async def dismiss():
+        answered.append("dismiss")
+
+    page.fire(
+        "dialog",
+        SimpleNamespace(
+            type="confirm", message="Delete this slide?", accept=accept, dismiss=dismiss
+        ),
+    )
+    await asyncio.sleep(0)
+
+    assert answered == ["accept"]
+    result = await BrowserReadTool().execute({}, context)
+    assert result["dialogs"][0]["message"] == "Delete this slide?"
+    # Reported once: the next read is about the page, not about old news.
+    assert "dialogs" not in await BrowserReadTool().execute({}, context)
+
+
+async def test_a_tab_a_link_opened_becomes_the_one_being_driven(tmp_path) -> None:
+    session, page = make_session(tmp_path)
+    context = make_context(tmp_path, session)
+    await BrowserReadTool().execute({}, context)
+
+    popup = FakePage()
+    popup.url = "https://example.com/report"
+    page.fire("popup", popup)
+    session._context = SimpleNamespace(pages=[page, popup])
+
+    result = await BrowserReadTool().execute({}, context)
+    assert result["url"] == "https://example.com/report"
+    assert [tab["url"] for tab in result["tabs"]] == [page.url, popup.url]
+
+
+async def test_tabs_can_be_listed_and_switched_between(tmp_path) -> None:
+    session, page = make_session(tmp_path)
+    other = FakePage()
+    other.url = "https://example.com/other"
+    session._context = SimpleNamespace(pages=[page, other])
+    context = make_context(tmp_path, session)
+
+    listed = await BrowserPageTool().execute({"action": "tabs"}, context)
+    assert [tab["index"] for tab in listed["tabs"]] == [0, 1]
+
+    await BrowserPageTool().execute({"action": "switch", "tab": 1}, context)
+    assert session._page is other
+    assert "front" in [what for what, _ in other.actions]
+
+
+async def test_switching_to_a_tab_that_is_not_there_says_how_many_are(tmp_path) -> None:
+    session, _ = make_session(tmp_path)
+    with pytest.raises(ToolExecutionError) as caught:
+        await BrowserPageTool().execute(
+            {"action": "switch", "tab": 5}, make_context(tmp_path, session)
+        )
+    assert "there is 1" in str(caught.value)
+
+
+# ------------------------------------------------------- frames and selectors
+
+
+async def test_an_element_inside_an_iframe_is_numbered_and_acted_on_in_its_frame(tmp_path) -> None:
+    """A slide editor puts its canvas in an iframe; the document around it has no buttons."""
+
+    session, page = make_session(tmp_path)
+    inner = FakePage()
+    inner.elements = [{"ref": 0, "tag": "button", "text": "Insert shape", "x": 5, "y": 5}]
+    page.frames = [page, inner]
+    context = make_context(tmp_path, session)
+
+    result = await BrowserReadTool().execute({}, context)
+    numbers = {element["text"]: element["index"] for element in result["elements"]}
+    assert numbers["Insert shape"] == 2
+    assert result["elements"][2]["frame"] == 1
+
+    await BrowserClickTool().execute({"element": numbers["Insert shape"]}, context)
+    # Clicked in the frame that holds it, not in the document around it.
+    assert inner.actions[-1][0] == "click"
+    assert "click" not in [what for what, _ in page.actions]
+
+
+async def test_something_the_reading_did_not_list_can_be_named_by_selector(tmp_path) -> None:
+    session, page = make_session(tmp_path)
+    context = make_context(tmp_path, session)
+    await BrowserReadTool().execute({}, context)
+
+    await BrowserClickTool().execute({"selector": ".toolbar .bold"}, context)
+    assert page.actions[-1][1]["selector"] == ".toolbar .bold"
+
+
+async def test_a_selector_that_matches_nothing_says_so_instead_of_acting(tmp_path) -> None:
+    session, page = make_session(tmp_path)
+    page.absent.add(".gone")
+    context = make_context(tmp_path, session)
+    await BrowserReadTool().execute({}, context)
+
+    with pytest.raises(ToolExecutionError) as caught:
+        await BrowserClickTool().execute({"selector": ".gone"}, context)
+    assert "Nothing on this page matches" in str(caught.value)
+
+
+async def test_acting_without_naming_anything_is_refused(tmp_path) -> None:
+    session, _ = make_session(tmp_path)
+    with pytest.raises(ToolArgumentError):
+        await BrowserClickTool().execute({}, make_context(tmp_path, session))
+
+
+async def test_a_reading_says_where_the_page_is_scrolled(tmp_path) -> None:
+    """Otherwise there is no telling an empty page from one not scrolled to yet."""
+
+    session, _ = make_session(tmp_path)
+    result = await BrowserReadTool().execute({}, make_context(tmp_path, session))
+    assert result["viewport"]["at_bottom"] is False
+    assert result["viewport"]["page_height"] == 2000
+
+
+async def test_a_downloaded_file_is_kept_where_it_can_be_opened_afterwards(tmp_path) -> None:
+    """Playwright deletes it with the context; an export nobody kept is gone."""
+
+    session, page = make_session(tmp_path)
+    session.download_dir = tmp_path / "downloads"
+    context = make_context(tmp_path, session)
+    await BrowserReadTool().execute({}, context)
+
+    saved: list[str] = []
+
+    async def save_as(path):
+        saved.append(path)
+
+    page.fire(
+        "download",
+        SimpleNamespace(
+            suggested_filename="deck.pdf", url="https://example.com/deck.pdf", save_as=save_as
+        ),
+    )
+    await asyncio.sleep(0)
+
+    assert saved == [str(tmp_path / "downloads" / "deck.pdf")]
+    result = await BrowserReadTool().execute({}, context)
+    assert result["downloads"][0]["file"].endswith("deck.pdf")
+    # Reported once, like a dialog: the next read is about the page.
+    assert "downloads" not in await BrowserReadTool().execute({}, context)
+
+
+async def test_a_download_that_fails_says_so_rather_than_going_quiet(tmp_path) -> None:
+    session, page = make_session(tmp_path)
+    session.download_dir = tmp_path / "downloads"
+    context = make_context(tmp_path, session)
+    await BrowserReadTool().execute({}, context)
+
+    async def save_as(path):
+        raise RuntimeError("download was cancelled\n  at somewhere")
+
+    page.fire(
+        "download",
+        SimpleNamespace(suggested_filename="deck.pdf", url="", save_as=save_as),
+    )
+    await asyncio.sleep(0)
+
+    result = await BrowserReadTool().execute({}, context)
+    assert result["downloads"][0]["failed"] == "download was cancelled"
+
+
+async def test_a_filename_the_page_chose_cannot_escape_the_download_directory(tmp_path) -> None:
+    """The name comes from the site, so it is not something to trust with a path."""
+
+    session, page = make_session(tmp_path)
+    session.download_dir = tmp_path / "downloads"
+    context = make_context(tmp_path, session)
+    await BrowserReadTool().execute({}, context)
+
+    saved: list[str] = []
+
+    async def save_as(path):
+        saved.append(path)
+
+    page.fire(
+        "download",
+        SimpleNamespace(suggested_filename="../../evil.sh", url="", save_as=save_as),
+    )
+    await asyncio.sleep(0)
+
+    assert saved == [str(tmp_path / "downloads" / "evil.sh")]

@@ -342,6 +342,7 @@ class BrowserConfig:
     timeout_ms: int = int(DEFAULT_BROWSER["timeout_ms"])
     channel: str = str(DEFAULT_BROWSER["channel"])
     auto_install: bool = bool(DEFAULT_BROWSER["auto_install"])
+    dialog_policy: str = str(DEFAULT_BROWSER["dialog_policy"])
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any] | None) -> BrowserConfig:
@@ -353,6 +354,7 @@ class BrowserConfig:
             timeout_ms=int(values["timeout_ms"]),
             channel=str(values["channel"] or "").strip().lower(),
             auto_install=bool(values["auto_install"]),
+            dialog_policy=str(values["dialog_policy"] or "").strip().lower(),
         )
 
     def resolved_profile_dir(self, workspace: Path | str) -> Path:
@@ -366,6 +368,8 @@ class BrowserConfig:
             raise ConfigurationError("browser timeout_ms must be at least 1000.")
         # Refused here rather than at the first browser call, where a typo
         # would read as "that browser is not installed".
+        if self.dialog_policy not in {"accept", "dismiss"}:
+            raise ConfigurationError('browser dialog_policy must be "accept" or "dismiss".')
         if self.channel and self.channel not in BROWSER_CHANNELS:
             raise ConfigurationError(
                 "browser channel must be empty (Playwright's own Chromium) or one of: "

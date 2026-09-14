@@ -407,6 +407,10 @@ DEFAULT_BROWSER: dict[str, object] = {
     # machine with no display, where nothing could be handed over anyway.
     "headless": False,
     "timeout_ms": 30000,
+    # What answers an alert(), confirm() or prompt(): "accept" or "dismiss".
+    # Nothing else will - the agent is not watching the screen - and an
+    # unanswered dialog blocks the page until every later action times out.
+    "dialog_policy": "accept",
     # A browser already installed to drive instead of Playwright's own build:
     # "msedge" or "chrome" (or their beta/dev/canary). Empty uses the bundled
     # Chromium, and Edge or Chrome stand in by themselves when that build is

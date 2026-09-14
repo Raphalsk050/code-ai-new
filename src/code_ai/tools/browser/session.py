@@ -23,6 +23,16 @@ from typing import Any
 
 from code_ai.core.errors import ToolExecutionError
 from code_ai.tools.browser.devtools import DevtoolsRecorder, inspect_page, mask, render_value
+from code_ai.tools.browser.dom import (
+    COLLECT_JS,
+    INTERACTIVE_SELECTOR,
+    MAX_ELEMENTS,
+    MAX_LABEL_CHARS,
+    MAX_OPTIONS,
+    VIEWPORT_JS,
+    describe,
+    stamp_selector,
+)
 from code_ai.tools.browser.install import (
     FALLBACK_CHANNELS,
     MISSING_BROWSER,
@@ -52,54 +62,9 @@ _LAUNCH_TIMEOUT_MS = 60_000
 # would otherwise cost the whole turn's context to answer "what is on screen".
 MAX_PAGE_TEXT_CHARS = 6_000
 
-# Interactive elements offered to the model per read. Enough to cover a real
-# page's controls without the list itself becoming the expensive part.
-MAX_ELEMENTS = 60
-
-# What the model is allowed to click: things a user could click, and nothing
-# else. Collected in DOM order so the numbering matches reading order.
-_INTERACTIVE_SELECTOR = (
-    "a[href], button, input:not([type=hidden]), select, textarea, "
-    "[role=button], [role=link], [role=tab], [role=checkbox], [onclick]"
-)
-
-# Runs in the page. Returns one record per interactive element: what it is,
-# what it says, and where it is - so the agent can click by number instead of
-# inventing a CSS selector for a DOM it cannot see.
-_COLLECT_JS = """
-(args) => {
-  const [selector, limit] = args;
-  const out = [];
-  for (const el of document.querySelectorAll(selector)) {
-    const rect = el.getBoundingClientRect();
-    // Anything with no box is display:none, collapsed, or off in a detached
-    // subtree. A user cannot click it, so it must not be offered as clickable.
-    if (rect.width <= 0 || rect.height <= 0) continue;
-    const style = window.getComputedStyle(el);
-    if (style.visibility === 'hidden' || style.display === 'none') continue;
-    const label = (
-      el.getAttribute('aria-label') ||
-      el.value ||
-      el.innerText ||
-      el.getAttribute('placeholder') ||
-      el.getAttribute('title') ||
-      el.getAttribute('name') ||
-      ''
-    ).trim().replace(/\\s+/g, ' ').slice(0, 120);
-    out.push({
-      index: out.length,
-      tag: el.tagName.toLowerCase(),
-      type: el.getAttribute('type') || '',
-      text: label,
-      x: Math.round(rect.left + rect.width / 2),
-      y: Math.round(rect.top + rect.height / 2),
-    });
-    if (out.length >= limit) break;
-  }
-  return out;
-}
-"""
-
+# Dialogs and downloads kept between reads.
+_MAX_DIALOGS = 10
+_MAX_DOWNLOADS = 20
 
 # Playwright reports a vanished browser through several exception types and
 # spellings depending on which call noticed it first. Matching the text is what
@@ -150,8 +115,25 @@ class BrowserSession:
     _context: Any = field(default=None, repr=False)
     _page: Any = field(default=None, repr=False)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    # What to do with an alert(), confirm() or prompt(): "accept" or "dismiss".
+    # Something must, or the page stops dead behind a modal nobody can see.
+    dialog_policy: str = "accept"
+    # Where a file the page downloads is kept. Without it Playwright deletes it
+    # when the context closes, and an export the agent just asked for is gone
+    # before anything can look at it.
+    download_dir: Path | None = None
     # The elements offered by the last read, so a click can name one by number.
     last_elements: list[dict[str, Any]] = field(default_factory=list)
+    # The frames those elements were found in, in the same order as their
+    # "_frame" field. Held rather than re-derived: frame order can change.
+    last_frames: list[Any] = field(default_factory=list, repr=False)
+    # Dialogs answered since the last read, reported once so the model knows a
+    # confirm() was in the way rather than wondering why the click did nothing.
+    _dialogs: list[dict[str, Any]] = field(default_factory=list, repr=False)
+    # Files the page downloaded since the last read, with where they were kept.
+    _downloads: list[dict[str, Any]] = field(default_factory=list, repr=False)
+    # Pages already listened to, by id, so handlers are attached once each.
+    _hooked: set[int] = field(default_factory=set, repr=False)
     # Where the browser was, so a window the user closed can be reopened there
     # rather than on a blank page that answers "nothing here" to a question
     # about a site that was open a second ago.
@@ -169,7 +151,7 @@ class BrowserSession:
 
     async def _page_unlocked(self) -> Any:
         if self._page is not None and not self._page.is_closed():
-            self.devtools.watch(self._page)
+            self._watch(self._page)
             return self._page
         if self._context is None:
             await self._start()
@@ -186,8 +168,69 @@ class BrowserSession:
             # every call with "target closed". Throw it away and start again.
             await self._rebuild()
         self._page.set_default_timeout(self.timeout_ms)
-        self.devtools.watch(self._page)
+        self._watch(self._page)
         return self._page
+
+    def _watch(self, page: Any) -> None:
+        """Listen to one page: its logs, its dialogs, and the tabs it opens.
+
+        A native dialog blocks the page until something answers it, and nothing
+        will - the agent is not looking at the screen. Unanswered, every later
+        action times out with no hint as to why, so they are answered here and
+        reported in the next read.
+        """
+
+        self.devtools.watch(page)
+        key = id(page)
+        if key in self._hooked:
+            return
+        self._hooked.add(key)
+
+        def on_dialog(dialog: Any) -> None:
+            # Bounded: a page in a loop can raise them faster than they are read,
+            # and the report is meant to explain a click, not to be the output.
+            if len(self._dialogs) < _MAX_DIALOGS:
+                self._dialogs.append(
+                    {
+                        "kind": getattr(dialog, "type", ""),
+                        "message": mask(str(getattr(dialog, "message", ""))[:400]),
+                        "answered": self.dialog_policy,
+                    }
+                )
+            handler = dialog.dismiss() if self.dialog_policy == "dismiss" else dialog.accept()
+            asyncio.ensure_future(handler)
+
+        def on_download(download: Any) -> None:
+            asyncio.ensure_future(self._keep(download))
+
+        def on_popup(popup: Any) -> None:
+            # A link that opens a tab is still the thing the agent just did, so
+            # the new tab becomes the current one rather than being lost.
+            self._page = popup
+            self.last_elements = []
+            self._watch(popup)
+
+        try:
+            page.on("dialog", on_dialog)
+            page.on("popup", on_popup)
+            page.on("download", on_download)
+        except Exception:  # noqa: BLE001 - a page that died between the two
+            return
+
+    async def _keep(self, download: Any) -> None:
+        """Put a downloaded file where it can be opened after the browser closes."""
+
+        if self.download_dir is None or len(self._downloads) >= _MAX_DOWNLOADS:
+            return
+        try:
+            name = Path(str(download.suggested_filename or "download")).name
+            self.download_dir.mkdir(parents=True, exist_ok=True)
+            target = self.download_dir / name
+            await download.save_as(str(target))
+        except Exception as exc:  # noqa: BLE001 - a cancelled or failed download
+            self._downloads.append({"failed": mask(str(exc).splitlines()[0])})
+            return
+        self._downloads.append({"file": str(target), "url": getattr(download, "url", "")})
 
     async def _rebuild(self) -> Any:
         """Start a fresh browser and put it back where the old one was.
@@ -392,12 +435,18 @@ class BrowserSession:
                 await self._recover()
                 return await action()
 
-    async def read(self, *, screenshot: bool = False) -> dict[str, Any]:
-        """What the page says, what can be clicked on it, and optionally a picture."""
+    async def read(
+        self, *, screenshot: bool = False, full_page: bool = False
+    ) -> dict[str, Any]:
+        """What the page says, what can be acted on, and optionally a picture."""
 
-        return await self._attempt(lambda: self._read_unlocked(screenshot=screenshot))
+        return await self._attempt(
+            lambda: self._read_unlocked(screenshot=screenshot, full_page=full_page)
+        )
 
-    async def _read_unlocked(self, *, screenshot: bool = False) -> dict[str, Any]:
+    async def _read_unlocked(
+        self, *, screenshot: bool = False, full_page: bool = False
+    ) -> dict[str, Any]:
         page = await self._page_unlocked()
         self.last_url = page.url
         title = await page.title()
@@ -416,16 +465,81 @@ class BrowserSession:
         }
         if truncated:
             payload["text_truncated"] = True
+        viewport = await self._viewport(page)
+        if viewport:
+            payload["viewport"] = viewport
+        tabs = self._open_pages()
+        if len(tabs) > 1:
+            payload["tabs"] = [{"index": i, "url": tab.url} for i, tab in enumerate(tabs)]
+        if self._dialogs:
+            payload["dialogs"] = list(self._dialogs)
+            self._dialogs.clear()
+        if self._downloads:
+            payload["downloads"] = list(self._downloads)
+            self._downloads.clear()
         if screenshot:
-            payload["screenshot_png"] = await page.screenshot(type="png")
+            payload["screenshot_png"] = await page.screenshot(type="png", full_page=full_page)
         return payload
 
     async def _elements(self, page: Any) -> list[dict[str, Any]]:
+        """Every interactive element on the page, iframes included.
+
+        Numbered across frames in one sequence, because the model sees one page
+        and should not have to know which document a button happens to live in.
+        The frame is kept beside the number so the action can go back to it.
+        """
+
+        frames = self._frames(page)
+        self.last_frames = frames
+        collected: list[dict[str, Any]] = []
+        for position, frame in enumerate(frames):
+            if len(collected) >= MAX_ELEMENTS:
+                break
+            try:
+                found = await frame.evaluate(
+                    COLLECT_JS,
+                    [
+                        INTERACTIVE_SELECTOR,
+                        MAX_ELEMENTS - len(collected),
+                        MAX_LABEL_CHARS,
+                        MAX_OPTIONS,
+                    ],
+                )
+            except Exception:  # noqa: BLE001 - mid-navigation, or cross-origin
+                continue
+            for item in found:
+                if not isinstance(item, dict):
+                    continue
+                item["index"] = len(collected)
+                if position:
+                    # Only worth saying when it is not the main document.
+                    item["frame"] = position
+                item["_frame"] = position
+                collected.append(item)
+        return collected
+
+    @staticmethod
+    def _frames(page: Any) -> list[Any]:
         try:
-            found = await page.evaluate(_COLLECT_JS, [_INTERACTIVE_SELECTOR, MAX_ELEMENTS])
-        except Exception:  # noqa: BLE001 - a page mid-navigation has no DOM yet
+            return [frame for frame in page.frames if not frame.is_detached()]
+        except Exception:  # noqa: BLE001 - no frame tree yet
+            return [page.main_frame] if getattr(page, "main_frame", None) else []
+
+    @staticmethod
+    async def _viewport(page: Any) -> dict[str, Any]:
+        try:
+            found = await page.evaluate(VIEWPORT_JS)
+        except Exception:  # noqa: BLE001 - no DOM yet
+            return {}
+        return found if isinstance(found, dict) else {}
+
+    def _open_pages(self) -> list[Any]:
+        if self._context is None:
             return []
-        return [item for item in found if isinstance(item, dict)]
+        try:
+            return [page for page in self._context.pages if not page.is_closed()]
+        except Exception:  # noqa: BLE001 - context already gone
+            return []
 
     async def inspect(self, aspect: str, **options: Any) -> dict[str, Any]:
         """What one developer-tools panel shows about the page the browser is on."""
@@ -482,43 +596,355 @@ class BrowserSession:
         await self._attempt(navigate)
         return await self.read()
 
-    async def click_index(self, index: int) -> dict[str, Any]:
-        """Click the numbered element from the last read.
+    # ------------------------------------------------------------------ acting
+    #
+    # Every action goes through a locator on the attribute the read stamped,
+    # never through the coordinates it also reported. Playwright then scrolls
+    # the element into view, waits until it is actually clickable, and says so
+    # when something covers it - three ways a coordinate click fails silently,
+    # landing on a cookie banner or on nothing at all.
 
-        By number rather than by selector because the model is choosing from a
-        list it was just given: a selector it invents describes a DOM it cannot
-        see, and a wrong one either misses or hits something else silently.
-        """
-
-        async def click() -> None:
-            # The page is secured first and the element looked up second, so a
-            # rebuild in between invalidates the lookup rather than being
-            # overtaken by it. Reversed, the coordinates would come from the
-            # page that just died and the click would land somewhere on its
-            # replacement without anything saying so.
+    async def click(
+        self,
+        target: dict[str, Any],
+        *,
+        button: str = "left",
+        count: int = 1,
+        modifiers: list[str] | None = None,
+    ) -> dict[str, Any]:
+        async def run() -> None:
             page = await self._page_unlocked()
-            element = self._element_at(index)
-            # Located again by position rather than held as a handle: anything
-            # the page did since the read may have replaced the node, and a
-            # stale handle throws where a fresh coordinate still lands.
-            await page.mouse.click(element["x"], element["y"])
+            locator, _ = await self._locate(page, target)
+            await locator.click(
+                button=button,
+                click_count=max(1, count),
+                modifiers=list(modifiers or []),
+                timeout=self.timeout_ms,
+            )
             await self._settle(page)
 
-        await self._attempt(click)
-        return await self.read()
+        return await self._act(run)
 
-    async def type_into(self, index: int, text: str, *, submit: bool = False) -> dict[str, Any]:
-        async def enter() -> None:
+    async def hover(self, target: dict[str, Any]) -> dict[str, Any]:
+        async def run() -> None:
             page = await self._page_unlocked()
-            element = self._element_at(index)
-            await page.mouse.click(element["x"], element["y"])
-            await page.keyboard.type(text)
+            locator, _ = await self._locate(page, target)
+            await locator.hover(timeout=self.timeout_ms)
+            # Menus open on a timer after the pointer lands.
+            await self._pause(page, 300)
+
+        return await self._act(run)
+
+    async def type_text(
+        self,
+        target: dict[str, Any],
+        text: str,
+        *,
+        replace: bool = False,
+        submit: bool = False,
+    ) -> dict[str, Any]:
+        """Type into a field, or into whatever a rich editor puts the caret in.
+
+        `fill` replaces the value in one step and is what a form wants;
+        `press_sequentially` sends real keystrokes, which is what an editor
+        that only listens to keydown - a document, a slide - needs.
+        """
+
+        async def run() -> None:
+            page = await self._page_unlocked()
+            locator, record = await self._locate(page, target)
+            editable = bool(record.get("editable")) or record.get("tag") in {"", None}
+            if replace and not editable:
+                await locator.fill(text, timeout=self.timeout_ms)
+            else:
+                await locator.click(timeout=self.timeout_ms)
+                if replace:
+                    await self._select_all(page)
+                await locator.press_sequentially(text, delay=15, timeout=self.timeout_ms)
             if submit:
-                await page.keyboard.press("Enter")
+                await locator.press("Enter", timeout=self.timeout_ms)
                 await self._settle(page)
 
-        await self._attempt(enter)
-        return await self.read()
+        return await self._act(run)
+
+    async def press(self, keys: str, target: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Send a key or a chord - "Enter", "Control+b", "Escape" - as a user would.
+
+        This is how an application is driven where no button exists for what is
+        wanted: bold in a document, a slide's next-placeholder, undo.
+        """
+
+        async def run() -> None:
+            page = await self._page_unlocked()
+            sequence = [part.strip() for part in keys.split(",") if part.strip()]
+            if not sequence:
+                raise ToolExecutionError("No keys given to press.")
+            if target:
+                locator, _ = await self._locate(page, target)
+                for key in sequence:
+                    await locator.press(key, timeout=self.timeout_ms)
+            else:
+                for key in sequence:
+                    await page.keyboard.press(key)
+            await self._settle(page)
+
+        return await self._act(run)
+
+    async def focus(self, target: dict[str, Any]) -> dict[str, Any]:
+        async def run() -> None:
+            page = await self._page_unlocked()
+            locator, _ = await self._locate(page, target)
+            await locator.focus(timeout=self.timeout_ms)
+
+        return await self._act(run)
+
+    async def select(self, target: dict[str, Any], values: list[str]) -> dict[str, Any]:
+        async def run() -> None:
+            page = await self._page_unlocked()
+            locator, _ = await self._locate(page, target)
+            try:
+                await locator.select_option(values, timeout=self.timeout_ms)
+            except Exception as exc:  # noqa: BLE001
+                if _is_closed_error(exc):
+                    raise
+                # A <select> takes values; a listbox built out of divs takes a
+                # click on the option that reads like what was asked for.
+                raise ToolExecutionError(
+                    f"Could not select {values!r}: {mask(str(exc).splitlines()[0])}. "
+                    "If this is not a real <select>, click the option instead."
+                ) from exc
+
+        return await self._act(run)
+
+    async def set_checked(self, target: dict[str, Any], checked: bool) -> dict[str, Any]:
+        async def run() -> None:
+            page = await self._page_unlocked()
+            locator, _ = await self._locate(page, target)
+            await locator.set_checked(checked, timeout=self.timeout_ms)
+            await self._settle(page)
+
+        return await self._act(run)
+
+    async def upload(self, target: dict[str, Any], paths: list[str]) -> dict[str, Any]:
+        async def run() -> None:
+            page = await self._page_unlocked()
+            locator, _ = await self._locate(page, target)
+            await locator.set_input_files(paths, timeout=self.timeout_ms)
+            await self._settle(page)
+
+        return await self._act(run)
+
+    async def drag(
+        self,
+        source: dict[str, Any],
+        destination: dict[str, Any] | None = None,
+        *,
+        offset: tuple[int, int] | None = None,
+        steps: int = 20,
+    ) -> dict[str, Any]:
+        """Drag with the mouse, from an element to another or by an offset.
+
+        Stepped by hand rather than through drag_to: an editor that moves a
+        shape watches mousemove, and a drag that jumps straight to the end
+        looks like no movement at all. The steps are what make it land.
+        """
+
+        async def run() -> None:
+            page = await self._page_unlocked()
+            start = await self._point(page, source)
+            if destination is not None:
+                end = await self._point(page, destination)
+            elif offset is not None:
+                end = (start[0] + offset[0], start[1] + offset[1])
+            else:
+                raise ToolExecutionError("A drag needs somewhere to go: a target or an offset.")
+            await page.mouse.move(start[0], start[1])
+            await page.mouse.down()
+            # One move before the stepped run: some libraries only start
+            # dragging after the first move that follows the press.
+            await page.mouse.move(start[0] + 1, start[1] + 1)
+            await page.mouse.move(end[0], end[1], steps=max(2, steps))
+            await page.mouse.up()
+            await self._settle(page)
+
+        return await self._act(run)
+
+    async def scroll(
+        self,
+        *,
+        target: dict[str, Any] | None = None,
+        dx: int = 0,
+        dy: int = 0,
+        to: str = "",
+    ) -> dict[str, Any]:
+        async def run() -> None:
+            page = await self._page_unlocked()
+            if target is not None:
+                locator, _ = await self._locate(page, target)
+                await locator.scroll_into_view_if_needed(timeout=self.timeout_ms)
+            elif to in {"top", "bottom"}:
+                where = "0" if to == "top" else "document.body.scrollHeight"
+                await page.evaluate(f"() => window.scrollTo(0, {where})")
+            else:
+                await page.mouse.wheel(dx, dy)
+            await self._pause(page, 250)
+
+        return await self._act(run)
+
+    async def navigate(self, action: str) -> dict[str, Any]:
+        async def run() -> None:
+            page = await self._page_unlocked()
+            mover = {"back": page.go_back, "forward": page.go_forward, "reload": page.reload}.get(
+                action
+            )
+            if mover is None:
+                raise ToolExecutionError(f"Unknown navigation {action!r}: back, forward, reload.")
+            await mover(wait_until="domcontentloaded", timeout=self.timeout_ms)
+            self.last_url = page.url
+
+        return await self._act(run)
+
+    async def wait_for(
+        self,
+        *,
+        text: str = "",
+        selector: str = "",
+        url: str = "",
+        state: str = "",
+        seconds: float = 0.0,
+    ) -> dict[str, Any]:
+        """Wait for the page to reach a state, rather than reading it repeatedly."""
+
+        async def run() -> None:
+            page = await self._page_unlocked()
+            timeout = self.timeout_ms
+            if selector:
+                await page.wait_for_selector(selector, timeout=timeout)
+            elif text:
+                await page.wait_for_selector(f"text={text}", timeout=timeout)
+            elif url:
+                await page.wait_for_url(url, timeout=timeout)
+            elif state:
+                await page.wait_for_load_state(state, timeout=timeout)
+            elif seconds > 0:
+                await asyncio.sleep(min(seconds, timeout / 1000))
+            else:
+                raise ToolExecutionError("Nothing to wait for: text, selector, url, state or time.")
+
+        return await self._act(run)
+
+    async def screenshot(
+        self, *, target: dict[str, Any] | None = None, full_page: bool = False
+    ) -> dict[str, Any]:
+        """A picture of the page, or of one element - the visual check itself."""
+
+        async def run() -> dict[str, Any]:
+            page = await self._page_unlocked()
+            if target is not None:
+                locator, record = await self._locate(page, target)
+                await locator.scroll_into_view_if_needed(timeout=self.timeout_ms)
+                shot = await locator.screenshot(type="png", timeout=self.timeout_ms)
+                return {"url": page.url, "of": describe(record), "screenshot_png": shot}
+            shot = await page.screenshot(type="png", full_page=full_page)
+            return {"url": page.url, "of": "page", "screenshot_png": shot}
+
+        return await self._attempt(run)
+
+    async def tabs(self, action: str = "list", index: int = 0) -> dict[str, Any]:
+        async def run() -> dict[str, Any]:
+            await self._page_unlocked()
+            pages = self._open_pages()
+            if action == "list":
+                return {
+                    "tabs": [
+                        {"index": i, "url": tab.url, "current": tab is self._page}
+                        for i, tab in enumerate(pages)
+                    ]
+                }
+            if action == "new":
+                self._page = await self._context.new_page()
+                self._page.set_default_timeout(self.timeout_ms)
+                self._watch(self._page)
+                return {"opened": True}
+            if index < 0 or index >= len(pages):
+                raise ToolExecutionError(
+                    f"No tab {index}: there {'is' if len(pages) == 1 else 'are'} {len(pages)}."
+                )
+            chosen = pages[index]
+            if action == "close":
+                await chosen.close()
+                remaining = self._open_pages()
+                self._page = remaining[0] if remaining else None
+                self.last_elements = []
+                return {"closed": index}
+            if action == "switch":
+                self._page = chosen
+                await chosen.bring_to_front()
+                self.last_elements = []
+                return {"switched": index}
+            raise ToolExecutionError(f"Unknown tab action {action!r}: list, switch, new, close.")
+
+        result = await self._attempt(run)
+        if action in {"list"}:
+            return result
+        return {**result, **await self.read()}
+
+    # ------------------------------------------------------------- finding one
+
+    async def _locate(self, page: Any, target: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
+        """The locator for what the model named, and what the read knew about it.
+
+        A number is the reliable way in - it came from this page, a moment ago.
+        A CSS selector or a piece of text is for what a read did not list:
+        something inside a canvas-drawn widget, or a node the model found by
+        running its own JavaScript.
+        """
+
+        if "element" in target and target["element"] is not None:
+            record = self._element_at(int(target["element"]))
+            frame = self._frame_of(record)
+            return frame.locator(stamp_selector(int(record["ref"]))).first, record
+        selector = str(target.get("selector") or "").strip()
+        text = str(target.get("text") or "").strip()
+        if not selector and not text:
+            raise ToolExecutionError("Name what to act on: element, selector or text.")
+        query = selector or f"text={text}"
+        for frame in self._frames(page):
+            locator = frame.locator(query).first
+            try:
+                if await locator.count():
+                    return locator, {"tag": "", "text": selector or text}
+            except Exception:  # noqa: BLE001 - detached frame, cross-origin
+                continue
+        raise ToolExecutionError(
+            f"Nothing on this page matches {query!r}. Read the page and use one of "
+            "the numbered elements, or check the selector."
+        )
+
+    def _frame_of(self, record: dict[str, Any]) -> Any:
+        position = int(record.get("_frame", 0))
+        if position < len(self.last_frames):
+            frame = self.last_frames[position]
+            try:
+                if not frame.is_detached():
+                    return frame
+            except Exception:  # noqa: BLE001 - gone, fall through to the page
+                pass
+        raise ToolExecutionError(
+            "The frame that element was in is gone. Read the page again for fresh numbers."
+        )
+
+    async def _point(self, page: Any, target: dict[str, Any]) -> tuple[float, float]:
+        """The middle of an element in page coordinates, for the mouse to use."""
+
+        if "x" in target and "y" in target:
+            return float(target["x"]), float(target["y"])
+        locator, record = await self._locate(page, target)
+        await locator.scroll_into_view_if_needed(timeout=self.timeout_ms)
+        box = await locator.bounding_box()
+        if not box:
+            raise ToolExecutionError(f"{describe(record)} has no position on screen to drag from.")
+        return box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
 
     def _element_at(self, index: int) -> dict[str, Any]:
         for element in self.last_elements:
@@ -528,6 +954,28 @@ class BrowserSession:
             f"No element {index} on this page. Read the page first, then use one "
             f"of the numbers it lists ({len(self.last_elements)} available)."
         )
+
+    async def _act(self, action: Any) -> dict[str, Any]:
+        """Do something, then report the page it left behind.
+
+        Always a fresh read: the numbers from before the action describe a page
+        that no longer exists, and the next action must not use them.
+        """
+
+        await self._attempt(action)
+        return await self.read()
+
+    @staticmethod
+    async def _select_all(page: Any) -> None:
+        modifier = "Meta" if sys.platform == "darwin" else "Control"
+        await page.keyboard.press(f"{modifier}+a")
+
+    @staticmethod
+    async def _pause(page: Any, ms: int) -> None:
+        try:
+            await page.wait_for_timeout(ms)
+        except Exception:  # noqa: BLE001 - page went away mid-wait
+            return
 
     async def _settle(self, page: Any) -> None:
         """Give a click that navigates a moment to land, without insisting."""
