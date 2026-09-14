@@ -1379,23 +1379,46 @@ class AgentOrchestrator:
         a previous pass is still running (learning must never queue up).
         """
 
-        if self.reflection is None or result.cancelled or result.error is not None:
-            return
-        if not self.reflection.should_reflect(tool_calls_executed=state.tool_calls_executed):
+        digest: TurnDigest | None = None
+        if (
+            self.reflection is not None
+            and not result.cancelled
+            and result.error is None
+            and self.reflection.should_reflect(tool_calls_executed=state.tool_calls_executed)
+        ):
+            digest = TurnDigest(
+                user_text=state.user_text,
+                final_text=result.text,
+                actions=tuple(state.actions),
+                evidence=self._turn_evidence_summary(),
+                outcome=result.wind_down_reason or "success",
+            )
+        if digest is None and not self._pending_lessons:
             return
         if self._learning_task is not None and not self._learning_task.done():
+            # The pending lessons keep waiting for the next quiet moment.
             return
-        digest = TurnDigest(
-            user_text=state.user_text,
-            final_text=result.text,
-            actions=tuple(state.actions),
-            evidence=self._turn_evidence_summary(),
-            outcome=result.wind_down_reason or "success",
-        )
         self._learning_task = asyncio.create_task(self._run_learning(digest))
 
-    async def _run_learning(self, digest: TurnDigest) -> None:
+    async def distill_pending_lessons(self) -> None:
+        """Turn this turn's recorded failures into lessons, one meta-call each."""
+
+        pending, self._pending_lessons = self._pending_lessons, []
+        if self.failure_memory is None:
+            return
+        for signature, context, fallback in pending:
+            try:
+                await self.failure_memory.distill(signature, context, fallback)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - learning must never surface as an error
+                logger.debug("Lesson distillation failed for %s.", signature, exc_info=True)
+
+    async def _run_learning(self, digest: TurnDigest | None) -> None:
         try:
+            await self.distill_pending_lessons()
+            if digest is None or self.reflection is None:
+                return
             report = await self.reflection.reflect_on_turn(digest)
             # Same background lane, strictly after reflection: curate any store
             # that grew past its threshold, so cost stays one pass at a time.
@@ -1517,12 +1540,18 @@ class AgentOrchestrator:
         if self.failure_memory is None:
             return
         try:
-            await self.failure_memory.record(
+            entry = await self.failure_memory.record(
                 trigger=trigger,
                 context=context,
                 fallback_lesson=fallback_lesson,
                 signature=signature,
+                # Counted now, distilled after the turn (see
+                # distill_pending_lessons): the meta-call held the model for a
+                # whole step in the middle of the work.
+                distill=False,
             )
+            if not entry.lesson:
+                self._pending_lessons.append((entry.signature, context, fallback_lesson))
             # Not re-rendered into the system prompt here: within this turn the
             # lesson reaches the model on the error itself and through
             # _lesson_warning, and rewriting message 0 mid-turn invalidates the
@@ -2307,11 +2336,11 @@ class AgentOrchestrator:
                     f"The tool '{call.name}' failed with: {bound_text(str(exc), 400)}. "
                     f"Arguments: {bound_text(json.dumps(call.arguments, default=str), 400)}"
                 ),
-                fallback_lesson=(
-                    f"Before calling '{call.name}', validate its arguments against "
-                    "the workspace state (paths exist, JSON is well-formed) to avoid "
-                    "the error seen previously."
-                ),
+                # No fallback: a generic "validate the arguments" sentence is
+                # not a lesson, and warning about it on every later use of the
+                # tool was most of the noise the model got. Either the model
+                # distils something specific after the turn, or nothing is said.
+                fallback_lesson="",
             )
             if prior is not None:
                 # Carried on the error itself rather than as a separate note: the

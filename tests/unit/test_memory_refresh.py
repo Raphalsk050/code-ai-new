@@ -67,6 +67,8 @@ async def test_recorded_failure_is_injected_into_system_prompt(tmp_path) -> None
         context="the command failed",
         fallback_lesson="Validate command arguments before running.",
     )
+    # Distilled after the turn, in the learning lane, not while the model works.
+    await orchestrator.distill_pending_lessons()
 
     # Mid-turn the prompt is left alone (rewriting message 0 would throw away
     # the engine's prompt cache for the rest of the turn); the lesson reaches

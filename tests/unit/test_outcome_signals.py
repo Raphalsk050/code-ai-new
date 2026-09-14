@@ -148,6 +148,9 @@ async def test_completion_rejection_records_a_lesson(tmp_path) -> None:
 
     assert outcome is not None
     assert outcome.result.is_error is True
+    # The meta-call runs in the learning lane after the turn, never mid-work.
+    assert orchestrator.failure_memory.lessons() == []
+    await orchestrator.distill_pending_lessons()
     lessons = orchestrator.failure_memory.lessons()
     assert [entry.trigger for entry in lessons] == ["completion_rejected"]
     # Not rendered into the prompt mid-turn (that would invalidate the engine's
