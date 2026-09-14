@@ -105,7 +105,6 @@ class DragMouseTool:
                     "'right'. Defaults to left."
                 ),
             },
-            "coordinate_space": COORDINATE_SPACE_SCHEMA,
             "duration": {
                 "type": "number",
                 "description": "Seconds the drag should take. Defaults to 0.3.",

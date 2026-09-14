@@ -232,6 +232,19 @@ class ScreenGeometry:
             int(round(self.top + y / scale)),
         )
 
+    def holds_image_point(self, x: float, y: float) -> bool:
+        """Whether a point could have been read off the picture that was sent."""
+
+        return 0 <= x <= self.image_width and 0 <= y <= self.image_height
+
+    def holds_screen_point(self, x: float, y: float) -> bool:
+        """Whether a point is somewhere on the desktop at all."""
+
+        return (
+            self.left <= x <= self.left + self.width
+            and self.top <= y <= self.top + self.height
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "screen": {
@@ -310,7 +323,7 @@ def downscale_png(data: bytes, max_edge: int = MAX_IMAGE_EDGE_PX) -> bytes:
             f"Captured a {size[0]}x{size[1]} screen, which is too large to send "
             f"as-is, and Pillow is not installed to shrink it. Install it with: "
             f"{_PILLOW_HINT}."
-        )
+        ) from None
     try:
         image = Image.open(io.BytesIO(data))
         if max(image.size) <= max_edge:
@@ -359,7 +372,9 @@ def _unavailable_message(system: str, backends: tuple[CaptureBackend, ...]) -> s
             "(gnome-screenshot, spectacle), and a portal prompt left unanswered "
             "reads as a failure here."
         )
-    hints = "; ".join(f"{backend.name} ({backend.install})" for backend in backends if backend.install)
+    hints = "; ".join(
+        f"{backend.name} ({backend.install})" for backend in backends if backend.install
+    )
     return f"No screenshot backend is installed. Install one of: {hints}."
 
 
