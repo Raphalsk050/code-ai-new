@@ -8,8 +8,9 @@ name: Build standalone binaries
 # running PyInstaller inside a Wine container (tobix/pywine). The only thing
 # the runner must provide is Docker.
 #
-# The project is installed with its `browser` extra: the binary has to carry
-# Playwright and its Node driver, or the browser tools can never start. The
+# A plain `pip install .` brings Playwright: the binary has to carry it and
+# its Node driver, or the browser tools can never start, so it is a required
+# dependency rather than an extra this file has to remember to ask for. The
 # spec refuses to build without it, and `doctor browser --no-launch` checks
 # that the bundled driver actually runs.
 #
@@ -51,7 +52,7 @@ jobs:
               python -m venv /tmp/venv
               . /tmp/venv/bin/activate
               pip install --upgrade pip
-              pip install ".[browser]"
+              pip install .
               pip install "pyinstaller>=6,<7"
               pyinstaller --clean --noconfirm packaging/code-ai.spec
               ./dist/code-ai --help
@@ -88,7 +89,7 @@ jobs:
             tobix/pywine:3.12 \
             bash -euxc '
               wine python -m pip install --upgrade pip
-              wine python -m pip install ".[browser]"
+              wine python -m pip install .
               wine python -m pip install "pyinstaller>=6,<7"
               wine python -m PyInstaller --clean --noconfirm packaging/code-ai.spec
               wine dist/code-ai.exe --help || echo "wine smoke test non-fatal"
