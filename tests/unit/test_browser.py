@@ -110,6 +110,8 @@ class FakePage:
         self.absent: set[str] = set()
         self.boxes: dict[str, dict] = {}
         self.select_error: Exception | None = None
+        # Selectors a wait will never see turn up, so a test can let one expire.
+        self.never_arrives: set[str] = set()
         self.mouse = SimpleNamespace(
             click=self._click,
             move=self._move,
@@ -204,6 +206,9 @@ class FakePage:
 
     async def wait_for_selector(self, selector, timeout=None):
         self.actions.append(("wait_selector", {"selector": selector}))
+        if selector in self.never_arrives:
+            raise RuntimeError(f"Timeout {timeout}ms exceeded waiting for {selector}")
+        return FakeLocator(self, selector)
 
     async def wait_for_url(self, url, timeout=None):
         self.actions.append(("wait_url", {"url": url}))
@@ -1246,3 +1251,125 @@ async def test_a_filename_the_page_chose_cannot_escape_the_download_directory(tm
     await asyncio.sleep(0)
 
     assert saved == [str(tmp_path / "downloads" / "evil.sh")]
+
+
+async def test_a_wait_that_runs_out_of_time_answers_with_the_page(tmp_path) -> None:
+    """The page is usually fine and the wording was wrong; an error hides that."""
+
+    session, page = make_session(tmp_path)
+    page.never_arrives.add("text=Saved")
+    context = make_context(tmp_path, session)
+
+    result = await BrowserWaitTool().execute({"text": "Saved"}, context)
+
+    assert result["arrived"] is False
+    assert result["waited_for"] == "text 'Saved'"
+    assert "another wording" in result["note"]
+    # The page it gave up on comes back, numbers and all, ready to act on.
+    assert result["title"] == "Login"
+    assert [element["text"] for element in result["elements"]] == ["Email", "Sign in"]
+
+
+async def test_a_wait_that_arrives_says_so(tmp_path) -> None:
+    session, _ = make_session(tmp_path)
+    result = await BrowserWaitTool().execute({"selector": ".chart"}, make_context(tmp_path, session))
+    assert result["arrived"] is True
+    assert "note" not in result
+
+
+async def test_a_wait_looks_in_every_frame_not_only_the_main_document(tmp_path) -> None:
+    """A slide editor renders in an iframe, and nothing waited for is outside it."""
+
+    session, page = make_session(tmp_path)
+    inner = FakePage()
+    page.frames = [page, inner]
+    # The document around the editor never shows it; the frame does.
+    page.never_arrives.add("text=Slide 2")
+    context = make_context(tmp_path, session)
+
+    result = await BrowserWaitTool().execute({"text": "Slide 2"}, context)
+    assert result["arrived"] is True
+    assert ("wait_selector", "text=Slide 2") in [(w, d.get("selector")) for w, d in inner.actions]
+
+
+async def test_a_frame_that_fails_does_not_end_the_wait_for_the_others(tmp_path) -> None:
+    session, page = make_session(tmp_path)
+    detached = FakePage()
+    detached.never_arrives.add("text=Ready")
+    holder = FakePage()
+    page.never_arrives.add("text=Ready")
+    page.frames = [page, detached, holder]
+    context = make_context(tmp_path, session)
+
+    result = await BrowserWaitTool().execute({"text": "Ready"}, context)
+    assert result["arrived"] is True
+
+
+async def test_a_plain_pause_reports_no_verdict_to_read_into(tmp_path) -> None:
+    """Time passing says nothing about the page, so there is nothing to claim."""
+
+    session, _ = make_session(tmp_path)
+    result = await BrowserWaitTool().execute({"seconds": 0.01}, make_context(tmp_path, session))
+    assert "arrived" not in result
+    assert result["title"] == "Login"
+
+
+# --------------------------------------------------------- running out of time
+
+
+class SlowLocator(FakeLocator):
+    """An element that is there but never becomes actionable."""
+
+    async def click(self, **kwargs):
+        raise RuntimeError(
+            'Timeout 30000ms exceeded.\nCall log:\n  - waiting for Locator("canvas") to be visible'
+        )
+
+
+async def test_an_action_that_times_out_reports_it_instead_of_failing_the_turn(tmp_path) -> None:
+    """A banner over the button is a thing to work around, not a broken message.
+
+    Acting waits for the element to be visible, still and uncovered. Raising on
+    that would kill the message carrying the action and throw away the page
+    that says what was in the way.
+    """
+
+    session, page = make_session(tmp_path)
+    page.locator = lambda selector: SlowLocator(page, selector)
+    context = make_context(tmp_path, session)
+    await BrowserReadTool().execute({}, context)
+
+    result = await BrowserClickTool().execute({"element": 1}, context)
+
+    assert result["done"] is False
+    assert "The click did not go through within 30s" in result["note"]
+    assert "Nothing on the page was changed" in result["note"]
+    # And the page comes back, so the next move can be chosen from it.
+    assert result["title"] == "Login"
+    assert [element["text"] for element in result["elements"]] == ["Email", "Sign in"]
+
+
+async def test_an_action_that_works_says_nothing_about_having_worked(tmp_path) -> None:
+    """Only the exception is worth reporting; success is just the page."""
+
+    session, _ = make_session(tmp_path)
+    context = make_context(tmp_path, session)
+    await BrowserReadTool().execute({}, context)
+
+    result = await BrowserClickTool().execute({"element": 1}, context)
+    assert "done" not in result
+    assert "note" not in result
+
+
+async def test_a_closed_browser_is_still_a_restart_not_a_timeout_note(tmp_path) -> None:
+    """The two look alike from the outside and want opposite handling."""
+
+    page = ClosingPage(fail_times=0)
+    session = _recovering_session(tmp_path, page)
+    await session.goto("https://example.com")
+    page.fail_times = 1
+
+    with pytest.raises(ToolExecutionError):
+        await session.click({"element": 0})
+    # It rebuilt rather than shrugging: the numbers went with the old page.
+    assert session.last_elements == []

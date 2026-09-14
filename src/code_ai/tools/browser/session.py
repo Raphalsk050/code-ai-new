@@ -29,6 +29,7 @@ from code_ai.tools.browser.dom import (
     MAX_ELEMENTS,
     MAX_LABEL_CHARS,
     MAX_OPTIONS,
+    MAX_SCANNED_NODES,
     VIEWPORT_JS,
     describe,
     stamp_selector,
@@ -85,6 +86,17 @@ _CLOSED_MARKERS = (
 
 def _is_closed_error(exc: BaseException) -> bool:
     return any(marker in str(exc).lower() for marker in _CLOSED_MARKERS)
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    """Playwright's timeout, whichever of its two spellings raised it."""
+
+    if isinstance(exc, TimeoutError | asyncio.TimeoutError):
+        return True
+    if type(exc).__name__ in {"TimeoutError", "PlaywrightTimeoutError"}:
+        return True
+    text = str(exc).lower()
+    return "timeout" in text and "exceeded" in text
 
 
 @dataclass
@@ -503,6 +515,7 @@ class BrowserSession:
                         MAX_ELEMENTS - len(collected),
                         MAX_LABEL_CHARS,
                         MAX_OPTIONS,
+                        MAX_SCANNED_NODES,
                     ],
                 )
             except Exception:  # noqa: BLE001 - mid-navigation, or cross-origin
@@ -623,7 +636,7 @@ class BrowserSession:
             )
             await self._settle(page)
 
-        return await self._act(run)
+        return await self._act(run, "The click")
 
     async def hover(self, target: dict[str, Any]) -> dict[str, Any]:
         async def run() -> None:
@@ -633,7 +646,7 @@ class BrowserSession:
             # Menus open on a timer after the pointer lands.
             await self._pause(page, 300)
 
-        return await self._act(run)
+        return await self._act(run, "The hover")
 
     async def type_text(
         self,
@@ -665,7 +678,7 @@ class BrowserSession:
                 await locator.press("Enter", timeout=self.timeout_ms)
                 await self._settle(page)
 
-        return await self._act(run)
+        return await self._act(run, "The typing")
 
     async def press(self, keys: str, target: dict[str, Any] | None = None) -> dict[str, Any]:
         """Send a key or a chord - "Enter", "Control+b", "Escape" - as a user would.
@@ -688,7 +701,7 @@ class BrowserSession:
                     await page.keyboard.press(key)
             await self._settle(page)
 
-        return await self._act(run)
+        return await self._act(run, "The key press")
 
     async def focus(self, target: dict[str, Any]) -> dict[str, Any]:
         async def run() -> None:
@@ -696,7 +709,7 @@ class BrowserSession:
             locator, _ = await self._locate(page, target)
             await locator.focus(timeout=self.timeout_ms)
 
-        return await self._act(run)
+        return await self._act(run, "Focusing that element")
 
     async def select(self, target: dict[str, Any], values: list[str]) -> dict[str, Any]:
         async def run() -> None:
@@ -714,7 +727,7 @@ class BrowserSession:
                     "If this is not a real <select>, click the option instead."
                 ) from exc
 
-        return await self._act(run)
+        return await self._act(run, "The dropdown choice")
 
     async def set_checked(self, target: dict[str, Any], checked: bool) -> dict[str, Any]:
         async def run() -> None:
@@ -723,7 +736,7 @@ class BrowserSession:
             await locator.set_checked(checked, timeout=self.timeout_ms)
             await self._settle(page)
 
-        return await self._act(run)
+        return await self._act(run, "Setting that checkbox")
 
     async def upload(self, target: dict[str, Any], paths: list[str]) -> dict[str, Any]:
         async def run() -> None:
@@ -732,7 +745,7 @@ class BrowserSession:
             await locator.set_input_files(paths, timeout=self.timeout_ms)
             await self._settle(page)
 
-        return await self._act(run)
+        return await self._act(run, "The upload")
 
     async def drag(
         self,
@@ -767,7 +780,7 @@ class BrowserSession:
             await page.mouse.up()
             await self._settle(page)
 
-        return await self._act(run)
+        return await self._act(run, "The drag")
 
     async def scroll(
         self,
@@ -789,7 +802,7 @@ class BrowserSession:
                 await page.mouse.wheel(dx, dy)
             await self._pause(page, 250)
 
-        return await self._act(run)
+        return await self._act(run, "The scroll")
 
     async def navigate(self, action: str) -> dict[str, Any]:
         async def run() -> None:
@@ -802,7 +815,7 @@ class BrowserSession:
             await mover(wait_until="domcontentloaded", timeout=self.timeout_ms)
             self.last_url = page.url
 
-        return await self._act(run)
+        return await self._act(run, "Going back or forward")
 
     async def wait_for(
         self,
@@ -812,26 +825,99 @@ class BrowserSession:
         url: str = "",
         state: str = "",
         seconds: float = 0.0,
+        screenshot: bool = False,
     ) -> dict[str, Any]:
-        """Wait for the page to reach a state, rather than reading it repeatedly."""
+        """Wait for the page to reach a state, rather than reading it repeatedly.
 
-        async def run() -> None:
+        Running out of time is an answer, not a failure. What was waited for may
+        already be on the page under another wording, or in a frame, or the page
+        may simply have gone somewhere else - and the read that comes back says
+        which. Failing instead would throw that away and report an error about a
+        page that is perfectly fine.
+        """
+
+        what = ""
+        for label, value in (
+            ("selector", selector),
+            ("text", text),
+            ("url", url),
+            ("state", state),
+        ):
+            if value:
+                what = f"{label} {value!r}"
+                break
+        if not what and seconds <= 0:
+            raise ToolExecutionError("Nothing to wait for: text, selector, url, state or time.")
+
+        async def run() -> bool:
             page = await self._page_unlocked()
             timeout = self.timeout_ms
-            if selector:
-                await page.wait_for_selector(selector, timeout=timeout)
-            elif text:
-                await page.wait_for_selector(f"text={text}", timeout=timeout)
-            elif url:
-                await page.wait_for_url(url, timeout=timeout)
-            elif state:
-                await page.wait_for_load_state(state, timeout=timeout)
-            elif seconds > 0:
-                await asyncio.sleep(min(seconds, timeout / 1000))
-            else:
-                raise ToolExecutionError("Nothing to wait for: text, selector, url, state or time.")
+            try:
+                if selector or text:
+                    # Across frames: the thing being waited for is as likely to
+                    # be in an editor's iframe as in the document around it.
+                    return await self._wait_in_any_frame(
+                        page, selector or f"text={text}", timeout
+                    )
+                if url:
+                    await page.wait_for_url(url, timeout=timeout)
+                elif state:
+                    # networkidle never arrives on a page that polls or holds a
+                    # socket open, which is most of them now.
+                    await page.wait_for_load_state(state, timeout=timeout)
+                else:
+                    await asyncio.sleep(min(seconds, timeout / 1000))
+            except Exception as exc:  # noqa: BLE001
+                if _is_closed_error(exc):
+                    raise
+                return False
+            return True
 
-        return await self._act(run)
+        arrived = await self._attempt(run)
+        page_now = await self.read(screenshot=screenshot)
+        if not what:
+            return page_now
+        return {
+            **page_now,
+            "waited_for": what,
+            "arrived": arrived,
+            **(
+                {}
+                if arrived
+                else {
+                    "note": (
+                        f"{what} did not turn up in time. The page below is where "
+                        "things stand - check whether it is already there under "
+                        "another wording before waiting again."
+                    )
+                }
+            ),
+        }
+
+    async def _wait_in_any_frame(self, page: Any, query: str, timeout: int) -> bool:
+        """True when any frame turns up a match, without waiting on the rest."""
+
+        pending = {
+            asyncio.ensure_future(frame.wait_for_selector(query, timeout=timeout))
+            for frame in self._frames(page)
+        }
+        if not pending:
+            return False
+        try:
+            while pending:
+                done, pending = await asyncio.wait(
+                    pending, return_when=asyncio.FIRST_COMPLETED
+                )
+                # A frame that failed says nothing about the others: a detached
+                # one throws at once, and waiting on its answer would end the
+                # wait before the frame that has the element ever replies.
+                for task in done:
+                    if task.exception() is None and task.result() is not None:
+                        return True
+            return False
+        finally:
+            for task in pending:
+                task.cancel()
 
     async def screenshot(
         self, *, target: dict[str, Any] | None = None, full_page: bool = False
@@ -955,14 +1041,37 @@ class BrowserSession:
             f"of the numbers it lists ({len(self.last_elements)} available)."
         )
 
-    async def _act(self, action: Any) -> dict[str, Any]:
+    async def _act(self, action: Any, what: str = "") -> dict[str, Any]:
         """Do something, then report the page it left behind.
 
         Always a fresh read: the numbers from before the action describe a page
         that no longer exists, and the next action must not use them.
+
+        Running out of time is reported, not raised. Acting waits for the
+        element to be visible, still and uncovered - so a banner over a button,
+        a modal that has not finished opening, or a spinner still on screen all
+        end in a timeout, none of which is a broken turn. Raising would throw
+        away the page that says which of them it was, and the message that
+        carried the action dies with it.
         """
 
-        await self._attempt(action)
+        try:
+            await self._attempt(action)
+        except Exception as exc:  # noqa: BLE001
+            if not _is_timeout(exc) or _is_closed_error(exc):
+                raise
+            return {
+                **await self.read(),
+                "done": False,
+                "note": (
+                    f"{what or 'That'} did not go through within "
+                    f"{self.timeout_ms // 1000}s - the element has to be visible, "
+                    "still and not covered by anything. Nothing on the page was "
+                    "changed. What is below is where things stand: look for what "
+                    "is in the way (a banner, a dialog, a spinner), or act on a "
+                    "different element."
+                ),
+            }
         return await self.read()
 
     @staticmethod

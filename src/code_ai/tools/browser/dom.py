@@ -29,6 +29,11 @@ MAX_LABEL_CHARS = 120
 # Options listed for a <select>. A country dropdown should not cost the turn.
 MAX_OPTIONS = 30
 
+# Nodes the shadow-host walk may look at. An application-sized page has tens
+# of thousands, and past this the components not yet found are not worth the
+# time the read is spending.
+MAX_SCANNED_NODES = 30_000
+
 # What counts as interactive. Wider than "things with an onclick": a document
 # editor's canvas is a contenteditable div, a slide thumbnail is a role=option,
 # and a toolbar button is as likely to be a div with a role as a <button>.
@@ -73,40 +78,40 @@ INTERACTIVE_SELECTOR = ", ".join(
 # at a node from two pages ago would be the one thing worse than no number.
 COLLECT_JS = """
 (args) => {
-  const [selector, limit, labelChars, maxOptions] = args;
+  const [selector, limit, labelChars, maxOptions, nodeBudget] = args;
   const ATTR = 'data-codeai-el';
   const seen = new Set();
   const found = [];
 
+  // Matching is left to querySelectorAll. Testing every node against the
+  // selector by hand instead costs enough on an application-sized page - tens
+  // of thousands of nodes - to push the read itself past its timeout.
+  //
   // querySelectorAll stops at a shadow boundary, so each root is searched on
-  // its own and every open root is walked into.
+  // its own and every open root is queued. Finding the hosts does need a walk;
+  // it is one pass reading one property, and it stops at a budget.
+  let scanned = 0;
   const roots = [document];
   for (let i = 0; i < roots.length; i++) {
     const root = roots[i];
-    let all;
     try {
-      all = root.querySelectorAll('*');
+      // Cleared per root, not once over the document: a stamp left inside a
+      // shadow tree would still answer to its number, and the selector would
+      // find it before the element this read meant.
+      for (const old of root.querySelectorAll('[' + ATTR + ']')) old.removeAttribute(ATTR);
+      for (const el of root.querySelectorAll(selector)) {
+        if (seen.has(el)) continue;
+        seen.add(el);
+        found.push(el);
+      }
+      if (scanned < nodeBudget) {
+        for (const el of root.querySelectorAll('*')) {
+          if (++scanned > nodeBudget) break;
+          if (el.shadowRoot) roots.push(el.shadowRoot);
+        }
+      }
     } catch (err) {
       continue;
-    }
-    // Cleared per root, not once over the document: a stamp left inside a
-    // shadow tree would still answer to its number, and the selector would
-    // find it before the element this read meant.
-    for (const old of all) {
-      if (old.hasAttribute(ATTR)) old.removeAttribute(ATTR);
-    }
-    for (const el of all) {
-      if (el.shadowRoot) roots.push(el.shadowRoot);
-      if (seen.has(el)) continue;
-      let matches = false;
-      try {
-        matches = el.matches(selector);
-      } catch (err) {
-        matches = false;
-      }
-      if (!matches) continue;
-      seen.add(el);
-      found.push(el);
     }
   }
 
