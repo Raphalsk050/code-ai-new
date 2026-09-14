@@ -246,8 +246,8 @@ DEFAULT_BUDGETS: dict[str, int] = {
     # Sub-agent orchestration limits. Depth 1 means the main agent may delegate
     # but a sub-agent may not delegate further (no unbounded recursion).
     "max_subagent_depth": 1,
-    "max_concurrent_subagents": 4,
-    "max_subagents_per_turn": 12,
+    "max_concurrent_subagents": 40,
+    "max_subagents_per_turn": 40,
     # Resilience: retry attempts per sub-agent (total tries, including the first)
     # and the circuit breaker thresholds (consecutive failures / cooldown).
     "subagent_retry_max_attempts": 2,
