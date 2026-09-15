@@ -120,6 +120,16 @@ _KNOBS: tuple[_Knob, ...] = (
         0.1,
         "Above 0 discourages repeating the same words. -2 to 2",
     ),
+    _Knob(
+        "repeat_penalty",
+        "Repeat penalty",
+        False,
+        0.0,
+        2.0,
+        0.05,
+        "llama.cpp's own loop breaker (Ollama, LM Studio). 1 is off; 1.05 is "
+        "enough for a long think block. 0 to 2",
+    ),
 )
 _KNOB_BY_FIELD = {knob.field: knob for knob in _KNOBS}
 
@@ -534,7 +544,9 @@ class DoctorModal(ModalScreen[None]):
                 classes="doctor-knob-hint",
             )
         )
-        widgets.append(Button("Reset all to Code-AI defaults", id="doctor-sampling-reset"))
+        widgets.append(
+            Button("Reset all to Code-AI defaults", variant="error", id="doctor-sampling-reset")
+        )
         return widgets
 
     def on_input_changed(self, event: Input.Changed) -> None:

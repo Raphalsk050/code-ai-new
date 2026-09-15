@@ -221,7 +221,12 @@ def test_sampling_loads_from_config_file(tmp_path) -> None:
     assert chat["top_p"] == 0.95
     assert chat["presence_penalty"] == 0.0
     # top_k/min_p are not OpenAI fields -> forwarded via extra_body alongside passthrough.
-    assert chat["extra_body"] == {"repetition_penalty": 1.05, "top_k": 20, "min_p": 0.0}
+    assert chat["extra_body"] == {
+        "repetition_penalty": 1.05,
+        "top_k": 20,
+        "min_p": 0.0,
+        "repeat_penalty": 1.05,
+    }
 
     responses = sampling.responses_kwargs()
     assert "presence_penalty" not in responses
@@ -239,8 +244,11 @@ def test_sampling_omits_unset_fields(tmp_path) -> None:
                     "temperature": None,
                     "top_p": None,
                     "presence_penalty": None,
+                    "frequency_penalty": None,
                     "top_k": None,
                     "min_p": None,
+                    "repeat_penalty": None,
+                    "reasoning_effort": None,
                 },
             }
         ),
@@ -379,3 +387,38 @@ def test_config_init_accepts_overrides_after_subcommand(tmp_path) -> None:
     assert args.init_workspace == tmp_path
     assert args.init_api_mode == "ollama"
     assert args.init_model == "local-model"
+
+
+def test_repeat_penalty_is_lifted_out_of_extra_body(tmp_path) -> None:
+    # It used to be reachable only through the passthrough; a file from then
+    # must keep sending it, and the Model tab's knob must show it.
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "api_mode": "completions",
+                "workspace": str(tmp_path),
+                "sampling": {"extra_body": {"repeat_penalty": 1.3, "other": 1}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    sampling = load_config(explicit_path=config_path).sampling
+
+    assert sampling.repeat_penalty == 1.3
+    assert sampling.extra_body == {"other": 1}
+    assert sampling.chat_completion_kwargs()["extra_body"]["repeat_penalty"] == 1.3
+    assert sampling.responses_kwargs()["extra_body"]["repeat_penalty"] == 1.3
+    assert sampling.ollama_options()["repeat_penalty"] == 1.3
+
+
+def test_the_defaults_think_at_xhigh_with_a_cool_sampler() -> None:
+    from code_ai.config.models import SamplingConfig
+
+    sampling = SamplingConfig.from_mapping({})
+
+    assert sampling.reasoning_effort == "xhigh"
+    assert sampling.temperature == 0.6
+    assert sampling.frequency_penalty == 0.0
+    assert sampling.repeat_penalty == 1.05
+    assert sampling.ollama_options()["repeat_penalty"] == 1.05
