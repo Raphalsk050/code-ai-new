@@ -95,7 +95,11 @@ def probe_directory(
                 continue
 
             report.waited_s += outcome.waited_s
-            if not outcome.atomic:
+            # ``degraded``, not ``atomic``: on Windows an existing file is
+            # rewritten in place by design, and counting that as lost
+            # atomicity told every quiet Windows host it was being interfered
+            # with.
+            if outcome.degraded:
                 report.non_atomic += 1
             elif outcome.attempts > 1:
                 report.retried += 1

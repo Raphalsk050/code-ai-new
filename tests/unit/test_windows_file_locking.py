@@ -75,6 +75,10 @@ def force_the_rename_path(monkeypatch):
     """
 
     monkeypatch.setattr(fileio, "_replace_file_win", lambda source, target: False)
+    # Same reason, one layer up: on Windows an existing file is rewritten in
+    # place before any swap is tried, so a lock on the swap would never be
+    # reached there either. These tests are about the swap.
+    monkeypatch.setattr(fileio, "_on_windows", lambda: False)
 
 
 async def test_a_write_rides_out_a_lock_that_lets_go(tmp_path, monkeypatch) -> None:
