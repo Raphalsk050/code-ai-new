@@ -38,6 +38,10 @@ def force_the_rename_path(monkeypatch):
     """
 
     monkeypatch.setattr(fileio, "_replace_file_win", lambda source, target: False)
+    # Same reason, one layer up: on Windows an existing file is rewritten in
+    # place before any swap is tried, so a lock on the swap would never be
+    # reached there either. These tests are about the swap.
+    monkeypatch.setattr(fileio, "_on_windows", lambda: False)
 
 
 def test_a_quiet_host_reports_nothing_wrong(tmp_path) -> None:
@@ -112,3 +116,16 @@ def test_the_command_exits_zero_on_a_quiet_host(tmp_path, capsys) -> None:
     assert code == 0
     assert "Nothing is interfering" in output
     assert PROBE_FILENAME not in [p.name for p in tmp_path.iterdir()]
+
+
+def test_a_quiet_windows_host_reports_nothing_wrong(tmp_path, monkeypatch) -> None:
+    # Windows rewrites an existing file in place by design. That is not lost
+    # atomicity, and the probe used to report it as interference on every
+    # round after the first.
+    monkeypatch.setattr(fileio, "_on_windows", lambda: True)
+
+    report = probe_directory(tmp_path, policy=FAST, rounds=5, fallback=True)
+
+    assert report.ok is True
+    assert report.clean == 5
+    assert report.non_atomic == 0
