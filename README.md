@@ -22,6 +22,20 @@ The CLI and UI do not parse provider SDK objects or execute tools directly. Prov
 ## Install
 
 ```bash
+./install.sh     # Linux, macOS, Git Bash
+install.bat      # Windows
+```
+
+Both create `.venv`, install the project editable, and tell pip to trust the
+PyPI hosts, because a network that re-signs TLS with its own certificate fails
+every download otherwise - the same reason `ssl_verification` defaults to off.
+Options: `--extras dev,desktop` for the screenshot tools, `--venv DIR` for
+another location, `--browser` to download Chromium up front instead of on
+first use, `--verify-ssl` to keep certificate checks on.
+
+By hand, in an environment that is already set up:
+
+```bash
 python -m pip install -e ".[dev]"
 ```
 
