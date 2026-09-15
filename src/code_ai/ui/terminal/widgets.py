@@ -718,8 +718,6 @@ _TRACE_PREFIXES = (
 # are collapsed so the dim trace stays compact instead of sprawling.
 _BLANK_RUN = re.compile(r"\n[ \t]*\n+")
 
-# "model> requested <name> tool" — the name is chipped as the tool that ran.
-_TOOL_REQUEST = re.compile(r"^model> requested (?P<name>\S+) tool$")
 _TOOL_LINE_PREFIX = "tool> "
 
 
@@ -793,14 +791,16 @@ def thinking_panel_body(line: str) -> str:
     return "\n".join(rows)
 
 
-def thinking_size_label(line: str) -> str:
+def thinking_size_label(line: str, *, size: int | None = None) -> str:
     """Compact size of a reasoning block, for the panel's border subtitle.
 
     The panel only ever shows its newest rows, so without this the user has no
     idea whether the model has been reasoning for two lines or two pages.
+    ``size`` is the whole line's length when ``line`` is only its tail.
     """
-    text = line[len(THINKING_PREFIX) :] if line.startswith(THINKING_PREFIX) else line
-    size = len(text)
+    prefixed = line.startswith(THINKING_PREFIX)
+    text = line[len(THINKING_PREFIX) :] if prefixed else line
+    size = len(text) if size is None else size - (len(THINKING_PREFIX) if prefixed else 0)
     if size < 1000:
         return f"{size} chars"
     return f"{size / 1000:.1f}k chars"
@@ -892,25 +892,21 @@ def render_conversation_line(
         rest = line[len("you> ") :]
         chip = _chip("you", palette.success)
         return chip.append(Content.styled(f" {rest}", palette.success)) if rest else chip
-    request = _TOOL_REQUEST.match(line)
-    if request:
-        # The model asked to run a tool: keep the dim "model> requested … tool"
-        # framing, only the tool name is tinted so the eye lands on which tool.
-        return (
-            Content.styled("model> requested ", palette.trace)
-            .append(Content.styled(request["name"], f"bold {palette.info}"))
-            .append(Content.styled(" tool", palette.trace))
-        )
     if line.startswith(_TOOL_LINE_PREFIX):
-        # A tool's lifecycle ("tool> <name> started/completed …"): tint only the
-        # tool name, status stays in the dim trace gray.
+        # A tool call that ran ("tool> <name>: <result>"): tint only the tool
+        # name, the result summary stays in the dim trace gray.
         rest = line[len(_TOOL_LINE_PREFIX) :]
-        name, sep, status = rest.partition(" ")
+        cut = len(rest)
+        for stop in (":", " "):
+            pos = rest.find(stop)
+            if pos != -1:
+                cut = min(cut, pos)
+        name, remainder = rest[:cut], rest[cut:]
         result = Content.styled(_TOOL_LINE_PREFIX, palette.trace).append(
             Content.styled(name, f"bold {palette.info}")
         )
-        if sep:
-            result = result.append(Content.styled(f" {status}", palette.trace))
+        if remainder:
+            result = result.append(Content.styled(remainder, palette.trace))
         return result
     if line.startswith(("thinking> ", "working> ")):
         return _BLANK_RUN.sub("\n", line)
