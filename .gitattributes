@@ -1,0 +1,3 @@
+# A shell script with CRLF is not a shell script on Linux.
+*.sh text eol=lf
+*.bat text eol=crlf
