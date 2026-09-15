@@ -19,10 +19,29 @@ import sqlite3
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from code_ai.index.chunking import Chunk
 
 SCHEMA_VERSION = 1
+
+try:
+    # Not a dependency of the project, so the frozen binary may not have it;
+    # where it is present, scoring the whole table is one matrix product.
+    import numpy as _np
+except Exception:  # pragma: no cover - numpy is optional
+    _np = None
+
+try:
+    # 3.12+: a dot product in C. Still a Python-level loop over chunks, and
+    # array('f') misses its list fast path, so it is the fallback, not the
+    # fast path: ~120ms for 4k chunks against 0.2ms with numpy.
+    _sumprod = math.sumprod
+except AttributeError:  # pragma: no cover - 3.11
+
+    def _sumprod(a, b):  # type: ignore[misc]
+        return sum(x * y for x, y in zip(a, b, strict=True))
+
 
 _CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
@@ -35,6 +54,23 @@ class FileRecord:
     sha256: str
     mtime_ns: int
     size: int
+
+
+@dataclass(slots=True)
+class _VectorCache:
+    """Every stored vector of one model, unit length, in memory.
+
+    Scoring a query used to read every blob back out of SQLite and normalise
+    it again, per query: 36ms for 3.5k chunks and growing with the tree. Read
+    once and kept, the same search is a dot product per chunk.
+    """
+
+    ids: list[int]
+    paths: list[str]
+    vectors: list[array.array]
+    # The same vectors as one (chunks x dim) float32 matrix, when numpy is
+    # around and every vector has the same width.
+    matrix: Any = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -149,6 +185,15 @@ def _unpack(blob: bytes) -> array.array:
     return values
 
 
+def _unit(vector: array.array) -> array.array | None:
+    """``vector`` scaled to length one, or ``None`` for the zero vector."""
+
+    norm = math.sqrt(_sumprod(vector, vector))
+    if norm == 0:
+        return None
+    return array.array("f", (value / norm for value in vector))
+
+
 class IndexStore:
     """Chunks, their lexical index and their embeddings, in one SQLite file."""
 
@@ -156,6 +201,9 @@ class IndexStore:
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        # Filled by the first vector search after a write, dropped by the
+        # next write. The embeddings table stays the source of truth.
+        self._vectors: dict[str, _VectorCache] = {}
         self._conn = sqlite3.connect(str(path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -297,6 +345,7 @@ class IndexStore:
         """Store ``chunks`` as the whole content of ``path``; returns the chunk count."""
 
         with self._lock, self._conn:
+            self._vectors.clear()
             self._conn.execute("DELETE FROM chunks WHERE path = ?", (path,))
             self._conn.execute(
                 "INSERT INTO files(path, sha256, mtime_ns, size) VALUES (?, ?, ?, ?) "
@@ -325,10 +374,13 @@ class IndexStore:
     def remove_file(self, path: str) -> bool:
         with self._lock, self._conn:
             cursor = self._conn.execute("DELETE FROM files WHERE path = ?", (path,))
+            if cursor.rowcount > 0:
+                self._vectors.clear()
         return cursor.rowcount > 0
 
     def clear(self) -> None:
         with self._lock, self._conn:
+            self._vectors.clear()
             self._conn.execute("DELETE FROM files")
             self._conn.execute("DELETE FROM chunks")
             self._conn.execute("DELETE FROM embeddings")
@@ -364,12 +416,12 @@ class IndexStore:
             for row in rows
         }
 
-    def chunk_paths(self, ids: list[int]) -> dict[int, str]:
-        """Just the paths of these chunks, for reranking before the text is read.
+    def chunk_heads(self, ids: list[int]) -> dict[int, tuple[str, str]]:
+        """Path and symbol of these chunks, for reranking before the text is read.
 
         Reranking needs to see every candidate, but the candidate list is wider
         than what is returned; pulling each chunk's ``text`` only to throw most
-        of it away is the expensive part, so the rerank runs on paths alone.
+        of it away is the expensive part, so the rerank runs on the heads alone.
         """
 
         if not ids:
@@ -377,9 +429,9 @@ class IndexStore:
         placeholders = ",".join("?" for _ in ids)
         with self._lock:
             rows = self._conn.execute(
-                f"SELECT id, path FROM chunks WHERE id IN ({placeholders})", ids
+                f"SELECT id, path, symbol FROM chunks WHERE id IN ({placeholders})", ids
             ).fetchall()
-        return {int(row["id"]): str(row["path"]) for row in rows}
+        return {int(row["id"]): (str(row["path"]), str(row["symbol"])) for row in rows}
 
     # ------------------------------------------------------------------ #
     # Lexical search
@@ -478,6 +530,7 @@ class IndexStore:
         if not vectors:
             return
         with self._lock, self._conn:
+            self._vectors.clear()
             self._conn.executemany(
                 "INSERT INTO embeddings(chunk_id, model, dim, vector) VALUES (?, ?, ?, ?) "
                 "ON CONFLICT(chunk_id) DO UPDATE SET model = excluded.model, "
@@ -487,6 +540,7 @@ class IndexStore:
 
     def drop_embeddings(self, *, except_model: str | None = None) -> None:
         with self._lock, self._conn:
+            self._vectors.clear()
             if except_model is None:
                 self._conn.execute("DELETE FROM embeddings")
             else:
@@ -509,31 +563,64 @@ class IndexStore:
     ) -> list[tuple[int, float]]:
         """Chunk ids ranked by cosine similarity to ``query_vector``."""
 
-        sql = "SELECT e.chunk_id AS id, e.vector AS vector FROM embeddings e"
-        params: list[object] = []
-        if path_prefix:
-            sql += " JOIN chunks c ON c.id = e.chunk_id"
-        sql += " WHERE e.model = ?"
-        params.append(model)
-        if path_prefix:
-            sql += " AND c.path LIKE ? ESCAPE '\\'"
-            params.append(_like_prefix(path_prefix))
-        with self._lock:
-            rows = self._conn.execute(sql, params).fetchall()
-        query = array.array("f", query_vector)
-        query_norm = math.sqrt(sum(value * value for value in query))
-        if query_norm == 0:
+        query = _unit(array.array("f", query_vector))
+        if query is None:
             return []
+        cache = self._vector_cache(model)
+        normalized = path_prefix.strip("/")
+        want = f"{normalized}/" if normalized else ""
         scored: list[tuple[int, float]] = []
-        for row in rows:
-            vector = _unpack(row["vector"])
+        if cache.matrix is not None and cache.matrix.shape[1] == len(query):
+            scores = cache.matrix @ _np.asarray(query, dtype=_np.float32)
+            # Stable, and the cache is in id order, so ties fall to the lower id
+            # exactly as the loop below would have them.
+            for index in _np.argsort(-scores, kind="stable"):
+                score = float(scores[index])
+                if score <= 0:
+                    break
+                if want and not cache.paths[index].startswith(want):
+                    continue
+                scored.append((cache.ids[index], score))
+                if len(scored) >= limit:
+                    break
+            return scored
+        for chunk_id, path, vector in zip(cache.ids, cache.paths, cache.vectors, strict=True):
+            if want and not path.startswith(want):
+                continue
             if len(vector) != len(query):
                 continue
-            score = _cosine(query, vector, query_norm)
+            score = _sumprod(query, vector)
             if score > 0:
-                scored.append((int(row["id"]), score))
+                scored.append((chunk_id, score))
         scored.sort(key=lambda item: (-item[1], item[0]))
         return scored[:limit]
+
+    def _vector_cache(self, model: str) -> _VectorCache:
+        with self._lock:
+            cache = self._vectors.get(model)
+            if cache is not None:
+                return cache
+            rows = self._conn.execute(
+                "SELECT e.chunk_id AS id, c.path AS path, e.vector AS vector "
+                "FROM embeddings e JOIN chunks c ON c.id = e.chunk_id "
+                "WHERE e.model = ? ORDER BY e.chunk_id",
+                (model,),
+            ).fetchall()
+            cache = _VectorCache(ids=[], paths=[], vectors=[])
+            for row in rows:
+                unit = _unit(_unpack(row["vector"]))
+                if unit is None:
+                    continue
+                cache.ids.append(int(row["id"]))
+                cache.paths.append(str(row["path"]))
+                cache.vectors.append(unit)
+            widths = {len(vector) for vector in cache.vectors}
+            if _np is not None and len(widths) == 1:
+                cache.matrix = _np.frombuffer(
+                    b"".join(vector.tobytes() for vector in cache.vectors), dtype=_np.float32
+                ).reshape(len(cache.vectors), widths.pop())
+            self._vectors[model] = cache
+            return cache
 
     def close(self) -> None:
         with self._lock:
@@ -543,22 +630,6 @@ class IndexStore:
         with self._lock:
             rows = self._conn.execute("SELECT key, value FROM meta").fetchall()
         return {str(row["key"]): str(row["value"]) for row in rows}
-
-
-def _cosine(query: array.array, vector: array.array, query_norm: float) -> float:
-    try:
-        import numpy  # type: ignore[import-not-found]
-    except Exception:  # pragma: no cover - numpy is optional
-        dot = 0.0
-        norm = 0.0
-        for a, b in zip(query, vector, strict=True):
-            dot += a * b
-            norm += b * b
-        return dot / (query_norm * math.sqrt(norm)) if norm else 0.0
-    a = numpy.frombuffer(query.tobytes(), dtype=numpy.float32)
-    b = numpy.frombuffer(vector.tobytes(), dtype=numpy.float32)
-    norm = float(numpy.linalg.norm(b))
-    return float(a.dot(b)) / (query_norm * norm) if norm else 0.0
 
 
 def _like_prefix(prefix: str) -> str:

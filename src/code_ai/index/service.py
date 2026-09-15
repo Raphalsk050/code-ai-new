@@ -20,6 +20,7 @@ import fnmatch
 import hashlib
 import logging
 import os
+import re
 import time
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
@@ -32,7 +33,7 @@ from code_ai.core.errors import ProviderError
 from code_ai.events.models import EventEnvelope
 from code_ai.index.chunking import Chunk, chunk_file
 from code_ai.index.embeddings import EmbeddingClient
-from code_ai.index.store import ChunkRow, IndexStore
+from code_ai.index.store import ChunkRow, IndexStore, query_terms
 from code_ai.tools.filesystem.list_files import DEFAULT_EXCLUDES
 
 logger = logging.getLogger(__name__)
@@ -108,6 +109,12 @@ _BINARY_SUFFIXES = frozenset(
 # shared DEFAULT_EXCLUDES (which list_files and search_code also honour).
 _EXCLUDED_DIR_SUFFIXES = (".egg-info", ".dist-info")
 _RRF_K = 60.0
+# How many chunks each retriever hands to the rerank. The rerank can only
+# promote what it is given: on a plain BM25 list a source file sat at #29
+# behind twenty-eight of its own tests, so a pool of twenty never contained
+# it and the test penalty had nothing to work on. FTS answers in under a
+# millisecond, so a wide pool costs nothing.
+_CANDIDATE_POOL = 100
 # Files between progress reports. Every file would emit thousands of events for
 # a bar that only has so many cells; this is often enough to look continuous.
 _PROGRESS_EVERY = 20
@@ -211,6 +218,11 @@ class CodeIndexService:
         self._drain_task: asyncio.Task[None] | None = None
         self._refreshing = False
         self._last_error: str | None = None
+        # Whether the user has been told the embedding endpoint is down. Said
+        # once per outage: a warning per search would be the noise the index
+        # exists to save, and silence was worse - the fall-back to lexical
+        # left search_index answering "semantic: false" with nobody watching.
+        self._semantic_warned = False
         self._closed = False
         self._adopt_embedder(embedder)
 
@@ -437,9 +449,9 @@ class CodeIndexService:
             try:
                 vectors = await self.embedder.embed([text for _, text in batch])
             except ProviderError as exc:
-                self._last_error = str(exc)
                 report.errors.append(f"embeddings: {exc}")
                 logger.warning("code index: embeddings unavailable: %s", exc)
+                await self._note_semantic_outage(str(exc))
                 break
             self.store.store_embeddings(
                 model,
@@ -447,8 +459,28 @@ class CodeIndexService:
             )
             embedded += len(batch)
             self._emit_progress("embedding", min(embedded, outstanding), outstanding)
-            self._last_error = None
+            self._semantic_recovered()
         return embedded
+
+    async def _note_semantic_outage(self, message: str) -> None:
+        self._last_error = message
+        if self._semantic_warned:
+            return
+        self._semantic_warned = True
+        await self._emit(
+            "warning",
+            {
+                "message": (
+                    f"code index: semantic search unavailable ({message}); "
+                    "answering from the lexical index until the embedding "
+                    "endpoint is back"
+                )
+            },
+        )
+
+    def _semantic_recovered(self) -> None:
+        self._last_error = None
+        self._semantic_warned = False
 
     async def touch(self, relative_path: str) -> None:
         """Queue one workspace file for (re)indexing in the background."""
@@ -516,7 +548,7 @@ class CodeIndexService:
     ) -> list[SearchHit]:
         limit = max(1, limit)
         prefix = path_prefix.replace("\\", "/").strip("/").rstrip(".")
-        candidates = max(limit * 3, 20)
+        candidates = max(limit * 12, _CANDIDATE_POOL)
         lexical = await asyncio.to_thread(
             self.store.lexical_search, query, limit=candidates, path_prefix=prefix
         )
@@ -535,19 +567,26 @@ class CodeIndexService:
                     limit=candidates,
                     path_prefix=prefix,
                 )
+                self._semantic_recovered()
             except ProviderError as exc:
-                self._last_error = str(exc)
                 logger.warning("code index: semantic search unavailable: %s", exc)
+                await self._note_semantic_outage(str(exc))
         fused = _fuse(lexical, vector)
-        paths = await asyncio.to_thread(self.store.chunk_paths, list(fused))
-        weight = _path_weights(query, paths)
-        ordered = sorted(
-            fused.items(),
-            key=lambda item: (-item[1][0] * weight(item[0]), item[0]),
+        heads = await asyncio.to_thread(self.store.chunk_heads, list(fused))
+        path_weight = _path_weights(query, {cid: path for cid, (path, _) in heads.items()})
+        symbol_weight = _symbol_weights(query, heads)
+        # The score a hit carries is the one it was ordered by, so the model
+        # reading the list sees the numbers fall in the order the hits come.
+        ranked = sorted(
+            (
+                (chunk_id, score * path_weight(chunk_id) * symbol_weight(chunk_id), sources)
+                for chunk_id, (score, sources) in fused.items()
+            ),
+            key=lambda item: (-item[1], item[0]),
         )[:limit]
-        rows = self.store.chunk_rows([chunk_id for chunk_id, _ in ordered])
+        rows = self.store.chunk_rows([chunk_id for chunk_id, _, _ in ranked])
         hits: list[SearchHit] = []
-        for chunk_id, (score, sources) in ordered:
+        for chunk_id, score, sources in ranked:
             row = rows.get(chunk_id)
             if row is None:
                 continue
@@ -715,24 +754,66 @@ def _fuse(
 # code the user asked about is pushed off the page.
 _SECONDARY_MARKERS = ("test", "spec", "fixture", "mock", "example", "sample", "benchmark")
 _SECONDARY_PENALTY = 0.55
+# Prose does the same in its own way: a README paragraph about a behaviour is
+# written in the words of the question, so it outranks the function that
+# implements it. Demoted less than tests - a doc is sometimes the answer - and
+# not at all when the question is about the docs.
+_DOC_MARKERS = ("doc", "readme", "guide", "manual", "tutorial", "how to", "changelog")
+_DOC_SUFFIXES = (".md", ".rst", ".txt")
+_DOC_PENALTY = 0.7
 
 
 def _path_weights(query: str, paths: dict[int, str]):
-    """A per-chunk rank multiplier that keeps tests from burying the source.
+    """A per-chunk rank multiplier that keeps tests and prose from burying the source.
 
-    Skipped entirely when the query itself is about tests: someone asking
-    "where is the retry policy tested" wants exactly the files this demotes.
+    Each demotion is skipped when the query itself asks for that kind of file:
+    "where is the retry policy tested" wants the tests, "readme for sampling"
+    wants the prose.
     """
 
     lowered = query.lower()
-    if any(marker in lowered for marker in _SECONDARY_MARKERS):
-        return lambda chunk_id: 1.0
-    penalised = {
-        chunk_id
-        for chunk_id, path in paths.items()
-        if any(marker in path.lower() for marker in _SECONDARY_MARKERS)
+    about_tests = any(marker in lowered for marker in _SECONDARY_MARKERS)
+    about_docs = any(marker in lowered for marker in _DOC_MARKERS)
+    weights: dict[int, float] = {}
+    for chunk_id, path in paths.items():
+        lowered_path = path.lower()
+        weight = 1.0
+        if not about_tests and any(marker in lowered_path for marker in _SECONDARY_MARKERS):
+            weight *= _SECONDARY_PENALTY
+        if not about_docs and lowered_path.endswith(_DOC_SUFFIXES):
+            weight *= _DOC_PENALTY
+        if weight != 1.0:
+            weights[chunk_id] = weight
+    return lambda chunk_id: weights.get(chunk_id, 1.0)
+
+
+# A symbol named in the query outranks every chunk that merely mentions it:
+# "where is atomic_write_bytes" wants the def, and BM25 hands that slot to
+# whichever test says the name most often. Only a name that reads as an
+# identifier counts - snake_case, camelCase, or the query's own words run
+# together - so an ordinary word that happens to name a function is left to
+# the lexical ranking.
+_SYMBOL_BOOST = 2.0
+_IDENTIFIER_IN_QUERY = re.compile(r"[A-Za-z_][A-Za-z0-9_]+")
+_CAMEL_INSIDE = re.compile(r"[a-z][A-Z]")
+
+
+def _symbol_weights(query: str, heads: dict[int, tuple[str, str]]):
+    """A per-chunk rank multiplier that puts a named symbol's definition first."""
+
+    wanted = {
+        token.lower().replace("_", "")
+        for token in _IDENTIFIER_IN_QUERY.findall(query)
+        if "_" in token.strip("_") or _CAMEL_INSIDE.search(token)
     }
-    return lambda chunk_id: _SECONDARY_PENALTY if chunk_id in penalised else 1.0
+    wanted.add("".join(query_terms(query)))
+    wanted.discard("")
+    boosted = {
+        chunk_id
+        for chunk_id, (_, symbol) in heads.items()
+        if symbol and symbol.rpartition(".")[2].lower().replace("_", "") in wanted
+    }
+    return lambda chunk_id: _SYMBOL_BOOST if chunk_id in boosted else 1.0
 
 
 def _hit(row: ChunkRow, score: float, sources: list[str], snippet_chars: int) -> SearchHit:
