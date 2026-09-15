@@ -322,13 +322,21 @@ async def test_doctor_model_tab_applies_sampling_live(tmp_path) -> None:
         modal._pick("reasoning_effort-high")
         assert config.sampling.reasoning_effort == "high"
 
+        # repeat_penalty has a knob of its own rather than living in the JSON.
+        modal.query_one("#doctor-knob-repeat_penalty", Input).value = "1.2"
+        await pilot.pause(1.0)
+        assert config.sampling.repeat_penalty == 1.2
+
         # Reset puts every control back to Code-AI's defaults, fields included.
+        # It undoes everything above, so it reads as the destructive one.
+        assert modal.query_one("#doctor-sampling-reset", Button).variant == "error"
         modal._reset_sampling()
         await pilot.pause(0.1)
         assert config.sampling.temperature == DEFAULT_SAMPLING["temperature"]
         assert config.sampling.top_k == DEFAULT_SAMPLING["top_k"]
-        assert config.sampling.reasoning_effort is None
-        assert modal.query_one("#doctor-knob-temperature", Input).value == "1"
+        assert config.sampling.repeat_penalty == DEFAULT_SAMPLING["repeat_penalty"]
+        assert config.sampling.reasoning_effort == DEFAULT_SAMPLING["reasoning_effort"]
+        assert modal.query_one("#doctor-knob-temperature", Input).value == "0.6"
 
 
 async def test_subagent_events_populate_agents_panel(tmp_path) -> None:
@@ -1418,7 +1426,7 @@ def test_config_effort_command_rejects_unknown_value(tmp_path) -> None:
         config_path=config_path,
     )
     assert "Unsupported reasoning effort" in result
-    assert fake_app.session.config.sampling.reasoning_effort is None
+    assert fake_app.session.config.sampling.reasoning_effort == "xhigh"
     assert not config_path.exists()
 
 

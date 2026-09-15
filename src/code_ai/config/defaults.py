@@ -257,24 +257,31 @@ DEFAULT_BUDGETS: dict[str, int] = {
 
 
 DEFAULT_SAMPLING: dict[str, object] = {
-    # Tuned for Qwen3.8-27B in thinking mode, the model's default and the mode
-    # Code-AI runs it in: the model card recommends temperature 1.0, top_p
-    # 0.95, top_k 20, min_p 0.0, presence_penalty 0.0 (repetition_penalty 1.0,
-    # which is every server's default, so it is not sent).
+    # Tuned for Qwen3.8-27B in thinking mode at the highest reasoning effort,
+    # which is how Code-AI runs it. The model card's temperature 1.0 holds up
+    # for a short think block and falls apart in a long one - by the end of an
+    # xhigh block the model was drifting between languages and topics. 0.6
+    # keeps it on the rails, and both penalties stay off because they do the
+    # same damage as the block grows.
     # https://huggingface.co/Qwen/Qwen3.8-27B
     #
     # Standard OpenAI sampling controls. ``None`` means "omit and let the
     # endpoint use its own default".
-    "temperature": 1.0,
+    "temperature": 0.6,
     "top_p": 0.95,
     "presence_penalty": 0.0,
-    "frequency_penalty": None,
+    "frequency_penalty": 0.0,
     # Not part of the OpenAI schema; forwarded via ``extra_body`` for
     # OpenAI-compatible servers (vLLM, SGLang, Ollama's OpenAI shim, ...).
     "top_k": 20,
     "min_p": 0.0,
-    # Responses-API reasoning controls (official OpenAI reasoning models).
-    "reasoning_effort": None,
+    # llama.cpp's own repetition control (Ollama, LM Studio). 1.0 is off; a
+    # touch above it stops a long think block circling without flattening the
+    # prose the way frequency_penalty does.
+    "repeat_penalty": 1.05,
+    # Reasoning controls. Sent on Chat Completions and Responses; on most local
+    # servers this is the switch that turns thinking on as well as how much.
+    "reasoning_effort": "xhigh",
     "reasoning_summary": None,
     # Free-form passthrough merged into the request ``extra_body``.
     "extra_body": {},

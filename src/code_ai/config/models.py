@@ -530,9 +530,10 @@ def _opt_str(value: Any) -> str | None:
 class SamplingConfig:
     """Model sampling and reasoning controls shared by every provider.
 
-    Standard fields map directly onto the OpenAI request body. ``top_k`` and
-    ``min_p`` are not part of the OpenAI schema, so they are forwarded through
-    ``extra_body`` for OpenAI-compatible servers (vLLM, SGLang, ...).
+    Standard fields map directly onto the OpenAI request body. ``top_k``,
+    ``min_p`` and ``repeat_penalty`` are not part of the OpenAI schema, so they
+    are forwarded through ``extra_body`` for OpenAI-compatible servers (vLLM,
+    SGLang, llama.cpp, ...) and as ``options`` in native Ollama mode.
     ``reasoning_effort`` is sent on both Chat Completions and Responses (it is
     what enables thinking on most OpenAI-compatible local servers, not just a
     dial for how much); ``reasoning_summary`` only applies to the Responses API.
@@ -545,6 +546,7 @@ class SamplingConfig:
     frequency_penalty: float | None = None
     top_k: int | None = None
     min_p: float | None = None
+    repeat_penalty: float | None = None
     reasoning_effort: str | None = None
     reasoning_summary: str | None = None
     extra_body: dict[str, Any] = field(default_factory=dict)
@@ -557,6 +559,12 @@ class SamplingConfig:
         extra = values.get("extra_body") or {}
         if not isinstance(extra, dict):
             raise ConfigurationError("sampling.extra_body must be a JSON object.")
+        extra = dict(extra)
+        if "repeat_penalty" in extra and "repeat_penalty" not in (data or {}):
+            # It used to live only in the passthrough. A file from then keeps
+            # working, and the value shows up on the Model tab's own knob
+            # instead of being buried in the JSON field.
+            values["repeat_penalty"] = extra.pop("repeat_penalty")
         return cls(
             temperature=_opt_float(values.get("temperature")),
             top_p=_opt_float(values.get("top_p")),
@@ -564,9 +572,10 @@ class SamplingConfig:
             frequency_penalty=_opt_float(values.get("frequency_penalty")),
             top_k=_opt_int(values.get("top_k")),
             min_p=_opt_float(values.get("min_p")),
+            repeat_penalty=_opt_float(values.get("repeat_penalty")),
             reasoning_effort=_opt_str(values.get("reasoning_effort")),
             reasoning_summary=_opt_str(values.get("reasoning_summary")),
-            extra_body=dict(extra),
+            extra_body=extra,
         )
 
     def validate(self) -> None:
@@ -578,6 +587,8 @@ class SamplingConfig:
             raise ConfigurationError("sampling.min_p must be between 0.0 and 1.0.")
         if self.top_k is not None and self.top_k < 0:
             raise ConfigurationError("sampling.top_k must be zero or positive.")
+        if self.repeat_penalty is not None and not 0.0 <= self.repeat_penalty <= 2.0:
+            raise ConfigurationError("sampling.repeat_penalty must be between 0.0 and 2.0.")
         for name, value in (
             ("presence_penalty", self.presence_penalty),
             ("frequency_penalty", self.frequency_penalty),
@@ -607,6 +618,8 @@ class SamplingConfig:
             extra_body.setdefault("top_k", self.top_k)
         if self.min_p is not None:
             extra_body.setdefault("min_p", self.min_p)
+        if self.repeat_penalty is not None:
+            extra_body.setdefault("repeat_penalty", self.repeat_penalty)
         return extra_body
 
     def chat_completion_kwargs(self) -> dict[str, Any]:
@@ -666,6 +679,8 @@ class SamplingConfig:
             options["top_k"] = self.top_k
         if self.min_p is not None:
             options["min_p"] = self.min_p
+        if self.repeat_penalty is not None:
+            options["repeat_penalty"] = self.repeat_penalty
         if self.presence_penalty is not None:
             options["presence_penalty"] = self.presence_penalty
         if self.frequency_penalty is not None:

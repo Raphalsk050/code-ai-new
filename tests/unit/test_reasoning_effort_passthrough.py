@@ -12,7 +12,7 @@ def test_reasoning_effort_reaches_chat_completions() -> None:
 
 
 def test_unset_reasoning_effort_is_omitted() -> None:
-    kwargs = SamplingConfig.from_mapping({}).chat_completion_kwargs()
+    kwargs = SamplingConfig.from_mapping({"reasoning_effort": None}).chat_completion_kwargs()
     assert "reasoning_effort" not in kwargs
 
 

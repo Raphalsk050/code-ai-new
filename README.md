@@ -168,9 +168,11 @@ The optional `sampling` section tunes how the model generates and whether its
 reasoning ("thinking") is captured. Any field left as `null` is omitted from the
 request so the endpoint default applies.
 
-The defaults are the ones the [Qwen3.8-27B model card](https://huggingface.co/Qwen/Qwen3.8-27B)
-recommends for thinking mode, which is on by default for that model. For a
-different model, set its own recommended values here.
+The defaults are tuned for [Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B)
+in thinking mode at the highest reasoning effort. They sit a little cooler than
+the model card (temperature 0.6 rather than 1.0, penalties off, a light
+`repeat_penalty`): the card's values hold for a short think block and drift in
+a long one. For a different model, set its own recommended values here.
 
 `/doctor model` (the **Model** tab of `/doctor`) edits every field below
 without opening the file: each change is saved and used from the next model
@@ -179,13 +181,14 @@ call, with no restart. Leaving a field empty stops sending it.
 ```json
 {
   "sampling": {
-    "temperature": 1.0,
+    "temperature": 0.6,
     "top_p": 0.95,
     "presence_penalty": 0.0,
-    "frequency_penalty": null,
+    "frequency_penalty": 0.0,
     "top_k": 20,
     "min_p": 0.0,
-    "reasoning_effort": null,
+    "repeat_penalty": 1.05,
+    "reasoning_effort": "xhigh",
     "reasoning_summary": null,
     "extra_body": {}
   }
@@ -194,9 +197,9 @@ call, with no restart. Leaving a field empty stops sending it.
 
 - `temperature`, `top_p`, `presence_penalty`, `frequency_penalty` map to the
   standard OpenAI sampling controls.
-- `top_k` and `min_p` are not part of the OpenAI schema, so they are forwarded
-  through `extra_body` for OpenAI-compatible servers (vLLM, SGLang, ...). In
-  `ollama` mode they go into the request `options`.
+- `top_k`, `min_p` and `repeat_penalty` are not part of the OpenAI schema, so
+  they are forwarded through `extra_body` for OpenAI-compatible servers (vLLM,
+  SGLang, llama.cpp, ...). In `ollama` mode they go into the request `options`.
 - `extra_body` is a free-form passthrough merged into the request body for any
   other vendor-specific knobs.
 - If an endpoint rejects a sampling parameter, the provider warns and retries
