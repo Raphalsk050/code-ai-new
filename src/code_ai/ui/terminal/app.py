@@ -693,7 +693,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
 
         def __init__(self, **kwargs: Any) -> None:
             super().__init__("", markup=False, **kwargs)
-            self._pending: str | None = None
+            self._pending: tuple[str, int] | None = None
             self._painted: int | None = None
             self._timer = None
 
@@ -701,12 +701,17 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self.border_title = "thinking"
             self._timer = self.set_interval(self.TICK, self._tick, pause=True)
 
-        def update_reasoning(self, line: str) -> None:
-            """Queue the newest reasoning; the timer decides when to paint it."""
-            # Length alone identifies the state: the line only ever grows.
-            if len(line) == self._painted:
+        def update_reasoning(self, line: str, size: int | None = None) -> None:
+            """Queue the newest reasoning; the timer decides when to paint it.
+
+            ``size`` is the full length of the line when ``line`` is only its
+            tail (see ``TerminalViewModel.live_line``); the length alone
+            identifies the state, since the line only ever grows.
+            """
+            size = len(line) if size is None else size
+            if size == self._painted:
                 return
-            self._pending = line
+            self._pending = (line, size)
             if self._timer is not None:
                 self._timer.resume()
 
@@ -732,10 +737,10 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 if self._timer is not None:
                     self._timer.pause()
                 return
-            line = self._pending
+            line, size = self._pending
             self._pending = None
-            self._painted = len(line)
-            self.border_subtitle = thinking_size_label(line)
+            self._painted = size
+            self.border_subtitle = thinking_size_label(line, size=size)
             self.update(thinking_panel_body(line))
 
     class CommandOutputPanel(Static):
@@ -1193,6 +1198,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
         def _report_render_failure(self, event_type: str) -> None:
             """Say that an event could not be drawn, without risking a second one."""
             try:
+                self.vm.flush_stream()
                 self.vm.conversation.append(
                     f"warning> the screen could not render {event_type}; "
                     "the transcript may be missing a line"
@@ -1313,6 +1319,10 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             # arrives) cannot trigger a flicker or a full re-render.
             working = self.vm.status in WORKING_STATES
             held_back = working and self._committed < len(convo)
+            if not held_back:
+                # Whatever goes into the scrollback goes in whole: a line still
+                # arriving in fragments is joined before it is mounted.
+                self.vm.flush_stream()
             commit_upto = len(convo) - 1 if held_back else len(convo)
 
             mounted = False
@@ -1326,9 +1336,16 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 # both deferred until the freshly mounted widgets are laid out.
                 self.call_after_refresh(self._trim_and_follow_conversation, log)
 
-            self._paint_live_line(convo[-1] if held_back else "", tail)
+            # A bounded view of the streaming line: the strips below only ever
+            # show its newest rows, and joining the whole line on every delta
+            # is what a page of reasoning used to freeze the terminal with.
+            self._paint_live_line(
+                self.vm.live_line(_STREAM_TAIL_MAX_CHARS) if held_back else "",
+                self.vm.live_line_chars if held_back else 0,
+                tail,
+            )
 
-        def _paint_live_line(self, line: str, tail: Static) -> None:
+        def _paint_live_line(self, line: str, size: int, tail: Static) -> None:
             """Show the line that is still streaming, wherever it belongs.
 
             Reasoning goes into the boxed thinking panel; everything else (the
@@ -1341,7 +1358,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             if line.startswith(THINKING_PREFIX):
                 opening = not panel.display
                 panel.display = True
-                panel.update_reasoning(line)
+                panel.update_reasoning(line, size)
                 if opening:
                     # Paint the first fragment straight away, so the box opens
                     # with reasoning in it rather than empty for a tick.
@@ -1662,6 +1679,9 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             verbatim followed by Enter.
             """
             argument = stripped[len("/term") :].strip()
+            # Any /term is the user asking for the terminal, so a panel /clear
+            # dismissed comes back before the subcommand acts on it.
+            self.vm.reveal_terminal()
             if argument == "status":
                 self._append_conversation_line(self.controller.terminal_status())
                 return
@@ -1945,6 +1965,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
         def _append_conversation_line(self, text: str) -> None:
             if not text:
                 return
+            self.vm.flush_stream()
             self.vm.conversation.extend(text.splitlines())
             self._sync_conversation()
             self._refresh_status()
@@ -2168,6 +2189,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
         async def action_toggle_terminal_focus(self) -> None:
             """Point the composer at the shell, or back at the conversation."""
 
+            self.vm.reveal_terminal()
             if not self.vm.terminal_visible or self.vm.terminal_closed:
                 return
             self.vm.terminal_focused = not self.vm.terminal_focused
@@ -2203,7 +2225,14 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self._apply_terminal_focus()
 
         async def action_clear(self) -> None:
+            self.vm.flush_stream()
             self.vm.conversation.clear()
+            # The terminal panel is session-scoped and survives a new turn, but
+            # /clear is the user wiping the screen, and a dev server's output
+            # left standing in the middle of it is what they were wiping. The
+            # session keeps running; /term brings the panel back.
+            self.vm.dismiss_terminal()
+            self._apply_terminal_focus()
             await self.query_one("#conversation", VerticalScroll).remove_children()
             self.query_one("#stream-tail", Static).update("")
             self._painted.pop("stream-tail", None)

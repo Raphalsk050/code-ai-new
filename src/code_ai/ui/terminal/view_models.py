@@ -18,6 +18,11 @@ _TURN_OVER_STATES = frozenset({"READY", "FAILED", "CLOSED"})
 # Cells in the /index progress bar.
 _INDEX_BAR_CELLS = 24
 
+# Events that grow the line still streaming in. Anything else closes it first
+# (see ``flush_stream``), so every other handler finds a whole line at the end
+# of the transcript.
+_STREAMING_EVENTS = frozenset({"model.stream.delta", "model.thinking.delta"})
+
 
 def render_index_progress(phase: str, done: int, total: int) -> str:
     """One line showing how far an index refresh has got.
@@ -81,6 +86,9 @@ class TerminalViewModel:
     terminal_rows: int = 24
     terminal_cols: int = 80
     terminal_closed: bool = False
+    # The session /clear took off screen. Its own updates keep it hidden; a
+    # different session, or the user reaching for /term, brings the panel back.
+    terminal_dismissed_session: str = ""
     # True while the composer is typing into the PTY instead of into the chat.
     # Held here rather than on the widget so the state survives a repaint and
     # can be read by anything that renders the panel or the prompt.
@@ -101,6 +109,12 @@ class TerminalViewModel:
     # question UI simply never reads it, and the questions still reach the user
     # as the turn's final answer.
     pending_questions: list[dict[str, object]] = field(default_factory=list)
+    # The line still streaming in, as the fragments it arrived in. While it is
+    # open, ``conversation[-1]`` holds only its prefix; ``live_line`` reads it
+    # bounded and ``flush_stream`` joins it once. See ``_extend_streaming_line``.
+    _stream_prefix: str = ""
+    _stream_parts: list[str] = field(default_factory=list, repr=False)
+    _stream_chars: int = 0
 
     def turn_is_over(self) -> bool:
         """Whether the agent has stopped working, however the turn ended."""
@@ -123,6 +137,8 @@ class TerminalViewModel:
         return list(self.subagents.values())
 
     def apply(self, event: EventEnvelope) -> None:
+        if event.event_type not in _STREAMING_EVENTS:
+            self.flush_stream()
         if event.event_type == "status.changed":
             self.status = str(event.payload.get("state", self.status))
             if self.status in _TURN_OVER_STATES:
@@ -272,15 +288,6 @@ class TerminalViewModel:
                     self.conversation[-1] = f"ai> {cleaned}"
                 else:
                     self.conversation.pop()
-        elif event.event_type == "model.response.completed":
-            tool_calls = event.payload.get("tool_calls")
-            if tool_calls:
-                # Name each requested tool explicitly so the transcript shows
-                # *which* tool the model invoked, not just that it invoked one.
-                # The name is rendered as a chip downstream (see widgets.py).
-                for call in tool_calls:
-                    name = call.get("name") if isinstance(call, dict) else None
-                    self.conversation.append(f"model> requested {name or 'tool'} tool")
         elif event.event_type == "tool.call.progress":
             self._apply_tool_progress(event.payload)
         elif event.event_type == "command.output":
@@ -297,9 +304,11 @@ class TerminalViewModel:
             self.conversation.append(
                 f"tool> call was cut off mid-stream, asking again ({attempt}/{total})"
             )
-        elif event.event_type == "tool.call.started":
-            self.conversation.append(f"tool> {event.payload.get('name')} started")
         elif event.event_type == "tool.call.completed":
+            # One line per tool call, written when it lands. The request and
+            # the start used to get a line each, so every call read as three
+            # lines of the same name; the status bar already says a tool is
+            # running, and the result is the part worth a line.
             name = str(event.payload.get("name") or "")
             result = event.payload.get("result")
             detail = ""
@@ -322,7 +331,7 @@ class TerminalViewModel:
                 # The write landed: stop the live window claiming it is still
                 # being typed, even if the stream never marked it complete.
                 self.code_stream_complete = True
-            self.conversation.append(f"tool> {name} completed{detail}")
+            self.conversation.append(f"tool> {name}{detail}")
         elif event.event_type == "tool.call.failed":
             name = event.payload.get("name")
             message = event.payload.get("message", "")
@@ -435,7 +444,8 @@ class TerminalViewModel:
         The line updates in place as the arguments grow, so a large write_file
         shows the file and how much has been written so far instead of the UI
         sitting idle until the finished diff appears. A distinct 'tool~' prefix
-        keeps this transient line apart from the started/completed 'tool>' lines.
+        keeps this transient line apart from the 'tool>' line the call gets
+        once it lands.
         """
 
         name = str(payload.get("name") or "tool")
@@ -539,24 +549,79 @@ class TerminalViewModel:
     def _extend_streaming_line(self, prefix: str, text: str) -> None:
         """Append one streamed fragment to the line it belongs to.
 
-        The line is popped, grown and pushed back rather than grown in place
-        through ``self.conversation[-1] += text``. That reads the same and is
-        the whole difference between linear and quadratic: a subscript target
-        keeps a second reference alive, so CPython copies the entire line on
-        every fragment, and a model that reasons for a page ends up copying
-        hundreds of megabytes. Popped first, the line is the only reference
-        left and the append is amortised O(1).
+        The fragments are kept as a list and joined once, when the line closes.
+        Growing a str fragment by fragment is linear only where the interpreter
+        special-cases ``line += text`` on a sole reference, and CPython 3.14 no
+        longer does: a 160k-fragment reasoning block took two minutes there
+        against milliseconds on 3.12. A list append costs the same everywhere.
 
-        Measured on a 50k-fragment block: 751ms of copying becomes 3ms.
+        While the line is open ``conversation[-1]`` is a placeholder holding its
+        prefix, so the transcript keeps one entry per line. Anyone who needs the
+        text mid-stream reads ``live_line``; ``apply`` flushes before handling
+        any other event, so every other handler sees the whole line.
         """
         if not text:
             return
+        if self._stream_parts and self._stream_prefix == prefix:
+            self._stream_parts.append(text)
+            self._stream_chars += len(text)
+            return
+        self.flush_stream()
         if self.conversation and self.conversation[-1].startswith(prefix):
-            line = self.conversation.pop()
-            line += text
-            self.conversation.append(line)
+            opening = self.conversation.pop()
         else:
-            self.conversation.append(prefix + text)
+            opening = prefix
+        self._stream_prefix = prefix
+        self._stream_parts = [opening, text]
+        self._stream_chars = len(opening) + len(text)
+        self.conversation.append(prefix)
+
+    def flush_stream(self) -> None:
+        """Write the streaming line into ``conversation`` whole. Idempotent."""
+
+        if not self._stream_parts:
+            return
+        line = "".join(self._stream_parts)
+        placeholder = self._stream_prefix
+        self._stream_parts = []
+        self._stream_prefix = ""
+        self._stream_chars = 0
+        if self.conversation and self.conversation[-1] == placeholder:
+            self.conversation[-1] = line
+        else:
+            self.conversation.append(line)
+
+    def live_line(self, max_chars: int) -> str:
+        """The newest line as it stands, with at most ``max_chars`` of body.
+
+        Cheap while a line streams: only the fragments that fit are joined, so
+        painting the tail costs the same for a page of reasoning as for a word.
+        The prefix is always kept so the caller can still tell what kind of
+        line it is looking at.
+        """
+
+        if not self._stream_parts:
+            return self.conversation[-1] if self.conversation else ""
+        prefix = self._stream_prefix
+        if self._stream_chars - len(prefix) <= max_chars:
+            return "".join(self._stream_parts)
+        need = max_chars
+        tail: list[str] = []
+        for part in reversed(self._stream_parts):
+            if len(part) >= need:
+                tail.append(part[-need:])
+                break
+            tail.append(part)
+            need -= len(part)
+        return prefix + "".join(reversed(tail))
+
+    @property
+    def live_line_chars(self) -> int:
+        """Length of the newest line, prefix included, without joining it."""
+
+        if self._stream_parts:
+            return self._stream_chars
+        return len(self.conversation[-1]) if self.conversation else 0
 
     @staticmethod
     def _bound_command_tail(line: str, prefix: str) -> str:
@@ -566,7 +631,11 @@ class TerminalViewModel:
 
     def _apply_terminal_screen(self, payload: dict[object, object]) -> None:
         """Reflect an interactive terminal's emulated screen in the panel state."""
-        self.terminal_session_id = str(payload.get("session_id") or self.terminal_session_id)
+        session_id = str(payload.get("session_id") or self.terminal_session_id)
+        if session_id != self.terminal_dismissed_session:
+            # A session the user never hid: whatever was dismissed is history.
+            self.terminal_dismissed_session = ""
+        self.terminal_session_id = session_id
         self.terminal_screen = str(payload.get("screen") or "")
         rows = payload.get("rows")
         cols = payload.get("columns")
@@ -575,11 +644,30 @@ class TerminalViewModel:
         if isinstance(cols, int):
             self.terminal_cols = cols
         self.terminal_closed = bool(payload.get("closed"))
-        self.terminal_visible = True
+        self.terminal_visible = not self.terminal_dismissed_session
         # A shell that has exited cannot be typed into, so focus is released
         # rather than left pointing at a dead session.
         if self.terminal_closed:
             self.terminal_focused = False
+
+    def dismiss_terminal(self) -> None:
+        """Take the terminal panel off screen without touching the session.
+
+        The poller keeps reporting the session's screen, so hiding the panel
+        alone would last one tick. Remembering which session was dismissed
+        keeps those reports from re-opening it; a new session still shows.
+        """
+
+        self.terminal_visible = False
+        self.terminal_focused = False
+        self.terminal_dismissed_session = self.terminal_session_id
+
+    def reveal_terminal(self) -> None:
+        """Undo a dismissal: the user asked for the terminal by name."""
+
+        self.terminal_dismissed_session = ""
+        if self.terminal_session_id:
+            self.terminal_visible = True
 
     def _apply_subagent_event(self, event: EventEnvelope) -> None:
         """Fold a ``subagent.*`` event into the live AGENTS panel state.

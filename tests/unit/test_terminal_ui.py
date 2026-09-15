@@ -741,8 +741,9 @@ async def test_streaming_deltas_do_not_rerender_whole_transcript(tmp_path) -> No
         assert mounts == 2
         assert terminal_app._committed == len(terminal_app.vm.conversation) - 1
         # The whole stream collapsed into one live line held in the tail Static.
-        assert terminal_app.vm.conversation[-1].startswith("ai> ")
-        assert "49" in terminal_app.vm.conversation[-1]
+        live = terminal_app.vm.live_line(4000)
+        assert live.startswith("ai> ")
+        assert "49" in live
 
         # When the turn finishes the streamed answer must flow into the log
         # instead of being stranded in the live tail below it.
@@ -1137,6 +1138,9 @@ def test_terminal_view_model_shows_model_activity_and_public_thinking() -> None:
     view_model.apply(started)
     view_model.apply(thinking)
     assert "model> thinking step 0..." in view_model.conversation
+    # Still streaming: the line is read through live_line until it closes.
+    assert view_model.live_line(4000) == "thinking> checking files"
+    view_model.flush_stream()
     assert "thinking> checking files" in view_model.conversation
 
 
@@ -2455,7 +2459,7 @@ async def test_thinking_panel_shows_only_the_rows_it_can_fit(tmp_path) -> None:
         assert "line 399 of reasoning" in body
         assert "line 0 of reasoning" not in body
         # Nothing is lost from the transcript itself.
-        assert "line 0 of reasoning" in terminal_app.vm.conversation[-1]
+        assert "line 0 of reasoning" in terminal_app.vm.live_line(10**6)
         assert "chars" in (panel.border_subtitle or "")
 
 
@@ -2786,3 +2790,94 @@ async def test_the_terminal_panel_does_not_look_like_the_thinking_panel(tmp_path
         assert command.styles.border.top[1] != thinking.styles.border.top[1]
         assert command.styles.border_title_color != thinking.styles.border_title_color
         assert command.border_title != thinking.border_title
+
+
+def _event(event_type: str, payload: dict, sequence: int = 1) -> EventEnvelope:
+    return EventEnvelope.create(
+        event_type=event_type,
+        session_id="fake-session",
+        sequence=sequence,
+        payload=payload,
+        source="test",
+    )
+
+
+def test_view_model_writes_one_line_per_tool_call() -> None:
+    # The request, the start and the completion each had a line, so every call
+    # read as three lines of the same tool name. One line, when it lands.
+    from code_ai.ui.terminal.view_models import TerminalViewModel
+
+    view_model = TerminalViewModel()
+    view_model.apply(
+        _event("model.response.completed", {"tool_calls": [{"name": "list_files"}]})
+    )
+    view_model.apply(_event("tool.call.started", {"name": "list_files"}, 2))
+    assert view_model.conversation == []
+
+    view_model.apply(
+        _event("tool.call.completed", {"name": "list_files", "result": {"entries": [1, 2]}}, 3)
+    )
+    assert view_model.conversation == ["tool> list_files: 2 entries"]
+
+
+def test_view_model_keeps_a_dismissed_terminal_hidden_until_asked_for() -> None:
+    from code_ai.ui.terminal.view_models import TerminalViewModel
+
+    view_model = TerminalViewModel()
+    screen = {"session_id": "abc12345", "screen": "$ npm run dev", "closed": False}
+    view_model.apply(_event("terminal.screen.updated", screen))
+    assert view_model.terminal_visible is True
+
+    view_model.dismiss_terminal()
+    assert view_model.terminal_visible is False
+    # The poller keeps reporting the same session; that must not re-open it.
+    view_model.apply(_event("terminal.screen.updated", {**screen, "screen": "ready"}, 2))
+    assert view_model.terminal_visible is False
+    assert view_model.terminal_screen == "ready"
+
+    view_model.reveal_terminal()
+    assert view_model.terminal_visible is True
+
+    # A session the user never hid shows on its own.
+    view_model.dismiss_terminal()
+    view_model.apply(_event("terminal.screen.updated", {**screen, "session_id": "new1"}, 3))
+    assert view_model.terminal_visible is True
+    assert view_model.terminal_dismissed_session == ""
+
+
+async def test_clear_takes_a_running_terminal_off_screen(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        screen = {"session_id": "abc12345", "screen": "$ npm run dev", "closed": False}
+        await fake_app.emit("terminal.screen.updated", screen)
+        await pilot.pause(0.05)
+        assert terminal_app.query_one("#terminal-panel").display is True
+
+        await terminal_app.action_clear()
+        await pilot.pause(0.05)
+        assert terminal_app.query_one("#terminal-panel").display is False
+
+        await fake_app.emit("terminal.screen.updated", {**screen, "screen": "still running"})
+        await pilot.pause(0.05)
+        assert terminal_app.query_one("#terminal-panel").display is False
+
+
+def test_a_streaming_line_is_read_bounded_and_flushed_whole() -> None:
+    from code_ai.ui.terminal.view_models import TerminalViewModel
+
+    view_model = TerminalViewModel()
+    for sequence, word in enumerate(("alpha ", "beta ", "gamma"), start=1):
+        view_model.apply(_event("model.thinking.delta", {"text": word}, sequence))
+
+    # Mid-stream the line is served bounded, newest text first, prefix kept.
+    assert view_model.live_line(4) == "thinking> amma"
+    assert view_model.live_line(4000) == "thinking> alpha beta gamma"
+    assert view_model.live_line_chars == len("thinking> alpha beta gamma")
+    assert len(view_model.conversation) == 1
+
+    # Any other event closes it, and the transcript holds the whole line.
+    view_model.apply(_event("tool.call.completed", {"name": "read_file"}, 4))
+    assert view_model.conversation == ["thinking> alpha beta gamma", "tool> read_file"]
+    assert view_model.live_line(4000) == "tool> read_file"
