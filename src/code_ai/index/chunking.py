@@ -98,20 +98,20 @@ def _python_symbols(text: str, lines: list[str]) -> list[tuple[int, int, str, st
                     start = min(start, min(d.lineno for d in child.decorator_list))
                 end = child.end_lineno or start
                 kind = "class" if isinstance(child, ast.ClassDef) else "function"
-                if isinstance(child, ast.ClassDef) and end - start + 1 > MAX_CHUNK_LINES:
-                    # A big class is split into its methods; the class header
-                    # (up to the first method) stays as its own chunk.
-                    methods = [
-                        m
-                        for m in child.body
-                        if isinstance(m, ast.FunctionDef | ast.AsyncFunctionDef)
-                    ]
-                    if methods:
-                        first = min(
-                            min([m.lineno, *[d.lineno for d in m.decorator_list]]) for m in methods
-                        )
-                        found.append((start, first - 1, name, "class"))
-                        visit(child, f"{name}.")
+                if end - start + 1 > MAX_CHUNK_LINES:
+                    # A big class is split into its methods, and a big function
+                    # into whatever it defines inside - a factory that builds
+                    # an app out of nested classes used to hand every one of
+                    # its windows the factory's own name, so no search by the
+                    # name of a nested method ever hit the symbol. The header
+                    # (up to the first nested definition) stays as its own
+                    # chunk under the outer name.
+                    before = len(found)
+                    visit(child, f"{name}.")
+                    nested = found[before:]
+                    if nested:
+                        first = min(nested_start for nested_start, *_ in nested)
+                        found.append((start, first - 1, name, kind))
                         continue
                 found.append((start, end, name, kind))
             elif isinstance(child, ast.If | ast.Try | ast.With):

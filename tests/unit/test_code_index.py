@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from code_ai.app.service import CodeAIApplication
 from code_ai.config.models import AppConfig, IndexConfig
 from code_ai.core.errors import (
     ConfigurationError,
@@ -15,7 +16,6 @@ from code_ai.core.errors import (
     WorkspaceBoundaryError,
 )
 from code_ai.events.bus import AsyncEventBus
-from code_ai.app.service import CodeAIApplication
 from code_ai.index import build_code_index
 from code_ai.index.chunking import chunk_file
 from code_ai.index.service import CodeIndexService
@@ -749,5 +749,159 @@ async def test_a_warm_up_that_fails_costs_the_index_not_the_session(tmp_path) ->
         assert application.start_index_warmup() is True
         # Awaiting it must not raise: the session survives a broken warm-up.
         await application._index_warmup_task
+    finally:
+        await service.close()
+
+
+async def test_the_source_survives_a_wall_of_tests(tmp_path) -> None:
+    # Twenty-eight test chunks outscored the source lexically, so a pool of
+    # twenty candidates never held it and the test penalty had nothing to
+    # promote. The pool is wide now, and the source comes out on top.
+    workspace = tmp_path / "ws"
+    _write(workspace, "pkg/retry.py", PY_SOURCE)
+    for number in range(30):
+        _write(
+            workspace,
+            f"tests/test_retry_{number}.py",
+            f"def test_retry_backoff_{number}():\n"
+            "    # retry backoff retry backoff retry backoff retry backoff\n"
+            "    assert RetryPolicy().backoff(1) == 2  # retry backoff\n",
+        )
+    service = make_service(workspace)
+    try:
+        await service.refresh()
+        hits = await service.search("retry backoff", limit=5)
+        assert hits[0].path == "pkg/retry.py"
+        # The score shown is the one the hit was ordered by.
+        assert [hit.score for hit in hits] == sorted((hit.score for hit in hits), reverse=True)
+    finally:
+        await service.close()
+
+
+async def test_a_query_naming_a_symbol_finds_its_definition_first(tmp_path) -> None:
+    workspace = tmp_path / "ws"
+    _write(workspace, "pkg/calls.py", PY_SOURCE)
+    _write(
+        workspace,
+        "pkg/uses.py",
+        "from pkg.calls import parse_tool_call\n\n\n"
+        "def run():\n"
+        "    # parse_tool_call parse_tool_call parse_tool_call parse_tool_call\n"
+        "    return parse_tool_call(parse_tool_call(parse_tool_call({})))\n",
+    )
+    service = make_service(workspace)
+    try:
+        await service.refresh()
+        for query in ("parse_tool_call", "where is parse_tool_call defined", "parse tool call"):
+            hits = await service.search(query)
+            assert hits[0].symbol == "parse_tool_call", query
+        # A plain word that happens to name nothing gets no such push.
+        hits = await service.search("run")
+        assert hits[0].path == "pkg/uses.py"
+    finally:
+        await service.close()
+
+
+def test_a_big_function_is_split_into_what_it_defines() -> None:
+    from code_ai.index.chunking import MAX_CHUNK_LINES
+
+    padding = "\n".join(f"    x{n} = {n}" for n in range(MAX_CHUNK_LINES))
+    source = (
+        "def build_app(config):\n"
+        f"{padding}\n"
+        "    def action_clear():\n"
+        "        return 1\n\n"
+        "    class App:\n"
+        "        def on_mount(self):\n"
+        "            return 2\n\n"
+        "    return App\n"
+    )
+    chunks = chunk_file("app.py", source)
+    symbols = {chunk.symbol for chunk in chunks}
+    assert {"build_app", "build_app.action_clear", "build_app.App"} <= symbols
+    header = next(chunk for chunk in chunks if chunk.symbol == "build_app")
+    assert header.start_line == 1 and header.kind == "function"
+
+
+async def test_a_semantic_outage_is_announced_once_until_it_recovers(tmp_path) -> None:
+    workspace = tmp_path / "ws"
+    _write(workspace, "pkg/retry.py", PY_SOURCE)
+    embedder = FakeEmbedder()
+    service = make_service(workspace, embedder=embedder)
+    events: list = []
+    service.event_bus = AsyncEventBus(session_id="s")
+    service.event_bus.subscribe(lambda event: events.append(event))
+    try:
+        await service.refresh()
+        warnings = lambda: [e for e in events if e.event_type == "warning"]  # noqa: E731
+
+        embedder.fail = True
+        await service.search("retry")
+        await service.search("backoff")
+        assert len(warnings()) == 1
+        assert "lexical" in warnings()[0].payload["message"]
+        assert service.status().last_error == "embedding server down"
+
+        embedder.fail = False
+        await service.search("retry")
+        assert service.status().last_error is None
+        embedder.fail = True
+        await service.search("retry")
+        assert len(warnings()) == 2
+    finally:
+        await service.close()
+
+
+async def test_vector_search_follows_writes(tmp_path) -> None:
+    # Vectors are scored from an in-memory copy; a file that changes must not
+    # keep answering from the copy taken before it did.
+    workspace = tmp_path / "ws"
+    _write(workspace, "pkg/a.py", "def approve():\n    return 'approve approve'\n")
+    service = make_service(workspace, embedder=FakeEmbedder())
+    try:
+        await service.refresh()
+        hits = await service.search("approve")
+        assert hits and "semantic" in hits[0].sources
+
+        _write(workspace, "pkg/a.py", "def widget():\n    return 'widget widget'\n")
+        await service.refresh()
+        hits = await service.search("widget")
+        assert hits and hits[0].symbol == "widget" and "semantic" in hits[0].sources
+        assert not [hit for hit in await service.search("approve") if "semantic" in hit.sources]
+    finally:
+        await service.close()
+
+
+async def test_the_source_outranks_the_prose_that_describes_it(tmp_path) -> None:
+    workspace = tmp_path / "ws"
+    _write(workspace, "pkg/retry.py", PY_SOURCE)
+    _write(
+        workspace,
+        "README.md",
+        "## Retry backoff\n\nThe retry backoff doubles the retry backoff on every "
+        "retry, so backoff grows with each retry.\n",
+    )
+    service = make_service(workspace)
+    try:
+        await service.refresh()
+        hits = await service.search("retry backoff")
+        assert hits[0].path == "pkg/retry.py"
+        # ...unless the prose is what was asked for.
+        hits = await service.search("readme section on retry backoff")
+        assert hits[0].path == "README.md"
+    finally:
+        await service.close()
+
+
+async def test_vector_search_honours_a_path_prefix(tmp_path) -> None:
+    workspace = tmp_path / "ws"
+    _write(workspace, "pkg/a.py", "def approve():\n    return 'approve'\n")
+    _write(workspace, "web/b.py", "def approve_web():\n    return 'approve'\n")
+    service = make_service(workspace, embedder=FakeEmbedder())
+    try:
+        await service.refresh()
+        hits = await service.search("approve", path_prefix="web")
+        assert hits and all(hit.path.startswith("web/") for hit in hits)
+        assert "semantic" in hits[0].sources
     finally:
         await service.close()
