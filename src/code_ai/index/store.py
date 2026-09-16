@@ -95,13 +95,35 @@ def split_identifiers(text: str) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
     for identifier in _IDENTIFIER.findall(text):
+        for lowered in _identifier_words(identifier):
+            if lowered not in seen:
+                seen.add(lowered)
+                out.append(lowered)
+    return out
+
+
+# The same identifiers recur across a tree thousands of times over, and the
+# regex split was a third of the time spent writing a file. Cleared rather
+# than evicted once full: it refills in one file.
+_SPLIT_CACHE: dict[str, tuple[str, ...]] = {}
+_SPLIT_CACHE_LIMIT = 100_000
+
+
+def _identifier_words(identifier: str) -> tuple[str, ...]:
+    words = _SPLIT_CACHE.get(identifier)
+    if words is None:
+        whole = identifier.lower()
+        found: list[str] = []
         for part in _CAMEL_BOUNDARY.split(identifier):
             for word in part.split("_"):
                 lowered = word.lower()
-                if len(lowered) >= 2 and lowered != identifier.lower() and lowered not in seen:
-                    seen.add(lowered)
-                    out.append(lowered)
-    return out
+                if len(lowered) >= 2 and lowered != whole:
+                    found.append(lowered)
+        words = tuple(found)
+        if len(_SPLIT_CACHE) >= _SPLIT_CACHE_LIMIT:
+            _SPLIT_CACHE.clear()
+        _SPLIT_CACHE[identifier] = words
+    return words
 
 
 # Words a natural-language question is made of rather than words the code

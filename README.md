@@ -499,6 +499,7 @@ No chunk can break the refresh by being too long: each is clipped to `index.embe
     "chunk_lines": 60,
     "chunk_overlap_lines": 10,
     "embedding_max_chars": 8000,
+    "embedding_parallel": 4,
     "include_globs": [],
     "exclude_globs": [],
     "respect_gitignore": true

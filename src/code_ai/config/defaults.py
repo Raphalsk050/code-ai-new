@@ -445,6 +445,10 @@ DEFAULT_INDEX: dict[str, object] = {
     "embedding_api_mode": "",
     "embedding_base_url": "",
     "embedding_batch_size": 32,
+    # Batches in flight at once. The server is the slow half of a refresh and
+    # any worth using answers several requests at a time; one that does not
+    # simply queues them, which still overlaps the round trips.
+    "embedding_parallel": 4,
     # Longest text handed to the embedding model, in characters. Chunks are
     # cut on symbol boundaries and a generated file can put a whole bundle on
     # one line; past the model's context window the request is refused. Code
