@@ -1021,3 +1021,29 @@ async def test_http_client_tells_a_refused_input_from_an_outage() -> None:
         assert not isinstance(info.value, EmbeddingInputError)
     finally:
         await client.close()
+
+
+async def test_embedding_batches_run_concurrently(tmp_path) -> None:
+    workspace = tmp_path / "ws"
+    for n in range(12):
+        _write(workspace, f"pkg/m{n}.py", f"def approve_{n}():\n    return {n}\n")
+
+    class SlowEmbedder(FakeEmbedder):
+        in_flight = 0
+        peak = 0
+
+        async def embed(self, texts: list[str]) -> list[list[float]]:
+            SlowEmbedder.in_flight += 1
+            SlowEmbedder.peak = max(SlowEmbedder.peak, SlowEmbedder.in_flight)
+            await asyncio.sleep(0.01)
+            SlowEmbedder.in_flight -= 1
+            return await super().embed(texts)
+
+    config = IndexConfig(embedding_batch_size=1, embedding_parallel=4)
+    service = make_service(workspace, embedder=SlowEmbedder(), config=config)
+    try:
+        report = await service.refresh()
+        assert report.embedded == service.status().chunks and not report.errors
+        assert SlowEmbedder.peak == 4
+    finally:
+        await service.close()

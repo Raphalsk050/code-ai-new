@@ -388,6 +388,7 @@ class IndexConfig:
     embedding_base_url: str = str(DEFAULT_INDEX["embedding_base_url"])
     embedding_batch_size: int = int(DEFAULT_INDEX["embedding_batch_size"])
     embedding_max_chars: int = int(DEFAULT_INDEX["embedding_max_chars"])
+    embedding_parallel: int = int(DEFAULT_INDEX["embedding_parallel"])
     auto_index_touched_files: bool = bool(DEFAULT_INDEX["auto_index_touched_files"])
     max_file_bytes: int = int(DEFAULT_INDEX["max_file_bytes"])
     chunk_lines: int = int(DEFAULT_INDEX["chunk_lines"])
@@ -409,6 +410,7 @@ class IndexConfig:
             embedding_base_url=str(values["embedding_base_url"] or "").strip(),
             embedding_batch_size=int(values["embedding_batch_size"]),
             embedding_max_chars=int(values["embedding_max_chars"]),
+            embedding_parallel=int(values["embedding_parallel"]),
             auto_index_touched_files=bool(values["auto_index_touched_files"]),
             max_file_bytes=int(values["max_file_bytes"]),
             chunk_lines=int(values["chunk_lines"]),
@@ -437,6 +439,8 @@ class IndexConfig:
             raise ConfigurationError("index embedding_batch_size must be at least 1.")
         if self.embedding_max_chars < 200:
             raise ConfigurationError("index embedding_max_chars must be at least 200.")
+        if self.embedding_parallel < 1:
+            raise ConfigurationError("index embedding_parallel must be at least 1.")
         if self.max_file_bytes <= 0:
             raise ConfigurationError("index max_file_bytes must be positive.")
         if self.chunk_lines < 5:

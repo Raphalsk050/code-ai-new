@@ -446,9 +446,10 @@ class CodeIndexService:
     ) -> int:
         assert self.embedder is not None
         model = self.embedder.model
-        configured = max(1, self.config.embedding_batch_size)
-        batch_size = configured
+        batch_size = max(1, self.config.embedding_batch_size)
+        parallel = max(1, self.config.embedding_parallel)
         embedded = 0
+        processed = 0
         # Embedding is the slow half - one network round trip per batch against
         # a walk that is pure local I/O - so this is the phase a progress bar is
         # actually for. The total is what is missing when the phase starts.
@@ -458,46 +459,66 @@ class CodeIndexService:
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 break
-            batch = self.store.chunks_without_embedding(model, limit=batch_size)
-            if not batch:
+            pending = self.store.chunks_without_embedding(model, limit=batch_size * parallel)
+            if not pending:
                 break
-            texts = [self._clip_for_embedding(text) for _, text in batch]
-            try:
-                vectors = await self.embedder.embed(texts)
-            except EmbeddingInputError as exc:
-                # The endpoint refused what was sent, not the sending: too many
-                # texts in one call, or one text past the model's context. Not
-                # an outage, so it must not stop the rest of the index. Halve
-                # the batch first; a batch of one is then cut shorter, and a
-                # chunk refused at the floor is marked so no later refresh
-                # trips over it again.
-                if len(batch) > 1:
-                    batch_size = len(batch) // 2
-                    continue
-                chunk_id, _ = batch[0]
-                if len(texts[0]) > _MIN_EMBED_CHARS:
-                    self._embed_chars = max(_MIN_EMBED_CHARS, len(texts[0]) // 2)
-                    continue
-                self.store.store_embeddings(model, [(chunk_id, [])])
-                report.unembeddable += 1
-                logger.warning(
-                    "code index: chunk %s refused by the embedding model: %s", chunk_id, exc
-                )
-                continue
-            except ProviderError as exc:
-                report.errors.append(f"embeddings: {exc}")
-                logger.warning("code index: embeddings unavailable: %s", exc)
-                await self._note_semantic_outage(str(exc))
-                break
-            self.store.store_embeddings(
-                model,
-                [(chunk_id, vector) for (chunk_id, _), vector in zip(batch, vectors, strict=True)],
+            batches = [pending[i : i + batch_size] for i in range(0, len(pending), batch_size)]
+            results = await asyncio.gather(
+                *(self._embed_batch(model, batch, report) for batch in batches)
             )
-            embedded += len(batch)
-            batch_size = configured
-            self._emit_progress("embedding", min(embedded, outstanding), outstanding)
+            for result in results:
+                if result is None:
+                    continue
+                self.store.store_embeddings(model, result)
+                processed += len(result)
+                embedded += sum(1 for _, vector in result if vector)
+            if any(result is None for result in results):
+                break
+            self._emit_progress("embedding", min(processed, outstanding), outstanding)
             self._semantic_recovered()
         return embedded
+
+    async def _embed_batch(
+        self, model: str, batch: list[tuple[int, str]], report: RefreshReport
+    ) -> list[tuple[int, list[float]]] | None:
+        """Vectors for ``batch``, sending less until the model accepts it.
+
+        The endpoint refusing what was sent is not an outage: too many texts
+        in one call, or one text past the model's context. The batch is
+        halved first, a batch of one is then cut shorter, and a chunk refused
+        at the floor gets an empty vector so no later refresh trips over it.
+        ``None`` means the endpoint itself is down.
+        """
+
+        assert self.embedder is not None
+        texts = [self._clip_for_embedding(text) for _, text in batch]
+        try:
+            vectors = await self.embedder.embed(texts)
+        except EmbeddingInputError as exc:
+            if len(batch) > 1:
+                half = len(batch) // 2
+                first = await self._embed_batch(model, batch[:half], report)
+                if first is None:
+                    return None
+                second = await self._embed_batch(model, batch[half:], report)
+                return None if second is None else first + second
+            chunk_id, _ = batch[0]
+            if len(texts[0]) > _MIN_EMBED_CHARS:
+                shorter = max(_MIN_EMBED_CHARS, len(texts[0]) // 2)
+                # Another batch in flight may already have learned a smaller size.
+                self._embed_chars = min(self._embed_chars or shorter, shorter)
+                return await self._embed_batch(model, batch, report)
+            report.unembeddable += 1
+            logger.warning("code index: chunk %s refused by the embedding model: %s", chunk_id, exc)
+            return [(chunk_id, [])]
+        except ProviderError as exc:
+            # Batches in flight together fail together; one line says it.
+            if not any(error.startswith("embeddings:") for error in report.errors):
+                report.errors.append(f"embeddings: {exc}")
+                logger.warning("code index: embeddings unavailable: %s", exc)
+            await self._note_semantic_outage(str(exc))
+            return None
+        return [(chunk_id, vector) for (chunk_id, _), vector in zip(batch, vectors, strict=True)]
 
     def _clip_for_embedding(self, text: str) -> str:
         limit = self.config.embedding_max_chars
