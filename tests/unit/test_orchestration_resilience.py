@@ -1277,3 +1277,56 @@ async def test_every_preparation_step_failing_at_once_still_runs_the_turn(tmp_pa
     assert result.text == "done"
     assert events.count("warning") >= 3
     assert "turn.completed" in events
+
+
+class QueuedProvider(_BaseProvider):
+    """A server that takes ``delay`` seconds to start on a request."""
+
+    def __init__(self, delay: float) -> None:
+        self.delay = delay
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        await asyncio.sleep(self.delay)
+        yield ProviderEvent(kind="text_delta", text_delta="hello")
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text="hello", finish_reason=FinishReason.STOP),
+        )
+
+
+async def _events_for(tmp_path, delay: float) -> tuple[str, list]:
+    config = _config(tmp_path)
+    config.budgets.model_queue_notice_s = 0.1  # type: ignore[assignment]
+    app = build_application(config=config, provider=QueuedProvider(delay))
+    events: list = []
+    app.subscribe(events.append)
+    await app.start()
+    result = await app.submit_user_message("Olá")
+    await app.close()
+    return result.text, events
+
+
+async def test_a_slow_first_token_is_announced_as_a_queue_wait(tmp_path) -> None:
+    text, events = await _events_for(tmp_path, delay=0.35)
+    assert text == "hello"
+    kinds = [event.event_type for event in events]
+    waits = [
+        event.payload["waited_s"]
+        for event in events
+        if event.event_type == "model.request.waiting"
+    ]
+    assert waits and all(isinstance(value, int) for value in waits)
+    # The wait is announced, then ended, and only then does the answer stream.
+    assert kinds.count("model.request.responding") == 1
+    first_wait = kinds.index("model.request.waiting")
+    responding = kinds.index("model.request.responding")
+    assert first_wait < responding < kinds.index("model.stream.delta")
+    assert "model.request.waiting" not in kinds[responding:]
+
+
+async def test_a_prompt_answer_says_nothing_about_a_queue(tmp_path) -> None:
+    text, events = await _events_for(tmp_path, delay=0)
+    assert text == "hello"
+    kinds = {event.event_type for event in events}
+    assert "model.request.waiting" not in kinds
+    assert "model.request.responding" not in kinds

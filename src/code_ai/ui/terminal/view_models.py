@@ -24,6 +24,15 @@ _INDEX_BAR_CELLS = 24
 _STREAMING_EVENTS = frozenset({"model.stream.delta", "model.thinking.delta"})
 
 
+def _format_wait(value: object) -> str:
+    try:
+        seconds = max(0, int(value))  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return "a while"
+    minutes, seconds = divmod(seconds, 60)
+    return f"{minutes}m {seconds:02d}s" if minutes else f"{seconds}s"
+
+
 def render_index_progress(phase: str, done: int, total: int) -> str:
     """One line showing how far an index refresh has got.
 
@@ -71,6 +80,9 @@ class TerminalViewModel:
     # 0%, for the whole refresh. It lives in its own widget instead, like every
     # other thing on screen that changes while it is being watched.
     index_progress: str = ""
+    # The server has not started on the current model request past the notice
+    # threshold; the working indicator says so instead of "calling model".
+    model_waiting: bool = False
     # Live sub-agent activity, keyed by agent_id and kept in dispatch order, so
     # the AGENTS panel can show what each delegated agent is doing right now.
     # Reset at the start of every user turn so a prior turn's agents never linger.
@@ -113,6 +125,9 @@ class TerminalViewModel:
     # open, ``conversation[-1]`` holds only its prefix; ``live_line`` reads it
     # bounded and ``flush_stream`` joins it once. See ``_extend_streaming_line``.
     _stream_prefix: str = ""
+    # The line the current model request opened, so a queue wait can be noted
+    # on it instead of costing a line of its own.
+    _model_line: str = ""
     _stream_parts: list[str] = field(default_factory=list, repr=False)
     _stream_chars: int = 0
 
@@ -141,6 +156,8 @@ class TerminalViewModel:
             self.flush_stream()
         if event.event_type == "status.changed":
             self.status = str(event.payload.get("state", self.status))
+            if self.status != "CALLING_MODEL":
+                self.model_waiting = False
             if self.status in _TURN_OVER_STATES:
                 # The turn is over, so nothing is being written any more. Leaving
                 # the window up parked a finished file over the conversation
@@ -269,7 +286,17 @@ class TerminalViewModel:
         elif event.event_type == "model.request.started":
             step = event.payload.get("step")
             suffix = f" step {step}" if step is not None else ""
-            self.conversation.append(f"model> thinking{suffix}...")
+            self._model_line = f"model> thinking{suffix}..."
+            self.model_waiting = False
+            self.conversation.append(self._model_line)
+        elif event.event_type == "model.request.waiting":
+            self.model_waiting = True
+            waited = _format_wait(event.payload.get("waited_s"))
+            self._note_model_wait(f"waiting in the model queue ({waited})")
+        elif event.event_type == "model.request.responding":
+            self.model_waiting = False
+            waited = _format_wait(event.payload.get("waited_s"))
+            self._note_model_wait(f"waited {waited} in the model queue")
         elif event.event_type == "model.stream.delta":
             text = str(event.payload.get("text", ""))
             channel = str(event.payload.get("channel") or "answer")
@@ -345,6 +372,7 @@ class TerminalViewModel:
             # simply stopped mid-turn and left the transcript looking frozen -
             # the one failure the user most needs named, and the only one that
             # said nothing at all.
+            self.model_waiting = False
             message = str(event.payload.get("message", ""))
             line = f"error> model request failed: {message}"
             if "timeout" in message.lower() or "timed out" in message.lower():
@@ -545,6 +573,17 @@ class TerminalViewModel:
             self.conversation.append(self._bound_command_tail(merged, prefix))
         else:
             self.conversation.append(self._bound_command_tail(prefix + text, prefix))
+
+    def _note_model_wait(self, note: str) -> None:
+        # On the request's own line while it is still the last one: the live
+        # tail repaints it in place. Once anything lands below it, the line is
+        # in the scrollback for good and the wait gets a line of its own.
+        line = self._model_line
+        if line and self.conversation and self.conversation[-1].startswith(line):
+            self.conversation[-1] = f"{line} {note}"
+            return
+        self._model_line = "model>"
+        self.conversation.append(f"model> {note}")
 
     def _extend_streaming_line(self, prefix: str, text: str) -> None:
         """Append one streamed fragment to the line it belongs to.

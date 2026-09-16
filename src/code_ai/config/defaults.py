@@ -231,6 +231,9 @@ DEFAULT_BUDGETS: dict[str, int] = {
     "max_context_tokens": 256000,
     "max_model_call_s": 180,
     "max_model_step_seconds": 180,
+    # Seconds a model request can go without a first token before the user is
+    # told it is waiting in the server's queue; the notice repeats at this pace.
+    "model_queue_notice_s": 15,
     "max_model_steps": 80,
     "max_orchestration_rounds": 60,
     "max_stall_rounds": 4,

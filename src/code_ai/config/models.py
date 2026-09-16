@@ -55,6 +55,7 @@ class BudgetConfig:
     max_context_tokens: int = DEFAULT_BUDGETS["max_context_tokens"]
     max_model_call_s: int = DEFAULT_BUDGETS["max_model_call_s"]
     max_model_step_seconds: int = DEFAULT_BUDGETS["max_model_step_seconds"]
+    model_queue_notice_s: int = DEFAULT_BUDGETS["model_queue_notice_s"]
     max_model_steps: int = DEFAULT_BUDGETS["max_model_steps"]
     max_orchestration_rounds: int = DEFAULT_BUDGETS["max_orchestration_rounds"]
     max_orchestration_seconds: int = DEFAULT_BUDGETS["max_orchestration_seconds"]

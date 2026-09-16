@@ -174,7 +174,9 @@ CODE_AI_SPINNER_OPTIONS = tuple(style.key for style in _SPINNER_LIST)
 DEFAULT_SPINNER = "ascii"
 
 
-def working_label(status: str) -> str:
+def working_label(status: str, *, waiting: bool = False) -> str:
+    if waiting and status == "CALLING_MODEL":
+        return "waiting in the model queue"
     return _WORKING_LABELS.get(status, "working")
 
 

@@ -54,3 +54,9 @@ def test_working_states_are_active_only() -> None:
     assert "READY" not in WORKING_STATES
     assert "STARTING" not in WORKING_STATES
     assert "CALLING_MODEL" in WORKING_STATES
+
+
+def test_working_label_names_a_model_queue_wait() -> None:
+    assert working_label("CALLING_MODEL", waiting=True) == "waiting in the model queue"
+    # Only a model call can be waiting on the model.
+    assert working_label("EXECUTING_TOOL", waiting=True) == "running tools"
