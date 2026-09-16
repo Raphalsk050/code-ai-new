@@ -448,6 +448,10 @@ Finding code by grepping the tree gets slower with every file, and it only finds
 The code index is a local copy of the workspace's source, cut into chunks on symbol boundaries (Python via `ast`, other languages via their declaration keywords, everything else in overlapping windows) and stored in SQLite under `~/.code-ai/projects/<slug>/index/`.
 Nothing is ever written into the project.
 
+What gets indexed is the project, not its exhaust: hidden directories, build output, dependency checkouts and virtualenvs are skipped whatever the language.
+A directory is recognised by its name (`build`, `node_modules`, `vendor`, `third_party`, `target` ...), by what it contains (`CMakeCache.txt`, `pyvenv.cfg`, `CACHEDIR.TAG` ...), by the project file beside it (`bin` and `obj` next to a `.csproj`, `Binaries` and `Intermediate` next to a `.uproject`, `Library` next to Unity's `ProjectSettings`), or by being a git checkout of its own inside the repo.
+`.gitignore` at every level, `.ignore` and `.git/info/exclude` are honoured too (`index.respect_gitignore`); `index.exclude_globs` and `index.include_globs` are the manual override, and the refresh report says how many directories were pruned.
+
 Two tools read and maintain it:
 
 - `search_index`: ranked retrieval for a question or a set of identifiers ("where are tool calls approved", "retry backoff subagent"). Lexical ranking is BM25 over FTS5 and understands split identifiers, so `ToolCall` matches "tool call". Every hit carries the chunk text with its path and line range.
@@ -481,6 +485,7 @@ The same thing set by hand is `index.embedding_model` (for example `nomic-embed-
 Embeddings default to the chat provider's endpoint; `index.embedding_api_mode` (`ollama` or `openai`) and `index.embedding_base_url` point them elsewhere, and the setup dialog lists that endpoint's catalog instead.
 If the embedding server is down the index degrades to lexical and says so in `/index status`.
 Changing the embedding model invalidates the stored vectors, which are recomputed on the next refresh.
+No chunk can break the refresh by being too long: each is clipped to `index.embedding_max_chars` before it is sent, and if the model still refuses one the index halves the batch, then the clip, and remembers the size that worked; a chunk refused at every size is marked and skipped, and lexical search still covers it.
 
 ```json
 {
@@ -493,8 +498,10 @@ Changing the embedding model invalidates the stored vectors, which are recompute
     "max_file_bytes": 524288,
     "chunk_lines": 60,
     "chunk_overlap_lines": 10,
+    "embedding_max_chars": 8000,
     "include_globs": [],
-    "exclude_globs": []
+    "exclude_globs": [],
+    "respect_gitignore": true
   }
 }
 ```

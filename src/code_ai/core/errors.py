@@ -14,6 +14,14 @@ class TransientProviderError(ProviderError):
     """Provider request failed for a retryable reason."""
 
 
+class EmbeddingInputError(ProviderError):
+    """The embedding endpoint refused the input itself, not the request.
+
+    Too many texts in one call or one text past the model's context window.
+    Neither is an outage: the caller shrinks what it sends and carries on.
+    """
+
+
 class UnsupportedProviderCapability(ProviderError):
     """The selected provider or endpoint does not support a requested capability."""
 

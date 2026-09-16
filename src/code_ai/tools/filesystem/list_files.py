@@ -8,26 +8,7 @@ from code_ai.core.errors import ToolArgumentError
 from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.locations import LOCATION_SCHEMA, for_context
 from code_ai.tools.schema import tool_schema
-
-DEFAULT_EXCLUDES = {
-    ".cache",
-    ".git",
-    ".mypy_cache",
-    ".nox",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".tox",
-    ".venv",
-    "__pycache__",
-    "build",
-    "cmake-build-debug",
-    "cmake-build-release",
-    "dist",
-    "node_modules",
-    "out",
-    "target",
-    "venv",
-}
+from code_ai.util.ignore import is_generated_dir_name
 
 
 class ListFilesTool:
@@ -101,9 +82,7 @@ class ListFilesTool:
 
         walk(root, 0)
         return {
-            "path": root.relative_to(location.root).as_posix()
-            if root != location.root
-            else ".",
+            "path": root.relative_to(location.root).as_posix() if root != location.root else ".",
             "max_depth": max_depth,
             "max_entries": max_entries,
             "entries": entries,
@@ -145,9 +124,10 @@ def _should_skip(
     exclude_globs: list[str],
     use_default_excludes: bool,
 ) -> bool:
-    if not include_hidden and any(part.startswith(".") for part in path.parts):
+    parts = relative.split("/")
+    if not include_hidden and any(part.startswith(".") for part in parts):
         return True
-    if use_default_excludes and any(part in DEFAULT_EXCLUDES for part in path.parts):
+    if use_default_excludes and any(is_generated_dir_name(part) for part in parts):
         return True
     if exclude_globs and _matches_any(relative, exclude_globs):
         return True

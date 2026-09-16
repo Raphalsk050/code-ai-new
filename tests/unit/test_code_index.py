@@ -11,6 +11,7 @@ from code_ai.app.service import CodeAIApplication
 from code_ai.config.models import AppConfig, IndexConfig
 from code_ai.core.errors import (
     ConfigurationError,
+    EmbeddingInputError,
     ProviderError,
     ToolExecutionError,
     WorkspaceBoundaryError,
@@ -905,3 +906,118 @@ async def test_vector_search_honours_a_path_prefix(tmp_path) -> None:
         assert "semantic" in hits[0].sources
     finally:
         await service.close()
+
+
+# ---------------------------------------------------------- embedding limits
+
+
+class LimitedEmbedder(FakeEmbedder):
+    """An endpoint with a context window: refuses long texts and big batches."""
+
+    def __init__(self, *, max_chars: int, max_batch: int = 1000, poison: str = "") -> None:
+        super().__init__()
+        self.max_chars = max_chars
+        self.max_batch = max_batch
+        self.poison = poison
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        if len(texts) > self.max_batch:
+            raise EmbeddingInputError("too many inputs")
+        if any(len(text) > self.max_chars for text in texts):
+            raise EmbeddingInputError("input length exceeds the context length")
+        if self.poison and any(self.poison in text for text in texts):
+            raise EmbeddingInputError("input length exceeds the context length")
+        return await super().embed(texts)
+
+
+async def test_oversized_chunk_is_cut_until_the_model_accepts_it(tmp_path) -> None:
+    workspace = tmp_path / "ws"
+    _write(workspace, "pkg/retry.py", PY_SOURCE)
+    # A generated file: one line, far past any embedding window.
+    _write(workspace, "web/bundle.js", "var approve=1;" + "x" * 30_000 + ";\n")
+    embedder = LimitedEmbedder(max_chars=1000, max_batch=4)
+    service = make_service(workspace, embedder=embedder)
+    try:
+        report = await service.refresh()
+        assert not report.errors and report.unembeddable == 0
+        status = service.status()
+        assert status.embedded_chunks == status.chunks
+        # The batch was halved down to one, then the text down to the window,
+        # and the size that worked is remembered for everything after.
+        assert all(len(text) <= 1000 for call in embedder.calls for text in call)
+        assert service._embed_chars == 1000
+        assert (await service.search("retry backoff"))[0].sources == ["lexical", "semantic"]
+    finally:
+        await service.close()
+
+
+async def test_chunk_refused_at_every_size_is_marked_and_not_retried(tmp_path) -> None:
+    workspace = tmp_path / "ws"
+    _write(workspace, "pkg/retry.py", PY_SOURCE)
+    _write(workspace, "pkg/bad.py", "def approve():\n    return 'poison'\n")
+    embedder = LimitedEmbedder(max_chars=10_000, poison="poison")
+    service = make_service(workspace, embedder=embedder)
+    try:
+        report = await service.refresh()
+        assert not report.errors and report.unembeddable == 1
+        assert "1 chunk(s) too long to embed" in report.summary()
+        # Everything else was embedded and semantic search is up...
+        hits = await service.search("retry backoff")
+        assert hits[0].path == "pkg/retry.py" and "semantic" in hits[0].sources
+        # ...the refused chunk still answers lexically...
+        assert (await service.search("poison"))[0].path == "pkg/bad.py"
+        # ...and a later refresh does not go back to it.
+        calls = len(embedder.calls)
+        report = await service.refresh()
+        assert report.unembeddable == 0 and len(embedder.calls) == calls
+    finally:
+        await service.close()
+
+
+async def test_index_workspace_tool_bounds_the_error_list(tmp_path) -> None:
+    workspace = tmp_path / "ws"
+    _write(workspace, "pkg/retry.py", PY_SOURCE)
+    service = make_service(workspace)
+    context = make_context(workspace, service)
+    try:
+        original = service.refresh
+
+        async def refresh(**kwargs):
+            report = await original(**kwargs)
+            report.errors.extend(f"file{n}.py: Permission denied" for n in range(50))
+            return report
+
+        service.refresh = refresh  # type: ignore[method-assign]
+        result = await IndexWorkspaceTool().execute({}, context)
+        assert len(result["errors"]) == 6
+        assert result["errors"][-1] == "... and 45 more error(s)"
+    finally:
+        await service.close()
+
+
+async def test_http_client_tells_a_refused_input_from_an_outage() -> None:
+    httpx = pytest.importorskip("httpx")
+    from code_ai.index.embeddings import HttpEmbeddingClient
+
+    responses: list[httpx.Response] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return responses.pop(0)
+
+    client = HttpEmbeddingClient(api_mode="openai", base_url="http://x", model="m")
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        responses.append(httpx.Response(400, text="This model's maximum context length is 8192"))
+        with pytest.raises(EmbeddingInputError):
+            await client.embed(["a"])
+        responses.append(
+            httpx.Response(500, json={"error": "input length exceeds the context length"})
+        )
+        with pytest.raises(EmbeddingInputError):
+            await client.embed(["a"])
+        responses.append(httpx.Response(503, text="overloaded"))
+        with pytest.raises(ProviderError) as info:
+            await client.embed(["a"])
+        assert not isinstance(info.value, EmbeddingInputError)
+    finally:
+        await client.close()

@@ -445,6 +445,12 @@ DEFAULT_INDEX: dict[str, object] = {
     "embedding_api_mode": "",
     "embedding_base_url": "",
     "embedding_batch_size": 32,
+    # Longest text handed to the embedding model, in characters. Chunks are
+    # cut on symbol boundaries and a generated file can put a whole bundle on
+    # one line; past the model's context window the request is refused. Code
+    # runs three to four characters per token, so this fits an 8k model with
+    # room to spare, and a model that still refuses is met with smaller cuts.
+    "embedding_max_chars": 8000,
     # Re-index a file automatically whenever a tool reads, writes or edits it,
     # so the index follows what the agent is actually working on.
     "auto_index_touched_files": True,
@@ -454,10 +460,14 @@ DEFAULT_INDEX: dict[str, object] = {
     # Fallback chunking for files without recognisable symbol boundaries.
     "chunk_lines": 60,
     "chunk_overlap_lines": 10,
-    # Optional glob filters over workspace-relative paths, on top of the
-    # default excludes (.git, node_modules, build output, ...).
+    # Optional glob filters over workspace-relative paths, on top of what the
+    # walk already refuses: hidden dirs, build output, dependency checkouts
+    # (recognised by name, by marker files such as CMakeCache.txt or
+    # pyvenv.cfg, or by the project file beside them) and nested git repos.
     "include_globs": [],
     "exclude_globs": [],
+    # Also honour .gitignore, .ignore and .git/info/exclude at every level.
+    "respect_gitignore": True,
 }
 
 

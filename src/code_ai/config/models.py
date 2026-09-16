@@ -71,9 +71,7 @@ class BudgetConfig:
     max_concurrent_subagents: int = DEFAULT_BUDGETS["max_concurrent_subagents"]
     max_subagents_per_turn: int = DEFAULT_BUDGETS["max_subagents_per_turn"]
     subagent_retry_max_attempts: int = DEFAULT_BUDGETS["subagent_retry_max_attempts"]
-    subagent_circuit_failure_threshold: int = DEFAULT_BUDGETS[
-        "subagent_circuit_failure_threshold"
-    ]
+    subagent_circuit_failure_threshold: int = DEFAULT_BUDGETS["subagent_circuit_failure_threshold"]
     subagent_circuit_reset_s: int = DEFAULT_BUDGETS["subagent_circuit_reset_s"]
 
     @classmethod
@@ -132,13 +130,9 @@ class PlannerConfig:
             tool_policy=_resolve_tool_policy(data),
             local_first=bool(values["local_first"]),
             require_plan_for_mutations=bool(values["require_plan_for_mutations"]),
-            require_verification_for_changes=bool(
-                values["require_verification_for_changes"]
-            ),
+            require_verification_for_changes=bool(values["require_verification_for_changes"]),
             double_check_completion=bool(values["double_check_completion"]),
-            require_review_for_risky_changes=bool(
-                values["require_review_for_risky_changes"]
-            ),
+            require_review_for_risky_changes=bool(values["require_review_for_risky_changes"]),
             max_plan_steps=int(values["max_plan_steps"]),
             max_discovery_rounds=int(values["max_discovery_rounds"]),
             max_replans=int(values["max_replans"]),
@@ -223,9 +217,7 @@ class MemoryConfig:
             if value <= 0:
                 raise ConfigurationError(f"Memory value {key} must be positive.")
         if self.reflection_min_tool_calls < 0:
-            raise ConfigurationError(
-                "reflection_min_tool_calls must be zero or positive."
-            )
+            raise ConfigurationError("reflection_min_tool_calls must be zero or positive.")
 
 
 @dataclass(slots=True)
@@ -395,12 +387,14 @@ class IndexConfig:
     embedding_api_mode: str = str(DEFAULT_INDEX["embedding_api_mode"])
     embedding_base_url: str = str(DEFAULT_INDEX["embedding_base_url"])
     embedding_batch_size: int = int(DEFAULT_INDEX["embedding_batch_size"])
+    embedding_max_chars: int = int(DEFAULT_INDEX["embedding_max_chars"])
     auto_index_touched_files: bool = bool(DEFAULT_INDEX["auto_index_touched_files"])
     max_file_bytes: int = int(DEFAULT_INDEX["max_file_bytes"])
     chunk_lines: int = int(DEFAULT_INDEX["chunk_lines"])
     chunk_overlap_lines: int = int(DEFAULT_INDEX["chunk_overlap_lines"])
     include_globs: list[str] = field(default_factory=list)
     exclude_globs: list[str] = field(default_factory=list)
+    respect_gitignore: bool = bool(DEFAULT_INDEX["respect_gitignore"])
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any] | None) -> IndexConfig:
@@ -414,12 +408,14 @@ class IndexConfig:
             embedding_api_mode=str(values["embedding_api_mode"] or "").strip().lower(),
             embedding_base_url=str(values["embedding_base_url"] or "").strip(),
             embedding_batch_size=int(values["embedding_batch_size"]),
+            embedding_max_chars=int(values["embedding_max_chars"]),
             auto_index_touched_files=bool(values["auto_index_touched_files"]),
             max_file_bytes=int(values["max_file_bytes"]),
             chunk_lines=int(values["chunk_lines"]),
             chunk_overlap_lines=int(values["chunk_overlap_lines"]),
             include_globs=_string_list(values.get("include_globs")),
             exclude_globs=_string_list(values.get("exclude_globs")),
+            respect_gitignore=bool(values["respect_gitignore"]),
         )
 
     def resolved_index_dir(self, workspace: Path | str) -> Path:
@@ -439,6 +435,8 @@ class IndexConfig:
             )
         if self.embedding_batch_size < 1:
             raise ConfigurationError("index embedding_batch_size must be at least 1.")
+        if self.embedding_max_chars < 200:
+            raise ConfigurationError("index embedding_max_chars must be at least 200.")
         if self.max_file_bytes <= 0:
             raise ConfigurationError("index max_file_bytes must be positive.")
         if self.chunk_lines < 5:
@@ -600,8 +598,7 @@ class SamplingConfig:
             and self.reasoning_effort not in SUPPORTED_REASONING_EFFORTS
         ):
             raise ConfigurationError(
-                "sampling.reasoning_effort must be one of "
-                f"{sorted(SUPPORTED_REASONING_EFFORTS)}."
+                f"sampling.reasoning_effort must be one of {sorted(SUPPORTED_REASONING_EFFORTS)}."
             )
         if (
             self.reasoning_summary is not None
