@@ -4,7 +4,18 @@ from typing import Any
 
 from code_ai.core.errors import ToolExecutionError
 from code_ai.tools.base import ToolCapability, ToolContext
+from code_ai.tools.output import bound_text
 from code_ai.tools.schema import tool_schema
+
+_MAX_ERRORS = 5
+_MAX_ERROR_CHARS = 300
+
+
+def _bound_errors(errors: list[str]) -> list[str]:
+    shown = [bound_text(error, _MAX_ERROR_CHARS) for error in errors[:_MAX_ERRORS]]
+    if len(errors) > len(shown):
+        shown.append(f"... and {len(errors) - len(shown)} more error(s)")
+    return shown
 
 
 class IndexWorkspaceTool:
@@ -52,10 +63,16 @@ class IndexWorkspaceTool:
         full = bool(arguments.get("full", False))
         report = await index.refresh(full=full, subtree=subtree, cancel_event=context.cancel_event)
         status = index.status()
+        payload = report.to_dict()
+        # A refresh of a large tree can fail on thousands of files (a mounted
+        # drive, a permission boundary), and a list that long would be the
+        # context blow-up the index exists to prevent. The model needs the
+        # shape of the failure, not the roll call.
+        payload["errors"] = _bound_errors(payload["errors"])
         return {
             "path": subtree or ".",
             "summary": report.summary(),
-            **report.to_dict(),
+            **payload,
             "index": {
                 "files": status.files,
                 "chunks": status.chunks,

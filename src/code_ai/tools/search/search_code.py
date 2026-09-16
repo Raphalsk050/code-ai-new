@@ -11,9 +11,9 @@ from typing import Any
 
 from code_ai.core.errors import ToolArgumentError, ToolExecutionError
 from code_ai.tools.base import ToolCapability, ToolContext
-from code_ai.tools.filesystem.list_files import DEFAULT_EXCLUDES
 from code_ai.tools.output import bound_text
 from code_ai.tools.schema import tool_schema
+from code_ai.util.ignore import DEFAULT_EXCLUDES, is_generated_dir_name
 
 
 class SearchCodeTool:
@@ -122,8 +122,7 @@ async def _run_rg(
         argv.append("--hidden")
     if use_default_excludes:
         for name in sorted(DEFAULT_EXCLUDES):
-            argv.extend(["--glob", f"!{name}/**"])
-            argv.extend(["--glob", f"!**/{name}/**"])
+            argv.extend(["--iglob", f"!**/{name}/**"])
     for pattern in include_globs:
         argv.extend(["--glob", pattern])
     for pattern in exclude_globs:
@@ -327,9 +326,10 @@ def _path_allowed(
     exclude_globs: list[str],
     use_default_excludes: bool,
 ) -> bool:
-    if not include_hidden and any(part.startswith(".") for part in path.parts):
+    parts = relative.split("/")
+    if not include_hidden and any(part.startswith(".") for part in parts):
         return False
-    if use_default_excludes and any(part in DEFAULT_EXCLUDES for part in path.parts):
+    if use_default_excludes and any(is_generated_dir_name(part) for part in parts):
         return False
     if exclude_globs and any(fnmatch.fnmatch(relative, pattern) for pattern in exclude_globs):
         return False

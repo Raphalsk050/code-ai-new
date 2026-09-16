@@ -12,7 +12,7 @@ from typing import Any, Protocol
 from urllib.parse import urljoin
 
 from code_ai.config.models import AppConfig
-from code_ai.core.errors import ProviderError
+from code_ai.core.errors import EmbeddingInputError, ProviderError
 
 
 class EmbeddingClient(Protocol):
@@ -87,20 +87,51 @@ class HttpEmbeddingClient:
             data = response.json()
         except self._httpx.HTTPStatusError as exc:
             detail = exc.response.text[:300].strip()
-            raise ProviderError(
+            message = (
                 f"Embedding request failed ({exc.response.status_code}) at {self._url}: {detail}"
-            ) from exc
+            )
+            if exc.response.status_code in _INPUT_REJECTED or _looks_too_long(detail):
+                raise EmbeddingInputError(message) from exc
+            raise ProviderError(message) from exc
         except self._httpx.HTTPError as exc:
             raise ProviderError(f"Embedding request failed at {self._url}: {exc}") from exc
         except ValueError as exc:
             raise ProviderError("Embedding endpoint returned a non-JSON body.") from exc
         if isinstance(data, dict) and data.get("error"):
-            raise ProviderError(f"Embedding endpoint error: {data['error']}")
+            message = f"Embedding endpoint error: {data['error']}"
+            if _looks_too_long(str(data["error"])):
+                raise EmbeddingInputError(message)
+            raise ProviderError(message)
         vectors = _parse_vectors(data, expected=len(texts))
         return vectors
 
     async def close(self) -> None:
         await self._client.aclose()
+
+
+# Statuses that blame the payload rather than the server.
+_INPUT_REJECTED = frozenset({400, 413, 422})
+# How servers word "your input is longer than the model's context": OpenAI,
+# vLLM, llama.cpp, LM Studio and Ollama (with truncate off) each say it
+# differently, and none of them use a dedicated status for it.
+_TOO_LONG_HINTS = (
+    "context length",
+    "context window",
+    "maximum context",
+    "too long",
+    "too large",
+    "too many",
+    "exceeds",
+    "exceed the",
+    "input length",
+    "max_tokens",
+    "maximum length",
+)
+
+
+def _looks_too_long(detail: str) -> bool:
+    lowered = detail.lower()
+    return any(hint in lowered for hint in _TOO_LONG_HINTS)
 
 
 def _parse_vectors(data: Any, *, expected: int) -> list[list[float]]:

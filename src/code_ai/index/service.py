@@ -16,10 +16,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import fnmatch
 import hashlib
 import logging
-import os
 import re
 import time
 from collections.abc import Iterable
@@ -29,12 +27,12 @@ from pathlib import Path
 from typing import Any
 
 from code_ai.config.models import IndexConfig
-from code_ai.core.errors import ProviderError
+from code_ai.core.errors import EmbeddingInputError, ProviderError
 from code_ai.events.models import EventEnvelope
 from code_ai.index.chunking import Chunk, chunk_file
 from code_ai.index.embeddings import EmbeddingClient
 from code_ai.index.store import ChunkRow, IndexStore, query_terms
-from code_ai.tools.filesystem.list_files import DEFAULT_EXCLUDES
+from code_ai.util.ignore import WorkspaceIgnore
 
 logger = logging.getLogger(__name__)
 
@@ -105,9 +103,6 @@ _BINARY_SUFFIXES = frozenset(
         ".map",
     }
 )
-# Directory names that are build metadata rather than source, on top of the
-# shared DEFAULT_EXCLUDES (which list_files and search_code also honour).
-_EXCLUDED_DIR_SUFFIXES = (".egg-info", ".dist-info")
 _RRF_K = 60.0
 # How many chunks each retriever hands to the rerank. The rerank can only
 # promote what it is given: on a plain BM25 list a source file sat at #29
@@ -115,6 +110,10 @@ _RRF_K = 60.0
 # it and the test penalty had nothing to work on. FTS answers in under a
 # millisecond, so a wide pool costs nothing.
 _CANDIDATE_POOL = 100
+# The smallest cut a chunk is embedded at. Below this the text no longer says
+# what the chunk is about, and a model that refuses it is not going to accept
+# anything shorter either.
+_MIN_EMBED_CHARS = 200
 # Files between progress reports. Every file would emit thousands of events for
 # a bar that only has so many cells; this is often enough to look continuous.
 _PROGRESS_EVERY = 20
@@ -128,8 +127,13 @@ class RefreshReport:
     unchanged: int = 0
     removed: int = 0
     skipped: int = 0
+    # Directories the walk refused as build output, dependencies or ignored.
+    pruned: int = 0
     chunks: int = 0
     embedded: int = 0
+    # Chunks the embedding model refused at every size; lexical search still
+    # covers them.
+    unembeddable: int = 0
     duration_s: float = 0.0
     errors: list[str] = field(default_factory=list)
 
@@ -144,8 +148,12 @@ class RefreshReport:
         ]
         if self.skipped:
             parts.append(f"{self.skipped} skipped")
+        if self.pruned:
+            parts.append(f"{self.pruned} dir(s) pruned")
         if self.embedded:
             parts.append(f"{self.embedded} chunk(s) embedded")
+        if self.unembeddable:
+            parts.append(f"{self.unembeddable} chunk(s) too long to embed")
         text = ", ".join(parts) + f" in {self.duration_s:.1f}s"
         if self.errors:
             text += f"; {len(self.errors)} error(s): {self.errors[0]}"
@@ -223,6 +231,10 @@ class CodeIndexService:
         # exists to save, and silence was worse - the fall-back to lexical
         # left search_index answering "semantic: false" with nobody watching.
         self._semantic_warned = False
+        # The longest text the embedding model has been seen to accept, once it
+        # has refused a longer one; zero until then. Learned per session so one
+        # small-context model does not cost a halving per chunk.
+        self._embed_chars = 0
         self._closed = False
         self._adopt_embedder(embedder)
 
@@ -348,7 +360,9 @@ class CodeIndexService:
         # known before the work starts: without a total there is no progress to
         # report, only a rising number, and a first index of an unfamiliar repo
         # is exactly when the user wants to know how far along it is.
-        paths = list(self._walk(root))
+        rules = self._ignore_rules()
+        paths = list(self._walk(root, rules))
+        report.pruned = len(rules.pruned)
         if report_progress is not None:
             report_progress(0, len(paths))
         for position, path in enumerate(paths, start=1):
@@ -432,7 +446,8 @@ class CodeIndexService:
     ) -> int:
         assert self.embedder is not None
         model = self.embedder.model
-        batch_size = max(1, self.config.embedding_batch_size)
+        configured = max(1, self.config.embedding_batch_size)
+        batch_size = configured
         embedded = 0
         # Embedding is the slow half - one network round trip per batch against
         # a walk that is pure local I/O - so this is the phase a progress bar is
@@ -446,8 +461,29 @@ class CodeIndexService:
             batch = self.store.chunks_without_embedding(model, limit=batch_size)
             if not batch:
                 break
+            texts = [self._clip_for_embedding(text) for _, text in batch]
             try:
-                vectors = await self.embedder.embed([text for _, text in batch])
+                vectors = await self.embedder.embed(texts)
+            except EmbeddingInputError as exc:
+                # The endpoint refused what was sent, not the sending: too many
+                # texts in one call, or one text past the model's context. Not
+                # an outage, so it must not stop the rest of the index. Halve
+                # the batch first; a batch of one is then cut shorter, and a
+                # chunk refused at the floor is marked so no later refresh
+                # trips over it again.
+                if len(batch) > 1:
+                    batch_size = len(batch) // 2
+                    continue
+                chunk_id, _ = batch[0]
+                if len(texts[0]) > _MIN_EMBED_CHARS:
+                    self._embed_chars = max(_MIN_EMBED_CHARS, len(texts[0]) // 2)
+                    continue
+                self.store.store_embeddings(model, [(chunk_id, [])])
+                report.unembeddable += 1
+                logger.warning(
+                    "code index: chunk %s refused by the embedding model: %s", chunk_id, exc
+                )
+                continue
             except ProviderError as exc:
                 report.errors.append(f"embeddings: {exc}")
                 logger.warning("code index: embeddings unavailable: %s", exc)
@@ -458,9 +494,16 @@ class CodeIndexService:
                 [(chunk_id, vector) for (chunk_id, _), vector in zip(batch, vectors, strict=True)],
             )
             embedded += len(batch)
+            batch_size = configured
             self._emit_progress("embedding", min(embedded, outstanding), outstanding)
             self._semantic_recovered()
         return embedded
+
+    def _clip_for_embedding(self, text: str) -> str:
+        limit = self.config.embedding_max_chars
+        if self._embed_chars:
+            limit = min(limit, self._embed_chars)
+        return text if len(text) <= limit else text[:limit]
 
     async def _note_semantic_outage(self, message: str) -> None:
         self._last_error = message
@@ -688,50 +731,29 @@ class CodeIndexService:
         except ValueError:
             return None
 
-    def _allowed(self, path: Path, relative: str) -> bool:
-        parts = relative.split("/")
-        if any(part.startswith(".") for part in parts):
-            return False
-        if any(part in DEFAULT_EXCLUDES for part in parts[:-1]):
-            return False
-        if any(part.endswith(_EXCLUDED_DIR_SUFFIXES) for part in parts[:-1]):
-            return False
-        name = parts[-1].lower()
-        if any(name.endswith(suffix) for suffix in _BINARY_SUFFIXES):
-            return False
-        if self.config.exclude_globs and any(
-            fnmatch.fnmatch(relative, pattern) for pattern in self.config.exclude_globs
-        ):
-            return False
-        if self.config.include_globs and not any(
-            fnmatch.fnmatch(relative, pattern) for pattern in self.config.include_globs
-        ):
-            return False
-        return not path.is_symlink()
+    def _ignore_rules(self) -> WorkspaceIgnore:
+        # Fresh per walk: the rules memoise directory listings.
+        return WorkspaceIgnore(
+            self.workspace,
+            exclude_globs=self.config.exclude_globs,
+            include_globs=self.config.include_globs,
+            use_ignore_files=self.config.respect_gitignore,
+        )
 
-    def _walk(self, root: Path) -> Iterable[Path]:
-        if root.is_file():
-            relative = self._relative(root)
-            if relative is not None and self._allowed(root, relative):
-                yield root
-            return
-        if not root.is_dir():
-            return
-        for current, dirs, files in os.walk(root):
-            current_path = Path(current)
-            dirs[:] = sorted(
-                d
-                for d in dirs
-                if not d.startswith(".")
-                and d not in DEFAULT_EXCLUDES
-                and not d.endswith(_EXCLUDED_DIR_SUFFIXES)
-                and not (current_path / d).is_symlink()
-            )
-            for filename in sorted(files):
-                path = current_path / filename
-                relative = self._relative(path)
-                if relative is not None and self._allowed(path, relative):
-                    yield path
+    def _allowed(self, path: Path, relative: str) -> bool:
+        return self._indexable_name(relative) and self._ignore_rules().file_allowed(relative)
+
+    @staticmethod
+    def _indexable_name(relative: str) -> bool:
+        name = relative.rpartition("/")[2].lower()
+        return not any(name.endswith(suffix) for suffix in _BINARY_SUFFIXES)
+
+    def _walk(self, root: Path, rules: WorkspaceIgnore | None = None) -> Iterable[Path]:
+        rules = rules or self._ignore_rules()
+        for path in rules.walk(root):
+            relative = self._relative(path)
+            if relative is not None and self._indexable_name(relative):
+                yield path
 
 
 def _fuse(
