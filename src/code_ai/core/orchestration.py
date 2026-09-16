@@ -9,6 +9,7 @@ import random
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
+from functools import partial
 from typing import Any
 
 from code_ai.config.models import AppConfig
@@ -70,6 +71,11 @@ from code_ai.util.partial_json import PartialObjectDecoder
 ToolContextFactory = Callable[[asyncio.Event | None], ToolContext]
 
 _MODEL_STEP_MAX_RETRIES = 200
+# Provider events that mean the model has started on a request. Usage and
+# warnings can arrive without it.
+_MODEL_OUTPUT_KINDS = frozenset(
+    {"text_delta", "reasoning_delta", "tool_call", "tool_call_delta", "completed"}
+)
 # How many times to re-prompt a model that printed a tool call as text but in a
 # shape we could not parse, before giving up and surfacing its best-effort text.
 _MAX_TOOL_FORMAT_RETRIES = 2
@@ -92,6 +98,69 @@ _TOOL_GUARD_POLL_SECONDS = 2.0
 _TOOL_GUARD_GRACE_SECONDS = 10.0
 
 logger = logging.getLogger(__name__)
+
+
+class _ModelWaitNotice:
+    """Tells the user the model has not started on a request yet.
+
+    Nothing on the wire tells a request queued behind other people's apart
+    from one the server is still reading, and to whoever is watching it is the
+    same wait: a spinner that says nothing for a minute reads as a hang.
+    """
+
+    def __init__(
+        self,
+        emit: Callable[[str, dict[str, Any]], Awaitable[object]],
+        *,
+        since: float,
+        every: float,
+    ) -> None:
+        self._emit = emit
+        self._since = since
+        self._every = every
+        self._answered = asyncio.Event()
+        self._task: asyncio.Task[None] | None = None
+
+    @property
+    def pending(self) -> bool:
+        return not self._answered.is_set()
+
+    async def __aenter__(self) -> _ModelWaitNotice:
+        self._task = asyncio.create_task(self._run())
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
+
+    async def answered(self) -> None:
+        """The model started. Returns once a notice already on its way has landed,
+        so the UI never hears the wait ended before it heard it began."""
+
+        self._answered.set()
+        if self._task is not None:
+            await asyncio.wait({self._task})
+
+    async def _run(self) -> None:
+        announced = False
+        try:
+            while True:
+                waited = time.monotonic() - self._since
+                due = (waited // self._every + 1) * self._every - waited
+                try:
+                    await asyncio.wait_for(self._answered.wait(), timeout=due)
+                except TimeoutError:
+                    announced = True
+                    await self._emit("model.request.waiting", self._waited())
+                    continue
+                if announced:
+                    await self._emit("model.request.responding", self._waited())
+                return
+        except Exception:  # noqa: BLE001 - a notice must never cost the request
+            logger.debug("model wait notice failed", exc_info=True)
+
+    def _waited(self) -> dict[str, Any]:
+        return {"waited_s": round(time.monotonic() - self._since)}
 # Minimum growth in a streaming tool call's arguments before we emit another
 # progress update, so a large write reports periodically rather than per-token.
 _TOOL_PROGRESS_STEP_CHARS = 160
@@ -1750,11 +1819,16 @@ class AgentOrchestrator:
     async def _run_model_step(self, request: ModelRequest, state: _TurnState) -> ModelResponse:
         attempts = 0
         model_timeout = float(self.config.budgets.model_timeout())
+        # From the first attempt: a retry sends the request again, it does not
+        # give the user back the time already spent waiting for it.
+        waiting_since = time.monotonic()
         while True:
             streamed: list[str] = []
             try:
                 return await asyncio.wait_for(
-                    self._collect_model_response(request, state, streamed),
+                    self._collect_model_response(
+                        request, state, streamed, waiting_since=waiting_since
+                    ),
                     timeout=model_timeout,
                 )
             except CancellationError:
@@ -1889,6 +1963,8 @@ class AgentOrchestrator:
         request: ModelRequest,
         state: _TurnState,
         streamed_sink: list[str],
+        *,
+        waiting_since: float | None = None,
     ) -> ModelResponse:
         cancel_event = state.cancel_event
         reasoning_parts: list[str] = []
@@ -1918,9 +1994,19 @@ class AgentOrchestrator:
         # response under it open until the garbage collector gets to it -
         # meanwhile the server, which only stops when the client goes away,
         # keeps generating tokens nobody will ever read.
-        async with contextlib.aclosing(self.provider.stream(request)) as provider_stream:
+        notice = _ModelWaitNotice(
+            partial(self.event_bus.emit, source="core.orchestrator"),
+            since=time.monotonic() if waiting_since is None else waiting_since,
+            every=float(self.config.budgets.model_queue_notice_s),
+        )
+        async with (
+            contextlib.aclosing(self.provider.stream(request)) as provider_stream,
+            notice,
+        ):
             async for event in provider_stream:
                 self._raise_if_cancelled(cancel_event)
+                if notice.pending and event.kind in _MODEL_OUTPUT_KINDS:
+                    await notice.answered()
                 if event.kind == "text_delta":
                     answer, thought = reasoning_filter.feed(event.text_delta)
                     if thought:

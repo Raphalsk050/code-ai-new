@@ -2889,3 +2889,75 @@ def test_a_streaming_line_is_read_bounded_and_flushed_whole() -> None:
     view_model.apply(_event("tool.call.completed", {"name": "read_file"}, 4))
     assert view_model.conversation == ["thinking> alpha beta gamma", "tool> read_file"]
     assert view_model.live_line(4000) == "tool> read_file"
+
+
+def test_view_model_notes_a_model_queue_wait_on_the_step_line() -> None:
+    from code_ai.ui.terminal.view_models import TerminalViewModel
+
+    view_model = TerminalViewModel()
+    sequence = 0
+
+    def apply(event_type: str, payload: dict[str, object]) -> None:
+        nonlocal sequence
+        sequence += 1
+        view_model.apply(
+            EventEnvelope.create(
+                event_type=event_type,
+                session_id="fake-session",
+                sequence=sequence,
+                payload=payload,
+                source="test",
+            )
+        )
+
+    apply("status.changed", {"state": "CALLING_MODEL"})
+    apply("model.request.started", {"step": 2})
+    apply("model.request.waiting", {"waited_s": 15})
+    assert view_model.model_waiting
+    assert view_model.conversation[-1] == (
+        "model> thinking step 2... waiting in the model queue (15s)"
+    )
+    apply("model.request.waiting", {"waited_s": 75})
+    assert view_model.conversation[-1] == (
+        "model> thinking step 2... waiting in the model queue (1m 15s)"
+    )
+    apply("model.request.responding", {"waited_s": 80})
+    assert not view_model.model_waiting
+    assert view_model.conversation[-1] == (
+        "model> thinking step 2... waited 1m 20s in the model queue"
+    )
+    # The whole wait cost no line beyond the step's own.
+    assert sum(line.startswith("model> ") for line in view_model.conversation) == 1
+
+    # Once something lands below the step line, the wait gets its own line.
+    apply("model.request.started", {"step": 3})
+    apply("user.message.queued", {"text": "also check the tests"})
+    apply("model.request.waiting", {"waited_s": 30})
+    assert view_model.conversation[-1] == "model> waiting in the model queue (30s)"
+    apply("model.request.waiting", {"waited_s": 45})
+    assert view_model.conversation[-1] == "model> waiting in the model queue (45s)"
+    # The turn ending clears the indicator even without a responding event.
+    apply("status.changed", {"state": "FAILED"})
+    assert not view_model.model_waiting
+
+
+async def test_working_indicator_says_the_model_queue_is_the_wait(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        await fake_app.emit("status.changed", {"state": "CALLING_MODEL"})
+        await fake_app.emit("model.request.started", {"step": 1})
+        await fake_app.emit("model.request.waiting", {"waited_s": 15})
+        await pilot.pause(0.05)
+
+        indicator = terminal_app.query_one("#working-indicator")
+        assert indicator._label == "waiting in the model queue"
+        tail = str(terminal_app.query_one("#stream-tail", Static).render())
+        assert "waiting in the model queue (15s)" in tail
+
+        await fake_app.emit("model.request.responding", {"waited_s": 21})
+        await pilot.pause(0.05)
+        assert indicator._label == "calling model"
+        tail = str(terminal_app.query_one("#stream-tail", Static).render())
+        assert "waited 21s in the model queue" in tail

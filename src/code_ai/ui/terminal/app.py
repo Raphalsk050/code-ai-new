@@ -2335,7 +2335,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 self.query_one("#session-info", Static).update(session_text)
             working = self.vm.status in WORKING_STATES
             self.query_one("#working-indicator", WorkingIndicator).set_running(
-                working, working_label(self.vm.status)
+                working, working_label(self.vm.status, waiting=self.vm.model_waiting)
             )
             # The right sidebar shows only while there is a plan and/or live
             # sub-agents; each panel toggles on its own so one can show without
