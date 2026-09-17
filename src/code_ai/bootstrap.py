@@ -79,6 +79,14 @@ from code_ai.tools.computer import (
     ScrollMouseTool,
     TypeTextTool,
 )
+from code_ai.tools.design import DesignSystemTool, UiAuditTool, UiPreviewTool
+from code_ai.tools.documents import (
+    DocumentConvertTool,
+    DocumentCreateTool,
+    DocumentEditTool,
+    DocumentFormatTool,
+    DocumentInspectTool,
+)
 from code_ai.tools.filesystem import EditCodeTool, ListFilesTool, ReadFileTool, WriteFileTool
 from code_ai.tools.git import GitReviewTool
 from code_ai.tools.interaction import AskUserTool
@@ -91,9 +99,11 @@ from code_ai.tools.internal import (
     RequestExternalGapTool,
     SubmitPlanTool,
 )
+from code_ai.tools.latex import LatexArticleTool, LatexCompileTool, LatexSetupTool
 from code_ai.tools.logcat import AnalyzeLogcatTool
 from code_ai.tools.memory import RememberTool
 from code_ai.tools.on_demand import render_catalog as render_on_demand_catalog
+from code_ai.tools.pdf import PdfConvertTool, PdfEditTool, PdfInspectTool
 from code_ai.tools.process import ExecuteCommandTool
 from code_ai.tools.registry import ToolRegistry
 from code_ai.tools.review import (
@@ -109,6 +119,13 @@ from code_ai.tools.search import IndexWorkspaceTool, SearchCodeTool, SearchIndex
 from code_ai.tools.skills import CreateSkillTool, UseSkillTool
 from code_ai.tools.skills.common import render_skills_catalog
 from code_ai.tools.skills.seed import seed_default_skills
+from code_ai.tools.slides import (
+    SlidesCreateTool,
+    SlidesEditTool,
+    SlidesFormatTool,
+    SlidesInspectTool,
+    SlidesRenderTool,
+)
 from code_ai.tools.system import SystemInformationTool
 from code_ai.tools.terminal import (
     InterruptTerminalTool,
@@ -166,6 +183,25 @@ def build_tool_registry() -> ToolRegistry:
         SystemInformationTool(),
         AnalyzeLogcatTool(),
         AnalyzeApkTool(),
+        PdfInspectTool(),
+        PdfEditTool(),
+        PdfConvertTool(),
+        DocumentCreateTool(),
+        DocumentInspectTool(),
+        DocumentEditTool(),
+        DocumentFormatTool(),
+        DocumentConvertTool(),
+        SlidesCreateTool(),
+        SlidesInspectTool(),
+        SlidesEditTool(),
+        SlidesFormatTool(),
+        SlidesRenderTool(),
+        DesignSystemTool(),
+        UiPreviewTool(),
+        UiAuditTool(),
+        LatexArticleTool(),
+        LatexCompileTool(),
+        LatexSetupTool(),
         WebSearchTool(),
         UseSkillTool(),
         CreateSkillTool(),

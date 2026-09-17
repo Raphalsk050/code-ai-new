@@ -93,6 +93,56 @@ DEFERRED_TOOL_GROUPS: tuple[ToolGroup, ...] = (
         summary="analyze an APK or a logcat capture",
         tools=frozenset({"analyze_apk", "analyze_logcat"}),
     ),
+    ToolGroup(
+        name="pdf",
+        summary=(
+            "read, edit and create PDFs: merge, split, watermark, forms, redact, encrypt; "
+            "Markdown, HTML, images or office files to PDF; PDF to images or text"
+        ),
+        tools=frozenset({"pdf_inspect", "pdf_edit", "pdf_convert"}),
+    ),
+    ToolGroup(
+        name="documents",
+        summary=(
+            "create, inspect, edit, format and convert Word documents (.docx): Markdown to "
+            "styled docx, ABNT and other presets, find/replace, sections, tables, tracked changes"
+        ),
+        tools=frozenset(
+            {
+                "document_create",
+                "document_inspect",
+                "document_edit",
+                "document_format",
+                "document_convert",
+            }
+        ),
+    ),
+    ToolGroup(
+        name="slides",
+        summary=(
+            "create, inspect, edit, format and render PowerPoint decks (.pptx): designed "
+            "layouts and themes, native charts, text fitting, visual previews"
+        ),
+        tools=frozenset(
+            {"slides_create", "slides_inspect", "slides_edit", "slides_format", "slides_render"}
+        ),
+    ),
+    ToolGroup(
+        name="design",
+        summary=(
+            "UX/UI design: design tokens and accessible colour palettes, contrast checks, "
+            "screenshots of pages at several viewports, accessibility and UX audits"
+        ),
+        tools=frozenset({"design_system", "ui_preview", "ui_audit"}),
+    ),
+    ToolGroup(
+        name="latex",
+        summary=(
+            "write and compile LaTeX articles: IEEE, ACM, Springer, Elsevier, ABNT templates, "
+            "bibliography, error diagnosis, TeX Live install"
+        ),
+        tools=frozenset({"latex_article", "latex_compile", "latex_setup"}),
+    ),
 )
 
 _BY_NAME = {group.name: group for group in DEFERRED_TOOL_GROUPS}

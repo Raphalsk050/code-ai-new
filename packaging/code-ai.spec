@@ -45,7 +45,22 @@ if importlib.util.find_spec("playwright") is None:
         "pip install ."
     )
 
-for package in ("textual", "rich", "art", "tiktoken", "pydantic", "playwright"):
+# pypdfium2 carries the pdfium library as package data, reportlab its fonts,
+# python-docx and python-pptx the blank templates every new file starts from.
+for package in (
+    "textual",
+    "rich",
+    "art",
+    "tiktoken",
+    "pydantic",
+    "playwright",
+    "pypdf",
+    "pypdfium2",
+    "pypdfium2_raw",
+    "reportlab",
+    "docx",
+    "pptx",
+):
     pkg_datas, pkg_binaries, pkg_hidden = collect_all(package)
     datas += pkg_datas
     binaries += pkg_binaries
