@@ -87,11 +87,13 @@ from code_ai.tools.internal import (
     CompleteTaskTool,
     FinishDiscoveryTool,
     LoadToolsTool,
+    LoadToolTool,
     RequestExternalGapTool,
     SubmitPlanTool,
 )
 from code_ai.tools.logcat import AnalyzeLogcatTool
 from code_ai.tools.memory import RememberTool
+from code_ai.tools.on_demand import render_catalog as render_on_demand_catalog
 from code_ai.tools.process import ExecuteCommandTool
 from code_ai.tools.registry import ToolRegistry
 from code_ai.tools.review import (
@@ -181,6 +183,7 @@ def build_tool_registry() -> ToolRegistry:
         CompletePlanStepTool(),
         FinishDiscoveryTool(),
         LoadToolsTool(registry.has),
+        LoadToolTool(registry.has),
         RequestExternalGapTool(),
         CompleteTaskTool(),
     ):
@@ -365,6 +368,11 @@ def build_application(
                     ),
                     rules=rules.render_for_prompt(),
                     tool_enabled=registry.has,
+                    on_demand_catalog=(
+                        render_on_demand_catalog(registry)
+                        if config.experimental.on_demand_tools and registry.has("load_tool")
+                        else ""
+                    ),
                     skills=_skills_catalog(),
                     workflows=workflows.render_for_prompt(),
                 ),

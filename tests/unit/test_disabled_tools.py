@@ -209,16 +209,16 @@ async def test_with_every_tool_disabled_the_turn_still_ends(tmp_path) -> None:
     assert "no tools here" in (result.text or "")
 
 
-async def test_disabling_load_tools_keeps_the_groups_out_instead_of_flooding(tmp_path) -> None:
+async def test_disabling_the_loaders_keeps_the_groups_out_instead_of_flooding(tmp_path) -> None:
     provider = ScriptedProvider([answer()])
-    app = app_for(tmp_path, provider, disabled_tools=["load_tools"])
+    app = app_for(tmp_path, provider, disabled_tools=["load_tool", "load_tools"])
 
     await app.start()
     await app.submit_user_message("hello")
     await app.close()
 
     offered = tool_names(provider.requests[0])
-    assert "load_tools" not in offered
+    assert not {"load_tool", "load_tools"} & offered
     assert "browser_open" not in offered
     assert "Tool groups:" not in provider.requests[0].messages[0].content
 

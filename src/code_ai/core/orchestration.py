@@ -30,6 +30,7 @@ from code_ai.core.errors import (
     EnvironmentUnavailableError,
     ImageLimitError,
     ProviderError,
+    ToolArgumentError,
     TransientProviderError,
     WorkspaceBoundaryError,
 )
@@ -62,6 +63,7 @@ from code_ai.providers.tool_recovery import (
     looks_like_attempted_tool_call,
     recover_tool_calls_from_text,
 )
+from code_ai.tools import on_demand
 from code_ai.tools.base import TOOL_IMAGES_KEY, ToolCapability, ToolContext
 from code_ai.tools.groups import group_named, group_of
 from code_ai.tools.output import bound_text
@@ -508,6 +510,12 @@ class AgentOrchestrator:
         # A group stays loaded for the session: unloading it again would shift
         # the tool list, and with it the cached prompt prefix, on every task.
         self._loaded_tool_groups: set[str] = set()
+        # Experimental on-demand mode: tools brought in one by one with
+        # load_tool, kept for the session for the same reason. The switch is
+        # read at turn start only, so the prompt and the tool list never
+        # disagree inside a turn.
+        self._loaded_tools: set[str] = set()
+        self._on_demand_tools = config.experimental.on_demand_tools
         # Groups the host cannot serve (backend missing, wrong platform), with
         # the reason. Withdrawn from the request for the session: the same
         # error came back four times running when the model was left to retry.
@@ -613,6 +621,9 @@ class AgentOrchestrator:
                 workflows=workflows,
                 code_index=self._code_index_summary(),
                 tool_enabled=self.tool_registry.has,
+                on_demand_catalog=(
+                    on_demand.render_catalog(self.tool_registry) if self._on_demand() else ""
+                ),
             )
         )
 
@@ -762,6 +773,7 @@ class AgentOrchestrator:
         await self._prepare_step("stopping background learning", self._cancel_pending_learning())
         # Pull in any lessons/memories learned since this session's system prompt
         # was built, so the model benefits from them on this turn.
+        self._on_demand_tools = self.config.experimental.on_demand_tools
         self._prepare_step_sync("refreshing the system prompt", self._refresh_system_prompt)
         # Editor context (open file / selection forwarded by an embedding client)
         # is added to the conversation so the model sees it, but it is *not*
@@ -2187,7 +2199,7 @@ class AgentOrchestrator:
     ) -> None:
         await self.set_state(AgentState.EXECUTING_TOOL, phase="executing_tools")
         call = ToolCall(id=call_id, name=name, arguments=arguments)
-        outcome = await self._execute_call(call, None, state)
+        outcome = await self._execute_call(call, None, state, host=True)
         state.actions.append(self._action_line(name, arguments, outcome.result.is_error))
         if (
             self.planner
@@ -2208,6 +2220,8 @@ class AgentOrchestrator:
         call: ToolCall,
         decision: PolicyDecision | None,
         state: _TurnState,
+        *,
+        host: bool = False,
     ) -> _ToolOutcome:
         await self.event_bus.emit(
             "tool.call.requested",
@@ -2215,8 +2229,10 @@ class AgentOrchestrator:
             source="core.orchestrator",
         )
         # A deferred tool called by name (remembered from an earlier turn, or
-        # guessed right) is as clear a request for its group as load_tools is.
-        self._note_tool_group_use(call.name)
+        # guessed right) is as clear a request for it as a loader call is. The
+        # host's own calls ask for nothing.
+        if not host:
+            self._note_tool_group_use(call.name)
         withdrawn = self._withdrawn_reason(call)
         if withdrawn:
             content = await self._withdraw_tool_group(call, withdrawn)
@@ -2337,6 +2353,8 @@ class AgentOrchestrator:
             payload = await self._guarded_execute(call.name, call.arguments, state)
             if call.name == "load_tools" and isinstance(payload, dict):
                 self._loaded_tool_groups.add(str(payload.get("group") or ""))
+            if call.name == "load_tool" and isinstance(payload, dict):
+                self._loaded_tools.add(str(payload.get("tool") or ""))
             if self.planner and self.planner.enabled and call.name == "complete_task":
                 rejection = await self._completion_rejection(call, payload)
                 if rejection is not None:
@@ -2513,6 +2531,9 @@ class AgentOrchestrator:
         leaking resources. A hard cancel is the last resort if the tool ignores
         the cooperative signal past a short grace period.
         """
+        if name == self._hidden_loader():
+            # The loader of the other mode does not exist for the model.
+            raise ToolArgumentError(f"Unknown tool: {name}")
         parent = state.cancel_event
         timeout = float(self.config.budgets.max_tool_wall_time_s)
         tool_cancel = asyncio.Event()
@@ -3009,32 +3030,55 @@ class AgentOrchestrator:
         return bool(caps) and caps <= frozenset({ToolCapability.LOCAL_READ})
 
     def _deferred_tool_names(self) -> set[str]:
-        """Tools held back from the request until their group is loaded.
+        """Tools held back from the request until they (or their group) are loaded.
 
-        Nothing is held back from a registry that has no ``load_tools``: a
-        sub-agent's registry is already cut to its role, and hiding tools it
-        has no way to ask for would just be hiding them. A ``load_tools`` the
-        user switched off does not count as absent: the groups stay out
-        rather than all landing in the request at once.
+        Nothing is held back from a registry that has no loader: a sub-agent's
+        registry is already cut to its role, and hiding tools it has no way to
+        ask for would just be hiding them. A loader the user switched off does
+        not count as absent: the tools stay out rather than all landing in the
+        request at once.
         """
 
-        if not self.tool_registry.is_registered("load_tools"):
+        registry = self.tool_registry
+        if not (registry.is_registered("load_tools") or registry.is_registered("load_tool")):
             return set()
-        return {
+        withdrawn = {
             name
-            for name in self.tool_registry.names()
+            for name in registry.names()
             if (group := group_of(name)) is not None
-            and (
-                group.name not in self._loaded_tool_groups
-                or group.name in self._unavailable_tool_groups
-            )
+            and group.name in self._unavailable_tool_groups
         }
+        if self._on_demand():
+            loadable = set(on_demand.loadable_names(registry)) - self._loaded_tools
+            return loadable | withdrawn | {"load_tools"}
+        return withdrawn | {"load_tool"} | {
+            name
+            for name in registry.names()
+            if (group := group_of(name)) is not None
+            and group.name not in self._loaded_tool_groups
+        }
+
+    def _on_demand(self) -> bool:
+        """Whether this turn runs in experimental on-demand mode.
+
+        Needs a load_tool that is switched on: without it the tools could never
+        come in, so the session falls back to the groups.
+        """
+
+        return self._on_demand_tools and self.tool_registry.has("load_tool")
+
+    def _hidden_loader(self) -> str | None:
+        if not self.tool_registry.is_registered("load_tool"):
+            return None
+        return "load_tools" if self._on_demand() else "load_tool"
 
     def _group_for_call(self, call: ToolCall):
         """The deferred group a call is about: its own, or the one it loads."""
 
         if call.name == "load_tools" and isinstance(call.arguments, dict):
             return group_named(str(call.arguments.get("group") or ""))
+        if call.name == "load_tool" and isinstance(call.arguments, dict):
+            return group_of(str(call.arguments.get("name") or "").strip())
         return group_of(call.name)
 
     def _withdrawn_reason(self, call: ToolCall) -> str | None:
@@ -3063,8 +3107,12 @@ class AgentOrchestrator:
         )
 
     def _note_tool_group_use(self, name: str) -> None:
-        """A call to a deferred tool loads its group, no ceremony required."""
+        """A call to a deferred tool loads it (on demand) or its group, no ceremony."""
 
+        if self._on_demand():
+            if name in on_demand.loadable_names(self.tool_registry):
+                self._loaded_tools.add(name)
+            return
         group = group_of(name)
         if group is not None:
             self._loaded_tool_groups.add(group.name)
@@ -3084,7 +3132,17 @@ class AgentOrchestrator:
     def _recommended_tool_names(self) -> set[str]:
         if not (self.planner and self.planner.enabled):
             return set()
-        return self.planner.recommended_tool_names(self.tool_registry) - self._deferred_tool_names()
+        recommended = self.planner.recommended_tool_names(self.tool_registry)
+        if self._on_demand():
+            # Loadable by name, so still worth pointing at; only the other
+            # mode's loader and withdrawn groups are taken out.
+            return recommended - {"load_tools"} - {
+                name
+                for name in recommended
+                if (group := group_of(name)) is not None
+                and group.name in self._unavailable_tool_groups
+            }
+        return recommended - self._deferred_tool_names()
 
     @staticmethod
     def _git_context(state: _TurnState) -> str:

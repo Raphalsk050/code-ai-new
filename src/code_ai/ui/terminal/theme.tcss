@@ -603,6 +603,17 @@ DoctorModal {
   width: 1fr;
 }
 
+#doctor-experimental {
+  height: 1fr;
+  overflow: auto auto;
+  scrollbar-size: 1 1;
+}
+
+.doctor-experiment-hint {
+  color: $ca-muted;
+  padding: 0 0 1 4;
+}
+
 #doctor-status {
   height: auto;
   color: $ca-foreground;
