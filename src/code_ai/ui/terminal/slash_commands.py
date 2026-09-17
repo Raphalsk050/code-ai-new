@@ -38,6 +38,7 @@ SLASH_COMMANDS = [
     SlashCommand("/help", "Show available commands."),
     SlashCommand("/doctor", "Guided setup: configure everything step by step."),
     SlashCommand("/doctor model", "Tune temperature, top_p, top_k and more; applied live."),
+    SlashCommand("/doctor tools", "Switch the agent's tools on and off; applied live."),
     SlashCommand("/status", "Show current session and provider state."),
     SlashCommand("/compact", "Request context compression."),
     SlashCommand("/auto", "Switch planner mode to auto."),

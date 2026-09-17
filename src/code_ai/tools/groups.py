@@ -15,6 +15,7 @@ task is *doing* - a browser task, a desktop task - and a capability such as
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 
@@ -98,8 +99,18 @@ _BY_NAME = {group.name: group for group in DEFERRED_TOOL_GROUPS}
 _BY_TOOL = {tool: group for group in DEFERRED_TOOL_GROUPS for tool in group.tools}
 
 
-def group_names() -> tuple[str, ...]:
-    return tuple(group.name for group in DEFERRED_TOOL_GROUPS)
+def group_names(enabled: Callable[[str], bool] | None = None) -> tuple[str, ...]:
+    return tuple(group.name for group in available_groups(enabled))
+
+
+def available_groups(enabled: Callable[[str], bool] | None = None) -> tuple[ToolGroup, ...]:
+    """The groups that still hold a tool ``enabled`` accepts; all of them without it."""
+
+    if enabled is None:
+        return DEFERRED_TOOL_GROUPS
+    return tuple(
+        group for group in DEFERRED_TOOL_GROUPS if any(enabled(tool) for tool in group.tools)
+    )
 
 
 def group_named(name: str) -> ToolGroup | None:
@@ -112,7 +123,7 @@ def group_of(tool_name: str) -> ToolGroup | None:
     return _BY_TOOL.get(tool_name)
 
 
-def render_catalog() -> str:
+def render_catalog(enabled: Callable[[str], bool] | None = None) -> str:
     """The groups as the prompt lists them: name, then what it is for."""
 
-    return "\n".join(f"- {group.name}: {group.summary}" for group in DEFERRED_TOOL_GROUPS)
+    return "\n".join(f"- {group.name}: {group.summary}" for group in available_groups(enabled))

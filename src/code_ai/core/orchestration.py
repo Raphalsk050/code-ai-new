@@ -612,6 +612,7 @@ class AgentOrchestrator:
                 skills=skills,
                 workflows=workflows,
                 code_index=self._code_index_summary(),
+                tool_enabled=self.tool_registry.has,
             )
         )
 
@@ -3012,10 +3013,12 @@ class AgentOrchestrator:
 
         Nothing is held back from a registry that has no ``load_tools``: a
         sub-agent's registry is already cut to its role, and hiding tools it
-        has no way to ask for would just be hiding them.
+        has no way to ask for would just be hiding them. A ``load_tools`` the
+        user switched off does not count as absent: the groups stay out
+        rather than all landing in the request at once.
         """
 
-        if not self.tool_registry.has("load_tools"):
+        if not self.tool_registry.is_registered("load_tools"):
             return set()
         return {
             name

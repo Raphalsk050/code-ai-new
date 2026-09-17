@@ -10,7 +10,15 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.timer import Timer
-from textual.widgets import Button, Input, OptionList, Static, TabbedContent, TabPane
+from textual.widgets import (
+    Button,
+    Checkbox,
+    Input,
+    OptionList,
+    Static,
+    TabbedContent,
+    TabPane,
+)
 
 from code_ai.config.defaults import DEFAULT_SAMPLING
 from code_ai.config.loader import persist_config_updates
@@ -18,6 +26,8 @@ from code_ai.config.models import AppConfig, normalize_api_mode
 from code_ai.index import build_embedding_client
 from code_ai.providers.factory import PROVIDER_BAKED_SETTINGS
 from code_ai.providers.model_listing import list_available_models
+from code_ai.tools.groups import DEFERRED_TOOL_GROUPS, group_of
+from code_ai.tools.registry import ToolRegistry
 from code_ai.ui.terminal.clipboard import paste_from_system_clipboard
 
 # The setup topics offered on the main menu, in the order a first-time user would
@@ -150,6 +160,8 @@ _CHOICE_KNOBS: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
     ),
 )
 
+_TAB_TITLES = {"doctor-tab-model": "Model behavior", "doctor-tab-tools": "Agent tools"}
+
 # How long typing has to pause before a Model-tab value is saved.
 _APPLY_DELAY_S = 0.6
 
@@ -197,8 +209,9 @@ class DoctorModal(ModalScreen[None]):
     the system clipboard, the base URL can be checked for reachability, and a
     chosen model can be tested with a live call - all without leaving the
     dialog. Model holds the sampling controls on one page, each saved and put
-    in force the moment it changes. Every save is persisted to the config file
-    immediately.
+    in force the moment it changes. Tools switches the agent's tools on and
+    off, from the next model call on. Every save is persisted to the config
+    file immediately.
     """
 
     BINDINGS = [("escape", "close", "Close")]
@@ -237,6 +250,8 @@ class DoctorModal(ModalScreen[None]):
                     yield VerticalScroll(id="doctor-body")
                 with TabPane("Model", id="doctor-tab-model"):
                     yield VerticalScroll(*self._sampling_widgets(), id="doctor-sampling")
+                with TabPane("Tools", id="doctor-tab-tools"):
+                    yield VerticalScroll(*self._tool_widgets(), id="doctor-tools")
             yield Static("", id="doctor-status")
 
     async def on_mount(self) -> None:
@@ -266,11 +281,12 @@ class DoctorModal(ModalScreen[None]):
         """Title and back button for whichever tab is showing.
 
         The back button walks the Setup menu, so it has nothing to do on the
-        Model tab, which is a single page.
+        Model and Tools tabs, which are single pages.
         """
 
-        on_setup = self.query_one("#doctor-tabs", TabbedContent).active == "doctor-tab-setup"
-        title = self._step_title if on_setup else "Model behavior"
+        active = self.query_one("#doctor-tabs", TabbedContent).active
+        on_setup = active == "doctor-tab-setup"
+        title = self._step_title if on_setup else _TAB_TITLES.get(active, "Code-AI setup")
         self.query_one("#doctor-title", Static).update(title)
         hide_back = not on_setup or self._step == "menu"
         self.query_one("#doctor-back", Button).set_class(hide_back, "doctor-hidden")
@@ -549,6 +565,103 @@ class DoctorModal(ModalScreen[None]):
         )
         return widgets
 
+    # ------------------------------------------------------------------ #
+    # Tools tab (on/off switches, applied live)
+    # ------------------------------------------------------------------ #
+    @property
+    def _tool_registry(self) -> ToolRegistry | None:
+        orchestrator = getattr(self._application, "orchestrator", None)
+        registry = getattr(orchestrator, "tool_registry", None)
+        return registry if isinstance(registry, ToolRegistry) else None
+
+    def _tool_widgets(self) -> list[Any]:
+        registry = self._tool_registry
+        if registry is None:
+            return [Static("This session has no tool registry.", classes="doctor-intro")]
+        widgets: list[Any] = [
+            Static(
+                "Unchecked tools are removed from the agent as if they never "
+                "existed: no schema in the request, no group in the prompt, and "
+                "a call to one fails as an unknown tool. Sub-agents lose them "
+                "too. Applied from the next model call on, even mid-turn.",
+                classes="doctor-intro",
+            ),
+            Horizontal(
+                Button("Enable all", id="doctor-tools-enable-all", compact=True),
+                Button("Disable all", id="doctor-tools-disable-all", compact=True),
+                Static(self._tools_count(), id="doctor-tools-count"),
+                classes="doctor-tools-actions",
+            ),
+        ]
+        names = registry.registered_names()
+        disabled = registry.disabled_names()
+        sections = [("Always offered", [name for name in names if group_of(name) is None])]
+        sections += [
+            (f"{group.name} group - {group.summary}", sorted(group.tools & set(names)))
+            for group in DEFERRED_TOOL_GROUPS
+        ]
+        for title, members in sections:
+            if not members:
+                continue
+            widgets.append(Static(title, classes="doctor-tools-section"))
+            for name in members:
+                description = str(getattr(registry.tool(name), "description", ""))
+                widgets.append(
+                    Checkbox(
+                        name,
+                        name not in disabled,
+                        id=f"doctor-tool-{name}",
+                        classes="doctor-tool",
+                        tooltip=description.split(". ")[0] or None,
+                        compact=True,
+                    )
+                )
+        return widgets
+
+    def _tools_count(self) -> str:
+        registry = self._tool_registry
+        return f"{len(registry.names())} of {len(registry.registered_names())} enabled"
+
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        if not (event.checkbox.id or "").startswith("doctor-tool-"):
+            return
+        disabled = {
+            (box.id or "")[len("doctor-tool-") :]
+            for box in self.query(".doctor-tool").results(Checkbox)
+            if not box.value
+        }
+        # "Disable all" flips every box and saves once; the Changed events it
+        # sets off arrive afterwards and find nothing left to save.
+        if disabled != self._tool_registry.disabled_names():
+            self._status(self._apply_disabled_tools(disabled))
+
+    def _set_all_tools(self, enabled: bool) -> None:
+        for box in self.query(".doctor-tool").results(Checkbox):
+            box.value = enabled
+        disabled = set() if enabled else set(self._tool_registry.registered_names())
+        self._status(self._apply_disabled_tools(disabled))
+
+    def _apply_disabled_tools(self, disabled: set[str]) -> str:
+        """Persist the switches and take the tools out of (or back into) the agent."""
+
+        config = self._config
+        try:
+            validated = persist_config_updates(
+                config, {"disabled_tools": sorted(disabled)}, explicit_path=self._config_path
+            )
+        except Exception as exc:  # noqa: BLE001
+            return f"✗ Not saved: {exc}"
+        config.disabled_tools = validated.disabled_tools
+        # The orchestrator reads the registry on every model step and the
+        # sub-agents share its switch set, so this is all "live" takes.
+        registry = self._tool_registry
+        registry.set_disabled(config.disabled_tools)
+        self.query_one("#doctor-tools-count", Static).update(self._tools_count())
+        if self._on_change is not None:
+            self._on_change()
+        off = len(registry.registered_names()) - len(registry.names())
+        return f"✓ Saved: {off} tool(s) disabled (applied from the next model call)"
+
     def on_input_changed(self, event: Input.Changed) -> None:
         field = self._knob_field(event.input)
         if field is None:
@@ -716,6 +829,8 @@ class DoctorModal(ModalScreen[None]):
             self._pick(button_id[len("doctor-pick-") :])
         elif button_id == "doctor-sampling-reset":
             self._reset_sampling()
+        elif button_id in {"doctor-tools-enable-all", "doctor-tools-disable-all"}:
+            self._set_all_tools(button_id == "doctor-tools-enable-all")
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         # Picking a listed model drops its name into the step's input field
