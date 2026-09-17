@@ -571,6 +571,38 @@ DoctorModal {
   margin-top: 1;
 }
 
+#doctor-tools {
+  height: 1fr;
+  overflow: auto auto;
+  scrollbar-size: 1 1;
+}
+
+.doctor-tools-actions {
+  height: 1;
+  margin-bottom: 1;
+}
+
+.doctor-tools-actions Button {
+  width: auto;
+  margin: 0 1 0 0;
+}
+
+#doctor-tools-count {
+  width: 1fr;
+  content-align: right middle;
+  color: $ca-muted;
+}
+
+.doctor-tools-section {
+  color: $ca-accent;
+  text-style: bold;
+  padding-top: 1;
+}
+
+.doctor-tool {
+  width: 1fr;
+}
+
 #doctor-status {
   height: auto;
   color: $ca-foreground;

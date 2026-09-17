@@ -750,6 +750,9 @@ class AppConfig:
     # every fragment is too expensive (a slow SSH link, a heavy multiplexer).
     terminal_live_code: bool = True
     learn: bool = True
+    # Tools switched off (Doctor > Tools). The agent is built as if they did not
+    # exist: no schema, no prompt catalog entry, and a call is an unknown tool.
+    disabled_tools: list[str] = field(default_factory=list)
     # Directory for persistent cross-session failure memories. ``None`` resolves
     # to ``<config dir>/memories`` at startup; tests point it at a temp dir.
     memories_dir: str | None = None
@@ -821,6 +824,9 @@ class AppConfig:
             terminal_session_collapsed=bool(data.get("terminal_session_collapsed", False)),
             terminal_live_code=bool(data.get("terminal_live_code", True)),
             learn=bool(data.get("learn", True)),
+            disabled_tools=sorted(
+                {str(name).strip() for name in data.get("disabled_tools") or ()} - {""}
+            ),
             memories_dir=(
                 str(data["memories_dir"]) if data.get("memories_dir") is not None else None
             ),

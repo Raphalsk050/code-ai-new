@@ -180,7 +180,7 @@ def build_tool_registry() -> ToolRegistry:
         SubmitPlanTool(),
         CompletePlanStepTool(),
         FinishDiscoveryTool(),
-        LoadToolsTool(),
+        LoadToolsTool(registry.has),
         RequestExternalGapTool(),
         CompleteTaskTool(),
     ):
@@ -227,6 +227,7 @@ def build_application(
     workspace = WorkspacePolicy.from_path(config.workspace)
     sandbox = _build_sandbox(config, session_id=event_bus.session_id)
     registry = build_tool_registry()
+    registry.set_disabled(config.disabled_tools)
     # The workspace's code index. Built once per session and shared with the
     # sub-agents; it follows the agent by re-indexing every file a tool touches
     # (see CodeIndexService.attach) and is refreshed on demand via /index.
@@ -363,6 +364,7 @@ def build_application(
                         limit_per_kind=config.memory.render_limit_per_kind
                     ),
                     rules=rules.render_for_prompt(),
+                    tool_enabled=registry.has,
                     skills=_skills_catalog(),
                     workflows=workflows.render_for_prompt(),
                 ),

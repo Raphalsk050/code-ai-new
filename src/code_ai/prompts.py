@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
@@ -65,6 +66,7 @@ def build_system_prompt(
     skills: str = "",
     workflows: str = "",
     code_index: str = "",
+    tool_enabled: Callable[[str], bool] | None = None,
 ) -> str:
     current_date = datetime.now().astimezone().date().isoformat()
     sandbox_section = build_sandbox_section(sandbox_root)
@@ -85,7 +87,22 @@ def build_system_prompt(
     # that might waste a call - so the size is given, and it is rebuilt every
     # turn because the index is warmed in the background while the session runs.
     index_section = f"\nCode index: {code_index.strip()}\n" if code_index.strip() else ""
-    tool_groups = render_tool_groups()
+    # Only the groups that still hold an enabled tool, and none at all once
+    # load_tools itself is switched off: there would be no way to load them.
+    tool_groups = render_tool_groups(tool_enabled)
+    if tool_enabled is not None and not tool_enabled("load_tools"):
+        tool_groups = ""
+    tool_groups_section = (
+        f"""Some tool groups are not in your tool list until you ask for them, so the
+everyday list stays short. Tool groups:
+{tool_groups}
+The moment a task needs one, call load_tools with the group name - in the same
+batch as your other first calls - and its tools are offered from the next step
+on. A task that never needs them never has to look past them.
+"""
+        if tool_groups
+        else ""
+    )
     return f"""You are Code-AI, a terminal-based coding agent.
 
 Configured workspace: {workspace}
@@ -262,13 +279,7 @@ location, use the configured workspace and tool output exactly. Never invent
 Unix placeholder paths such as /home/user when a tool result or configured
 workspace is available.
 
-Some tool groups are not in your tool list until you ask for them, so the
-everyday list stays short. Tool groups:
-{tool_groups}
-The moment a task needs one, call load_tools with the group name - in the same
-batch as your other first calls - and its tools are offered from the next step
-on. A task that never needs them never has to look past them.
-
+{tool_groups_section}
 The desktop group controls the user's computer: screen_info to read the screen
 size and current pointer position, move_mouse/click_mouse/drag_mouse/
 scroll_mouse to drive the pointer, type_text and press_keys for the keyboard, and

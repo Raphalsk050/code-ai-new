@@ -339,6 +339,51 @@ async def test_doctor_model_tab_applies_sampling_live(tmp_path) -> None:
         assert modal.query_one("#doctor-knob-temperature", Input).value == "0.6"
 
 
+async def test_doctor_tools_tab_switches_tools_live(tmp_path) -> None:
+    from textual.widgets import Checkbox, TabbedContent
+
+    from code_ai.bootstrap import build_tool_registry
+    from code_ai.ui.terminal.doctor import DoctorModal
+
+    cfg_path = tmp_path / "config.json"
+    fake_app = FakeTerminalApplication(tmp_path)
+    registry = build_tool_registry()
+    fake_app.orchestrator.tool_registry = registry
+    terminal_app = create_terminal_app(fake_app, config_path=cfg_path)
+
+    def saved() -> list[str]:
+        return json.loads(cfg_path.read_text(encoding="utf-8"))["disabled_tools"]
+
+    async with terminal_app.run_test(size=(120, 50)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "/doctor tools"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        modal = terminal_app.screen
+        assert isinstance(modal, DoctorModal)
+        assert modal.query_one("#doctor-tabs", TabbedContent).active == "doctor-tab-tools"
+        boxes = list(modal.query(".doctor-tool").results(Checkbox))
+        assert {box.label.plain for box in boxes} == set(registry.registered_names())
+
+        # One box off: saved, and gone from the registry the agent reads.
+        modal.query_one("#doctor-tool-read_file", Checkbox).value = False
+        await pilot.pause(0.2)
+        assert not registry.has("read_file")
+        assert saved() == ["read_file"]
+        assert fake_app.session.config.disabled_tools == ["read_file"]
+
+        await pilot.click("#doctor-tools-disable-all")
+        await pilot.pause(0.2)
+        assert registry.names() == []
+        assert saved() == registry.registered_names()
+        assert not any(box.value for box in modal.query(".doctor-tool").results(Checkbox))
+
+        await pilot.click("#doctor-tools-enable-all")
+        await pilot.pause(0.2)
+        assert registry.names() == registry.registered_names()
+        assert saved() == []
+
+
 async def test_subagent_events_populate_agents_panel(tmp_path) -> None:
     fake_app = FakeTerminalApplication(tmp_path)
     terminal_app = create_terminal_app(fake_app)
