@@ -18,7 +18,11 @@ from code_ai.tools.office.common import (
     optional_str,
     resolve_input,
 )
+from code_ai.tools.office.deps import ensure
 from code_ai.tools.schema import tool_schema
+
+# Loaded when a tool runs: a missing library must not stop Code-AI from starting.
+_DEPS = ("PIL",)
 
 
 def _strings(value: Any, name: str) -> list[str]:
@@ -132,6 +136,7 @@ class DesignSystemTool:
     )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        await ensure(*_DEPS, verify_ssl=bool(context.config.ssl_verification))
         mode = optional_str(arguments, "mode", "generate").lower()
         if mode == "check":
             pairs = _strings(arguments.get("pairs"), "pairs")
@@ -315,6 +320,7 @@ class UiPreviewTool:
     )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        await ensure(*_DEPS, verify_ssl=bool(context.config.ssl_verification))
         viewports = pages.parse_viewports(arguments.get("viewports"))
         color_schemes = pages.schemes(arguments.get("color_scheme"))
         if len(viewports) * len(color_schemes) > pages.MAX_IMAGES:
@@ -396,6 +402,7 @@ class UiAuditTool:
     )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        await ensure(*_DEPS, verify_ssl=bool(context.config.ssl_verification))
         viewports = pages.parse_viewports(arguments.get("viewports"))
         checks = [c.lower() for c in _strings(arguments.get("checks"), "checks")] or None
         known = {
