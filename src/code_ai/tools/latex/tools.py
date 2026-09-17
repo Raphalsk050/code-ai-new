@@ -22,8 +22,12 @@ from code_ai.tools.office.common import (
     require_str,
     resolve_input,
 )
+from code_ai.tools.office.deps import ensure
 from code_ai.tools.pdf.common import parse_json_argument
 from code_ai.tools.schema import tool_schema
+
+# Loaded when a tool runs: a missing library must not stop Code-AI from starting.
+_DEPS = ("markdown_it", "PIL", "pypdfium2")
 
 _BIB_ENTRY_FIELDS = (
     "author",
@@ -225,6 +229,7 @@ class LatexArticleTool:
     )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        await ensure(*_DEPS, verify_ssl=bool(context.config.ssl_verification))
         location = arguments.get("location")
         tree = for_context(context, location)
         project = tree.resolve(require_str(arguments, "output_dir", self.name), must_exist=False)
@@ -422,6 +427,7 @@ class LatexCompileTool:
     )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        await ensure(*_DEPS, verify_ssl=bool(context.config.ssl_verification))
         location = arguments.get("location")
         tex = resolve_input(
             context,
@@ -518,6 +524,7 @@ class LatexSetupTool:
     )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        await ensure(*_DEPS, verify_ssl=bool(context.config.ssl_verification))
         action = optional_str(arguments, "action", "status").lower()
         verify_ssl = bool(context.config.ssl_verification)
         repository = optional_str(arguments, "repository") or install.REPOSITORY

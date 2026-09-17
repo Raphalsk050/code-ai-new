@@ -5,8 +5,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-from pypdf import PdfWriter
-
 from code_ai.core.errors import ToolArgumentError, ToolExecutionError
 from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.locations import LOCATION_SCHEMA, for_context
@@ -20,12 +18,17 @@ from code_ai.tools.office.common import (
     resolve_input,
     resolve_output,
 )
+from code_ai.tools.office.deps import LazyModule, ensure
 from code_ai.tools.office.render import render_pages
 from code_ai.tools.pdf import convert as conversions
-from code_ai.tools.pdf import operations
 from code_ai.tools.pdf.common import parse_json_argument, to_points
-from code_ai.tools.pdf.inspect import inspect_pdf, open_reader
 from code_ai.tools.schema import tool_schema
+
+# Loaded when a tool runs: a missing library must not stop Code-AI from starting.
+pypdf = LazyModule("pypdf")
+operations = LazyModule("code_ai.tools.pdf.operations")
+pdf_inspect = LazyModule("code_ai.tools.pdf.inspect")
+_DEPS = ("pypdf", "pypdfium2", "cryptography", "reportlab", "PIL", "markdown_it")
 
 _PDF = (".pdf",)
 
@@ -95,13 +98,14 @@ class PdfInspectTool:
     )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        await ensure(*_DEPS, verify_ssl=bool(context.config.ssl_verification))
         raw = require_str(arguments, "path", self.name)
         path = resolve_input(context, raw, location=arguments.get("location"), suffixes=_PDF)
         password = optional_str(arguments, "password") or None
         max_chars = clamp_int(arguments.get("max_chars"), default=20_000, low=500, high=200_000)
 
         def work() -> dict[str, Any]:
-            report = inspect_pdf(
+            report = pdf_inspect.inspect_pdf(
                 path,
                 password=password,
                 text_pages=arguments.get("text_pages"),
@@ -177,6 +181,7 @@ class PdfEditTool:
     )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        await ensure(*_DEPS, verify_ssl=bool(context.config.ssl_verification))
         raw = require_str(arguments, "path", self.name)
         location = arguments.get("location")
         source = resolve_input(context, raw, location=location, suffixes=_PDF)
@@ -197,8 +202,8 @@ class PdfEditTool:
             return resolve_output(context, value, location=location, suffixes=_PDF)
 
         def work() -> dict[str, Any]:
-            reader = open_reader(source, password)
-            writer = PdfWriter(clone_from=reader)
+            reader = pdf_inspect.open_reader(source, password)
+            writer = pypdf.PdfWriter(clone_from=reader)
             state = operations.EditState(
                 writer=writer,
                 resolve_file=resolve_file,
@@ -316,6 +321,7 @@ class PdfConvertTool:
     )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        await ensure(*_DEPS, verify_ssl=bool(context.config.ssl_verification))
         location = arguments.get("location")
         output_raw = require_str(arguments, "output", self.name)
         out_suffix = Path(output_raw.replace("{page}", "1")).suffix.lower()
@@ -434,7 +440,7 @@ class PdfConvertTool:
         location = arguments.get("location")
         source = resolve_input(context, source_raw, location=location, suffixes=_PDF)
         password = optional_str(arguments, "password") or None
-        reader = await asyncio.to_thread(open_reader, source, password)
+        reader = await asyncio.to_thread(pdf_inspect.open_reader, source, password)
         pages = parse_page_spec(arguments.get("pages"), len(reader.pages))
         if out_suffix == ".txt":
             output = resolve_output(context, output_raw, location=location)

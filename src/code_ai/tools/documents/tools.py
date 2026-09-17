@@ -7,14 +7,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-import docx
-from docx.opc.exceptions import PackageNotFoundError
-
 from code_ai.core.errors import ToolArgumentError, ToolExecutionError
 from code_ai.tools.base import ToolCapability, ToolContext
-from code_ai.tools.documents import builder, formatting, ooxml, operations, presets
-from code_ai.tools.documents.inspect import inspect_document
-from code_ai.tools.documents.to_markdown import document_to_markdown
 from code_ai.tools.locations import LOCATION_SCHEMA, for_context
 from code_ai.tools.office.common import (
     attach_images,
@@ -26,8 +20,21 @@ from code_ai.tools.office.common import (
     resolve_input,
     resolve_output,
 )
+from code_ai.tools.office.deps import LazyModule, ensure
 from code_ai.tools.pdf.common import parse_json_argument
 from code_ai.tools.schema import tool_schema
+
+# Loaded when a tool runs: a missing library must not stop Code-AI from starting.
+docx = LazyModule("docx")
+docx_errors = LazyModule("docx.opc.exceptions")
+builder = LazyModule("code_ai.tools.documents.builder")
+formatting = LazyModule("code_ai.tools.documents.formatting")
+ooxml = LazyModule("code_ai.tools.documents.ooxml")
+operations = LazyModule("code_ai.tools.documents.operations")
+presets = LazyModule("code_ai.tools.documents.presets")
+document_inspect = LazyModule("code_ai.tools.documents.inspect")
+to_markdown = LazyModule("code_ai.tools.documents.to_markdown")
+_DEPS = ("docx", "lxml", "markdown_it", "PIL", "pypdfium2")
 
 _DOCX = (".docx", ".docm", ".dotx")
 
@@ -64,7 +71,7 @@ _LANGUAGE_FIELD = {
 def _open(path: Path):
     try:
         return docx.Document(str(path))
-    except PackageNotFoundError:
+    except docx_errors.PackageNotFoundError:
         raise ToolArgumentError(f"{path.name} is not a valid .docx file.") from None
     except Exception as exc:  # noqa: BLE001 - corrupt packages raise many types
         raise ToolExecutionError(f"Could not open {path.name}: {exc}") from exc
@@ -294,6 +301,7 @@ class DocumentCreateTool:
     )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        await ensure(*_DEPS, verify_ssl=bool(context.config.ssl_verification))
         location = arguments.get("location")
         output = resolve_output(
             context,
@@ -366,6 +374,7 @@ class DocumentInspectTool:
     )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        await ensure(*_DEPS, verify_ssl=bool(context.config.ssl_verification))
         path = resolve_input(
             context,
             require_str(arguments, "path", self.name),
@@ -375,7 +384,7 @@ class DocumentInspectTool:
 
         def work():
             document = _open(path)
-            return inspect_document(
+            return document_inspect.inspect_document(
                 document,
                 offset=clamp_int(arguments.get("offset"), default=0, low=0, high=10**6),
                 limit=clamp_int(arguments.get("limit"), default=200, low=1, high=2000),
@@ -440,6 +449,7 @@ class DocumentEditTool:
     )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        await ensure(*_DEPS, verify_ssl=bool(context.config.ssl_verification))
         location = arguments.get("location")
         source = resolve_input(
             context, require_str(arguments, "path", self.name), location=location, suffixes=_DOCX
@@ -529,6 +539,7 @@ class DocumentFormatTool:
     )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        await ensure(*_DEPS, verify_ssl=bool(context.config.ssl_verification))
         location = arguments.get("location")
         source = resolve_input(
             context, require_str(arguments, "path", self.name), location=location, suffixes=_DOCX
@@ -621,6 +632,7 @@ class DocumentConvertTool:
     )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        await ensure(*_DEPS, verify_ssl=bool(context.config.ssl_verification))
         location = arguments.get("location")
         source = resolve_input(
             context, require_str(arguments, "source", self.name), location=location
@@ -654,7 +666,9 @@ class DocumentConvertTool:
 
             def export():
                 document = _open(source)
-                markdown, images = document_to_markdown(document, media_dir, media_dir.name)
+                markdown, images = to_markdown.document_to_markdown(
+                    document, media_dir, media_dir.name
+                )
                 output.write_text(markdown, encoding="utf-8")
                 return images, len(markdown)
 

@@ -19,12 +19,18 @@ from code_ai.tools.office.common import (
     resolve_input,
     resolve_output,
 )
+from code_ai.tools.office.deps import LazyModule, ensure
 from code_ai.tools.pdf.common import parse_json_argument
 from code_ai.tools.schema import tool_schema
-from code_ai.tools.slides import deck as decks
-from code_ai.tools.slides import formatting, operations, spec
-from code_ai.tools.slides.inspect import inspect_deck
-from code_ai.tools.slides.themes import THEMES, get_theme
+from code_ai.tools.slides import spec
+
+# Loaded when a tool runs: a missing library must not stop Code-AI from starting.
+decks = LazyModule("code_ai.tools.slides.deck")
+formatting = LazyModule("code_ai.tools.slides.formatting")
+operations = LazyModule("code_ai.tools.slides.operations")
+deck_inspect = LazyModule("code_ai.tools.slides.inspect")
+themes = LazyModule("code_ai.tools.slides.themes")
+_DEPS = ("pptx", "lxml", "PIL", "pypdfium2")
 
 _PPTX = (".pptx", ".potx", ".pptm")
 _THEME_MARK = "code-ai-theme:"
@@ -83,9 +89,9 @@ def _theme_name(deck) -> str | None:
 
 def _resolve_theme(arguments: dict[str, Any], deck=None):
     name = optional_str(arguments, "theme") or (_theme_name(deck) if deck is not None else None)
-    if name and name not in THEMES:
+    if name and name not in themes.THEMES:
         name = None if deck is not None and not optional_str(arguments, "theme") else name
-    return get_theme(
+    return themes.get_theme(
         name or "corporate",
         accent=optional_str(arguments, "accent") or None,
         font=optional_str(arguments, "font") or None,
@@ -196,6 +202,7 @@ class SlidesCreateTool:
     )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        await ensure(*_DEPS, verify_ssl=bool(context.config.ssl_verification))
         location = arguments.get("location")
         output = resolve_output(
             context,
@@ -295,6 +302,7 @@ class SlidesInspectTool:
     )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        await ensure(*_DEPS, verify_ssl=bool(context.config.ssl_verification))
         path = resolve_input(
             context,
             require_str(arguments, "path", self.name),
@@ -305,7 +313,7 @@ class SlidesInspectTool:
         def work():
             deck = decks.open_deck(path)
             selection = parse_page_spec(arguments.get("slides"), len(deck.slides))
-            return inspect_deck(
+            return deck_inspect.inspect_deck(
                 deck,
                 slides=selection,
                 text_chars=clamp_int(arguments.get("text_chars"), default=200, low=20, high=4000),
@@ -366,6 +374,7 @@ class SlidesEditTool:
     )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        await ensure(*_DEPS, verify_ssl=bool(context.config.ssl_verification))
         location = arguments.get("location")
         source = resolve_input(
             context, require_str(arguments, "path", self.name), location=location, suffixes=_PPTX
@@ -464,6 +473,7 @@ class SlidesFormatTool:
     )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        await ensure(*_DEPS, verify_ssl=bool(context.config.ssl_verification))
         location = arguments.get("location")
         source = resolve_input(
             context, require_str(arguments, "path", self.name), location=location, suffixes=_PPTX
@@ -547,6 +557,7 @@ class SlidesRenderTool:
     )
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        await ensure(*_DEPS, verify_ssl=bool(context.config.ssl_verification))
         location = arguments.get("location")
         path = resolve_input(
             context,
