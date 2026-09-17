@@ -67,6 +67,7 @@ def build_system_prompt(
     workflows: str = "",
     code_index: str = "",
     tool_enabled: Callable[[str], bool] | None = None,
+    on_demand_catalog: str = "",
 ) -> str:
     current_date = datetime.now().astimezone().date().isoformat()
     sandbox_section = build_sandbox_section(sandbox_root)
@@ -103,6 +104,18 @@ on. A task that never needs them never has to look past them.
         if tool_groups
         else ""
     )
+    # Experimental on-demand mode replaces the groups with a per-tool catalog.
+    if on_demand_catalog.strip():
+        tool_groups_section = f"""Your tool list starts with only the planning and
+completion tools, so every request stays short. Every other tool exists and is
+loaded on demand:
+{on_demand_catalog.strip()}
+The moment a task needs one, call load_tool with its exact name - several
+load_tool calls fit in one batch, alongside your other calls - and it is in your
+tool list, with its parameters, from the next step on. A loaded tool stays for
+the rest of the session. Load only what the task needs; the tools named
+elsewhere in this prompt are loaded the same way.
+"""
     return f"""You are Code-AI, a terminal-based coding agent.
 
 Configured workspace: {workspace}

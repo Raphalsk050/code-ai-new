@@ -530,6 +530,20 @@ def _opt_str(value: Any) -> str | None:
 
 
 @dataclass(slots=True)
+class ExperimentalConfig:
+    """Features still being measured, each off by default (Doctor > Experimental)."""
+
+    # Every tool outside the planner's control tools is left out of the request
+    # until the model loads it with load_tool. See tools/on_demand.py.
+    on_demand_tools: bool = False
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any] | None) -> ExperimentalConfig:
+        data = data or {}
+        return cls(on_demand_tools=bool(data.get("on_demand_tools", False)))
+
+
+@dataclass(slots=True)
 class SamplingConfig:
     """Model sampling and reasoning controls shared by every provider.
 
@@ -697,6 +711,7 @@ class AppConfig:
     base_url: str = "http://localhost:11434/v1"
     permission_mode: str = "ask"
     budgets: BudgetConfig = field(default_factory=BudgetConfig)
+    experimental: ExperimentalConfig = field(default_factory=ExperimentalConfig)
     goal: GoalConfig = field(default_factory=GoalConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     planner: PlannerConfig = field(default_factory=PlannerConfig)
@@ -762,6 +777,9 @@ class AppConfig:
         budgets = BudgetConfig.from_mapping(
             data.get("budgets") if isinstance(data.get("budgets"), dict) else None
         )
+        experimental = ExperimentalConfig.from_mapping(
+            data.get("experimental") if isinstance(data.get("experimental"), dict) else None
+        )
         goal = GoalConfig.from_mapping(
             data.get("goal") if isinstance(data.get("goal"), dict) else None
         )
@@ -793,6 +811,7 @@ class AppConfig:
             base_url=str(data.get("base_url", "http://localhost:11434/v1")),
             permission_mode=str(data.get("permission_mode", "ask")).strip().lower(),
             budgets=budgets,
+            experimental=experimental,
             goal=goal,
             memory=memory_config,
             planner=planner,

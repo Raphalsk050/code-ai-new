@@ -160,7 +160,24 @@ _CHOICE_KNOBS: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
     ),
 )
 
-_TAB_TITLES = {"doctor-tab-model": "Model behavior", "doctor-tab-tools": "Agent tools"}
+_TAB_TITLES = {
+    "doctor-tab-model": "Model behavior",
+    "doctor-tab-tools": "Agent tools",
+    "doctor-tab-experimental": "Experimental",
+}
+
+# Experimental switches: config field under ``experimental``, label, what it does.
+_EXPERIMENTS: tuple[tuple[str, str, str], ...] = (
+    (
+        "on_demand_tools",
+        "Load tools on demand",
+        "The request starts with only the planning and completion tools; the "
+        "prompt lists every other tool in one line and the model loads each one "
+        "with load_tool when it needs it. Saves the schema tokens of every tool "
+        "a task never touches. Off: the usual list, with browser, desktop and "
+        "the other groups loaded by load_tools.",
+    ),
+)
 
 # How long typing has to pause before a Model-tab value is saved.
 _APPLY_DELAY_S = 0.6
@@ -252,6 +269,10 @@ class DoctorModal(ModalScreen[None]):
                     yield VerticalScroll(*self._sampling_widgets(), id="doctor-sampling")
                 with TabPane("Tools", id="doctor-tab-tools"):
                     yield VerticalScroll(*self._tool_widgets(), id="doctor-tools")
+                with TabPane("Experimental", id="doctor-tab-experimental"):
+                    yield VerticalScroll(
+                        *self._experimental_widgets(), id="doctor-experimental"
+                    )
             yield Static("", id="doctor-status")
 
     async def on_mount(self) -> None:
@@ -622,8 +643,60 @@ class DoctorModal(ModalScreen[None]):
         registry = self._tool_registry
         return f"{len(registry.names())} of {len(registry.registered_names())} enabled"
 
+    # ------------------------------------------------------------------ #
+    # Experimental tab
+    # ------------------------------------------------------------------ #
+    def _experimental_widgets(self) -> list[Any]:
+        experimental = self._config.experimental
+        widgets: list[Any] = [
+            Static(
+                "Features still being measured, all off by default. Each switch "
+                "is saved at once and takes effect from your next message, so a "
+                "turn already running keeps the setup it started with.",
+                classes="doctor-intro",
+            )
+        ]
+        for field, label, hint in _EXPERIMENTS:
+            widgets.append(
+                Checkbox(
+                    label,
+                    bool(getattr(experimental, field)),
+                    id=f"doctor-experiment-{field}",
+                    compact=True,
+                )
+            )
+            widgets.append(Static(hint, classes="doctor-experiment-hint"))
+        return widgets
+
+    def _apply_experiment(self, field: str, value: bool) -> str:
+        config = self._config
+        if getattr(config.experimental, field) == value:
+            return ""
+        changes = asdict(config.experimental)
+        changes[field] = value
+        try:
+            validated = persist_config_updates(
+                config, {"experimental": changes}, explicit_path=self._config_path
+            )
+        except Exception as exc:  # noqa: BLE001
+            return f"✗ Not saved: {exc}"
+        # The orchestrator reads this at the start of each turn.
+        config.experimental = validated.experimental
+        if self._on_change is not None:
+            self._on_change()
+        state = "on" if value else "off"
+        return f"✓ Saved {field}={state} (applied from your next message)"
+
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
-        if not (event.checkbox.id or "").startswith("doctor-tool-"):
+        checkbox_id = event.checkbox.id or ""
+        if checkbox_id.startswith("doctor-experiment-"):
+            message = self._apply_experiment(
+                checkbox_id[len("doctor-experiment-") :], event.value
+            )
+            if message:
+                self._status(message)
+            return
+        if not checkbox_id.startswith("doctor-tool-"):
             return
         disabled = {
             (box.id or "")[len("doctor-tool-") :]
