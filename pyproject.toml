@@ -23,6 +23,17 @@ dependencies = [
   # one `pip install .` away from a build that could not browse. Chromium is
   # still fetched on first use - see tools/browser/install.py.
   "playwright>=1.40.0",
+  # Documents, slides and PDFs. All pure Python or shipped as wheels, so the
+  # binary carries them; LibreOffice and TeX are fetched on first need.
+  "pypdf>=5.0.0",
+  # AES, which pypdf needs to open or write most encrypted PDFs.
+  "cryptography>=42.0.0",
+  "pypdfium2>=4.30.0",
+  "reportlab>=4.0.0",
+  "python-docx>=1.1.0",
+  "python-pptx>=1.0.0",
+  "pillow>=10.0.0",
+  "markdown-it-py>=3.0.0",
 ]
 
 [project.optional-dependencies]
