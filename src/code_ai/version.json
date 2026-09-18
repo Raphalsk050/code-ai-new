@@ -1,0 +1,8 @@
+{
+  "major": 0,
+  "minor": 9,
+  "patch": 0,
+  "build": 1,
+  "updated": "2026-09-18",
+  "note": "Baseline for everything shipped since v0.1.0: planner with an evidence gate, sub-agents, memory and lessons, code index, browser, desktop, document tools, on-demand tool loading, VS Code bridge."
+}

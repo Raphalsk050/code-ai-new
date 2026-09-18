@@ -1,5 +1,5 @@
 """Code-AI package."""
 
-__all__ = ["__version__"]
+from code_ai.version import __version__, full_version
 
-__version__ = "0.1.0"
+__all__ = ["__version__", "full_version"]
