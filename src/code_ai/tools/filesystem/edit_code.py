@@ -71,7 +71,7 @@ class EditCodeTool:
         location = for_context(context, arguments.get("location"))
         path = location.resolve(path_value, must_exist=True)
         policy = RetryPolicy.from_config(context.config.file_io)
-        original, old_hash = read_text_file(path, policy=policy)
+        original, old_hash = await asyncio.to_thread(read_text_file, path, policy=policy)
         replacements = self._build_replacements(original, edits)
         edited = self._apply(original, replacements)
         diff = "".join(

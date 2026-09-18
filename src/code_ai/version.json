@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 10,
+  "minor": 11,
   "patch": 0,
-  "build": 2,
+  "build": 3,
   "updated": "2026-09-18",
-  "note": "Mention files with @, run sub-agents on other models, and survive an endpoint without tool calling."
+  "note": "Filesystem and search tools no longer block the event loop, and read_file takes a line range."
 }
