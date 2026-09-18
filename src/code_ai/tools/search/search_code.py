@@ -11,6 +11,7 @@ from typing import Any
 
 from code_ai.core.errors import ToolArgumentError, ToolExecutionError
 from code_ai.tools.base import ToolCapability, ToolContext
+from code_ai.tools.filesystem.common import MAX_TEXT_FILE_BYTES
 from code_ai.tools.output import bound_text
 from code_ai.tools.schema import tool_schema
 from code_ai.util.ignore import DEFAULT_EXCLUDES, is_generated_dir_name
@@ -69,7 +70,12 @@ class SearchCodeTool:
                 max_output_chars=context.config.budgets.max_tool_output_chars,
             )
 
-        return _python_search(
+        # Without ripgrep this walks the tree and reads every candidate file.
+        # The orchestrator shares its event loop with the UI, so on the loop a
+        # miss - which reads everything before returning nothing - would freeze
+        # the screen and the tool's own timeout along with it.
+        return await asyncio.to_thread(
+            _python_search,
             query=query,
             root=root,
             workspace_root=context.workspace.root,
@@ -230,6 +236,10 @@ def _python_search(
             truncated = True
             break
         try:
+            # A minified bundle or a rotated log is not what anyone is grepping
+            # for, and reading one costs more than the whole rest of the walk.
+            if path.stat().st_size > MAX_TEXT_FILE_BYTES:
+                continue
             data = path.read_bytes()
         except OSError:
             continue

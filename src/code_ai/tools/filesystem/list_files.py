@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 from pathlib import Path
 from typing import Any
@@ -80,7 +81,10 @@ class ListFilesTool:
                 if entry["type"] == "directory" and depth < max_depth and not child.is_symlink():
                     walk(child, depth + 1)
 
-        walk(root, 0)
+        # A walk is thousands of stat calls, and on a cloud-synced or network
+        # tree each one can block. The orchestrator shares its event loop with
+        # the UI, so this runs off it or the screen stops repainting.
+        await asyncio.to_thread(walk, root, 0)
         return {
             "path": root.relative_to(location.root).as_posix() if root != location.root else ".",
             "max_depth": max_depth,
