@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
+from copy import deepcopy
 from typing import Any
 
 from code_ai.core.errors import ToolArgumentError, ToolExecutionError
@@ -35,8 +37,12 @@ class DispatchAgentTool:
         profile_registry: SubagentProfileRegistry,
         *,
         max_concurrent: int | None = None,
+        models: Callable[[], list[str]] | None = None,
     ) -> None:
         self._profiles = profile_registry
+        # A callable, not a list: the models are edited live in the Doctor, so a
+        # schema frozen at startup would keep offering yesterday's set.
+        self._models = models or (lambda: [])
         # Stating the real cap lets the model size a fan-out by the work instead
         # of guessing: anything above it queues rather than failing, so a wide
         # batch is safe. Left out entirely when the caller does not know it,
@@ -47,7 +53,7 @@ class DispatchAgentTool:
             if max_concurrent
             else ""
         )
-        self.description = (
+        self._description = (
             "Delegate one or more focused subtasks to specialized sub-agents that "
             "run concurrently and in isolation, each returning its own report. Use "
             "this to parallelize independent work - e.g. fan out several read-only "
@@ -62,7 +68,7 @@ class DispatchAgentTool:
             "carry anything that matters into your own answer. Available agent types:\n"
             + self._profiles.describe()
         )
-        self.input_schema = {
+        self._base_schema = {
             "type": "object",
             "properties": {
                 "tasks": {
@@ -107,6 +113,39 @@ class DispatchAgentTool:
             "additionalProperties": False,
         }
 
+    @property
+    def description(self) -> str:
+        """The static blurb, plus the models on offer when there is a choice."""
+
+        models = self._models()
+        if len(models) < 2:
+            return self._description
+        return (
+            f"{self._description}\n\nEach task may also name the model it runs "
+            f"on: {', '.join(models)}. The first is this session's own model and "
+            "the default. Send wide, cheap, read-only work to a smaller model and "
+            "keep the strongest one for work that has to be right; when unsure, "
+            "omit the field."
+        )
+
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        """The schema, with the model choice added only when one exists."""
+
+        models = self._models()
+        if len(models) < 2:
+            return self._base_schema
+        schema = deepcopy(self._base_schema)
+        schema["properties"]["tasks"]["items"]["properties"]["model"] = {
+            "type": "string",
+            "enum": models,
+            "description": (
+                "Which model runs this sub-agent. Omit to use the session's "
+                f"model ({models[0]})."
+            ),
+        }
+        return schema
+
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             name=self.name,
@@ -119,7 +158,7 @@ class DispatchAgentTool:
         if coordinator is None:
             raise ToolExecutionError("Sub-agent delegation is not available in this session.")
 
-        requests = _parse_requests(arguments)
+        requests = _parse_requests(arguments, self._models())
         reports = await coordinator.dispatch(
             requests,
             cancel_event=context.cancel_event,
@@ -141,7 +180,9 @@ class DispatchAgentTool:
         }
 
 
-def _parse_requests(arguments: dict[str, Any]) -> list[SubagentRequest]:
+def _parse_requests(
+    arguments: dict[str, Any], models: Sequence[str] = ()
+) -> list[SubagentRequest]:
     raw = arguments.get("tasks")
     if not isinstance(raw, list) or not raw:
         raise ToolArgumentError("tasks must be a non-empty array of {agent_type, prompt}.")
@@ -163,5 +204,13 @@ def _parse_requests(arguments: dict[str, Any]) -> list[SubagentRequest]:
                 f"{prompt}\n\nExpected outcome (your report will be judged "
                 f"against this): {expected}"
             )
-        requests.append(SubagentRequest(agent_type=agent_type, prompt=prompt))
+        model = str(item.get("model") or "").strip()
+        if model and models and model not in models:
+            raise ToolArgumentError(
+                f"tasks[{index}].model {model!r} is not available to sub-agents. "
+                f"Choose one of: {', '.join(models)}."
+            )
+        requests.append(
+            SubagentRequest(agent_type=agent_type, prompt=prompt, model=model)
+        )
     return requests

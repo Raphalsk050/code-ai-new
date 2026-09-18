@@ -163,8 +163,46 @@ _CHOICE_KNOBS: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
 _TAB_TITLES = {
     "doctor-tab-model": "Model behavior",
     "doctor-tab-tools": "Agent tools",
+    "doctor-tab-subagents": "Sub-agents",
     "doctor-tab-experimental": "Experimental",
 }
+
+# The sub-agent limits, in the order someone tuning a fan-out reaches for them.
+# Every one is a BudgetConfig field, so the tab edits budgets directly rather
+# than keeping a second copy of the same numbers.
+_SUBAGENT_LIMITS: tuple[tuple[str, str, str], ...] = (
+    (
+        "max_concurrent_subagents",
+        "Running at once",
+        "How many sub-agents work in parallel. The rest queue rather than fail.",
+    ),
+    (
+        "max_subagents_per_turn",
+        "Per turn",
+        "Ceiling on one turn's fan-out. Requests past it come back refused.",
+    ),
+    (
+        "max_subagent_depth",
+        "Delegation depth",
+        "1 means sub-agents cannot delegate further, which is the usual answer.",
+    ),
+    (
+        "subagent_explorer_timeout_s",
+        "Explorer timeout (s)",
+        "Wall-clock for a read-only investigator before it is wound down.",
+    ),
+    (
+        "subagent_worker_timeout_s",
+        "Worker timeout (s)",
+        "Wall-clock for a coder or reviewer, which need longer than a search.",
+    ),
+)
+
+_TOOL_CALLING_CHOICES = (
+    ("auto", "Ask for native tool calling, fall back to the prompt if refused"),
+    ("native", "Always send tool definitions; fail if the endpoint refuses"),
+    ("text", "Never send them: put the catalog in the prompt and parse replies"),
+)
 
 # Experimental switches: config field under ``experimental``, label, what it does.
 _EXPERIMENTS: tuple[tuple[str, str, str], ...] = (
@@ -269,6 +307,8 @@ class DoctorModal(ModalScreen[None]):
                     yield VerticalScroll(*self._sampling_widgets(), id="doctor-sampling")
                 with TabPane("Tools", id="doctor-tab-tools"):
                     yield VerticalScroll(*self._tool_widgets(), id="doctor-tools")
+                with TabPane("Sub-agents", id="doctor-tab-subagents"):
+                    yield VerticalScroll(*self._subagent_widgets(), id="doctor-subagents")
                 with TabPane("Experimental", id="doctor-tab-experimental"):
                     yield VerticalScroll(
                         *self._experimental_widgets(), id="doctor-experimental"
@@ -644,6 +684,229 @@ class DoctorModal(ModalScreen[None]):
         return f"{len(registry.names())} of {len(registry.registered_names())} enabled"
 
     # ------------------------------------------------------------------ #
+    # Sub-agents tab (limits, tool-call protocol, the model roster)
+    # ------------------------------------------------------------------ #
+    def _subagent_widgets(self) -> list[Any]:
+        config = self._config
+        widgets: list[Any] = [
+            Static(
+                "Sub-agents are the isolated agents the main one delegates to. "
+                "The limits below bound a fan-out; the roster decides which "
+                "models it may spend. Every change is saved at once and applies "
+                "to the next dispatch, so a fan-out already running keeps the "
+                "setup it started with.",
+                classes="doctor-intro",
+            ),
+            Static("Limits", classes="doctor-tools-section"),
+        ]
+        for field, label, hint in _SUBAGENT_LIMITS:
+            widgets.append(
+                Horizontal(
+                    Static(label, classes="doctor-knob-label"),
+                    Button("-", id=f"doctor-limit-dec-{field}", compact=True),
+                    Input(
+                        value=str(getattr(config.budgets, field)),
+                        id=f"doctor-limit-{field}",
+                        classes="doctor-knob-input",
+                        compact=True,
+                    ),
+                    Button("+", id=f"doctor-limit-inc-{field}", compact=True),
+                    classes="doctor-knob",
+                )
+            )
+            widgets.append(Static(hint, classes="doctor-knob-hint"))
+
+        widgets.append(Static("Tool calling", classes="doctor-tools-section"))
+        widgets.append(
+            Static(
+                "How tool calls reach the model. A server started without a tool "
+                "parser - a bare vLLM is the usual one - refuses any request "
+                "carrying tool definitions, which is what made good models on "
+                "such a host unusable. auto notices that once and switches the "
+                "session to the prompt protocol instead of failing.",
+                classes="doctor-intro",
+            )
+        )
+        for value, hint in _TOOL_CALLING_CHOICES:
+            selected = config.tool_calling == value
+            widgets.append(
+                Button(
+                    self._tool_calling_label(value, hint, selected),
+                    id=f"doctor-toolcalling-{value}",
+                    compact=True,
+                    variant="success" if selected else "default",
+                )
+            )
+
+        widgets.append(Static("Models sub-agents may use", classes="doctor-tools-section"))
+        widgets.append(
+            Static(
+                f"The session model ({config.model}) is always available and is "
+                "the default. Add any other model the same endpoint serves and "
+                "the agent may hand a sub-agent to it: a cheap one for wide "
+                "read-only work, the strong one for what has to be right.",
+                classes="doctor-intro",
+            )
+        )
+        widgets.append(
+            Horizontal(
+                Input(
+                    value="",
+                    placeholder="model name served by this endpoint",
+                    id="doctor-subagent-model-input",
+                    classes="doctor-subagent-input",
+                    compact=True,
+                ),
+                Button("+", id="doctor-subagent-add", variant="success", compact=True),
+                Button("List", id="doctor-subagent-list", compact=True),
+                classes="doctor-knob",
+            )
+        )
+        widgets.append(OptionList(id="doctor-subagent-catalog"))
+        widgets.append(Vertical(*self._subagent_model_rows(), id="doctor-subagent-models"))
+        return widgets
+
+    @staticmethod
+    def _tool_calling_label(value: str, hint: str, selected: bool) -> str:
+        return f"{value}  ✓ - {hint}" if selected else f"{value} - {hint}"
+
+    def _subagent_model_rows(self) -> list[Any]:
+        """One row per added model, each with the button that removes it."""
+
+        models = self._config.subagent_models
+        if not models:
+            return [
+                Static(
+                    "No extra models yet - every sub-agent runs on the session model.",
+                    classes="doctor-knob-hint",
+                )
+            ]
+        rows: list[Any] = []
+        for index, model in enumerate(models):
+            rows.append(
+                Horizontal(
+                    Static(model, classes="doctor-knob-label"),
+                    Button(
+                        "x", id=f"doctor-subagent-del-{index}", variant="error", compact=True
+                    ),
+                    classes="doctor-knob",
+                )
+            )
+        return rows
+
+    async def _refresh_subagent_models(self) -> None:
+        container = self.query_one("#doctor-subagent-models", Vertical)
+        await container.remove_children()
+        await container.mount(*self._subagent_model_rows())
+
+    async def _add_subagent_model(self, name: str = "") -> None:
+        widget = self.query_one("#doctor-subagent-model-input", Input)
+        name = (name or widget.value).strip()
+        if not name:
+            self._status("✗ Type a model name first.")
+            return
+        if name == self._config.model:
+            self._status("✗ That is the session model; it is always available.")
+            return
+        if name in self._config.subagent_models:
+            self._status(f"✗ {name} is already on the list.")
+            return
+        message = self._apply_subagent_models([*self._config.subagent_models, name])
+        if message.startswith("✓"):
+            widget.value = ""
+            await self._refresh_subagent_models()
+        self._status(message)
+
+    async def _remove_subagent_model(self, index: int) -> None:
+        models = list(self._config.subagent_models)
+        if not 0 <= index < len(models):
+            return
+        removed = models.pop(index)
+        message = self._apply_subagent_models(models)
+        if message.startswith("✓"):
+            await self._refresh_subagent_models()
+            message = f"✓ Removed {removed}"
+        self._status(message)
+
+    def _apply_subagent_models(self, models: list[str]) -> str:
+        config = self._config
+        try:
+            validated = persist_config_updates(
+                config, {"subagent_models": models}, explicit_path=self._config_path
+            )
+        except Exception as exc:  # noqa: BLE001
+            return f"✗ Not saved: {exc}"
+        # The dispatch tool reads this list through the coordinator on every
+        # call, so the next dispatch already sees it; nothing to rebuild.
+        config.subagent_models = validated.subagent_models
+        if self._on_change is not None:
+            self._on_change()
+        return f"✓ Saved: {len(validated.subagent_models)} model(s) available to sub-agents"
+
+    def _apply_tool_calling(self, value: str) -> None:
+        config = self._config
+        if config.tool_calling == value:
+            return
+        try:
+            validated = persist_config_updates(
+                config, {"tool_calling": value}, explicit_path=self._config_path
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._status(f"✗ Not saved: {exc}")
+            return
+        config.tool_calling = validated.tool_calling
+        for choice, hint in _TOOL_CALLING_CHOICES:
+            button = self.query_one(f"#doctor-toolcalling-{choice}", Button)
+            selected = choice == value
+            button.label = self._tool_calling_label(choice, hint, selected)
+            button.variant = "success" if selected else "default"
+        if self._on_change is not None:
+            self._on_change()
+        self._status(f"✓ Saved tool_calling={value} (applied from the next model call)")
+
+    def _apply_limit(self, field: str, value: int) -> str:
+        config = self._config
+        budgets = asdict(config.budgets)
+        budgets[field] = value
+        try:
+            validated = persist_config_updates(
+                config, {"budgets": budgets}, explicit_path=self._config_path
+            )
+        except Exception as exc:  # noqa: BLE001
+            return f"✗ Not saved: {exc}"
+        config.budgets = validated.budgets
+        if self._on_change is not None:
+            self._on_change()
+        return f"✓ Saved {field}={value} (applied from the next dispatch)"
+
+    def _step_limit(self, field: str, direction: int) -> None:
+        widget = self.query_one(f"#doctor-limit-{field}", Input)
+        try:
+            current = int(widget.value.strip())
+        except ValueError:
+            current = getattr(self._config.budgets, field)
+        # One is the floor for all of them: each counts something the runtime
+        # needs at least one of, and BudgetConfig refuses zero anyway.
+        value = max(1, current + direction)
+        widget.value = str(value)
+        self._status(self._apply_limit(field, value))
+
+    def _save_limit(self, field: str) -> None:
+        widget = self.query_one(f"#doctor-limit-{field}", Input)
+        raw = widget.value.strip()
+        try:
+            value = int(raw)
+        except ValueError:
+            self._status(f"✗ {field} must be a whole number.")
+            return
+        if value < 1:
+            self._status(f"✗ {field} must be at least 1.")
+            return
+        if value == getattr(self._config.budgets, field):
+            return
+        self._status(self._apply_limit(field, value))
+
+    # ------------------------------------------------------------------ #
     # Experimental tab
     # ------------------------------------------------------------------ #
     def _experimental_widgets(self) -> list[Any]:
@@ -747,7 +1010,14 @@ class DoctorModal(ModalScreen[None]):
             _APPLY_DELAY_S, lambda: self._apply_knob(field)
         )
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        widget_id = event.input.id or ""
+        if widget_id == "doctor-subagent-model-input":
+            await self._add_subagent_model()
+            return
+        if widget_id.startswith("doctor-limit-"):
+            self._save_limit(widget_id[len("doctor-limit-") :])
+            return
         field = self._knob_field(event.input)
         if field is not None:
             self._apply_knob(field)
@@ -904,11 +1174,32 @@ class DoctorModal(ModalScreen[None]):
             self._reset_sampling()
         elif button_id in {"doctor-tools-enable-all", "doctor-tools-disable-all"}:
             self._set_all_tools(button_id == "doctor-tools-enable-all")
+        elif button_id.startswith("doctor-limit-dec-"):
+            self._step_limit(button_id[len("doctor-limit-dec-") :], -1)
+        elif button_id.startswith("doctor-limit-inc-"):
+            self._step_limit(button_id[len("doctor-limit-inc-") :], 1)
+        elif button_id.startswith("doctor-toolcalling-"):
+            self._apply_tool_calling(button_id[len("doctor-toolcalling-") :])
+        elif button_id == "doctor-subagent-add":
+            await self._add_subagent_model()
+        elif button_id == "doctor-subagent-list":
+            await self._list_subagent_catalog()
+        elif button_id.startswith("doctor-subagent-del-"):
+            await self._remove_subagent_model(
+                int(button_id[len("doctor-subagent-del-") :])
+            )
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        list_id = event.option_list.id or ""
+        if list_id == "doctor-subagent-catalog":
+            # Picking from the sub-agent catalog only fills the box: adding is
+            # the green + next to it, so a stray click never edits the roster.
+            self.query_one("#doctor-subagent-model-input", Input).value = str(
+                event.option.prompt
+            )
+            return
         # Picking a listed model drops its name into the step's input field
         # (the option list id carries which model field this step edits).
-        list_id = event.option_list.id or ""
         field = list_id[len("doctor-model-list-") :] or "model"
         self.query_one(f"#doctor-input-{field}", Input).value = str(event.option.prompt)
 
@@ -978,6 +1269,25 @@ class DoctorModal(ModalScreen[None]):
         option_list.add_options(models)
         option_list.set_class(False, "doctor-hidden")
         self._status(f"{len(models)} model(s) — pick one to fill the field.")
+
+    async def _list_subagent_catalog(self) -> None:
+        """Show what the endpoint serves, so a name is picked rather than typed.
+
+        The whole point of the roster is a second model on the *same* host, so
+        the catalog it offers is that host's - a typo here would otherwise only
+        surface as a failed sub-agent much later.
+        """
+
+        self._status("Fetching models…")
+        try:
+            models = await list_available_models(self._candidate_config())
+        except Exception as exc:  # noqa: BLE001
+            self._status(f"✗ {exc}")
+            return
+        option_list = self.query_one("#doctor-subagent-catalog", OptionList)
+        option_list.clear_options()
+        option_list.add_options(models)
+        self._status(f"{len(models)} model(s) — pick one to add it.")
 
     async def _test_model(self, field: str) -> None:
         from code_ai.providers.factory import create_provider

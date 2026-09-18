@@ -31,6 +31,7 @@ from code_ai.core.errors import (
     ImageLimitError,
     ProviderError,
     ToolArgumentError,
+    ToolCallingUnsupportedError,
     TransientProviderError,
     WorkspaceBoundaryError,
 )
@@ -45,7 +46,12 @@ from code_ai.core.reminders import ReminderEngine, ToolRound
 from code_ai.core.rules import RulesService
 from code_ai.core.state import AgentState
 from code_ai.events.bus import AsyncEventBus
-from code_ai.prompts import VISION_ANALYSIS_PROMPT, build_runtime_note, build_system_prompt
+from code_ai.prompts import (
+    VISION_ANALYSIS_PROMPT,
+    build_runtime_note,
+    build_system_prompt,
+    build_text_tool_protocol,
+)
 from code_ai.providers.base import ModelProvider
 from code_ai.providers.models import (
     FinishReason,
@@ -62,6 +68,7 @@ from code_ai.providers.tool_recovery import (
     ToolCallStreamFilter,
     looks_like_attempted_tool_call,
     recover_tool_calls_from_text,
+    strip_tool_call_markup,
 )
 from code_ai.tools import on_demand
 from code_ai.tools.base import TOOL_IMAGES_KEY, ToolCapability, ToolContext
@@ -91,6 +98,15 @@ _MAX_BUDGET_RETRIES = 2
 # Bounded so a stream that keeps breaking still terminates the turn instead of
 # re-prompting forever.
 _MAX_INTERRUPTED_CALL_RETRIES = 2
+# What the user gets when every tool is off and the model spent its whole reply
+# on a call that could never run. Saying nothing would look like the turn simply
+# died, which is exactly what the empty tool list makes it look like already.
+_NO_TOOLS_ANSWER = (
+    "Every tool is switched off in this session, so I cannot look at the "
+    "workspace, read files or run anything - and I tried to. Turn the tools "
+    "back on in /doctor tools, or ask me something I can answer from our "
+    "conversation."
+)
 # How long a background reflection gets to die once the next turn asks it to.
 # Long enough for an ordinary provider call to unwind, short enough that the
 # user never reads it as the agent ignoring them.
@@ -361,6 +377,11 @@ class _TurnState:
     # one. See ``_retry_interrupted_tool_call``.
     tool_call_streaming: bool = False
     interrupted_call_retries: int = 0
+    # Whether the current model step was sent any tools at all. Reset per step.
+    # With every tool switched off there is no structured channel to correct the
+    # model into, so "call it properly" is the wrong nudge - see
+    # ``_retry_malformed_tool_call``.
+    step_offered_tools: bool = True
     # Inputs for the post-turn reflection digest: what the user asked and one
     # compact line per executed tool call.
     user_text: str = ""
@@ -516,6 +537,11 @@ class AgentOrchestrator:
         # disagree inside a turn.
         self._loaded_tools: set[str] = set()
         self._on_demand_tools = config.experimental.on_demand_tools
+        # Set once an endpoint refuses a request carrying tools, and kept
+        # for the session: it is a property of how the server was started,
+        # not of the request, so probing again every step would just buy
+        # the same 400 over and over.
+        self._text_tools_forced = False
         # Groups the host cannot serve (backend missing, wrong platform), with
         # the reason. Withdrawn from the request for the session: the same
         # error came back four times running when the model was left to retry.
@@ -624,6 +650,10 @@ class AgentOrchestrator:
                 on_demand_catalog=(
                     on_demand.render_catalog(self.tool_registry) if self._on_demand() else ""
                 ),
+                # With every tool switched off, the whole prompt - "call
+                # write_file", "complete_task only after evidence" - describes a
+                # session that does not exist. Ask for the one that does.
+                tools_available=bool(self.tool_registry.names()),
             )
         )
 
@@ -1066,7 +1096,23 @@ class AgentOrchestrator:
             )
 
             state.step_streamed_answer = False
-            response = await self._run_model_step(request, state)
+            state.step_offered_tools = bool(tool_definitions)
+            try:
+                response = await self._run_model_step(request, state)
+            except ToolCallingUnsupportedError as exc:
+                # The endpoint serves this model without a tool parser. The
+                # provider has remembered that; rebuilding the step puts the
+                # catalog in the prompt and reads the calls back out of the
+                # reply, which is the difference between "the tool does not
+                # work with this model" and it working.
+                self._text_tools_forced = True
+                await self.event_bus.emit(
+                    "model.tool_protocol.switched",
+                    {"model": self.config.model, "reason": str(exc)},
+                    source="core.orchestrator",
+                )
+                continue
+            
             state.last_response = response
             self.usage.add(response.usage)
             if response.response_id:
@@ -1112,6 +1158,13 @@ class AgentOrchestrator:
     async def _handle_no_tool_response(
         self, response: ModelResponse, state: _TurnState
     ) -> TurnResult | None:
+        # With the tools off the model often answers in tool-call markup anyway,
+        # and recovery leaves it alone because there is no tool to route it to.
+        # It must not be what the user is handed: strip it, and when nothing but
+        # markup was said, explain the empty turn rather than ending on silence.
+        if not state.step_offered_tools and looks_like_attempted_tool_call(response.text):
+            response.text = strip_tool_call_markup(response.text) or _NO_TOOLS_ANSWER
+
         # Fail-open. The surface classifier may still mislabel a request as a
         # mutation (keyword heuristics are inherently imperfect), so we nudge
         # the model toward tools at most once. If it still answers in
@@ -1240,9 +1293,14 @@ class AgentOrchestrator:
             response.text
         ) and not looks_like_attempted_tool_call(response.reasoning):
             return False
-        if state.tool_format_retries >= _MAX_TOOL_FORMAT_RETRIES:
+        # A step that offered no tools has no "proper format" to retry into, so
+        # the standard correction asks for something impossible and the model
+        # can only print the markup again. Tell it once that the tools are off
+        # and let it answer in prose; a second attempt buys nothing.
+        ceiling = _MAX_TOOL_FORMAT_RETRIES if state.step_offered_tools else 1
+        if state.tool_format_retries >= ceiling:
             return False
-        if state.tool_format_retries == 0:
+        if state.tool_format_retries == 0 and state.step_offered_tools:
             # Learn from the first botched format this turn, not every retry.
             await self._record_failure(
                 trigger="malformed_tool_call",
@@ -1262,13 +1320,18 @@ class AgentOrchestrator:
         # Not supplementary: re-issuing the call is the next step, not a detour
         # from the user's request.
         self.conversation.add_user(
-            build_runtime_note(self._tool_format_correction_text(), supplementary=False)
+            build_runtime_note(
+                self._tool_format_correction_text()
+                if state.step_offered_tools
+                else self._no_tools_correction_text(),
+                supplementary=False,
+            )
         )
         await self.event_bus.emit(
             "tool.call.malformed",
             {
                 "attempt": state.tool_format_retries,
-                "max_attempts": _MAX_TOOL_FORMAT_RETRIES,
+                "max_attempts": ceiling,
             },
             source="core.orchestrator",
         )
@@ -1284,6 +1347,18 @@ class AgentOrchestrator:
             "parsed. Do not print the call as text. Invoke the tool through the "
             "function-calling interface, using the exact tool name and valid JSON "
             "arguments. If no tool is needed, answer the user directly instead."
+        )
+
+    @staticmethod
+    def _no_tools_correction_text() -> str:
+        return (
+            "You have no tools in this session - every one of them is switched "
+            "off, which is why your request carried an empty tool list. Nothing "
+            "reads the call you just printed and nothing will run it. Answer the "
+            "user in the chat instead: say in one sentence what you cannot do "
+            "without tools, then give them the best you can without one - the "
+            "command they can run themselves, the code written out in full, or "
+            "what this conversation already tells you."
         )
 
     async def _retry_interrupted_tool_call(
@@ -1876,6 +1951,11 @@ class AgentOrchestrator:
                     attempts = 0
                     continue
                 await self._emit_request_failed(exc)
+                raise
+            except ToolCallingUnsupportedError:
+                # Not a failure: the endpoint just told us how it wants to be
+                # talked to. The loop rebuilds the step with the tools in the
+                # prompt instead, so this must not be reported as a dead request.
                 raise
             except ProviderError as exc:
                 if streamed:
@@ -2918,9 +2998,17 @@ class AgentOrchestrator:
         messages = _evict_stale_images(
             self.conversation.snapshot(), keep=self.config.image_history_limit
         )
+        text_tools = bool(tool_definitions) and self._text_tool_mode()
         runtime_context = "\n\n".join(
             block
-            for block in (self._planner_context(), self._git_context(state))
+            for block in (
+                # First: it is the contract for everything the model may do and
+                # it is identical from step to step, so it sits ahead of the
+                # blocks that change and costs the prefix cache nothing.
+                build_text_tool_protocol(tool_definitions) if text_tools else "",
+                self._planner_context(),
+                self._git_context(state),
+            )
             if block
         )
         if runtime_context:
@@ -2928,7 +3016,10 @@ class AgentOrchestrator:
         return ModelRequest(
             model=self.config.model,
             messages=messages,
-            tools=tool_definitions,
+            # Withheld on purpose in text mode: carrying them is what the
+            # endpoint refuses. The definitions still reach the recovery path,
+            # which is what turns a printed call into a real one.
+            tools=[] if text_tools else tool_definitions,
             max_output_tokens=self.config.output_token_reserve,
             previous_response_id=self.conversation.previous_response_id,
             use_remote_conversation_state=(
@@ -3168,11 +3259,38 @@ class AgentOrchestrator:
     def _planner_context(self) -> str:
         if not (self.planner and self.planner.enabled):
             return ""
+        if not self.tool_registry.names():
+            # The block is entirely about which tool to call next and what
+            # evidence completion needs. With every tool off it only tells the
+            # model to call write_file and complete_task, neither of which it
+            # has - the same lie the system prompt already stopped telling.
+            return ""
         return self.planner.task_context_block(
             recommended_tool_names=self._recommended_tool_names()
         )
 
+    def _text_tool_mode(self) -> bool:
+        """Whether tool calls travel as text this session rather than as fields.
+
+        ``native`` insists on the structured channel, ``text`` never uses it,
+        and ``auto`` - the default - asks for it and switches the moment an
+        endpoint refuses. That switch is the whole point: a vLLM started
+        without a tool parser answers any request carrying tools with a 400,
+        which made every model on such a server unusable however good it was.
+        """
+
+        mode = getattr(self.config, "tool_calling", "auto")
+        if mode == "text":
+            return True
+        if mode == "native":
+            return False
+        return self._text_tools_forced or not self.provider.capabilities.tool_calling
+
     def _requires_tool_for_progress(self) -> bool:
+        if not self.tool_registry.names():
+            # Prose is the only thing this session can produce; correcting the
+            # model toward tools it does not have just burns a round trip.
+            return False
         return bool(self.planner and self.planner.requires_tool_for_progress())
 
     @staticmethod

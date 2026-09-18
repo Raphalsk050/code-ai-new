@@ -28,6 +28,12 @@ from code_ai.ui.terminal.code_view import (
     render_live_code,
 )
 from code_ai.ui.terminal.controller import TerminalController
+from code_ai.ui.terminal.mentions import (
+    file_suggestions,
+    mention_completion,
+    mention_prefix,
+    render_mentions,
+)
 from code_ai.ui.terminal.palette import PaletteApp
 from code_ai.ui.terminal.slash_commands import (
     SlashCommand,
@@ -403,6 +409,22 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self._history_index = None
             self._draft = ""
 
+        def mention_matches(self) -> list[str]:
+            """Files answering the ``@`` being typed; empty when none is.
+
+            The workspace is read off the app rather than held here: /config can
+            retarget it mid-session, and a picker still offering the old
+            project's files would be worse than no picker at all.
+            """
+
+            prefix = mention_prefix(self.text)
+            if prefix is None:
+                return []
+            workspace = getattr(self.app, "mention_workspace", None)
+            if workspace is None:
+                return []
+            return file_suggestions(workspace, prefix)
+
         def _recall(self, value: str) -> None:
             self.text = value
             self.move_cursor(self.document.end)
@@ -475,6 +497,16 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 event.prevent_default()
                 self.insert("\n")
                 return
+            if key == "tab":
+                # An @mention is accepted wherever it sits, including inside a
+                # multi-line draft: naming a file is part of writing the
+                # message, not a command that has to start it.
+                completion = mention_completion(self.text, self.mention_matches())
+                if completion:
+                    event.stop()
+                    event.prevent_default()
+                    self._recall(completion)
+                    return
             if key == "tab" and "\n" not in self.text:
                 # Accept a slash-command completion in-place, like the old
                 # single-line prompt did on cursor movement.
@@ -1464,8 +1496,13 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             if text.strip() == "/status":
                 self._append_conversation_line(self._session_text())
                 return
-            if text.strip() in {"/doctor", "/doctor model", "/doctor tools"}:
-                # "/doctor model" and "/doctor tools" open straight on that tab.
+            if text.strip() in {
+                "/doctor",
+                "/doctor model",
+                "/doctor tools",
+                "/doctor subagents",
+            }:
+                # A named tab opens straight on it instead of at the menu.
                 self.push_screen(
                     DoctorModal(
                         application,
@@ -1926,9 +1963,24 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             if select.value != mode:
                 select.value = mode
 
+        @property
+        def mention_workspace(self):
+            """Where the @ picker looks. Read live so /config retargeting lands."""
+
+            return application.session.config.workspace
+
         def _set_command_suggestions(self, text: str) -> None:
             suggestions = self.query_one("#command-suggestions", Static)
-            rendered = render_suggestions(text, extra=asset_suggestions())
+            # A mention under the caret wins the panel: the user is naming a
+            # file right now, and a slash command is not what they are typing
+            # once an @ is open.
+            mention = mention_prefix(text)
+            if mention is not None:
+                rendered = render_mentions(
+                    file_suggestions(self.mention_workspace, mention)
+                )
+            else:
+                rendered = render_suggestions(text, extra=asset_suggestions())
             suggestions.update(rendered)
             suggestions.display = bool(rendered)
 

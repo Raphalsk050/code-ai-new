@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+import json
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from pathlib import Path
 
+from code_ai.providers.models import ToolDefinition
 from code_ai.tools.groups import render_catalog as render_tool_groups
 
 # Single source of truth for what "good architecture" means, shared between the
@@ -55,6 +57,52 @@ names the file, so read that file when the returned excerpt was cut short.
 """
 
 
+def build_toolless_system_prompt(
+    *,
+    workspace: Path,
+    language: str,
+    lessons: str = "",
+    memories: str = "",
+    rules: str = "",
+) -> str:
+    """The prompt for a session where the user switched every tool off.
+
+    The main prompt is written around the tools: it names list_files, write_file
+    and complete_task, and tells the model that action means calling them. With
+    an empty tool list that text is a lie the model acts on - it announces the
+    call, prints the markup as text because there is no structured channel to
+    use, and the turn ends with nothing done. Say what is actually true instead.
+    """
+
+    current_date = datetime.now().astimezone().date().isoformat()
+    rules_section = f"\n{rules.strip()}\n" if rules.strip() else ""
+    memories_section = f"\n\n{memories.strip()}\n" if memories.strip() else ""
+    lessons_section = f"\n\n{lessons.strip()}\n" if lessons.strip() else ""
+    return f"""You are Code-AI, a terminal-based coding agent.
+
+Configured workspace: {workspace}
+Configured response language: {language}
+Current local date: {current_date}
+{rules_section}
+Every tool is switched off in this session. You cannot list, read, write or
+search files, run commands, browse the web, save memories or delegate work. Your
+reply in the chat is the only thing you produce.
+
+So answer from this conversation alone. Never announce an action you cannot take
+("let me check the directory", "I'll create the file"): there is no later step
+where it happens, and the user is left waiting for something that never comes.
+Never print a tool call as text either - no tool_call markup, no function
+blocks; nothing reads them, they just land in the chat as noise.
+
+When the request needs a tool, say so plainly in one sentence, name what you
+would have needed, and then give the user the best answer you can without it:
+the command they can run themselves, the code they asked for written out in
+full, or what this conversation already tells you. Writing code in the chat is
+the right answer here rather than a substitute for a real edit - with the tools
+off, the code block is the deliverable.
+{memories_section}{lessons_section}"""
+
+
 def build_system_prompt(
     *,
     workspace: Path,
@@ -68,7 +116,16 @@ def build_system_prompt(
     code_index: str = "",
     tool_enabled: Callable[[str], bool] | None = None,
     on_demand_catalog: str = "",
+    tools_available: bool = True,
 ) -> str:
+    if not tools_available:
+        return build_toolless_system_prompt(
+            workspace=workspace,
+            language=language,
+            lessons=lessons,
+            memories=memories,
+            rules=rules,
+        )
     current_date = datetime.now().astimezone().date().isoformat()
     sandbox_section = build_sandbox_section(sandbox_root)
     memories_section = f"\n\n{memories.strip()}\n" if memories.strip() else ""
@@ -247,6 +304,16 @@ Ask only what actually blocks you, and only what the project cannot tell you:
 look for the answer in the code, the conventions and the existing dependencies
 first. Three sharp questions beat ten, and a question you could have answered
 by reading a file is an interruption you owed the user not to make.
+
+A path the user wrote with a leading "@" is a file they picked from the
+workspace - "@src/app.py" means that file, relative to the workspace root. Read
+it before answering about it, and drop the "@" when you pass the path to a tool.
+
+The tool list sent with each request is the complete set you have right now. A
+tool named anywhere in this prompt but missing from that list is switched off
+for this session: do not announce it, do not print the call as text hoping it
+runs, and do not plan around it. Say in one sentence what you cannot do, then
+answer with what the tools you do have can reach.
 
 A tool result saying the call was denied means the user or the active policy
 refused that specific call. That is a decision, not a transient failure: do not
@@ -597,4 +664,50 @@ external gaps.
 MALFORMED_TOOL_ARGUMENTS_PROMPT = """The previous tool call arguments were invalid.
 Return one corrected tool call with valid JSON arguments or explain why no tool
 call is possible. Do not repeat invalid arguments.
+"""
+
+
+def build_text_tool_protocol(tools: Sequence[ToolDefinition]) -> str:
+    """Teach the tools to a model whose endpoint will not carry them.
+
+    Some servers - a vLLM started without a tool parser is the usual one -
+    answer any request carrying ``tools`` with a 400 instead of ignoring the
+    field, so every model behind them looks broken however capable it is. The
+    way through is the one weak local models already take on their own: put the
+    catalog in the prompt and let the model write the call as text, which the
+    runtime parses back into a real call.
+
+    The markup is the Hermes/Qwen ``<tool_call>`` shape because that is what
+    open models emit unprompted, so this asks most of them for what they would
+    have done anyway.
+    """
+
+    if not tools:
+        return ""
+    entries = []
+    for tool in tools:
+        schema = json.dumps(tool.input_schema, ensure_ascii=False, sort_keys=True)
+        entries.append(f"- {tool.name}: {tool.description.strip()}\n  arguments: {schema}")
+    catalog = "\n".join(entries)
+    return f"""Tool protocol for this session.
+
+This endpoint does not carry tool definitions, so the tools are listed here and
+you call them by writing the call in your reply. To call one, emit exactly:
+
+<tool_call>
+{{"name": "<tool name>", "arguments": {{<arguments as JSON>}}}}
+</tool_call>
+
+Rules that make this work:
+- One JSON object per <tool_call> block, and nothing but the block when you are
+  calling a tool. Several blocks in one reply run as one batch, in order.
+- "arguments" must be a JSON object matching the schema below - real values, no
+  placeholders, no comments, no trailing commas.
+- Use the exact tool name. A name not in this list does not exist.
+- Do not describe the call, wrap it in a code fence, or say you are about to
+  make it. Write the block; the result comes back on the next turn.
+- When you are answering rather than calling, write plain prose with no block.
+
+Tools available to you:
+{catalog}
 """

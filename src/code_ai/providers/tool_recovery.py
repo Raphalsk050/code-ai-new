@@ -212,6 +212,28 @@ def recover_tool_calls_from_text(
     return recovered, _strip_spans(text, spans).strip()
 
 
+def strip_tool_call_markup(text: str) -> str:
+    """Return ``text`` with tool-call markup removed, whatever it names.
+
+    Recovery only strips calls it can execute, so markup naming a tool that is
+    not offered survives into the visible answer. When no call can be recovered
+    - the step offered no tools at all, say - this is what keeps raw
+    ``<tool_call>`` blocks out of the chat while preserving the prose around
+    them.
+    """
+
+    if not text:
+        return text
+    spans = [match.span() for match in _TOOL_CALL_TAG.finditer(text)]
+    spans += [span for _name, _body, span in _iter_xml_functions(text)]
+    spans += [
+        match.span()
+        for match in _FENCE.finditer(text)
+        if _ATTEMPT_MARKER.search(match.group(0))
+    ]
+    return _strip_spans(text, spans).strip()
+
+
 def _coerce_calls(blob: str, names: set[str]) -> list[tuple[str, dict]]:
     blob = blob.strip()
     if not blob:

@@ -555,6 +555,14 @@ DoctorModal {
   width: 1fr;
 }
 
+/* The sub-agent roster's name box. Bounded rather than 1fr: at full width it
+   pushed the + and List buttons past the dialog's right edge, where they were
+   drawn but could not be clicked. */
+.doctor-subagent-input {
+  width: 40;
+  margin: 0 1;
+}
+
 .doctor-knob Button {
   width: auto;
   min-width: 3;

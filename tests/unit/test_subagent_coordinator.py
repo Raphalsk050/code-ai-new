@@ -49,9 +49,13 @@ class _FakeRuntime:
         self.built = 0
         self.live = 0
         self.peak = 0
+        # Which model each build was asked for, so a dispatch that names one
+        # can be checked to have carried it all the way down.
+        self.models: list[str] = []
 
-    def build(self, profile) -> BuiltSubagent:
+    def build(self, profile, *, model: str = "") -> BuiltSubagent:
         self.built += 1
+        self.models.append(model)
         return BuiltSubagent(
             orchestrator=_FakeOrchestrator(self._wrap()),
             event_bus=AsyncEventBus(),
@@ -184,6 +188,43 @@ async def test_concurrency_is_bounded_by_config(tmp_path) -> None:
     release.set()
     reports = await asyncio.wait_for(task, timeout=5)
     assert len(reports) == 5
+
+
+async def test_a_listed_model_reaches_the_runtime(tmp_path) -> None:
+    async def behaviour(prompt, _cancel):
+        return TurnResult(text="ok", response=None)
+
+    runtime = _FakeRuntime(behaviour)
+    config = _config(tmp_path)
+    config.subagent_models = ["small-model"]
+    coord = _coordinator(tmp_path, runtime, config=config)
+
+    await coord.dispatch([SubagentRequest("explorer", "x", model="small-model")])
+
+    assert runtime.models == ["small-model"]
+
+
+async def test_an_unlisted_model_never_builds_anything(tmp_path) -> None:
+    runtime = _FakeRuntime(lambda p, c: None)
+    coord = _coordinator(tmp_path, runtime)
+
+    reports = await coord.dispatch([SubagentRequest("explorer", "x", model="ghost")])
+
+    assert reports[0].status is SubagentStatus.REJECTED
+    assert "ghost" in reports[0].error
+    assert runtime.built == 0
+
+
+async def test_naming_no_model_leaves_the_choice_to_the_runtime(tmp_path) -> None:
+    async def behaviour(prompt, _cancel):
+        return TurnResult(text="ok", response=None)
+
+    runtime = _FakeRuntime(behaviour)
+    coord = _coordinator(tmp_path, runtime)
+
+    await coord.dispatch([SubagentRequest("explorer", "x")])
+
+    assert runtime.models == [""]
 
 
 async def test_unknown_type_is_rejected(tmp_path) -> None:
@@ -408,7 +449,7 @@ async def test_child_workspace_actions_travel_back_as_evidence(tmp_path) -> None
     """The digest of what the child actually did is attached to its report."""
 
     class _BusAwareRuntime(_FakeRuntime):
-        def build(self, profile) -> BuiltSubagent:
+        def build(self, profile, *, model: str = "") -> BuiltSubagent:
             bus = AsyncEventBus()
 
             async def behaviour(prompt, _cancel):

@@ -25,6 +25,20 @@ from code_ai.util.redaction import redact_mapping
 
 SUPPORTED_API_MODES = {"responses", "completions", "ollama"}
 SUPPORTED_PERMISSION_MODES = {"ask", "auto", "bypass"}
+# "auto" probes native function calling and remembers a refusal; "native"
+# insists on it; "text" always uses the prompt protocol instead.
+SUPPORTED_TOOL_CALLING_MODES = {"auto", "native", "text"}
+
+
+def _unique_names(raw: Any) -> list[str]:
+    """Clean a user-entered name list, keeping their order and dropping repeats."""
+
+    seen: list[str] = []
+    for item in raw or ():
+        name = str(item).strip()
+        if name and name not in seen:
+            seen.append(name)
+    return seen
 SUPPORTED_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
 SUPPORTED_REASONING_SUMMARIES = {"auto", "concise", "detailed"}
 
@@ -768,6 +782,17 @@ class AppConfig:
     # Tools switched off (Doctor > Tools). The agent is built as if they did not
     # exist: no schema, no prompt catalog entry, and a call is an unknown tool.
     disabled_tools: list[str] = field(default_factory=list)
+    # Extra models sub-agents may run on (Doctor > Sub-agents). They are served
+    # by the same endpoint as the main model - only the model name changes - so
+    # a machine hosting several models can spend a cheap one on exploration and
+    # keep the expensive one for the conversation. Empty means every sub-agent
+    # inherits the session model.
+    subagent_models: list[str] = field(default_factory=list)
+    # How tool calls reach the model. "auto" asks for native function calling
+    # and falls back to the text protocol the first time an endpoint refuses
+    # it; "native" insists; "text" never asks. The fallback is what makes a
+    # vLLM served without a tool parser usable at all.
+    tool_calling: str = "auto"
     # Directory for persistent cross-session failure memories. ``None`` resolves
     # to ``<config dir>/memories`` at startup; tests point it at a temp dir.
     memories_dir: str | None = None
@@ -846,6 +871,11 @@ class AppConfig:
             disabled_tools=sorted(
                 {str(name).strip() for name in data.get("disabled_tools") or ()} - {""}
             ),
+            # Order is the user's, not sorted: the list is a preference ranking
+            # they build by hand in the Doctor, and the first entry is the one a
+            # sub-agent gets by default.
+            subagent_models=_unique_names(data.get("subagent_models")),
+            tool_calling=str(data.get("tool_calling", "auto")),
             memories_dir=(
                 str(data["memories_dir"]) if data.get("memories_dir") is not None else None
             ),
@@ -894,6 +924,13 @@ class AppConfig:
             raise ConfigurationError("max_images_per_request must be zero or positive.")
         if self.image_history_limit < 0:
             raise ConfigurationError("image_history_limit must be zero or positive.")
+        self.tool_calling = self.tool_calling.strip().lower()
+        if self.tool_calling not in SUPPORTED_TOOL_CALLING_MODES:
+            raise ConfigurationError(
+                f"Unsupported tool_calling: {self.tool_calling}. "
+                f"Choose one of {sorted(SUPPORTED_TOOL_CALLING_MODES)}."
+            )
+        self.subagent_models = _unique_names(self.subagent_models)
         if not self.terminal_theme.strip():
             raise ConfigurationError("terminal_theme must be non-empty.")
         if not self.terminal_banner_font.strip():

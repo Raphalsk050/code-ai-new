@@ -1325,9 +1325,11 @@ def test_a_long_config_signature_does_not_widen_the_other_sections() -> None:
     rendered = render_help()
     session = rendered.split("Planning:")[0]
 
-    # Session's widest entry is "/doctor model", so that is its column - not
-    # the far longer /config signatures further down.
-    assert "  /help          Show available commands." in session
+    # Session pads to its own widest entry ("/doctor subagents"), not to the
+    # far longer /config signatures further down.
+    widest = len("/doctor subagents")
+    assert f"  /help{' ' * (widest - len('/help'))}  Show available commands." in session
+    assert "/config" not in session
 
 
 def test_the_suggestion_popup_still_shows_a_shortlist() -> None:
