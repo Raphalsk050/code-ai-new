@@ -4,9 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "code-ai"
-version = "0.1.0"
 description = "Terminal-based coding agent with normalized providers, tools, events, and a Textual UI."
 readme = "README.md"
+# The single source of truth is src/code_ai/version.json; see code_ai/version.py.
+dynamic = ["version"]
 requires-python = ">=3.11"
 dependencies = [
   "openai>=1.0.0",
@@ -57,10 +58,14 @@ dev = [
 [project.scripts]
 code-ai = "code_ai.cli.main:main"
 
+[tool.setuptools.dynamic]
+version = {attr = "code_ai.__version__"}
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
+"code_ai" = ["version.json"]
 "code_ai.ui.terminal" = ["theme.tcss", "banner.txt"]
 "code_ai.assets" = ["default_skills/**/*.md"]
 
