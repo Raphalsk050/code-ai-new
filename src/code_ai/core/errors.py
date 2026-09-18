@@ -38,6 +38,17 @@ class ImageLimitError(ProviderError):
         self.limit = max(0, int(limit))
 
 
+class ToolCallingUnsupportedError(ProviderError):
+    """The endpoint refused the request because it does not serve tool calls.
+
+    A vLLM started without a tool parser answers a request carrying ``tools``
+    with a 400 rather than ignoring the field, which used to make every
+    otherwise-good model on such a server unusable. Raised so the caller can
+    switch that session to the prompt-based tool protocol and try again instead
+    of failing the turn.
+    """
+
+
 class ContextCapacityError(CodeAIError):
     """The active request cannot fit within the configured context limit."""
 

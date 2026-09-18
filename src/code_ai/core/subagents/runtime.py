@@ -87,9 +87,9 @@ class SubagentRuntime:
         self._browser = browser
         self._review_service_factory = review_service_factory
 
-    def build(self, profile: SubagentProfile) -> BuiltSubagent:
+    def build(self, profile: SubagentProfile, *, model: str = "") -> BuiltSubagent:
         event_bus = AsyncEventBus()
-        child_config = self._child_config(profile)
+        child_config = self._child_config(profile, model)
         registry = self._base_registry.select(profile.allowed_capabilities)
 
         def system_prompt() -> str:
@@ -159,7 +159,7 @@ class SubagentRuntime:
             timeout_seconds=profile.timeout_seconds(child_config.budgets),
         )
 
-    def _child_config(self, profile: SubagentProfile) -> AppConfig:
+    def _child_config(self, profile: SubagentProfile, model: str = "") -> AppConfig:
         """Clone the config with sub-agent-scoped budgets and no approval gate.
 
         The sub-agent runs in ``bypass`` internally: approval already happened
@@ -180,4 +180,8 @@ class SubagentRuntime:
             self._config,
             permission_mode="bypass",
             budgets=budgets,
+            # Only the name changes: the endpoint, the key and the api mode are
+            # the parent's, because a second model on the same server is what
+            # this is for. A sub-agent given nothing runs on the session model.
+            model=model.strip() or self._config.model,
         )

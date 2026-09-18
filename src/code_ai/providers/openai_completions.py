@@ -7,7 +7,12 @@ from contextlib import aclosing
 from typing import Any
 
 from code_ai.config.models import AppConfig
-from code_ai.core.errors import ImageLimitError, ProviderError, TransientProviderError
+from code_ai.core.errors import (
+    ImageLimitError,
+    ProviderError,
+    ToolCallingUnsupportedError,
+    TransientProviderError,
+)
 from code_ai.providers.base import build_openai_http_client, closing_stream
 from code_ai.providers.debug import ModelDebugLogger
 from code_ai.providers.images import parse_image_limit
@@ -98,6 +103,39 @@ def _looks_like_sampling_error(exc: Exception) -> bool:
     return any(hint in text for hint in _SAMPLING_ERROR_HINTS)
 
 
+# What a server says when it was started without the machinery to parse tool
+# calls. vLLM is the one that matters here: without --enable-auto-tool-choice
+# and --tool-call-parser it refuses the request outright instead of ignoring
+# the field, so a perfectly good model reads as a broken one.
+_TOOL_SUPPORT_ERROR_HINTS = (
+    "tool_choice",
+    "tool choice",
+    "tool-call-parser",
+    "tool_call_parser",
+    "enable-auto-tool-choice",
+    "tool parser",
+    "tool calling",
+    "does not support tools",
+    "tools are not supported",
+    "tools is not supported",
+    "function calling is not",
+)
+
+
+def _looks_like_tool_support_error(exc: Exception) -> bool:
+    """Whether this refusal is about tools rather than about the request.
+
+    Transient codes are excluded deliberately: an overloaded server that
+    happens to mention tools in its message must not cost the session its
+    structured tool channel for good.
+    """
+
+    if _is_transient_exception(exc):
+        return False
+    text = str(exc).lower()
+    return any(hint in text for hint in _TOOL_SUPPORT_ERROR_HINTS)
+
+
 def _reasoning_delta(value: Any) -> str:
     """Extract reasoning text from an OpenAI-compatible delta/message.
 
@@ -143,6 +181,10 @@ class OpenAIChatCompletionsProvider:
         )
         self._stream_options_supported = True
         self._sampling_supported = True
+        # Cleared the first time the endpoint refuses a request for carrying
+        # tools. It is a property of how the server was started, so it stays
+        # cleared for the session rather than being probed again every step.
+        self._tools_supported = True
 
     @property
     def capabilities(self) -> ProviderCapabilities:
@@ -212,7 +254,7 @@ class OpenAIChatCompletionsProvider:
         }
         if request.max_output_tokens:
             kwargs["max_tokens"] = request.max_output_tokens
-        if request.tools:
+        if request.tools and self._tools_supported:
             kwargs["tools"] = tools_to_chat(request.tools, strict=self._config.strict_tools)
             kwargs["tool_choice"] = "auto"
         if self._stream_options_supported:
@@ -234,6 +276,14 @@ class OpenAIChatCompletionsProvider:
                 # rediscovering the same refusal on every attachment.
                 self._capabilities.max_images_per_request = limit
                 raise ImageLimitError(str(exc), limit=limit) from exc
+            if request.tools and self._tools_supported and _looks_like_tool_support_error(exc):
+                # Checked before the sampling fallback below, whose hints
+                # ("unsupported parameter", "unknown field") also match a tools
+                # refusal and would have retried forever without the tools ever
+                # being the thing that was dropped.
+                self._tools_supported = False
+                self._capabilities.tool_calling = False
+                raise ToolCallingUnsupportedError(str(exc)) from exc
             if self._stream_options_supported and "stream_options" in str(exc):
                 self._stream_options_supported = False
                 yield ProviderEvent(

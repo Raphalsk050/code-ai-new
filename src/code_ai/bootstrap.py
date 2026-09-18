@@ -491,6 +491,9 @@ def build_application(
         DispatchAgentTool(
             profile_registry,
             max_concurrent=config.budgets.max_concurrent_subagents,
+            # Read through the live config, so a model added in the Doctor is
+            # offered on the next tool call instead of at the next restart.
+            models=lambda: subagent_coordinator.allowed_models(),
         )
     )
 

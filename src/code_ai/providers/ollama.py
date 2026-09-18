@@ -6,7 +6,7 @@ from typing import Any
 from urllib.parse import urljoin
 
 from code_ai.config.models import AppConfig
-from code_ai.core.errors import ProviderError, UnsupportedProviderCapability
+from code_ai.core.errors import ProviderError, ToolCallingUnsupportedError
 from code_ai.providers.debug import ModelDebugLogger
 from code_ai.providers.models import (
     FinishReason,
@@ -129,6 +129,9 @@ class NativeOllamaProvider:
             # pixels are read depends on the served model (e.g. qwen2.5-vl).
             image_support=True,
         )
+        # Cleared when the server says it cannot parse tool calls for the
+        # served model; see the error branch in the stream below.
+        self._tools_supported = True
 
     @property
     def capabilities(self) -> ProviderCapabilities:
@@ -146,7 +149,7 @@ class NativeOllamaProvider:
             ),
             "stream": True,
         }
-        if request.tools:
+        if request.tools and self._tools_supported:
             payload["tools"] = tools_to_chat(request.tools)
         options = self._config.sampling.ollama_options()
         if request.max_output_tokens:
@@ -173,8 +176,14 @@ class NativeOllamaProvider:
                     data = json.loads(line)
                     if "error" in data:
                         message = str(data["error"])
-                        if "tool" in message.lower():
-                            raise UnsupportedProviderCapability(message)
+                        if request.tools and "tool" in message.lower():
+                            # The server cannot parse tool calls for this model.
+                            # Remembered for the session so the caller can put
+                            # the catalog in the prompt instead of losing the
+                            # tools altogether.
+                            self._tools_supported = False
+                            self._capabilities.tool_calling = False
+                            raise ToolCallingUnsupportedError(message)
                         raise ProviderError(message)
                     message = data.get("message") or {}
                     content = str(message.get("content") or "")
@@ -200,7 +209,7 @@ class NativeOllamaProvider:
                             tool_call_index=index,
                         )
                     usage = _ollama_usage(data) or usage
-        except UnsupportedProviderCapability:
+        except ToolCallingUnsupportedError:
             raise
         except Exception as exc:
             raise ProviderError(f"Ollama request failed: {exc}") from exc

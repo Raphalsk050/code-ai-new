@@ -51,6 +51,10 @@ class SubagentRequest:
 
     agent_type: str
     prompt: str
+    # Which model this sub-agent runs on. Empty means the session's own. Only
+    # a model the user listed in the config is accepted; the coordinator says
+    # so rather than quietly running the task on the wrong one.
+    model: str = ""
 
 
 class Dispatcher(Protocol):
@@ -154,6 +158,18 @@ class SubagentCoordinator:
         )
         return reports
 
+    def allowed_models(self) -> list[str]:
+        """Every model a sub-agent may be given, session model first.
+
+        Read per dispatch rather than captured at startup: the list is edited
+        live in the Doctor, and a model added there has to be usable without
+        restarting the session.
+        """
+
+        models = [self._config.model]
+        models += [name for name in self._config.subagent_models if name != self._config.model]
+        return models
+
     @staticmethod
     def _name_factory() -> Callable[[], str]:
         """A generator of distinct genius-style names for one dispatch call."""
@@ -177,6 +193,15 @@ class SubagentCoordinator:
         # genius-style name (assigned in dispatch), used in every log and
         # reference and kept across retries.
         agent_id = uuid4().hex[:8]
+        if request.model and request.model not in self.allowed_models():
+            reason = (
+                f"Sub-agents cannot run on {request.model!r}. "
+                f"Available models: {', '.join(self.allowed_models())}. "
+                "Add one in /doctor subagents."
+            )
+            await self._emit_rejected(agent_id, name, request.agent_type, reason)
+            return self._rejected(request, reason, agent_id=agent_id, name=name)
+
         profile = self._profiles.get(request.agent_type)
         if profile is None:
             reason = (
@@ -252,7 +277,7 @@ class SubagentCoordinator:
         name: str,
         parent_cancel: asyncio.Event | None,
     ) -> SubagentReport:
-        built = self._runtime.build(profile)
+        built = self._runtime.build(profile, model=request.model)
         forwarder = self._make_forwarder(agent_id, name, profile.name)
         built.event_bus.subscribe(forwarder)
         # Every workspace action the child performs is collected as evidence and
