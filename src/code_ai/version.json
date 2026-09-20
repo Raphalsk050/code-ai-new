@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 14,
-  "patch": 0,
-  "build": 12,
+  "patch": 1,
+  "build": 13,
   "updated": "2026-09-20",
-  "note": "Enter queues a turn of its own, Alt+Enter steers, and the agent sees user terminals."
+  "note": "Closing a terminal reports it closed instead of failing the call."
 }

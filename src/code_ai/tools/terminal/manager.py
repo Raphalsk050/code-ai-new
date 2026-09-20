@@ -100,12 +100,21 @@ class PersistentTerminalManager:
         self.send_control(session_id, "c")
 
     def terminate(self, session_id: str) -> None:
-        session = self._get(session_id)
+        """End a session. Ending one that already ended is not a failure."""
+        session = self._sessions.get(session_id)
+        if session is None:
+            raise TerminalSessionError(f"Unknown terminal session: {session_id}")
+        if session.closed:
+            return
         session.child.terminate()
         session.closed = True
 
     def read_screen(self, session_id: str, *, include_cursor: bool = True) -> dict[str, object]:
-        session = self._get(session_id)
+        # Readable after the session ends: the payload carries `closed`, which
+        # would be a field that can only ever say False otherwise - and the one
+        # read that matters most is the one right after terminating, which is
+        # how the UI learns to stop drawing the session as live.
+        session = self._get(session_id, allow_closed=True)
         self._drain(session_id)
         display = "\n".join(session.screen.display)
         payload: dict[str, object] = {
@@ -152,11 +161,11 @@ class PersistentTerminalManager:
             except TerminalSessionError:
                 pass
 
-    def _get(self, session_id: str) -> TerminalSession:
+    def _get(self, session_id: str, *, allow_closed: bool = False) -> TerminalSession:
         session = self._sessions.get(session_id)
         if session is None:
             raise TerminalSessionError(f"Unknown terminal session: {session_id}")
-        if session.closed:
+        if session.closed and not allow_closed:
             raise TerminalSessionError(f"Terminal session is closed: {session_id}")
         return session
 

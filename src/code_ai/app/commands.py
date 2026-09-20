@@ -136,8 +136,14 @@ class SessionCommands:
         told.
         """
 
+        conversation = getattr(getattr(self._app, "orchestrator", None), "conversation", None)
+        if conversation is None:
+            # Nothing to tell, and the terminal is what the user asked for:
+            # opening it must not fail over a note that could not be written.
+            return
+
         started = f"`{command}`" if command else "the default shell"
-        self._app.orchestrator.conversation.add_user(
+        conversation.add_user(
             build_runtime_note(
                 f"The user opened an interactive terminal in their editor, running "
                 f"{started}. Its session_id is {session_id}. It is the same terminal "
