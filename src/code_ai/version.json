@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 13,
-  "patch": 3,
-  "build": 11,
+  "minor": 14,
+  "patch": 0,
+  "build": 12,
   "updated": "2026-09-20",
-  "note": "The frozen Windows binary carries the ConPTY runtime, so terminals stay open."
+  "note": "Enter queues a turn of its own, Alt+Enter steers, and the agent sees user terminals."
 }

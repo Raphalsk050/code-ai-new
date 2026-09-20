@@ -177,6 +177,21 @@ export function applyTranscript(state: TranscriptState, event: EventEnvelope): T
           text: "queued: waiting for the current step to finish",
         }),
       };
+    // Waiting its turn rather than steering the running one: the bubble is the
+    // same, the note says it will be answered on its own.
+    case "user.message.enqueued": {
+      const position = Number(p.position ?? 0);
+      const place = position > 1 ? ` (${position}º na fila)` : "";
+      return {
+        items: push(push(items, { kind: "user", id, text: String(p.text ?? "") }), {
+          kind: "notice",
+          id: id + "-w",
+          level: "info",
+          text: `na fila: responde quando o turno atual terminar${place}`,
+        }),
+      };
+    }
+
     case "user.message.delivered": {
       const last = items[items.length - 1];
       if (last && last.kind === "notice" && last.text.startsWith("queued:")) {

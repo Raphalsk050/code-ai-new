@@ -278,3 +278,22 @@ test("a completion with no reasoning before it changes nothing", () => {
   assert.equal(state.transcript.items.length, 1);
   assert.equal(state.transcript.items[0].kind, "user");
 });
+
+test("a message that waits its turn says so, and is not marked as steering", () => {
+  const state = feed([
+    ["user.message", { text: "faca X" }],
+    ["user.message.enqueued", { text: "e depois Y?", position: 1 }],
+  ]);
+  const items = state.transcript.items;
+  assert.equal(items[1].kind, "user");
+  assert.equal((items[1] as { text: string }).text, "e depois Y?");
+  assert.equal(items[2].kind, "notice");
+  assert.match((items[2] as { text: string }).text, /^na fila:/);
+});
+
+test("the queue position only shows once there is a queue", () => {
+  const first = feed([["user.message.enqueued", { text: "a", position: 1 }]]);
+  assert.doesNotMatch((first.transcript.items[1] as { text: string }).text, /na fila\)/);
+  const third = feed([["user.message.enqueued", { text: "c", position: 3 }]]);
+  assert.match((third.transcript.items[1] as { text: string }).text, /3.* na fila\)/);
+});

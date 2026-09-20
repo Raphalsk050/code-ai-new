@@ -493,7 +493,7 @@ function App(): JSX.Element {
     }
   };
 
-  const submit = () => {
+  const submit = (steer = false) => {
     const text = draft.trim();
     if (!text) return;
     const resolved = resolveCommand(catalog, text);
@@ -510,14 +510,15 @@ function App(): JSX.Element {
       setMenuDismissed(false);
       return;
     }
-    // Sending while the agent works is steering, not an error: the bridge
-    // queues the message and the running turn picks it up at its next model
-    // step, which is what the terminal does.
+    // While the agent works there are two useful things to mean, so the key
+    // says which: Enter asks a question and waits its turn, Alt+Enter cuts into
+    // the running turn to redirect it.
     send({
       type: "submit",
       text,
       includeContext: includeContext && !!editorContext,
       images: images.length ? images : undefined,
+      steer,
     });
     setDraft("");
     setImages([]);
@@ -580,7 +581,7 @@ function App(): JSX.Element {
     }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      submit();
+      submit(e.altKey);
     }
   };
 
@@ -860,10 +861,10 @@ function App(): JSX.Element {
                     ) : (
                       <button
                         className="send-btn"
-                        title="Enviar"
+                        title="Enviar (Alt para guiar o turno atual)"
                         disabled={!draft.trim()}
                         onPointerDown={ripple}
-                        onClick={submit}
+                        onClick={(e) => submit(e.altKey)}
                       >
                         <IconSend size={15} />
                       </button>
@@ -872,7 +873,7 @@ function App(): JSX.Element {
                 </div>
                 <div className="hint">
                   {busy
-                    ? "Enter enfileira para o turno em andamento · Esc terminal"
+                    ? "Enter responde depois · Alt+Enter guia o turno atual · Esc terminal"
                     : "Enter envia · Shift+Enter quebra linha · / comandos · @ arquivos · Esc terminal"}
                 </div>
               </div>

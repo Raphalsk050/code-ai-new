@@ -164,8 +164,17 @@ class BridgeServer:
         text = str(params.get("text") or "")
         context = str(params.get("context") or "")
         images = _parse_images(params.get("images"))
+        # Clients that say nothing keep the old behaviour: a message sent while
+        # the agent works steers the running turn. The VSCode composer sends
+        # false on plain Enter and true on Alt+Enter.
+        steer = params.get("steer")
         self._start_background_turn(
-            self._app.submit_user_message(text, context=context, images=images)
+            self._app.submit_user_message(
+                text,
+                context=context,
+                images=images,
+                steer=True if steer is None else bool(steer),
+            )
         )
         return {"status": "accepted"}
 

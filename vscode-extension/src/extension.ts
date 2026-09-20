@@ -525,6 +525,9 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
             text: message.text,
             context,
             images: message.images ?? [],
+            // Default false: a second message is usually a second question, and
+            // steering silently folds it into the answer to the first.
+            steer: message.steer === true,
           });
           break;
         }

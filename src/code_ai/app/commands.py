@@ -18,6 +18,7 @@ from typing import Any
 from code_ai.app.service import CodeAIApplication
 from code_ai.core.errors import ConfigurationError, GoalStateError, TerminalSessionError
 from code_ai.core.workflows import render_workflow_invocation
+from code_ai.prompts import build_runtime_note
 from code_ai.tools.skills.common import discover_skills_from, render_skill_invocation
 
 
@@ -118,10 +119,33 @@ class SessionCommands:
         except TerminalSessionError as exc:
             return _failed(str(exc))
         screen = await self._emit_screen(manager, session_id)
+        self._tell_model_about_terminal(session_id, command)
         return CommandResult(
             ok=True,
             message=f"Terminal {session_id[:8]} started.",
             data={"session_id": session_id, "screen": screen},
+        )
+
+    def _tell_model_about_terminal(self, session_id: str, command: str) -> None:
+        """Put a user-opened terminal into the conversation.
+
+        The session is created outside any turn, so the model has no way to know
+        it exists: asked about the id on screen, it answered that it had no
+        access to the editor and could not tell which shell that was. It is the
+        same manager the terminal tools drive, so all it was missing is being
+        told.
+        """
+
+        started = f"`{command}`" if command else "the default shell"
+        self._app.orchestrator.conversation.add_user(
+            build_runtime_note(
+                f"The user opened an interactive terminal in their editor, running "
+                f"{started}. Its session_id is {session_id}. It is the same terminal "
+                f"the terminal tools drive: pass that session_id to run commands in "
+                f"it, and whatever you run there is visible on their screen. It stays "
+                f"open until they close it, so state set in it (cd, activated "
+                f"virtualenv, exported variables) persists between commands."
+            )
         )
 
     async def terminal_write(self, text: str, *, enter: bool = True) -> CommandResult:

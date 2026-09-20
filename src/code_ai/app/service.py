@@ -125,6 +125,10 @@ class CodeAIApplication:
         self._usage_baseline: int = 0
         self._current_cancel: asyncio.Event | None = None
         self._current_task: asyncio.Task[TurnResult] | None = None
+        # Messages that asked to wait rather than steer the running turn.
+        # Drained one turn each once the current one ends, and dropped on
+        # a cancel - Ctrl+C means stop, not "stop and then run these".
+        self._followups: list[str] = []
         # One turn at a time. submit_user_message decides between running and
         # queueing by looking at _current_task, and there is a moment where that
         # task is finished but the coroutine awaiting it has not resumed to
@@ -230,17 +234,32 @@ class CodeAIApplication:
         context: str = "",
         resume_plan: bool = False,
         images: list[ImageContent] | None = None,
+        steer: bool = True,
     ) -> TurnResult:
         """Run the message as a turn, or hand it to the turn already running.
 
-        Typing while the agent works steers it: the message is queued and the
-        running turn reads it at its next model step, rather than waiting for
-        the whole turn to finish. The step already in flight completes first,
-        since a request in progress cannot be edited.
+        With ``steer`` (the default), typing while the agent works redirects it:
+        the message is queued and the running turn reads it at its next model
+        step, rather than waiting for the whole turn to finish. The step already
+        in flight completes first, since a request in progress cannot be edited.
+
+        Without it the message waits instead, and gets an answer of its own once
+        the current turn ends. Steering is the more useful behaviour while the
+        agent works, but it is surprising when all the user wanted was to ask a
+        second question: the message is folded into an answer addressed to the
+        first one, and reads as though it went nowhere.
         """
         if self._current_task and not self._current_task.done():
             message = text.strip()
             if not message:
+                return TurnResult(text="", response=None, queued=True)
+            if not steer:
+                self._followups.append(message)
+                await self.event_bus.emit(
+                    "user.message.enqueued",
+                    {"text": message, "position": len(self._followups)},
+                    source="app",
+                )
                 return TurnResult(text="", response=None, queued=True)
             self.orchestrator.queue_user_message(message)
             await self.event_bus.emit("user.message.queued", {"text": message}, source="app")
@@ -255,12 +274,21 @@ class CodeAIApplication:
         # - Ctrl+C means stop, not "stop and then run this".
         if result.cancelled:
             self.orchestrator.take_queued_messages()
+            self._followups.clear()
             return result
-        while self.orchestrator.has_queued_messages():
-            follow_up = "\n\n".join(self.orchestrator.take_queued_messages())
+        while self.orchestrator.has_queued_messages() or self._followups:
+            if self.orchestrator.has_queued_messages():
+                # Steering messages the loop never got to read belong with
+                # the turn that just ended, so they go on together.
+                follow_up = "\n\n".join(self.orchestrator.take_queued_messages())
+            else:
+                # One that asked to wait. A turn each, in the order typed:
+                # each is its own question and wants its own answer.
+                follow_up = self._followups.pop(0)
             result = await self._run_turn(follow_up, context="", resume_plan=False, images=None)
             if result.cancelled:
                 self.orchestrator.take_queued_messages()
+                self._followups.clear()
                 break
         return result
 

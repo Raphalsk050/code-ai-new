@@ -60,6 +60,8 @@ class _StubApp:
         self.closed = False
         self.submitted: list[str] = []
         self.submitted_context: list[str] = []
+        self.submitted_images: list[list] = []
+        self.submitted_steer: list[bool] = []
         self.answered: list[str] = []
         self.reset_count = 0
         self.reset_ids: list[str | None] = []
@@ -82,9 +84,13 @@ class _StubApp:
     async def start(self) -> None:
         self.started = True
 
-    async def submit_user_message(self, text: str, *, context: str = "") -> None:
+    async def submit_user_message(
+        self, text: str, *, context: str = "", images=None, steer: bool = True
+    ) -> None:
         self.submitted.append(text)
         self.submitted_context.append(context)
+        self.submitted_images.append(images or [])
+        self.submitted_steer.append(steer)
 
     async def submit_question_answer(self, answer: str) -> None:
         self.answered.append(answer)
@@ -440,3 +446,27 @@ async def test_run_starts_installs_gateway_and_closes_on_eof() -> None:
     assert app.closed is True
     assert app.permission_mode == "auto"
     assert isinstance(app.orchestrator.approval_gateway, WireApprovalGateway)
+
+
+async def test_a_submit_that_says_nothing_still_steers() -> None:
+    # Clients written before the flag existed keep the behaviour they had.
+    app = _StubApp()
+    server, _ = _server(app)
+    await server._handle_line(
+        json.dumps({"jsonrpc": "2.0", "id": 1, "method": "submitUserMessage",
+                    "params": {"text": "oi"}})
+    )
+    await asyncio.gather(*server._turn_tasks)
+    assert app.submitted_steer == [True]
+
+
+async def test_the_client_decides_between_steering_and_waiting() -> None:
+    app = _StubApp()
+    server, _ = _server(app)
+    for i, steer in enumerate([False, True], start=1):
+        await server._handle_line(
+            json.dumps({"jsonrpc": "2.0", "id": i, "method": "submitUserMessage",
+                        "params": {"text": f"m{i}", "steer": steer}})
+        )
+        await asyncio.gather(*server._turn_tasks)
+    assert app.submitted_steer == [False, True]

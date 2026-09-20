@@ -213,7 +213,14 @@ export type TerminalRequest =
   | { action: "status" };
 
 export type WebviewToHost =
-  | { type: "submit"; text: string; includeContext?: boolean; images?: PastedImage[] }
+  | {
+      type: "submit";
+      text: string;
+      includeContext?: boolean;
+      images?: PastedImage[];
+      /** Fold this into the running turn instead of giving it one of its own. */
+      steer?: boolean;
+    }
   | { type: "answerQuestions"; text: string }
   | { type: "setPlannerMode"; mode: string }
   | { type: "replan" }
