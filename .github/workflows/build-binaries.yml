@@ -4,13 +4,8 @@ name: Build standalone binaries
 # installed.
 #
 # code-linux is the company's only runner: GitHub-hosted ones are unreachable
-# from that network. Docker is all either job needs from the machine.
-#
-# The upload step exists twice because `uses:` takes no expression. github.com
-# refuses upload-artifact v3 outright; the company's Enterprise Server is the
-# one place v4 does not resolve. Whichever of the two runs is decided by which
-# server the workflow is on, not by the runner - the refusal comes from the
-# backend, so it happens on code-linux against github.com just the same.
+# from that network, and upload-artifact is pinned to v3 because v4 does not
+# exist there. Docker is all either job needs from the machine.
 #
 # No Windows runner, so the .exe is cross-built under Wine - PyInstaller
 # cannot cross-compile.
@@ -24,20 +19,8 @@ env:
 
 # Any branch: a packaging break should surface on the push that caused it, not
 # at the tag. "**" because branch names have slashes.
-#
-# The runner is a dropdown on a manual run only. Every automatic run, and a
-# manual one left alone, uses code-linux; picking a GitHub-hosted runner is for
-# the cases where the company one is down or unreachable.
 on:
   workflow_dispatch:
-    inputs:
-      runner:
-        description: "Runner"
-        type: choice
-        default: code-linux
-        options:
-          - code-linux
-          - ubuntu-latest
   push:
     branches: ["**"]
     tags: ["v*"]
@@ -49,8 +32,7 @@ concurrency:
 jobs:
   linux:
     name: Linux x86_64
-    # `inputs` is empty on a push, so the fallback is what runs unattended.
-    runs-on: ${{ inputs.runner || 'code-linux' }}
+    runs-on: code-linux
     steps:
       - uses: actions/checkout@v4
 
@@ -85,15 +67,7 @@ jobs:
           cp dist/code-ai out/code-ai-linux-x86_64
           chmod +x out/code-ai-linux-x86_64
 
-      - uses: actions/upload-artifact@v4
-        if: github.server_url == 'https://github.com'
-        with:
-          name: code-ai-linux-x86_64
-          path: out/code-ai-linux-x86_64
-          if-no-files-found: error
-
       - uses: actions/upload-artifact@v3
-        if: github.server_url != 'https://github.com'
         with:
           name: code-ai-linux-x86_64
           path: out/code-ai-linux-x86_64
@@ -101,7 +75,7 @@ jobs:
 
   windows:
     name: Windows x86_64 (cross-built on Linux via Wine)
-    runs-on: ${{ inputs.runner || 'code-linux' }}
+    runs-on: code-linux
     steps:
       - uses: actions/checkout@v4
 
@@ -144,15 +118,7 @@ jobs:
           mkdir -p out
           cp dist/code-ai.exe out/code-ai-windows-x86_64.exe
 
-      - uses: actions/upload-artifact@v4
-        if: github.server_url == 'https://github.com'
-        with:
-          name: code-ai-windows-x86_64
-          path: out/code-ai-windows-x86_64.exe
-          if-no-files-found: error
-
       - uses: actions/upload-artifact@v3
-        if: github.server_url != 'https://github.com'
         with:
           name: code-ai-windows-x86_64
           path: out/code-ai-windows-x86_64.exe
