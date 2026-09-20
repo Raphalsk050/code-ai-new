@@ -236,3 +236,45 @@ test("index progress fills the session bar and clears when it ends", () => {
   const after = applyEvent(during, ev("index.refreshed", { summary: "ok" }));
   assert.equal(after.session.indexTotal, 0);
 });
+
+test("reasoning streams into one open block while the model thinks", () => {
+  // The bug this guards: the block existed but was rendered collapsed, so the
+  // reasoning only became visible once the turn was over.
+  const state = feed([
+    ["user.message", { text: "oi" }],
+    ["model.thinking.delta", { text: "The " }],
+    ["model.thinking.delta", { text: "user " }],
+    ["model.thinking.delta", { text: "wants..." }],
+  ]);
+  const last = state.transcript.items[state.transcript.items.length - 1];
+  assert.equal(last.kind, "thinking");
+  assert.equal((last as { text: string }).text, "The user wants...");
+  assert.equal((last as { streaming?: boolean }).streaming, true);
+});
+
+test("the reasoning block closes itself when the model answers", () => {
+  const state = feed([
+    ["model.thinking.delta", { text: "hmm" }],
+    ["model.response.completed", { finish_reason: "tool_calls" }],
+  ]);
+  const last = state.transcript.items[state.transcript.items.length - 1];
+  assert.equal((last as { streaming?: boolean }).streaming, false);
+});
+
+test("settling the reasoning block twice is harmless", () => {
+  const state = feed([
+    ["model.thinking.delta", { text: "hmm" }],
+    ["model.response.completed", {}],
+    ["model.response.completed", {}],
+  ]);
+  assert.equal(state.transcript.items.length, 1);
+});
+
+test("a completion with no reasoning before it changes nothing", () => {
+  const state = feed([
+    ["user.message", { text: "oi" }],
+    ["model.response.completed", {}],
+  ]);
+  assert.equal(state.transcript.items.length, 1);
+  assert.equal(state.transcript.items[0].kind, "user");
+});

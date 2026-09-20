@@ -145,6 +145,21 @@ body {
   margin-top: 4px; padding: 8px 12px; border-left: 2px solid var(--border);
   color: var(--muted); font-family: var(--vscode-editor-font-family, monospace);
   font-size: 12px; white-space: pre-wrap;
+  /* Reasoning runs to thousands of words. Capped and scrolled while it streams,
+     so a long one does not push the answer off the screen. */
+  max-height: 260px; overflow-y: auto; overscroll-behavior: contain;
+}
+.thinking.live .thinking-body { border-left-color: var(--accent); }
+/* A pulse on the header is the only thing that says the block is still filling
+   when its text has scrolled past the fold. */
+.thinking-live {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent);
+  animation: thinking-pulse 1.4s ease-in-out infinite;
+}
+@keyframes thinking-pulse { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .thinking-live { animation: none; opacity: .8; }
 }
 
 /* ---- tool cards ---- */

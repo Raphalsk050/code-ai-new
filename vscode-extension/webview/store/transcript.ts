@@ -11,7 +11,7 @@ export type Item =
   | { kind: "user"; id: string; text: string }
   | { kind: "assistant"; id: string; text: string; streaming: boolean }
   | { kind: "working"; id: string; text: string }
-  | { kind: "thinking"; id: string; text: string }
+  | { kind: "thinking"; id: string; text: string; streaming?: boolean }
   | { kind: "tool"; id: string; toolId: string; name: string; status: ToolStatus; detail: string }
   | { kind: "notice"; id: string; level: NoticeLevel; text: string };
 
@@ -59,6 +59,19 @@ function extendText(items: Item[], kind: Item["kind"], text: string, makeNew: ()
     return copy;
   }
   return [...items, makeNew()];
+}
+
+/**
+ * Close the open reasoning block, if the last thing in the transcript is one.
+ * The model has stopped thinking, so the block stops holding the view open and
+ * goes back to being a header the reader can expand.
+ */
+function settleThinking(items: Item[]): Item[] {
+  const last = items[items.length - 1];
+  if (!last || last.kind !== "thinking" || !last.streaming) return items;
+  const copy = items.slice();
+  copy[copy.length - 1] = { ...last, streaming: false };
+  return copy;
 }
 
 function updateTool(
@@ -194,7 +207,12 @@ export function applyTranscript(state: TranscriptState, event: EventEnvelope): T
 
     case "model.thinking.delta": {
       const text = String(p.text ?? "");
-      return { items: extendText(items, "thinking", text, () => ({ kind: "thinking", id, text })) };
+      // `streaming` is what makes the block open itself while the model is
+      // reasoning: collapsed-by-default hid the one thing the user is waiting
+      // to see, and it only became findable once the turn was over.
+      return {
+        items: extendText(items, "thinking", text, () => ({ kind: "thinking", id, text, streaming: true })),
+      };
     }
 
     case "tool.calls.recovered": {
@@ -208,6 +226,10 @@ export function applyTranscript(state: TranscriptState, event: EventEnvelope): T
       }
       return state;
     }
+
+    // Reasoning is over the moment the model answers or asks for a tool.
+    case "model.response.completed":
+      return { items: settleThinking(items) };
 
     case "assistant.final": {
       const text = String(p.text ?? "");

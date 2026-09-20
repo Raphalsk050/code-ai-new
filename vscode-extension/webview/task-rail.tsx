@@ -12,6 +12,16 @@ import {
   IconTerminal,
 } from "./icons";
 import { ripple, useCollapseHeight, useMountTransition } from "./motion";
+import {
+  RAIL_DEFAULT_WIDTH,
+  clampRailWidth,
+  clampSectionHeight,
+  readStoredRailWidth,
+  readStoredSectionHeights,
+  storeRailWidth,
+  storeSectionHeights,
+  widthFromDrag,
+} from "./rail-layout";
 import { AgentsPanel } from "./panels/agents-panel";
 import { HistoryPanel } from "./panels/history-panel";
 import { PlanPanel } from "./panels/plan-panel";
@@ -79,6 +89,11 @@ export function TaskRail(props: RailProps): JSX.Element {
   const { width, state } = props;
   const wide = width === "md";
   const [docked, setDocked] = React.useState(true);
+  // Both splitters. The width is one number; the heights are per section and
+  // absent until the user drags one, so an untouched rail keeps sizing itself.
+  const [railWidth, setRailWidth] = React.useState(() => readStoredRailWidth() ?? RAIL_DEFAULT_WIDTH);
+  const [heights, setHeights] = React.useState<Record<string, number>>(() => readStoredSectionHeights());
+  const dragFromWidth = React.useRef(railWidth);
   const [open, setOpen] = React.useState<Set<SectionId>>(() => new Set(["session", "plan"]));
   const [drawer, setDrawer] = React.useState<SectionId | null>(null);
 
@@ -170,7 +185,31 @@ export function TaskRail(props: RailProps): JSX.Element {
       )}
 
       {showDock ? (
-        <div className="rail-dock">
+        <>
+          <RailGrip
+            axis="x"
+            label="Redimensionar painel de tarefas"
+            onStart={() => {
+              dragFromWidth.current = railWidth;
+            }}
+            onDrag={(dx, el) =>
+              setRailWidth(
+                widthFromDrag(
+                  dragFromWidth.current,
+                  dx,
+                  // The row this grip sits in, which is all the space there is
+                  // to share with the conversation.
+                  el.parentElement?.getBoundingClientRect().width ?? 0
+                )
+              )
+            }
+            onEnd={() => storeRailWidth(railWidth)}
+            onReset={() => {
+              setRailWidth(RAIL_DEFAULT_WIDTH);
+              storeRailWidth(RAIL_DEFAULT_WIDTH);
+            }}
+          />
+        <div className="rail-dock" style={{ width: clampRailWidth(railWidth, Infinity) }}>
           <div className="rail-dock-head">
             <span className="rail-section-title rail-section-head" style={{ padding: 0 }}>
               Tarefas
@@ -192,6 +231,16 @@ export function TaskRail(props: RailProps): JSX.Element {
                 id={id}
                 open={open.has(id)}
                 note={notes[id].text}
+                height={heights[id]}
+                onResize={(next) =>
+                  setHeights((prev) => {
+                    const copy = { ...prev };
+                    if (next === null) delete copy[id];
+                    else copy[id] = next;
+                    return copy;
+                  })
+                }
+                onResizeCommit={() => storeSectionHeights(heights)}
                 onToggle={() => toggleSection(id)}
               >
                 {body(id)}
@@ -199,7 +248,8 @@ export function TaskRail(props: RailProps): JSX.Element {
             ))}
           </div>
           <RailFooter connected={props.connected} state={state} />
-        </div>
+          </div>
+        </>
       ) : (
         <RailDrawer section={drawer} onClose={() => setDrawer(null)} title={drawer ? TITLES[drawer] : ""}>
           {drawer ? body(drawer) : null}
@@ -209,20 +259,103 @@ export function TaskRail(props: RailProps): JSX.Element {
   );
 }
 
+/**
+ * A splitter the user drags. Pointer capture rather than window listeners: the
+ * pointer keeps reporting to this element once the drag starts, so a fast drag
+ * that leaves the 5px strip - or leaves the webview entirely - still tracks.
+ *
+ * Keyboard-operable because it is the only way to resize without a mouse, and
+ * `role="separator"` with a tabindex is what a screen reader expects to find.
+ */
+function RailGrip({
+  axis,
+  label,
+  onStart,
+  onDrag,
+  onEnd,
+  onReset,
+}: {
+  axis: "x" | "y";
+  label: string;
+  onStart: () => void;
+  onDrag: (delta: number, el: HTMLElement) => void;
+  onEnd: () => void;
+  onReset: () => void;
+}): JSX.Element {
+  const origin = React.useRef<{ x: number; y: number } | null>(null);
+  const step = (delta: number, el: HTMLElement) => {
+    onStart();
+    onDrag(delta, el);
+    onEnd();
+  };
+  return (
+    <div
+      className={`rail-grip rail-grip-${axis}`}
+      role="separator"
+      aria-orientation={axis === "x" ? "vertical" : "horizontal"}
+      aria-label={label}
+      title={`${label} (duplo clique para restaurar)`}
+      tabIndex={0}
+      onPointerDown={(e) => {
+        e.preventDefault();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        origin.current = { x: e.clientX, y: e.clientY };
+        onStart();
+      }}
+      onPointerMove={(e) => {
+        const from = origin.current;
+        if (!from) return;
+        onDrag(axis === "x" ? e.clientX - from.x : e.clientY - from.y, e.currentTarget);
+      }}
+      onPointerUp={(e) => {
+        if (!origin.current) return;
+        origin.current = null;
+        e.currentTarget.releasePointerCapture(e.pointerId);
+        onEnd();
+      }}
+      onDoubleClick={onReset}
+      onKeyDown={(e) => {
+        const el = e.currentTarget;
+        const big = e.shiftKey ? 48 : 16;
+        if (axis === "x" && e.key === "ArrowLeft") step(-big, el);
+        else if (axis === "x" && e.key === "ArrowRight") step(big, el);
+        else if (axis === "y" && e.key === "ArrowUp") step(-big, el);
+        else if (axis === "y" && e.key === "ArrowDown") step(big, el);
+        else if (e.key === "Home" || e.key === "Escape") onReset();
+        else return;
+        e.preventDefault();
+      }}
+    />
+  );
+}
+
 function RailSection({
   id,
   open,
   note,
   onToggle,
+  height,
+  onResize,
+  onResizeCommit,
   children,
 }: {
   id: SectionId;
   open: boolean;
   note: string;
   onToggle: () => void;
+  /** Dragged height in px, or undefined to size to the content. */
+  height?: number;
+  /** null restores the content height. */
+  onResize: (next: number | null) => void;
+  /** The drag is over: persist whatever it settled on. */
+  onResizeCommit: () => void;
   children: React.ReactNode;
 }): JSX.Element {
   const ref = useCollapseHeight(open);
+  const bodyRef = React.useRef<HTMLDivElement>(null);
+  // The height the current drag started from: the content height when the
+  // section has never been dragged, so the first pull does not jump.
+  const dragFrom = React.useRef(0);
   return (
     <div className={`rail-section ${open ? "open" : ""}`}>
       <button
@@ -237,7 +370,28 @@ function RailSection({
         {note && <span className="rail-section-note">{note}</span>}
       </button>
       <div ref={ref} id={`rail-body-${id}`}>
-        <div className="rail-section-body">{children}</div>
+        <div
+          ref={bodyRef}
+          className={`rail-section-body ${height ? "sized" : ""}`}
+          style={height ? { height, overflowY: "auto" } : undefined}
+        >
+          {children}
+        </div>
+        {open && (
+          <RailGrip
+            axis="y"
+            label={`Redimensionar ${TITLES[id]}`}
+            onStart={() => {
+              dragFrom.current = height ?? bodyRef.current?.getBoundingClientRect().height ?? 0;
+            }}
+            onDrag={(dy) => onResize(clampSectionHeight(dragFrom.current + dy))}
+            onEnd={onResizeCommit}
+            onReset={() => {
+              onResize(null);
+              onResizeCommit();
+            }}
+          />
+        )}
       </div>
     </div>
   );

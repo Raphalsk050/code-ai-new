@@ -62,6 +62,8 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 
   // Shared with the hover provider and selection handlers (one bridge per view).
   private client?: BridgeClient;
+  /** Last `code-ai.command` warning shown, so a restart does not repeat it. */
+  private warnedAbout?: string;
   private view?: vscode.WebviewView;
   private webview?: vscode.Webview;
   private mode: AppMode = "agent";
@@ -547,7 +549,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
                 messages: r.messages ?? [],
               })
             )
-            .catch((err) => vscode.window.showErrorMessage(`Code-AI: could not open conversation: ${String(err)}`));
+            .catch((err) => this.recoverFromMissingConversation(client, message.id, err));
           break;
         case "deleteConversation":
           client?.send("deleteConversation", { conversation_id: message.id });
@@ -745,16 +747,23 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     );
     const command = resolved.command;
     if (resolved.source === "bundled") ensureExecutable(command);
-    if (resolved.ignoredConfig) {
-      // Surfaced in the panel too: a notification is easy to miss, and this one
-      // explains why a setting the user wrote is not the one in effect.
+    // Once per setting per session. Every restart re-reads the config, and a
+    // warning that repeats on each one trains the reader to dismiss it.
+    if (resolved.ignoredConfig && this.warnedAbout !== resolved.ignoredConfig) {
+      this.warnedAbout = resolved.ignoredConfig;
       vscode.window.showWarningMessage(`Code-AI: ${resolved.ignoredConfig}`);
       void this.webview?.postMessage({ type: "event", event: syntheticNotice(resolved.ignoredConfig) });
     }
 
+    // The agent works on the folder the editor has open, not on whatever
+    // workspace the config file last recorded - which is also where the
+    // conversation archive lives, so getting this wrong loses the history too.
+    // An explicit --workspace in `code-ai.args` still wins.
+    const workspaceArgs = cwd && !extraArgs.includes("--workspace") ? ["--workspace", cwd] : [];
+
     let client: BridgeClient;
     try {
-      client = new BridgeClient(command, [...extraArgs, "bridge"], cwd);
+      client = new BridgeClient(command, [...workspaceArgs, ...extraArgs, "bridge"], cwd);
     } catch (err) {
       const detail = `failed to spawn "${command}": ${String(err)}`;
       vscode.window.showErrorMessage(`Code-AI: ${detail}`);
@@ -787,6 +796,37 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     // Learn whether inline hints are on so the provider and status bar are
     // correct straight away (and after a restart re-reads edited config).
     this.refreshInlineSettings();
+  }
+
+  /**
+   * A conversation the user picked is not in the store. That is not an error
+   * they can act on: the archive is per-workspace, so a webview that kept its
+   * history across a folder change - or across a switch from a virtualenv to
+   * the bundled backend, which reads a different store - lists entries this
+   * process never had. Drop the dead entry, start a fresh conversation, and say
+   * so in the panel rather than leaving a modal over an empty transcript.
+   */
+  private recoverFromMissingConversation(
+    client: BridgeClient | undefined,
+    id: string,
+    err: unknown
+  ): void {
+    if (!/No saved conversation/i.test(String(err))) {
+      vscode.window.showErrorMessage(`Code-AI: could not open conversation: ${String(err)}`);
+      return;
+    }
+    client?.send("newConversation", {});
+    void this.webview?.postMessage({
+      type: "event",
+      event: syntheticNotice(`That conversation is no longer saved (${id}). Started a new one.`),
+    });
+    // Re-read the archive so the entry the user just clicked stops being listed.
+    client
+      ?.request<{ conversations: unknown[] }>("listConversations", {})
+      .then((r) =>
+        this.webview?.postMessage({ type: "conversationsList", conversations: r.conversations ?? [] })
+      )
+      .catch(() => undefined);
   }
 
   /**

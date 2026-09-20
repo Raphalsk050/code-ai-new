@@ -22,7 +22,7 @@ export function ItemView({ item }: { item: Item }): JSX.Element | null {
     case "working":
       return <WorkingRow text={item.text} />;
     case "thinking":
-      return <ThinkingRow text={item.text} />;
+      return <ThinkingRow text={item.text} streaming={item.streaming} />;
     case "tool":
       return <ToolRow name={item.name} status={item.status} detail={item.detail} />;
     case "notice":
@@ -64,16 +64,42 @@ function WorkingRow({ text }: { text: string }) {
   return <div className="working-note">{text}</div>;
 }
 
-function ThinkingRow({ text }: { text: string }) {
-  const [open, setOpen] = React.useState(false);
+function ThinkingRow({ text, streaming }: { text: string; streaming?: boolean }) {
+  // Open while the model is reasoning, collapsed once it stops - unless the
+  // reader has said otherwise, in which case their click wins for good.
+  const [choice, setChoice] = React.useState<boolean | null>(null);
+  const open = choice ?? !!streaming;
+  const body = React.useRef<HTMLDivElement>(null);
+
+  // Follow the text as it arrives; stop the moment the reader scrolls up, so
+  // reading something is never interrupted by the next delta.
+  const [follow, setFollow] = React.useState(true);
+  React.useEffect(() => {
+    const el = body.current;
+    if (!el || !open || !streaming || !follow) return;
+    el.scrollTop = el.scrollHeight;
+  }, [text, open, streaming, follow]);
+
   return (
-    <div className={`thinking ${open ? "open" : ""}`}>
-      <button className="thinking-head" onClick={() => setOpen((v) => !v)}>
+    <div className={`thinking ${open ? "open" : ""} ${streaming ? "live" : ""}`}>
+      <button className="thinking-head" onClick={() => setChoice(!open)}>
         <IconChevron size={13} className="chev" />
         <IconBrain size={13} />
         <span>Raciocínio</span>
+        {streaming && <span className="thinking-live" aria-label="em andamento" />}
       </button>
-      {open && <div className="thinking-body">{text}</div>}
+      {open && (
+        <div
+          ref={body}
+          className="thinking-body"
+          onScroll={(e) => {
+            const el = e.currentTarget;
+            setFollow(el.scrollHeight - el.scrollTop - el.clientHeight < 24);
+          }}
+        >
+          {text}
+        </div>
+      )}
     </div>
   );
 }

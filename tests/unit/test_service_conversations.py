@@ -85,8 +85,12 @@ async def test_load_missing_conversation_raises(tmp_path: Path) -> None:
     app = _app(tmp_path, ConversationState(messages=[Message(role="system", content="SYS")]))
     try:
         await app.load_conversation("does-not-exist")
-    except ValueError:
-        pass
+    except ValueError as err:
+        # The VSCode extension recovers from this one by starting a fresh
+        # conversation instead of showing a dead end, and it recognises it by
+        # this wording. Changing the text there means changing it in
+        # ChatViewProvider.recoverFromMissingConversation too.
+        assert "No saved conversation" in str(err)
     else:  # pragma: no cover
         raise AssertionError("expected ValueError for unknown conversation")
 

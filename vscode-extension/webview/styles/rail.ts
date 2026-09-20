@@ -39,6 +39,8 @@ export const RAIL_STYLE = `
 
 /* ---- docked column (md) ---- */
 .rail-dock {
+  /* Width comes from the component (the user drags it); this is the fallback
+     for the first paint, before the stored value is read. */
   width: 236px; flex-shrink: 0;
   display: flex; flex-direction: column;
   min-height: 0;
@@ -100,6 +102,36 @@ export const RAIL_STYLE = `
 .rail-section-note { font-size: 10.5px; letter-spacing: 0; text-transform: none; color: var(--muted); }
 .rail-section-body { padding: 0 12px 10px 12px; font-size: 12px; }
 .rail-empty { color: var(--muted); font-size: 11.5px; padding: 2px 0 6px; }
+
+/* ---- splitters ---- */
+/* 1px of line, 9px of target: a 1px hit area is unusable with a mouse and
+   impossible with a trackpad, so the strip is padded and the line is drawn
+   inside it. */
+.rail-grip {
+  position: relative;
+  flex-shrink: 0;
+  background: transparent;
+  touch-action: none;
+}
+.rail-grip::after {
+  content: "";
+  position: absolute;
+  background: transparent;
+  transition: background var(--dur-fast, .12s) var(--ease-out);
+}
+.rail-grip:hover::after,
+.rail-grip:focus-visible::after { background: var(--accent); }
+.rail-grip:focus-visible { outline: none; }
+
+.rail-grip-x { width: 9px; margin: 0 -4px; cursor: col-resize; z-index: 4; }
+.rail-grip-x::after { top: 0; bottom: 0; left: 4px; width: 1px; }
+
+/* Sits in the flow at the foot of an open section, so it moves with it. */
+.rail-grip-y { height: 9px; margin: -4px 0 0; cursor: row-resize; }
+.rail-grip-y::after { left: 12px; right: 12px; top: 4px; height: 1px; }
+
+/* A dragged section scrolls its own content instead of growing the rail. */
+.rail-section-body.sized { overflow-y: auto; }
 
 .rail-foot {
   border-top: 1px solid var(--border);
