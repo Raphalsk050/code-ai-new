@@ -9,7 +9,16 @@ export type CommandSource = "configured" | "bundled" | "venv" | "path";
 export interface ResolvedCommand {
   command: string;
   source: CommandSource;
+  /** Set when `code-ai.command` was overridden, saying what and why. */
+  ignoredConfig?: string;
 }
+
+/**
+ * A script is not an executable. `spawn` cannot run one (Windows answers
+ * EFTYPE, POSIX needs the shebang bit), so a setting pointing at `__main__.py`
+ * is a configuration that can never work - not a preference to honour.
+ */
+const SCRIPT = /\.(py|pyw)$/i;
 
 /** The filesystem calls this module makes, injected so tests need no disk. */
 export interface ResolveHost {
@@ -67,24 +76,33 @@ export function resolveCommand(
   host: ResolveHost
 ): ResolvedCommand {
   const trimmed = configured.trim();
+  let ignoredConfig: string | undefined;
   if (trimmed && trimmed !== DEFAULT_COMMAND) {
-    return { command: trimmed, source: "configured" };
+    if (!SCRIPT.test(trimmed)) return { command: trimmed, source: "configured" };
+    // Falling through rather than failing: the setting is unusable whatever we
+    // do with it, and the bundled backend is right there.
+    ignoredConfig =
+      `"code-ai.command" points at a Python script (${trimmed}), which cannot be launched ` +
+      `directly. Using the backend shipped with the extension instead. Clear the setting, or ` +
+      `set it to "python" with "code-ai.args" of ["-m", "code_ai"] to run from source.`;
   }
+  const tag = (resolved: ResolvedCommand): ResolvedCommand =>
+    ignoredConfig ? { ...resolved, ignoredConfig } : resolved;
 
   const bundled = bundledBinaryPath(extensionPath, host.platform);
   if (host.exists(bundled)) {
-    return { command: bundled, source: "bundled" };
+    return tag({ command: bundled, source: "bundled" });
   }
 
   const p = host.platform === "win32" ? nodePath.win32 : nodePath.posix;
   const roots = [p.dirname(extensionPath), ...workspaceRoots];
   for (const root of roots) {
     for (const candidate of venvCandidates(root, host.platform)) {
-      if (host.exists(candidate)) return { command: candidate, source: "venv" };
+      if (host.exists(candidate)) return tag({ command: candidate, source: "venv" });
     }
   }
 
-  return { command: DEFAULT_COMMAND, source: "path" };
+  return tag({ command: DEFAULT_COMMAND, source: "path" });
 }
 
 /**
@@ -93,18 +111,6 @@ export function resolveCommand(
  * reader can act on without knowing the resolution order.
  */
 export function spawnFailureHint(resolved: ResolvedCommand, platform: NodeJS.Platform): string {
-  // A script is not an executable: the OS reports a bare "EFTYPE"/"EACCES" that
-  // says nothing about why. Answer it before anything else, because pointing
-  // the setting at a source file is the obvious thing to try.
-  if (/\.(py|pyw)$/i.test(resolved.command)) {
-    return (
-      `"code-ai.command" points at a Python script (${resolved.command}), which cannot be ` +
-      `spawned directly. Point it at an interpreter and pass the module through "code-ai.args" ` +
-      `(command "python", args ["-m", "code_ai"]), or at the executable itself — ` +
-      `${platform === "win32" ? ".venv\\Scripts\\code-ai.exe" : ".venv/bin/code-ai"}.`
-    );
-  }
-
   switch (resolved.source) {
     case "bundled":
       return (

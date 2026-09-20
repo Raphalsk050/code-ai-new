@@ -95,14 +95,34 @@ test("whitespace-only settings count as the default", () => {
   assert.equal(resolved.source, "bundled");
 });
 
-test("a Python script as the command is explained, not left as EFTYPE", () => {
+test("a Python script as the command is overridden by the bundled backend", () => {
+  // `spawn` answers EFTYPE for a .py on Windows. Honouring the setting would
+  // mean failing on every launch with a setting nothing can make work, while
+  // the shipped binary sits unused next to it.
   const script = "C:\\proj\\src\\code_ai\\__main__.py";
-  const resolved = resolveCommand(script, WIN_EXT, [], host("win32", [script]));
-  assert.equal(resolved.source, "configured");
-  const hint = spawnFailureHint(resolved, "win32");
-  assert.match(hint, /cannot be spawned directly/);
-  assert.match(hint, /"-m", "code_ai"/);
-  assert.match(hint, /Scripts\\code-ai\.exe/);
+  const bundled = bundledBinaryPath(WIN_EXT, "win32");
+  const resolved = resolveCommand(script, WIN_EXT, [], host("win32", [script, bundled]));
+  assert.equal(resolved.command, bundled);
+  assert.equal(resolved.source, "bundled");
+  assert.match(resolved.ignoredConfig ?? "", /cannot be launched directly/);
+  assert.match(resolved.ignoredConfig ?? "", /"-m", "code_ai"/);
+});
+
+test("the override still applies when there is no bundled backend to fall back to", () => {
+  const script = "/proj/src/code_ai/__main__.py";
+  const resolved = resolveCommand(script, POSIX_EXT, [], host("linux", [script]));
+  assert.deepEqual(
+    { command: resolved.command, source: resolved.source },
+    { command: DEFAULT_COMMAND, source: "path" }
+  );
+  assert.ok(resolved.ignoredConfig);
+});
+
+test("an executable path is honoured even though it looks unusual", () => {
+  // Only scripts are overridden; anything else is the user's call.
+  const odd = "/opt/weird/code-ai-launcher";
+  const resolved = resolveCommand(odd, POSIX_EXT, [], host("linux", []));
+  assert.deepEqual(resolved, { command: odd, source: "configured" });
 });
 
 test("the failure hint names the path and how it was chosen", () => {

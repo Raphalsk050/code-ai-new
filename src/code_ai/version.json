@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 12,
-  "patch": 0,
-  "build": 5,
+  "patch": 1,
+  "build": 6,
   "updated": "2026-09-20",
-  "note": "The VSIX build freezes the backend itself, so packaging needs no preparation."
+  "note": "A code-ai.command pointing at a .py is overridden by the bundled backend."
 }

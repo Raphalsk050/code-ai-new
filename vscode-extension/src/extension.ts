@@ -745,6 +745,12 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     );
     const command = resolved.command;
     if (resolved.source === "bundled") ensureExecutable(command);
+    if (resolved.ignoredConfig) {
+      // Surfaced in the panel too: a notification is easy to miss, and this one
+      // explains why a setting the user wrote is not the one in effect.
+      vscode.window.showWarningMessage(`Code-AI: ${resolved.ignoredConfig}`);
+      void this.webview?.postMessage({ type: "event", event: syntheticNotice(resolved.ignoredConfig) });
+    }
 
     let client: BridgeClient;
     try {
