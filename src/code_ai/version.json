@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 13,
-  "patch": 1,
-  "build": 9,
+  "patch": 2,
+  "build": 10,
   "updated": "2026-09-20",
-  "note": "Reasoning streams visibly instead of filling a collapsed block."
+  "note": "Git snapshots run off the event loop; every turn lost ten seconds to them."
 }

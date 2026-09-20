@@ -731,7 +731,13 @@ class AgentOrchestrator:
         and out into a caller that drops it, killing the flow in silence.
 
         Failure is reported as a warning and the step's value is dropped.
+
+        Each step is timed. Together they run between the user's message and the
+        first model request, emitting nothing of their own, so a slow one used
+        to read as a frozen "calling model" with no way to tell which piece of
+        the preparation was responsible.
         """
+        started = time.monotonic()
         try:
             return await action
         except asyncio.CancelledError:
@@ -739,6 +745,8 @@ class AgentOrchestrator:
         except Exception as exc:  # noqa: BLE001 - optional work, never fatal
             await self._degraded(what, exc)
             return None
+        finally:
+            self._note_prepare_cost(what, time.monotonic() - started)
 
     def _prepare_step_sync(self, what: str, action: Callable[[], Any]) -> Any:
         """``_prepare_step`` for a step that does not await.
@@ -746,12 +754,24 @@ class AgentOrchestrator:
         Reports on the next emit rather than awaiting one here, so a synchronous
         step stays synchronous.
         """
+        started = time.monotonic()
         try:
             return action()
         except Exception as exc:  # noqa: BLE001 - optional work, never fatal
             logger.warning("Pre-turn step failed: %s", what, exc_info=exc)
             self._pending_degradations.append((what, exc))
             return None
+        finally:
+            self._note_prepare_cost(what, time.monotonic() - started)
+
+    #: A pre-turn step slower than this is worth a line in the log: the user is
+    #: watching a spinner for it, and nothing else names it.
+    _SLOW_PREPARE_S = 0.5
+
+    def _note_prepare_cost(self, what: str, seconds: float) -> None:
+        logger.debug("Pre-turn step %r took %.2fs", what, seconds)
+        if seconds >= self._SLOW_PREPARE_S:
+            logger.warning("Pre-turn step %r took %.1fs before the model was called", what, seconds)
 
     async def _degraded(self, what: str, exc: BaseException) -> None:
         """Tell the user a piece of the preparation failed, and carry on."""

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
 from pathlib import Path
 
 # Git calls here are on the turn's critical path, so they are short-fused. A
@@ -8,6 +9,11 @@ from pathlib import Path
 # turn proceeds without one and the planner's ledger remains the only account of
 # what changed.
 _GIT_TIMEOUT_S = 10.0
+
+# Keep git from flashing a console window when the host is a GUI process (the
+# VSCode extension spawns the bridge as one). Zero elsewhere, where the flag
+# does not exist.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 class GitBaseline:
@@ -75,35 +81,34 @@ class GitBaseline:
         out = await self._git(*args)
         return "" if out is None else out.strip()
 
-    async def _git(self, *args: str) -> str | None:
-        """Run a git command in the workspace. ``None`` means "no answer"."""
+    def _git_blocking(self, args: tuple[str, ...]) -> str | None:
+        """The actual git call, on a worker thread. ``None`` means "no answer"."""
 
         try:
-            process = await asyncio.create_subprocess_exec(
-                "git",
-                "-C",
-                str(self._workspace),
-                *args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
+            done = subprocess.run(
+                ["git", "-C", str(self._workspace), *args],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                timeout=_GIT_TIMEOUT_S,
+                creationflags=_NO_WINDOW,
             )
-        except (OSError, ValueError):
-            # git missing, or a workspace path the OS refuses - neither is worth
-            # failing a turn over.
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            # git missing, a workspace path the OS refuses, or a call that
+            # overran its fuse - none is worth failing a turn over.
             return None
-        try:
-            stdout, _ = await asyncio.wait_for(
-                process.communicate(), timeout=_GIT_TIMEOUT_S
-            )
-        except TimeoutError:
-            process.kill()
-            # Reap the killed child so it does not linger as a zombie.
-            await process.wait()
+        if done.returncode != 0:
             return None
-        except asyncio.CancelledError:
-            process.kill()
-            await process.wait()
-            raise
-        if process.returncode != 0:
-            return None
-        return stdout.decode("utf-8", errors="replace")
+        return done.stdout.decode("utf-8", errors="replace")
+
+    async def _git(self, *args: str) -> str | None:
+        """Run a git command in the workspace, off the event loop.
+
+        A thread rather than ``asyncio.create_subprocess_exec``: on Windows the
+        proactor loop's ``communicate()`` did not complete for these calls
+        inside the running app, so every turn paid the full ``_GIT_TIMEOUT_S``
+        before the model was even asked - ten silent seconds, for a command that
+        takes 0.1s from a shell. Measured on both a cold and a warm session.
+        """
+
+        return await asyncio.to_thread(self._git_blocking, args)
