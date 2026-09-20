@@ -7,6 +7,15 @@ name: Build standalone binaries
 # from that network, and upload-artifact is pinned to v3 because v4 does not
 # exist there. Docker is all either job needs from the machine.
 #
+# The `runner` dropdown on a manual run picks the other environment, where the
+# constraint is the mirror image: github.com refuses v3 outright. The two
+# versions cannot share a job - the refusal happens while the job resolves its
+# actions, before any step-level `if` is read - so each pair of jobs carries one
+# version and the dropdown decides which pair runs. A job that does not run
+# resolves nothing, which is what makes this work at all.
+#
+# Everything unattended, and a manual run left alone, uses code-linux with v3.
+#
 # No Windows runner, so the .exe is cross-built under Wine - PyInstaller
 # cannot cross-compile.
 #
@@ -21,6 +30,14 @@ env:
 # at the tag. "**" because branch names have slashes.
 on:
   workflow_dispatch:
+    inputs:
+      runner:
+        description: "Runner"
+        type: choice
+        default: code-linux
+        options:
+          - code-linux
+          - ubuntu-latest
   push:
     branches: ["**"]
     tags: ["v*"]
@@ -32,6 +49,8 @@ concurrency:
 jobs:
   linux:
     name: Linux x86_64
+    # Anything but an explicit ubuntu-latest, which includes every push.
+    if: inputs.runner != 'ubuntu-latest'
     runs-on: code-linux
     steps:
       - uses: actions/checkout@v4
@@ -75,6 +94,8 @@ jobs:
 
   windows:
     name: Windows x86_64 (cross-built on Linux via Wine)
+    # Anything but an explicit ubuntu-latest, which includes every push.
+    if: inputs.runner != 'ubuntu-latest'
     runs-on: code-linux
     steps:
       - uses: actions/checkout@v4
@@ -119,6 +140,86 @@ jobs:
           cp dist/code-ai.exe out/code-ai-windows-x86_64.exe
 
       - uses: actions/upload-artifact@v3
+        with:
+          name: code-ai-windows-x86_64
+          path: out/code-ai-windows-x86_64.exe
+          if-no-files-found: error
+
+  # ---- the same two binaries, on a GitHub-hosted runner --------------------
+  # Only these mention v4, and they are skipped unless the dropdown asks for
+  # them. No PIP_TRUSTED_HOST: that gets past a proxy which re-signs TLS, and
+  # there is none here. No pip cache either - the machine is thrown away.
+
+  linux-public:
+    name: Linux x86_64 (GitHub-hosted)
+    if: inputs.runner == 'ubuntu-latest'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Linux binary
+        run: |
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -v "$PWD":/work -w /work \
+            python:3.12-bullseye \
+            bash -euxc '
+              python -m venv /tmp/venv
+              . /tmp/venv/bin/activate
+              pip install --upgrade pip
+              pip install .
+              pip install "pyinstaller>=6,<7"
+              pyinstaller --clean --noconfirm packaging/code-ai.spec
+              ./dist/code-ai --help
+              ./dist/code-ai doctor browser --no-launch
+            '
+
+      - name: Stage artifact
+        run: |
+          mkdir -p out
+          cp dist/code-ai out/code-ai-linux-x86_64
+          chmod +x out/code-ai-linux-x86_64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: code-ai-linux-x86_64
+          path: out/code-ai-linux-x86_64
+          if-no-files-found: error
+
+  windows-public:
+    name: Windows x86_64 (GitHub-hosted, cross-built via Wine)
+    if: inputs.runner == 'ubuntu-latest'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Windows binary inside Wine
+        run: |
+          docker run --rm \
+            -v "$PWD":/work -w /work \
+            tobix/pywine:3.12 \
+            bash -euxc '
+              wine python -m pip install --upgrade pip
+              wine python -m pip install .
+              wine python -m pip install "pyinstaller>=6,<7"
+              wine python -m PyInstaller --clean --noconfirm packaging/code-ai.spec
+              wine dist/code-ai.exe --help || echo "wine smoke test non-fatal"
+              wine dist/code-ai.exe doctor browser --no-launch || echo "wine driver check non-fatal"
+            '
+
+      - name: Fix output ownership
+        if: always()
+        run: |
+          docker run --rm -v "$PWD":/work alpine \
+            sh -c 'chown -R '"$(id -u):$(id -g)"' /work/dist /work/build 2>/dev/null || true'
+
+      - name: Stage artifact
+        run: |
+          mkdir -p out
+          cp dist/code-ai.exe out/code-ai-windows-x86_64.exe
+
+      - uses: actions/upload-artifact@v4
         with:
           name: code-ai-windows-x86_64
           path: out/code-ai-windows-x86_64.exe
