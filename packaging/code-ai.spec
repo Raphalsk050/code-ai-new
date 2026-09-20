@@ -45,9 +45,17 @@ if importlib.util.find_spec("playwright") is None:
         "pip install ."
     )
 
+# pywinpty is how persistent terminals work on Windows. It carries the whole
+# ConPTY runtime as package data - conpty.dll, winpty.dll, winpty-agent.exe,
+# OpenConsole.exe - and `from winpty import PtyProcess` happens inside a
+# function, so static analysis reaches none of it. Without this the frozen
+# binary opened a terminal that reported itself closed half a second later.
+_WINDOWS_ONLY = ("winpty",) if sys.platform.startswith("win") else ()
+
 # pypdfium2 carries the pdfium library as package data, reportlab its fonts,
 # python-docx and python-pptx the blank templates every new file starts from.
 for package in (
+    *_WINDOWS_ONLY,
     "textual",
     "rich",
     "art",
