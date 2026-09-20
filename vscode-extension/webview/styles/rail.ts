@@ -126,9 +126,18 @@ export const RAIL_STYLE = `
 .rail-grip-x { width: 9px; margin: 0 -4px; cursor: col-resize; z-index: 4; }
 .rail-grip-x::after { top: 0; bottom: 0; left: 4px; width: 1px; }
 
-/* Sits in the flow at the foot of an open section, so it moves with it. */
-.rail-grip-y { height: 9px; margin: -4px 0 0; cursor: row-resize; }
-.rail-grip-y::after { left: 12px; right: 12px; top: 4px; height: 1px; }
+/* At the foot of an open section, straddling the boundary with the next one.
+   The margins cancel the height so it takes no room in the column, and the
+   z-index puts it over the neighbouring section header - which is a full-width
+   button, and was taking the drag for itself. */
+.rail-grip-y {
+  position: relative; z-index: 3;
+  height: 11px; margin: -5px 0 -6px;
+  cursor: row-resize;
+}
+.rail-grip-y::after { left: 12px; right: 12px; top: 5px; height: 2px; border-radius: 1px; }
+/* Wider than the line it draws, so the target is findable by feel. */
+.rail-grip-y:hover::after, .rail-grip-y:focus-visible::after { left: 0; right: 0; }
 
 /* A dragged section scrolls its own content instead of growing the rail. */
 .rail-section-body.sized { overflow-y: auto; }

@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 14,
-  "patch": 1,
-  "build": 13,
+  "patch": 2,
+  "build": 14,
   "updated": "2026-09-20",
-  "note": "Closing a terminal reports it closed instead of failing the call."
+  "note": "Section splitters sit above the neighbouring header instead of under it."
 }

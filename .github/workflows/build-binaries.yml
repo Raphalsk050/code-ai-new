@@ -224,3 +224,88 @@ jobs:
           name: code-ai-windows-x86_64
           path: out/code-ai-windows-x86_64.exe
           if-no-files-found: error
+
+  # ---- the VSCode extension ------------------------------------------------
+  # One VSIX per platform, each carrying the binary built above, so installing
+  # it needs nothing else on the machine. scripts/package.mjs fails the build if
+  # a package would ship without its backend, with the wrong platform's, or
+  # without the executable bit.
+
+  vsix:
+    name: VSCode extension
+    needs: [linux, windows]
+    if: inputs.runner != 'ubuntu-latest'
+    runs-on: code-linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v3
+        with:
+          name: code-ai-linux-x86_64
+          path: out
+
+      - uses: actions/download-artifact@v3
+        with:
+          name: code-ai-windows-x86_64
+          path: out
+
+      # Node comes from the same container pattern as the binaries: the runner
+      # itself is only asked for Docker.
+      - name: Build the packages
+        run: |
+          chmod +x out/code-ai-linux-x86_64
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e npm_config_cache=/tmp/npm \
+            -v "$PWD":/work -w /work/vscode-extension \
+            node:20-bookworm \
+            bash -euxc '
+              npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+              node scripts/package.mjs \
+                --linux ../out/code-ai-linux-x86_64 \
+                --win ../out/code-ai-windows-x86_64.exe
+            '
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: code-ai-vsix
+          path: vscode-extension/vsix/*.vsix
+          if-no-files-found: error
+
+  vsix-public:
+    name: VSCode extension (GitHub-hosted)
+    needs: [linux-public, windows-public]
+    if: inputs.runner == 'ubuntu-latest'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: code-ai-linux-x86_64
+          path: out
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: code-ai-windows-x86_64
+          path: out
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build the packages
+        working-directory: vscode-extension
+        run: |
+          chmod +x ../out/code-ai-linux-x86_64
+          npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+          node scripts/package.mjs \
+            --linux ../out/code-ai-linux-x86_64 \
+            --win ../out/code-ai-windows-x86_64.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: code-ai-vsix
+          path: vscode-extension/vsix/*.vsix
+          if-no-files-found: error

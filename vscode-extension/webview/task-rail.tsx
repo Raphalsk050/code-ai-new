@@ -377,22 +377,25 @@ function RailSection({
         >
           {children}
         </div>
-        {open && (
-          <RailGrip
-            axis="y"
-            label={`Redimensionar ${TITLES[id]}`}
-            onStart={() => {
-              dragFrom.current = height ?? bodyRef.current?.getBoundingClientRect().height ?? 0;
-            }}
-            onDrag={(dy) => onResize(clampSectionHeight(dragFrom.current + dy))}
-            onEnd={onResizeCommit}
-            onReset={() => {
-              onResize(null);
-              onResizeCommit();
-            }}
-          />
-        )}
       </div>
+      {/* Outside the collapse wrapper on purpose: in it the grip was clipped
+          while the section animated, and its overhang sat *under* the next
+          section's header button, which swallowed the drag. */}
+      {open && (
+        <RailGrip
+          axis="y"
+          label={`Redimensionar ${TITLES[id]}`}
+          onStart={() => {
+            dragFrom.current = height ?? bodyRef.current?.getBoundingClientRect().height ?? 0;
+          }}
+          onDrag={(dy) => onResize(clampSectionHeight(dragFrom.current + dy))}
+          onEnd={onResizeCommit}
+          onReset={() => {
+            onResize(null);
+            onResizeCommit();
+          }}
+        />
+      )}
     </div>
   );
 }
