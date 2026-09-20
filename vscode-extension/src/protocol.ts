@@ -17,9 +17,34 @@ export interface EventEnvelope {
 
 export type ApprovalScope = "once" | "session" | "deny";
 
+/** An image pasted into the composer, as the clipboard hands it over. */
+export interface PastedImage {
+  /** Base64 payload, without the data: URL prefix. */
+  data: string;
+  media_type: string;
+}
+
 // JSON-RPC methods the bridge accepts (extension host -> bridge).
 export type BridgeMethod =
   | "submitUserMessage"
+  | "replan"
+  | "startPlan"
+  | "planSnapshot"
+  | "goalDefine"
+  | "goalStart"
+  | "goalStop"
+  | "goalStatus"
+  | "terminalStart"
+  | "terminalWrite"
+  | "terminalControl"
+  | "terminalKill"
+  | "terminalStatus"
+  | "indexRefresh"
+  | "indexStatus"
+  | "listSlashCommands"
+  | "summarizeConversation"
+  | "listAssets"
+  | "runAsset"
   | "newConversation"
   | "getSettings"
   | "updateSettings"
@@ -42,6 +67,13 @@ export type BridgeMethod =
 /** The three operating modes; only `agent` shows the chat composer. */
 export type AppMode = "agent" | "refactor" | "explain";
 
+/** One registered tool and whether the agent is currently built with it. */
+export interface ToolSpec {
+  name: string;
+  description: string;
+  enabled: boolean;
+}
+
 /** User-editable backend settings surfaced in the settings panel. */
 export interface Settings {
   model: string;
@@ -56,10 +88,18 @@ export interface Settings {
   inline_model: string;
   max_context_tokens: number;
   workspace: string;
+  /** Doctor: tools switched off, sub-agent models, concurrency, sampling. */
+  disabled_tools: string[];
+  subagent_models: string[];
+  max_concurrent_subagents: number;
+  temperature: number | null;
+  top_p: number | null;
+  top_k: number | null;
   supported: {
     api_mode: string[];
     permission_mode: string[];
     reasoning_effort: string[];
+    tools: ToolSpec[];
   };
 }
 
@@ -101,6 +141,10 @@ export interface ServerConversation {
   created_at: number;
   updated_at: number;
   message_count: number;
+  /** What the conversation did, written when it was last persisted. */
+  summary?: string;
+  /** Cumulative tokens spent on the thread. */
+  total_tokens?: number;
 }
 
 /** A snapshot of what the user is looking at in the editor, attached to a turn. */
@@ -126,8 +170,23 @@ export interface ExplainTarget {
 }
 
 // Messages exchanged between the extension host and the webview.
+/** One entry of the backend's slash-command catalog. */
+export interface SlashCommandSpec {
+  command: string;
+  description: string;
+  /** Text to insert when the user completes it (may end in a space for args). */
+  completion: string;
+  /** False when this session's bridge has no method behind it yet. */
+  available: boolean;
+  /** A built-in command, or one of the user's own workflows/skills. */
+  kind?: "command" | "workflow" | "skill";
+}
+
 export type HostToWebview =
   | { type: "event"; event: EventEnvelope }
+  | { type: "slashCommands"; commands: SlashCommandSpec[] }
+  | { type: "fileMatches"; query: string; paths: string[] }
+  | { type: "commandResult"; ok: boolean; text: string }
   | { type: "editorContext"; context: EditorContext | null }
   | { type: "settings"; settings: Settings }
   | { type: "settingsUpdated"; result: UpdateSettingsResult }
@@ -146,8 +205,26 @@ export type HostToWebview =
 
 export type PermissionMode = "ask" | "auto" | "bypass";
 
+export type TerminalRequest =
+  | { action: "start"; command?: string }
+  | { action: "write"; text: string }
+  | { action: "ctrl"; key: string }
+  | { action: "kill" }
+  | { action: "status" };
+
 export type WebviewToHost =
-  | { type: "submit"; text: string; includeContext?: boolean }
+  | { type: "submit"; text: string; includeContext?: boolean; images?: PastedImage[] }
+  | { type: "answerQuestions"; text: string }
+  | { type: "setPlannerMode"; mode: string }
+  | { type: "replan" }
+  | { type: "startPlan" }
+  | { type: "goal"; action: "define" | "start" | "stop" | "status"; objective?: string }
+  | { type: "terminal"; request: TerminalRequest }
+  | { type: "indexRefresh"; full: boolean; subtree?: string }
+  | { type: "listSlashCommands" }
+  | { type: "summarizeConversation"; id: string }
+  | { type: "searchFiles"; query: string }
+  | { type: "runAsset"; token: string; argument: string }
   | { type: "newConversation"; id: string }
   | { type: "listConversations" }
   | { type: "loadConversation"; id: string }

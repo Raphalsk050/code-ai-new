@@ -1,3 +1,9 @@
 node_modules/
 dist/
+# The frozen backend staged by scripts/bundle-binary.mjs, and the packages it
+# goes into. Both are build output measured in hundreds of megabytes.
+bin/
+vsix/
 *.vsix
+e2e/.tmp/
+e2e/screenshots/

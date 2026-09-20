@@ -11,7 +11,7 @@ import {
   IconX,
 } from "./icons";
 import { Markdown } from "./markdown";
-import { Item, ToolStatus, workingLabel } from "./reducer";
+import { Item, ToolStatus, workingLabel } from "./store/transcript";
 
 export function ItemView({ item }: { item: Item }): JSX.Element | null {
   switch (item.kind) {
@@ -46,7 +46,7 @@ function Row(props: { role: string; avatar: React.ReactNode; name: string; child
 
 function UserRow({ text }: { text: string }) {
   return (
-    <Row role="user" name="You" avatar={<IconUser size={15} />}>
+    <Row role="user" name="Você" avatar={<IconUser size={15} />}>
       <div className="user-text">{text}</div>
     </Row>
   );
@@ -71,7 +71,7 @@ function ThinkingRow({ text }: { text: string }) {
       <button className="thinking-head" onClick={() => setOpen((v) => !v)}>
         <IconChevron size={13} className="chev" />
         <IconBrain size={13} />
-        <span>Thinking</span>
+        <span>Raciocínio</span>
       </button>
       {open && <div className="thinking-body">{text}</div>}
     </div>
@@ -79,9 +79,9 @@ function ThinkingRow({ text }: { text: string }) {
 }
 
 const STATUS_LABEL: Record<ToolStatus, string> = {
-  running: "running",
-  done: "done",
-  failed: "failed",
+  running: "rodando",
+  done: "ok",
+  failed: "falhou",
 };
 
 function ToolRow({ name, status, detail }: { name: string; status: ToolStatus; detail: string }) {

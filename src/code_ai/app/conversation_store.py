@@ -103,19 +103,31 @@ class ConversationStore:
         messages: list[Message],
         previous_response_id: str | None = None,
         title: str | None = None,
+        tokens_delta: int = 0,
     ) -> None:
         """Persist the (non-system) messages of a conversation. Best-effort:
-        callers should not let a storage failure abort a turn."""
+        callers should not let a storage failure abort a turn.
+
+        ``tokens_delta`` is what this thread spent since the last save; it is
+        added to the stored total so a resumed conversation keeps accruing
+        instead of restarting from the process-wide ledger.
+        """
         self._dir.mkdir(parents=True, exist_ok=True)
         now = time.time()
-        existing = self.load(conversation_id)
+        existing = self.load(conversation_id) or {}
         record = {
             "id": conversation_id,
             "title": title or _derive_title(messages),
-            "created_at": existing.get("created_at", now) if existing else now,
+            "created_at": existing.get("created_at", now),
             "updated_at": now,
             "previous_response_id": previous_response_id,
             "messages": [_message_to_record(m) for m in messages],
+            # The summary describes what the thread did; a new turn does not
+            # invalidate it, it just makes it older than ``updated_at``, which
+            # is how ``summarize`` knows there is something new to describe.
+            "summary": str(existing.get("summary") or ""),
+            "summary_at": float(existing.get("summary_at") or 0.0),
+            "total_tokens": int(existing.get("total_tokens") or 0) + max(0, int(tokens_delta)),
         }
         # Atomic swap so a crash never leaves a half-written file, retried
         # because on Windows a sync client or scanner can be holding the file
@@ -126,6 +138,26 @@ class ConversationStore:
             policy=_POLICY,
             allow_non_atomic_fallback=True,
         )
+
+    def set_summary(self, conversation_id: str, summary: str) -> bool:
+        """Attach a written summary to a stored conversation.
+
+        Stamped with the record's ``updated_at`` rather than the wall clock, so
+        a later save makes the summary visibly stale (summary_at < updated_at)
+        and a second summarize of an unchanged thread costs no model call.
+        """
+        record = self.load(conversation_id)
+        if record is None:
+            return False
+        record["summary"] = summary.strip()
+        record["summary_at"] = float(record.get("updated_at") or time.time())
+        atomic_write_text(
+            self._path(conversation_id),
+            json.dumps(record, ensure_ascii=False),
+            policy=_POLICY,
+            allow_non_atomic_fallback=True,
+        )
+        return True
 
     def load(self, conversation_id: str) -> dict[str, Any] | None:
         path = self._path(conversation_id)
@@ -163,6 +195,8 @@ class ConversationStore:
                     "created_at": data.get("created_at", 0),
                     "updated_at": data.get("updated_at", 0),
                     "message_count": len(messages),
+                    "summary": data.get("summary", ""),
+                    "total_tokens": int(data.get("total_tokens") or 0),
                 }
             )
         out.sort(key=lambda d: d.get("updated_at", 0), reverse=True)

@@ -1,8 +1,8 @@
 {
   "name": "code-ai",
   "displayName": "Code-AI",
-  "description": "Drive the Code-AI agent from VSCode (skeleton: spawns the stdio JSON-RPC bridge).",
-  "version": "0.1.4",
+  "description": "Drive the Code-AI agent from VSCode. Ships the agent with it: no Python, no install.",
+  "version": "0.2.0",
   "publisher": "code-ai",
   "private": true,
   "engines": {
@@ -89,15 +89,22 @@
     "build": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc --noEmit",
-    "package": "node esbuild.mjs && npx --yes @vscode/vsce package --allow-missing-repository --skip-license"
+    "package": "node scripts/package.mjs",
+    "verify-vsix": "node scripts/verify-vsix.mjs",
+    "test:webview": "node scripts/test-webview.mjs",
+    "test:package": "node scripts/test-package.mjs",
+    "test:e2e": "node e2e/run.mjs",
+    "test": "npm run typecheck && npm run test:webview && npm run test:package && npm run test:e2e"
   },
   "devDependencies": {
     "@types/diff": "^5.0.9",
+    "@vscode/vsce": "^3.2.0",
     "@types/node": "^20.11.0",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
     "@types/vscode": "^1.74.0",
     "esbuild": "^0.20.0",
+    "playwright": "^1.56.0",
     "typescript": "^5.4.0"
   },
   "dependencies": {

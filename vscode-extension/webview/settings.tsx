@@ -1,12 +1,12 @@
 import * as React from "react";
 
-import type { AppMode, Settings } from "../src/protocol";
+import type { AppMode, Settings, ToolSpec } from "../src/protocol";
 import { ExtPrefs } from "./history";
 import { IconBack, IconRefresh } from "./icons";
 
 // Local, editable mirror of the backend settings. `null` until the bridge
 // answers `getSettings`; the panel shows a loading state meanwhile.
-type Draft = Record<string, string | number | boolean>;
+type Draft = Record<string, string | number | boolean | string[] | null>;
 
 /** State of the on-demand "list models" query for the model field. */
 export interface ModelsState {
@@ -55,12 +55,18 @@ export function SettingsScreen({
       inline_model: settings.inline_model,
       max_context_tokens: settings.max_context_tokens,
       workspace: settings.workspace,
+      disabled_tools: settings.disabled_tools ?? [],
+      subagent_models: settings.subagent_models ?? [],
+      max_concurrent_subagents: settings.max_concurrent_subagents ?? 1,
+      temperature: settings.temperature,
+      top_p: settings.top_p,
+      top_k: settings.top_k,
     });
     setApiKey("");
     setSaved(false);
   }, [settings]);
 
-  const set = (key: string, value: string | number | boolean) => {
+  const set = (key: string, value: string | number | boolean | string[] | null) => {
     setDraft((d) => ({ ...d, [key]: value }));
     setSaved(false);
   };
@@ -76,40 +82,40 @@ export function SettingsScreen({
   return (
     <div className="settings">
       <div className="settings-bar">
-        <button className="icon-btn" title="Back" onClick={onBack}>
+        <button className="icon-btn" title="Voltar" onClick={onBack}>
           <IconBack size={16} />
         </button>
-        <span className="settings-title">Settings</span>
+        <span className="settings-title">Configurações</span>
         <button className="btn-primary settings-save" onClick={save} disabled={!settings}>
-          {saved ? "Saved" : "Save"}
+          {saved ? "Salvo" : "Salvar"}
         </button>
       </div>
 
       {!settings ? (
-        <div className="settings-loading">Loading settings…</div>
+        <div className="settings-loading">Carregando configurações…</div>
       ) : (
         <div className="settings-body">
-          <Section title="Modes & automation" hint="How the extension behaves in the editor.">
-            <Field label="Default mode">
+          <Section title="Modos e automação" hint="Como a extensão se comporta no editor.">
+            <Field label="Modo padrão">
               <select
                 value={prefs.mode}
                 onChange={(e) => onPrefsChange({ mode: e.target.value as AppMode })}
               >
-                <option value="agent">Agent</option>
-                <option value="refactor">Refactor</option>
-                <option value="explain">Explain</option>
+                <option value="agent">Agente</option>
+                <option value="refactor">Refatorar</option>
+                <option value="explain">Explicar</option>
               </select>
             </Field>
             <Toggle
-              label="Run refactor automatically on selection"
-              hint="In refactor mode, analyze a snippet as soon as you select it."
+              label="Analisar a seleção automaticamente"
+              hint="No modo refatorar, analisa o trecho assim que você seleciona."
               checked={prefs.autoRunRefactor}
               onChange={(v) => onPrefsChange({ autoRunRefactor: v })}
             />
           </Section>
 
-          <Section title="Provider & model" hint="Restart fields apply after reopening the panel.">
-            <Field label="Model">
+          <Section title="Provedor e modelo" hint="Campos restart valem ao reabrir o painel.">
+            <Field label="Modelo">
               <div className="model-row">
                 <input
                   className="model-input"
@@ -119,12 +125,12 @@ export function SettingsScreen({
                 <button
                   type="button"
                   className="btn-ghost model-list-btn"
-                  title="List the models the configured provider serves"
+                  title="Listar os modelos que o provedor configurado serve"
                   onClick={onListModels}
                   disabled={models.status === "loading"}
                 >
                   {models.status === "loading" ? <span className="spinner" /> : <IconRefresh size={13} />}
-                  <span>{models.status === "loading" ? "Listing…" : "List models"}</span>
+                  <span>{models.status === "loading" ? "Listando…" : "Listar modelos"}</span>
                 </button>
               </div>
               {models.status === "ready" && models.list.length > 0 && (
@@ -135,31 +141,31 @@ export function SettingsScreen({
                     if (e.target.value) set("model", e.target.value);
                   }}
                 >
-                  <option value="">Pick from {models.list.length} available…</option>
+                  <option value="">Escolher entre {models.list.length} disponíveis…</option>
                   {models.list.map((m) => (
                     <option key={m} value={m}>{m}</option>
                   ))}
                 </select>
               )}
               {models.status === "ready" && models.list.length === 0 && (
-                <div className="model-note">The provider returned no models.</div>
+                <div className="model-note">O provedor não devolveu nenhum modelo.</div>
               )}
               {models.status === "error" && <div className="model-error">{models.error}</div>}
             </Field>
-            <Field label="API mode" restart>
+            <Field label="Modo da API" restart>
               <select value={String(draft.api_mode ?? "")} onChange={(e) => set("api_mode", e.target.value)}>
                 {settings.supported.api_mode.map((m) => (
                   <option key={m} value={m}>{m}</option>
                 ))}
               </select>
             </Field>
-            <Field label="Base URL" restart>
+            <Field label="URL base" restart>
               <input value={String(draft.base_url ?? "")} onChange={(e) => set("base_url", e.target.value)} />
             </Field>
-            <Field label="API key" restart>
+            <Field label="Chave da API" restart>
               <input
                 type="password"
-                placeholder={settings.api_key_set ? "•••••••• (set — leave blank to keep)" : "not set"}
+                placeholder={settings.api_key_set ? "•••••••• (salva - deixe vazio para manter)" : "não configurada"}
                 value={apiKey}
                 onChange={(e) => {
                   setApiKey(e.target.value);
@@ -170,52 +176,52 @@ export function SettingsScreen({
           </Section>
 
           <Section
-            title="Inline hints"
-            hint="Editor ghost-text completions driven by the same provider."
+            title="Sugestões inline"
+            hint="Ghost text no editor, pelo mesmo provedor."
           >
             <Toggle
-              label="Enable inline code hints"
-              hint="Suggest completions as you type. Toggle quickly from the status bar too."
+              label="Sugestões inline no editor"
+              hint="Completa enquanto você digita. Dá para ligar e desligar pela barra de status."
               checked={Boolean(draft.inline_hints_enabled)}
               onChange={(v) => set("inline_hints_enabled", v)}
             />
-            <Field label="Inline hints model">
+            <Field label="Modelo das sugestões inline">
               <input
-                placeholder="Leave blank to use the main model"
+                placeholder="vazio = usa o modelo principal"
                 value={String(draft.inline_model ?? "")}
                 onChange={(e) => set("inline_model", e.target.value)}
               />
             </Field>
           </Section>
 
-          <Section title="Behavior">
-            <Field label="Permission mode">
+          <Section title="Comportamento">
+            <Field label="Modo de permissão">
               <select value={String(draft.permission_mode ?? "")} onChange={(e) => set("permission_mode", e.target.value)}>
                 {settings.supported.permission_mode.map((m) => (
                   <option key={m} value={m}>{m}</option>
                 ))}
               </select>
             </Field>
-            <Field label="Reasoning effort">
+            <Field label="Esforço de raciocínio">
               <select value={String(draft.reasoning_effort ?? "")} onChange={(e) => set("reasoning_effort", e.target.value)}>
                 {settings.supported.reasoning_effort.map((m) => (
                   <option key={m} value={m}>{m}</option>
                 ))}
               </select>
             </Field>
-            <Field label="Response language">
+            <Field label="Idioma das respostas">
               <input value={String(draft.language ?? "")} onChange={(e) => set("language", e.target.value)} />
             </Field>
             <Toggle
-              label="Learn mode"
-              hint="Show the model's explanation of why each change is needed in approvals."
+              label="Modo learn"
+              hint="Mostra, nas aprovações, por que o modelo acha que a mudança é necessária."
               checked={Boolean(draft.learn)}
               onChange={(v) => set("learn", v)}
             />
           </Section>
 
-          <Section title="Context & workspace">
-            <Field label="Max context tokens" restart>
+          <Section title="Contexto e workspace">
+            <Field label="Máx. de tokens de contexto" restart>
               <input
                 type="number"
                 value={Number(draft.max_context_tokens ?? 0)}
@@ -227,13 +233,75 @@ export function SettingsScreen({
             </Field>
           </Section>
 
+          <Section
+            title="Doctor"
+            hint="O que a TUI edita em /doctor: ferramentas, sub-agentes e amostragem."
+          >
+            <ToolSwitches
+              tools={settings.supported?.tools ?? []}
+              disabled={(draft.disabled_tools as string[]) ?? []}
+              onChange={(next) => set("disabled_tools", next)}
+            />
+            <Field label="Modelos dos sub-agentes">
+              <input
+                value={((draft.subagent_models as string[]) ?? []).join(", ")}
+                placeholder="vazio = todos herdam o modelo da sessão"
+                onChange={(e) =>
+                  set(
+                    "subagent_models",
+                    e.target.value
+                      .split(",")
+                      .map((name) => name.trim())
+                      .filter(Boolean)
+                  )
+                }
+              />
+            </Field>
+            <Field label="Sub-agentes simultâneos">
+              <input
+                type="number"
+                min={1}
+                value={Number(draft.max_concurrent_subagents ?? 1)}
+                onChange={(e) => set("max_concurrent_subagents", Number(e.target.value))}
+              />
+            </Field>
+            <Field label="temperature">
+              <input
+                type="number"
+                step="0.05"
+                value={draft.temperature == null ? "" : String(draft.temperature)}
+                placeholder="padrão do endpoint"
+                onChange={(e) =>
+                  set("temperature", e.target.value === "" ? null : Number(e.target.value))
+                }
+              />
+            </Field>
+            <Field label="top_p">
+              <input
+                type="number"
+                step="0.05"
+                value={draft.top_p == null ? "" : String(draft.top_p)}
+                placeholder="padrão do endpoint"
+                onChange={(e) => set("top_p", e.target.value === "" ? null : Number(e.target.value))}
+              />
+            </Field>
+            <Field label="top_k">
+              <input
+                type="number"
+                value={draft.top_k == null ? "" : String(draft.top_k)}
+                placeholder="padrão do endpoint"
+                onChange={(e) => set("top_k", e.target.value === "" ? null : Number(e.target.value))}
+              />
+            </Field>
+          </Section>
+
           <div className="settings-restart">
             <div className="settings-note">
-              Fields marked <span className="restart-tag">restart</span> are saved now but take effect
-              after restarting Code-AI. This reloads the config without reloading the window.
+              Campos marcados com <span className="restart-tag">restart</span> são salvos agora mas
+              só valem depois de reiniciar o Code-AI, o que recarrega a config sem recarregar a janela.
             </div>
             <button className="btn-ghost settings-restart-btn" onClick={onRestart}>
-              <IconRefresh size={13} /> Restart Code-AI
+              <IconRefresh size={13} /> Reiniciar Code-AI
             </button>
           </div>
         </div>
@@ -285,6 +353,60 @@ function Toggle({
       <div className="settings-toggle-text">
         <span className="settings-field-label">{label}</span>
         {hint && <span className="settings-toggle-hint">{hint}</span>}
+      </div>
+    </div>
+  );
+}
+
+
+/**
+ * The agent's tools, switched on and off.
+ *
+ * The list is the registry's, not the config's: a tool this session never
+ * registered (an optional dependency that is not installed) must not show up
+ * as a switch that does nothing.
+ */
+function ToolSwitches({
+  tools,
+  disabled,
+  onChange,
+}: {
+  tools: ToolSpec[];
+  disabled: string[];
+  onChange: (next: string[]) => void;
+}): JSX.Element {
+  if (tools.length === 0) {
+    return <div className="settings-note">Esta sessão não expôs a lista de ferramentas.</div>;
+  }
+  const off = new Set(disabled);
+  const toggle = (name: string) => {
+    const next = new Set(off);
+    if (next.has(name)) next.delete(name);
+    else next.add(name);
+    onChange([...next].sort());
+  };
+  return (
+    <div className="tool-switches">
+      <div className="settings-field-label">
+        Ferramentas · {tools.length - off.size} de {tools.length} ligadas
+        <button
+          className="btn-ghost tool-switch-all"
+          onClick={() => onChange(off.size ? [] : tools.map((t) => t.name).sort())}
+        >
+          {off.size ? "Ligar todas" : "Desligar todas"}
+        </button>
+      </div>
+      <div className="tool-switch-list">
+        {tools.map((tool) => (
+          <label key={tool.name} className="tool-switch" title={tool.description}>
+            <input
+              type="checkbox"
+              checked={!off.has(tool.name)}
+              onChange={() => toggle(tool.name)}
+            />
+            <span className="tool-switch-name">{tool.name}</span>
+          </label>
+        ))}
       </div>
     </div>
   );

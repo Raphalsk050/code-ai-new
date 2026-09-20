@@ -4,7 +4,7 @@
 // it lets the user browse and reopen past conversations, and start fresh ones.
 
 import type { AppMode, ServerConversation } from "../src/protocol";
-import type { Item } from "./reducer";
+import type { Item } from "./store/transcript";
 
 export interface Conversation {
   id: string;
@@ -20,6 +20,10 @@ export interface HistoryEntry {
   title: string;
   updatedAt: number;
   count: number;
+  /** What the conversation actually did, written by the bridge when it closed. */
+  summary?: string;
+  /** Compact token cost, e.g. "128k". */
+  tokens?: string;
 }
 
 /**
@@ -39,6 +43,8 @@ export function mergeHistory(
       title: s.title || "Conversation",
       updatedAt: (s.updated_at || 0) * 1000, // stored in seconds
       count: s.message_count,
+      summary: s.summary || undefined,
+      tokens: s.total_tokens ? compactTokens(s.total_tokens) : undefined,
     });
   }
   for (const c of client) {
@@ -49,6 +55,8 @@ export function mergeHistory(
       title: c.title,
       updatedAt: Math.max(c.updatedAt, prev?.updatedAt ?? 0),
       count: c.items.length,
+      summary: prev?.summary,
+      tokens: prev?.tokens,
     });
   }
   return [...byId.values()].sort((a, b) => b.updatedAt - a.updatedAt);
@@ -73,6 +81,12 @@ export const EMPTY_PERSISTED: PersistedState = {
   activeId: null,
   prefs: DEFAULT_PREFS,
 };
+
+function compactTokens(n: number): string {
+  if (n < 1000) return `${n} tok`;
+  if (n < 1_000_000) return `${Math.round(n / 1000)}k tok`;
+  return `${(n / 1_000_000).toFixed(1)}M tok`;
+}
 
 let _seq = 0;
 export function newId(): string {

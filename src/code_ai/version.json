@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 11,
+  "minor": 12,
   "patch": 0,
-  "build": 3,
-  "updated": "2026-09-18",
-  "note": "Filesystem and search tools no longer block the event loop, and read_file takes a line range."
+  "build": 5,
+  "updated": "2026-09-20",
+  "note": "The VSIX build freezes the backend itself, so packaging needs no preparation."
 }

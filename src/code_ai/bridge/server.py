@@ -7,9 +7,12 @@ import time
 from collections.abc import Coroutine
 from typing import Any, TextIO
 
+from code_ai.app.commands import SessionCommands
 from code_ai.app.service import CodeAIApplication
+from code_ai.app.slash_catalog import catalog_payload
 from code_ai.bridge.approval import WireApprovalGateway
 from code_ai.events.models import EventEnvelope
+from code_ai.providers.models import ImageContent
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +36,7 @@ class BridgeServer:
         self._stdin = stdin
         self._stdout = stdout
         self._gateway = WireApprovalGateway()
+        self._commands = SessionCommands(app)
         self._stop = asyncio.Event()
         self._turn_tasks: set[asyncio.Task[Any]] = set()
 
@@ -159,7 +163,10 @@ class BridgeServer:
     async def _h_submit(self, params: dict[str, Any]) -> dict[str, Any]:
         text = str(params.get("text") or "")
         context = str(params.get("context") or "")
-        self._start_background_turn(self._app.submit_user_message(text, context=context))
+        images = _parse_images(params.get("images"))
+        self._start_background_turn(
+            self._app.submit_user_message(text, context=context, images=images)
+        )
         return {"status": "accepted"}
 
     async def _heartbeat(self, turn_task: asyncio.Task[Any]) -> None:
@@ -283,6 +290,91 @@ class BridgeServer:
         )
         return {"status": "accepted"}
 
+    # -- planner, goal, terminal and index --------------------------------
+    #
+    # Thin wrappers over SessionCommands: the behaviour is shared with the
+    # terminal UI, and only the transport lives here.
+
+    async def _h_plan_snapshot(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._commands.plan_snapshot().to_payload()
+
+    async def _h_replan(self, params: dict[str, Any]) -> dict[str, Any]:
+        result = await self._commands.replan(str(params.get("reason") or ""))
+        return result.to_payload()
+
+    async def _h_start_plan(self, params: dict[str, Any]) -> dict[str, Any]:
+        return (await self._commands.start_plan()).to_payload()
+
+    async def _h_goal_define(self, params: dict[str, Any]) -> dict[str, Any]:
+        result = await self._commands.goal_define(str(params.get("objective") or ""))
+        return result.to_payload()
+
+    async def _h_goal_start(self, params: dict[str, Any]) -> dict[str, Any]:
+        return (await self._commands.goal_start()).to_payload()
+
+    async def _h_goal_stop(self, params: dict[str, Any]) -> dict[str, Any]:
+        return (await self._commands.goal_stop()).to_payload()
+
+    async def _h_goal_status(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._commands.goal_status().to_payload()
+
+    async def _h_terminal_start(self, params: dict[str, Any]) -> dict[str, Any]:
+        result = await self._commands.terminal_start(str(params.get("command") or ""))
+        return result.to_payload()
+
+    async def _h_terminal_write(self, params: dict[str, Any]) -> dict[str, Any]:
+        result = await self._commands.terminal_write(str(params.get("text") or ""))
+        return result.to_payload()
+
+    async def _h_terminal_control(self, params: dict[str, Any]) -> dict[str, Any]:
+        result = await self._commands.terminal_control(str(params.get("key") or "c"))
+        return result.to_payload()
+
+    async def _h_terminal_kill(self, params: dict[str, Any]) -> dict[str, Any]:
+        return (await self._commands.terminal_kill()).to_payload()
+
+    async def _h_terminal_status(self, params: dict[str, Any]) -> dict[str, Any]:
+        return (await self._commands.terminal_status()).to_payload()
+
+    async def _h_index_refresh(self, params: dict[str, Any]) -> dict[str, Any]:
+        result = await self._commands.index_refresh(
+            full=bool(params.get("full")), subtree=str(params.get("subtree") or "")
+        )
+        return result.to_payload()
+
+    async def _h_index_status(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._commands.index_status().to_payload()
+
+    async def _h_list_slash_commands(self, params: dict[str, Any]) -> dict[str, Any]:
+        assets = self._commands.list_assets().data
+        return {
+            "commands": catalog_payload(
+                workflows=assets.get("workflows", []), skills=assets.get("skills", [])
+            )
+        }
+
+    async def _h_list_assets(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._commands.list_assets().to_payload()
+
+    async def _h_run_asset(self, params: dict[str, Any]) -> dict[str, Any]:
+        result = self._commands.resolve_asset(
+            str(params.get("token") or ""), str(params.get("argument") or "")
+        )
+        if not result.ok:
+            return result.to_payload()
+        prompt = str(result.data.get("prompt") or "")
+        # A workflow or skill is a turn like any other, so it runs off the read
+        # loop: awaiting it here would hold the pipe its own approvals need.
+        self._start_background_turn(self._app.submit_user_message(prompt))
+        return {"ok": True, "message": result.message, "kind": result.data.get("kind"),
+                "name": result.data.get("name")}
+
+    async def _h_summarize_conversation(self, params: dict[str, Any]) -> dict[str, Any]:
+        conversation_id = params.get("conversation_id") or params.get("id")
+        return await self._app.summarize_conversation(
+            str(conversation_id) if conversation_id else None
+        )
+
     async def _h_shutdown(self, params: dict[str, Any]) -> dict[str, Any]:
         self._stop.set()
         return {"status": "closing"}
@@ -306,13 +398,70 @@ class BridgeServer:
         "setPermissionMode": _h_set_permission_mode,
         "resolveApproval": _h_resolve_approval,
         "answerQuestion": _h_answer_question,
+        "planSnapshot": _h_plan_snapshot,
+        "replan": _h_replan,
+        "startPlan": _h_start_plan,
+        "goalDefine": _h_goal_define,
+        "goalStart": _h_goal_start,
+        "goalStop": _h_goal_stop,
+        "goalStatus": _h_goal_status,
+        "terminalStart": _h_terminal_start,
+        "terminalWrite": _h_terminal_write,
+        "terminalControl": _h_terminal_control,
+        "terminalKill": _h_terminal_kill,
+        "terminalStatus": _h_terminal_status,
+        "indexRefresh": _h_index_refresh,
+        "indexStatus": _h_index_status,
+        "listSlashCommands": _h_list_slash_commands,
+        "listAssets": _h_list_assets,
+        "runAsset": _h_run_asset,
+        "summarizeConversation": _h_summarize_conversation,
         "shutdown": _h_shutdown,
     }
 
     # Methods whose model call may run long; dispatched off the read loop.
     _CONCURRENT_METHODS = frozenset(
-        {"explainCode", "inlineComplete", "analyzeRefactor", "planRefactor", "listModels"}
+        {
+            "explainCode",
+            "inlineComplete",
+            "analyzeRefactor",
+            "planRefactor",
+            "listModels",
+            # A goal derives its criteria with a model call, an index refresh
+            # walks the workspace, and a stop cancels the running turn: none of
+            # them may hold the read loop, which is what carries approvals.
+            "goalDefine",
+            "goalStart",
+            "goalStop",
+            "replan",
+            "indexRefresh",
+            # Writing the history card's summary is a model call of its own.
+            "summarizeConversation",
+        }
     )
+
+
+def _parse_images(raw: Any) -> list[ImageContent]:
+    """Decode pasted images from the wire.
+
+    The client sends what a clipboard gives it - base64 plus a media type - and
+    anything malformed is dropped rather than failing the turn: a screenshot
+    that did not survive the trip is not a reason to refuse the question it
+    came with.
+    """
+    if not isinstance(raw, list):
+        return []
+    images: list[ImageContent] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        data = str(item.get("data") or "").strip()
+        if not data:
+            continue
+        images.append(
+            ImageContent(data=data, media_type=str(item.get("media_type") or "image/png"))
+        )
+    return images
 
 
 async def run_bridge(app: CodeAIApplication, *, stdin: TextIO, stdout: TextIO) -> int:

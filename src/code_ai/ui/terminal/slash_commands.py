@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import shlex
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from code_ai.app.slash_catalog import SLASH_COMMANDS, SlashCommand
 from code_ai.config.loader import persist_config_updates, redacted_config_json
 from code_ai.config.models import (
     SUPPORTED_API_MODES,
@@ -21,162 +22,6 @@ from code_ai.ui.terminal.widgets import (
     normalize_banner_font,
     normalize_spinner,
 )
-
-
-@dataclass(frozen=True, slots=True)
-class SlashCommand:
-    command: str
-    description: str
-    completion: str | None = None
-
-    @property
-    def completion_text(self) -> str:
-        return self.completion or self.command
-
-
-SLASH_COMMANDS = [
-    SlashCommand("/help", "Show available commands."),
-    SlashCommand("/doctor", "Guided setup: configure everything step by step."),
-    SlashCommand("/doctor model", "Tune temperature, top_p, top_k and more; applied live."),
-    SlashCommand("/doctor tools", "Switch the agent's tools on and off; applied live."),
-    SlashCommand(
-        "/doctor subagents",
-        "Sub-agent limits, tool-call protocol, and the models they may use.",
-    ),
-    SlashCommand("/status", "Show current session and provider state."),
-    SlashCommand("/compact", "Request context compression."),
-    SlashCommand("/auto", "Switch planner mode to auto."),
-    SlashCommand("/plan", "Switch planner mode to plan."),
-    SlashCommand("/act", "Switch planner mode to act."),
-    SlashCommand(
-        "/mode <ask|auto|bypass>",
-        "Set the tool permission mode (persisted).",
-        "/mode ",
-    ),
-    SlashCommand(
-        "/deep-plan <objetivo>",
-        "Plan a task without changing anything (Cline-style plan mode).",
-        "/deep-plan ",
-    ),
-    SlashCommand("/plan-status", "Show planner phase and current step."),
-    SlashCommand("/replan", "Request a bounded replan on the next turn."),
-    SlashCommand(
-        "/goal <objetivo>",
-        "Define a persistent goal; the agent iterates until it is verifiably met.",
-        "/goal ",
-    ),
-    SlashCommand("/goal start", "Confirm the proposed criteria and start the goal loop."),
-    SlashCommand("/goal status", "Show the goal, its criteria, and loop progress."),
-    SlashCommand("/goal stop", "Stop the goal loop (also cancels the running turn)."),
-    SlashCommand("/goal resume", "Resume a blocked goal and restart the loop."),
-    SlashCommand("/cancel", "Cancel the active turn."),
-    SlashCommand("/index", "Refresh the code index (incremental) for fast search_index."),
-    SlashCommand("/index full", "Rebuild the code index from scratch."),
-    SlashCommand("/index status", "Show what the code index holds."),
-    SlashCommand(
-        "/index <dir>",
-        "Refresh the code index for one workspace subtree.",
-        "/index ",
-    ),
-    SlashCommand(
-        "/term <texto>",
-        "Type a line into the shared interactive terminal session.",
-        "/term ",
-    ),
-    SlashCommand("/term start", "Open an interactive terminal in the workspace."),
-    SlashCommand("/term status", "Show the terminal session and its screen."),
-    SlashCommand(
-        "/term ctrl <c|d|z>",
-        "Send a control key (e.g. Ctrl+C) to the terminal.",
-        "/term ctrl ",
-    ),
-    SlashCommand("/term kill", "Terminate the interactive terminal session."),
-    SlashCommand(
-        "/debug <on|off|status>",
-        "Log raw model requests/responses for parser debugging.",
-        "/debug ",
-    ),
-    SlashCommand("/workflows", "List the saved workflows you can run by name."),
-    SlashCommand("/skills", "List the skills you can force by name."),
-    SlashCommand("/clear", "Clear the conversation view."),
-    SlashCommand("/quit", "Close Code-AI."),
-    SlashCommand("/config help", "Browse and pick a /config command to run."),
-    SlashCommand("/config show", "Show redacted active config."),
-    SlashCommand(
-        "/config models",
-        "List models offered by your provider and pick one.",
-    ),
-    SlashCommand(
-        "/config model <name>",
-        "Persist and switch the model for future calls.",
-        "/config model ",
-    ),
-    SlashCommand(
-        "/config vision-model <name>",
-        "Vision model that reads pasted images for a non-multimodal main model.",
-        "/config vision-model ",
-    ),
-    SlashCommand(
-        "/config api-key <key>",
-        "Persist and switch the provider API key (redacted).",
-        "/config api-key ",
-    ),
-    SlashCommand(
-        "/config api-mode <responses|completions|ollama>",
-        "Persist and switch the API mode.",
-        "/config api-mode ",
-    ),
-    SlashCommand(
-        "/config base-url <url>",
-        "Persist and switch the provider base URL.",
-        "/config base-url ",
-    ),
-    SlashCommand(
-        "/config workspace <path>",
-        "Persist and switch the project directory.",
-        "/config workspace ",
-    ),
-    SlashCommand(
-        "/config language <code>",
-        "Persist and switch response language for future calls.",
-        "/config language ",
-    ),
-    SlashCommand(
-        "/config effort <none|minimal|low|medium|high|xhigh>",
-        "Persist and switch reasoning_effort (OpenAI Responses API).",
-        "/config effort ",
-    ),
-    SlashCommand(
-        "/config theme <name>",
-        "Recolour the whole terminal (monokai is Code-AI's own palette).",
-        "/config theme ",
-    ),
-    SlashCommand(
-        "/config banner-font <name>",
-        "Persist and switch the banner art font.",
-        "/config banner-font ",
-    ),
-    SlashCommand(
-        "/config spinner <name>",
-        "Persist and switch the working-indicator animation.",
-        "/config spinner ",
-    ),
-    SlashCommand(
-        "/config max-context-window <tokens>",
-        "Persist and apply the max context window size in tokens.",
-        "/config max-context-window ",
-    ),
-    SlashCommand(
-        "/config learn <on|off>",
-        "Show/hide the model's explanation of why it's making each change.",
-        "/config learn ",
-    ),
-    SlashCommand(
-        "/config live-code <on|off>",
-        "Show/hide the file being written, live, as the model streams it.",
-        "/config live-code ",
-    ),
-]
 
 # The /config actions consumed while the model client is constructed rather than
 # read per request. Changing one is persisted and applied to the live config

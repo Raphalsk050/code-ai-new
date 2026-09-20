@@ -19,8 +19,20 @@ env:
 
 # Any branch: a packaging break should surface on the push that caused it, not
 # at the tag. "**" because branch names have slashes.
+#
+# The runner is a dropdown on a manual run only. Every automatic run, and a
+# manual one left alone, uses code-linux; picking a GitHub-hosted runner is for
+# the cases where the company one is down or unreachable.
 on:
   workflow_dispatch:
+    inputs:
+      runner:
+        description: "Runner"
+        type: choice
+        default: code-linux
+        options:
+          - code-linux
+          - ubuntu-latest
   push:
     branches: ["**"]
     tags: ["v*"]
@@ -32,7 +44,8 @@ concurrency:
 jobs:
   linux:
     name: Linux x86_64
-    runs-on: code-linux
+    # `inputs` is empty on a push, so the fallback is what runs unattended.
+    runs-on: ${{ inputs.runner || 'code-linux' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -75,7 +88,7 @@ jobs:
 
   windows:
     name: Windows x86_64 (cross-built on Linux via Wine)
-    runs-on: code-linux
+    runs-on: ${{ inputs.runner || 'code-linux' }}
     steps:
       - uses: actions/checkout@v4
 

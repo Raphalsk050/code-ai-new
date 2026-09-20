@@ -40,7 +40,7 @@ export function ExplainPanel({ state }: { state: ExplainViewState }): JSX.Elemen
         <div className="explain-head">
           <button
             className="explain-toggle"
-            title={collapsed ? "Expand" : "Collapse"}
+            title={collapsed ? "Expandir" : "Recolher"}
             aria-expanded={!collapsed}
             onClick={() => setCollapsed((c) => !c)}
             disabled={idle}

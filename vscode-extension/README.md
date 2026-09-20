@@ -47,19 +47,41 @@ window run the command **“Code-AI: Open”** (Cmd/Ctrl-Shift-P).
 ## Settings
 
 - `code-ai.command` (default `code-ai`): the executable to launch. The extension appends `bridge`.
-  When left at the default, the extension auto-detects `<workspace>/.venv/bin/code-ai` (VSCode
-  launched from the GUI does not inherit your shell `PATH`, so the bare `code-ai` usually fails with
-  `spawn code-ai ENOENT`). Set this to an absolute path to override, e.g.
-  `/path/to/python_agent/.venv/bin/code-ai`.
+  Left at the default, it resolves in this order: the binary bundled in the extension
+  (`<extension>/bin/code-ai[.exe]`), then a development virtualenv — `.venv/Scripts/code-ai.exe` on
+  Windows, `.venv/bin/code-ai` elsewhere — next to the extension and in each workspace folder, then
+  the bare name on `PATH` (which usually fails: VSCode launched from the GUI does not inherit your
+  shell `PATH`). Set it to an absolute path to override. It must be an **executable**, not a script:
+  to run from source, use `"python"` with `code-ai.args` set to `["-m", "code_ai"]`.
 - `code-ai.args`: extra arguments inserted before `bridge` (e.g. `["--config", "/path/config.json"]`).
 
 The bridge runs with the first workspace folder as its cwd.
 
 ## Install from VSIX
 
-`npm run package` builds the bundles and produces a `code-ai-<version>.vsix`. Install it with
-**"Extensions: Install from VSIX…"** (or `code --install-extension code-ai-<version>.vsix`). The VSIX
-ships only the compiled `dist/` bundles, so no `npm install` is needed on the target machine.
+```bash
+scripts/build.sh
+```
+
+`scripts\build.bat` on Windows. No arguments and no preparation: it installs the npm
+dependencies if they are missing, freezes the backend if it is not already built, and writes
+`vsix/code-ai-<version>-<target>.vsix` for every platform it can serve. Install the result with
+**"Extensions: Install from VSIX…"** or `code --install-extension <file>`.
+
+**The package is self-contained.** It carries the compiled bundles *and* the frozen `code-ai`
+backend, so a first-time install needs nothing else on the machine — no source checkout, no Python,
+no `pip`, no virtualenv, no `PATH` entry. One package per platform, because the backend is most of
+the download and a universal one would ship every user a binary they cannot run.
+
+The backend is frozen from `packaging/code-ai.spec` into `.build-venv`, separate from your own
+`.venv`, and reused on later runs while it is newer than `src/` (`--refresh-backend` forces it).
+Building the **other** platform's binary needs Docker; without it that target is skipped with a
+reason, and the `build-binaries` workflow produces one to pass with `--win`/`--linux`. Run
+`scripts/build.sh --help` for the full list.
+
+`scripts/verify-vsix.mjs` runs on every package and fails the build if the backend is missing, is
+the wrong platform's, or would unpack without the executable bit — the three ways to produce a VSIX
+that installs cleanly and then cannot start.
 
 ## Troubleshooting
 

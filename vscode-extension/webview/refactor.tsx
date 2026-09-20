@@ -46,7 +46,7 @@ export function RefactorPanel({
             <span>Architectural improvements</span>
           </div>
           <button className="btn-ghost refactor-analyze" onClick={onAnalyze} disabled={status === "analyzing"}>
-            {status === "analyzing" ? "Analyzing…" : improvements.length ? "Re-analyze" : "Analyze selection"}
+            {status === "analyzing" ? "Analisando…" : improvements.length ? "Analisar de novo" : "Analisar seleção"}
           </button>
         </div>
 
@@ -59,7 +59,7 @@ export function RefactorPanel({
 
         {status === "analyzing" && (
           <div className="refactor-status">
-            <span className="spinner" /> Analyzing the selection…
+            <span className="spinner" /> Analisando a seleção…
           </div>
         )}
 
@@ -68,8 +68,8 @@ export function RefactorPanel({
         {status === "idle" && (
           <div className="refactor-empty">
             {autoRun
-              ? "Select a snippet in the editor to see suggested improvements."
-              : "Select a snippet in the editor, then run the analysis."}
+              ? "Selecione um trecho no editor para ver as melhorias sugeridas."
+              : "Selecione um trecho no editor e rode a análise."}
           </div>
         )}
 
@@ -140,7 +140,7 @@ function Card({
       </div>
       <div className="refactor-card-action">
         {planned ? (
-          <button className="btn-primary" onClick={onApply} title="Apply this change with the agent">
+          <button className="btn-primary" onClick={onApply} title="Aplicar com o agente">
             Apply changes
           </button>
         ) : planning ? (
@@ -148,7 +148,7 @@ function Card({
             <span className="spinner" /> Planning…
           </button>
         ) : (
-          <button className="btn-ghost" onClick={onPlan} title="Generate a detailed plan">
+          <button className="btn-ghost" onClick={onPlan} title="Gerar um plano detalhado">
             Planning
           </button>
         )}

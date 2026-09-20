@@ -2,6 +2,8 @@
 node_modules/**
 src/**
 webview/**
+e2e/**
+scripts/**
 **/*.ts
 **/*.tsx
 **/*.map
@@ -10,3 +12,9 @@ esbuild.mjs
 package-lock.json
 .gitignore
 **/*.vsix
+vsix/**
+
+# bin/ is deliberately NOT ignored: it holds the frozen backend that makes the
+# package self-contained. scripts/package.mjs stages exactly one platform's
+# binary there per target, and scripts/verify-vsix.mjs fails the build if it
+# did not make it in.

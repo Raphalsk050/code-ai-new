@@ -118,6 +118,11 @@ class CodeAIApplication:
         # by the client via reset_conversation/load_conversation; a turn persists
         # under it so the user can resume the thread later.
         self._conversation_id: str | None = None
+        # The process-wide token ledger at the moment the current conversation
+        # became current. What this thread spent is the distance from here, not
+        # the ledger's absolute total, which also counts every other thread the
+        # process has served since it started.
+        self._usage_baseline: int = 0
         self._current_cancel: asyncio.Event | None = None
         self._current_task: asyncio.Task[TurnResult] | None = None
         # One turn at a time. submit_user_message decides between running and
@@ -458,6 +463,7 @@ class CodeAIApplication:
         messages[:] = preserved
         self.orchestrator.conversation.reset_remote_state()
         self._conversation_id = conversation_id or uuid.uuid4().hex
+        self._usage_baseline = self._ledger_total()
         await self.orchestrator.set_state(AgentState.READY, phase="waiting_user")
         await self.event_bus.emit("conversation.reset", {}, source="app")
 
@@ -489,6 +495,7 @@ class CodeAIApplication:
         # the next request replays the full local history instead.
         self.orchestrator.conversation.reset_remote_state()
         self._conversation_id = conversation_id
+        self._usage_baseline = self._ledger_total()
         await self.orchestrator.set_state(AgentState.READY, phase="waiting_user")
         await self.event_bus.emit(
             "conversation.loaded",
@@ -500,6 +507,57 @@ class CodeAIApplication:
             "title": record.get("title", ""),
             "messages": record.get("messages", []),
         }
+
+    def _ledger_total(self) -> int:
+        """Tokens the process has spent so far, or 0 when nothing is counting."""
+        usage = getattr(self.orchestrator, "usage", None)
+        return int(getattr(usage, "total_tokens", 0) or 0)
+
+    async def summarize_conversation(self, conversation_id: str | None = None) -> dict[str, Any]:
+        """Write (or refresh) the two-line account of what a conversation did.
+
+        The history list is a wall of first messages otherwise: the title says
+        what was asked, never what happened. Summarizing costs a model call, so
+        it is explicit, and a thread that has not moved since its last summary
+        returns the stored one untouched.
+        """
+        from code_ai.providers.models import Message, ModelRequest
+
+        if not self.conversation_store:
+            return {"summarized": False, "reason": "no_store"}
+        target = conversation_id or self._conversation_id
+        if not target:
+            return {"summarized": False, "reason": "no_conversation"}
+        record = self.conversation_store.load(target)
+        if record is None:
+            return {"summarized": False, "reason": "not_found"}
+
+        existing = str(record.get("summary") or "")
+        if existing and float(record.get("summary_at") or 0.0) >= float(
+            record.get("updated_at") or 0.0
+        ):
+            return {"summarized": False, "id": target, "summary": existing, "reason": "current"}
+
+        digest = _conversation_digest(record.get("messages") or [])
+        if not digest.strip():
+            return {"summarized": False, "id": target, "reason": "empty"}
+
+        language = self.session.config.language if self.session.config else ""
+        directive = f" Write it in {language}." if language else ""
+        request = ModelRequest(
+            model=self.session.config.model,
+            messages=[
+                Message(role="system", content=_SUMMARY_SYSTEM + directive),
+                Message(role="user", content=digest),
+            ],
+            max_output_tokens=2048,
+        )
+        response = await self.provider.complete(request)
+        summary = (response.text or "").strip()
+        if not summary:
+            return {"summarized": False, "id": target, "reason": "empty_response"}
+        self.conversation_store.set_summary(target, summary)
+        return {"summarized": True, "id": target, "summary": summary}
 
     async def delete_conversation(self, conversation_id: str) -> bool:
         if not self.conversation_store:
@@ -535,12 +593,15 @@ class CodeAIApplication:
         ]
         if not non_system:
             return
+        total = self._ledger_total()
         try:
             self.conversation_store.save(
                 conversation_id=self._conversation_id,
                 messages=non_system,
                 previous_response_id=self.orchestrator.conversation.previous_response_id,
+                tokens_delta=total - self._usage_baseline,
             )
+            self._usage_baseline = total
         except Exception:  # pragma: no cover - persistence must never break a turn
             logger.warning(
                 "Failed to persist conversation %s", self._conversation_id, exc_info=True
@@ -679,12 +740,45 @@ class CodeAIApplication:
             "vision_model": config.vision_model,
             "max_context_tokens": config.budgets.max_context_tokens,
             "workspace": str(config.workspace),
+            # What the terminal's /doctor edits, so a second front end does not
+            # have to send the user back to the terminal to turn a tool off.
+            "disabled_tools": list(config.disabled_tools),
+            "subagent_models": list(config.subagent_models),
+            "max_concurrent_subagents": config.budgets.max_concurrent_subagents,
+            "temperature": config.sampling.temperature,
+            "top_p": config.sampling.top_p,
+            "top_k": config.sampling.top_k,
             "supported": {
                 "api_mode": sorted(SUPPORTED_API_MODES),
                 "permission_mode": sorted(SUPPORTED_PERMISSION_MODES),
                 "reasoning_effort": ["none", "minimal", "low", "medium", "high", "xhigh"],
+                "tools": self._tool_catalog(),
             },
         }
+
+    def _tool_catalog(self) -> list[dict[str, Any]]:
+        """Every registered tool and whether it is switched on.
+
+        Read from the live registry rather than the config: the registry is
+        what the agent is actually built from, and a tool the session never
+        registered (an optional dependency missing) must not appear as a switch
+        that does nothing.
+        """
+        registry = getattr(self.orchestrator, "tool_registry", None)
+        if registry is None:
+            return []
+        disabled = registry.disabled_names()
+        catalog: list[dict[str, Any]] = []
+        for name in sorted(registry.registered_names()):
+            tool = registry.tool(name)
+            catalog.append(
+                {
+                    "name": name,
+                    "description": " ".join(str(getattr(tool, "description", "")).split())[:160],
+                    "enabled": name not in disabled,
+                }
+            )
+        return catalog
 
     async def list_models(self) -> list[str]:
         """List the model identifiers the configured provider currently serves.
@@ -736,6 +830,38 @@ class CodeAIApplication:
                 elif key == "reasoning_effort":
                     sampling = asdict(config.sampling)
                     sampling["reasoning_effort"] = None if value == "none" else value
+                    validated = persist_config_updates(config, {"sampling": sampling})
+                    config.sampling = validated.sampling
+                    applied.append(key)
+                elif key == "disabled_tools":
+                    names = sorted({str(name).strip() for name in value or ()} - {""})
+                    validated = persist_config_updates(config, {"disabled_tools": names})
+                    config.disabled_tools = validated.disabled_tools
+                    registry = getattr(self.orchestrator, "tool_registry", None)
+                    if registry is not None:
+                        # Live: the next model request is built from the registry,
+                        # so a tool switched off here never reaches the schema.
+                        registry.set_disabled(config.disabled_tools)
+                    applied.append(key)
+                elif key == "subagent_models":
+                    models = [str(name).strip() for name in value or () if str(name).strip()]
+                    validated = persist_config_updates(config, {"subagent_models": models})
+                    # Order is the user's ranking, not sorted; the coordinator
+                    # reads the list per dispatch, so there is nothing to rebuild.
+                    config.subagent_models = validated.subagent_models
+                    applied.append(key)
+                elif key == "max_concurrent_subagents":
+                    budgets = asdict(config.budgets)
+                    budgets["max_concurrent_subagents"] = int(value)
+                    validated = persist_config_updates(config, {"budgets": budgets})
+                    config.budgets = validated.budgets
+                    applied.append(key)
+                elif key in {"temperature", "top_p", "top_k"}:
+                    sampling = asdict(config.sampling)
+                    if value in (None, "", "none"):
+                        sampling[key] = None
+                    else:
+                        sampling[key] = int(value) if key == "top_k" else float(value)
                     validated = persist_config_updates(config, {"sampling": sampling})
                     config.sampling = validated.sampling
                     applied.append(key)
@@ -1314,6 +1440,14 @@ _EXPLAIN_SYSTEM = (
 )
 
 
+_SUMMARY_SYSTEM = (
+    "You summarize a finished coding session for a history list. Two or three "
+    "sentences, plain prose, no bullets, no preamble, no markdown. Say what was "
+    "actually changed or found and how it ended (done, blocked, waiting on the "
+    "user). Name the files and commands that mattered; skip the pleasantries."
+)
+
+
 _INLINE_SYSTEM = (
     "You are a precise code-completion engine embedded in an editor, like GitHub "
     "Copilot. You receive a source file with the caret marked as <CURSOR>. Predict "
@@ -1396,3 +1530,28 @@ def _parse_improvements(text: str) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def _conversation_digest(records: Sequence[dict[str, Any]], *, limit: int = 6000) -> str:
+    """A compact, tail-biased transcript for the summarizer.
+
+    The end of a thread is what decides how it ended, so the digest is built
+    backwards and cut at the front - a truncated opening still summarizes, a
+    truncated ending summarizes wrongly.
+    """
+    lines: list[str] = []
+    for record in reversed(records):
+        role = str(record.get("role") or "")
+        content = re.sub(r"\s+", " ", str(record.get("content") or "")).strip()
+        if role == "assistant":
+            calls = [str(c.get("name") or "") for c in record.get("tool_calls") or []]
+            if calls:
+                content = (content + " " if content else "") + f"[tools: {', '.join(calls)}]"
+        elif role == "tool":
+            content = f"[{record.get('name') or 'tool'}] {content[:160]}"
+        if not content:
+            continue
+        lines.append(f"{role}: {content[:600]}")
+        if sum(len(line) for line in lines) > limit:
+            break
+    return "\n".join(reversed(lines))

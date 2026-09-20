@@ -21,7 +21,13 @@ export class BridgeClient extends EventEmitter {
 
   constructor(command: string, args: string[], cwd?: string) {
     super();
-    this.proc = spawn(command, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
+    // windowsHide: the frozen binary is a console application, so without it
+    // Windows pops a console window in front of the editor on every spawn.
+    this.proc = spawn(command, args, {
+      cwd,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
     this.proc.stdout.setEncoding("utf8");
     this.proc.stdout.on("data", (chunk: string) => this.onStdout(chunk));
     this.proc.stderr.setEncoding("utf8");

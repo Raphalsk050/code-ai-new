@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from code_ai.app.commands import SessionCommands
 from code_ai.app.service import CodeAIApplication
-from code_ai.core.errors import ConfigurationError, GoalStateError, TerminalSessionError
 from code_ai.core.interaction import Answer, render_answers
 from code_ai.events.models import EventEnvelope
 from code_ai.providers.models import ImageContent
@@ -16,6 +16,9 @@ class TerminalController:
     def __init__(self, app: CodeAIApplication, view_model: TerminalViewModel) -> None:
         self.app = app
         self.view_model = view_model
+        # Plan, goal, terminal and index behaviour is shared with the bridge;
+        # this class only phrases the outcome for the terminal.
+        self.commands = SessionCommands(app)
 
     async def handle_event(self, event: EventEnvelope) -> None:
         self.view_model.apply(event)
@@ -51,13 +54,8 @@ class TerminalController:
 
     # -- code index (/index) -------------------------------------------------
     async def index_refresh(self, *, full: bool = False, subtree: str = "") -> str:
-        try:
-            report = await self.app.refresh_code_index(full=full, subtree=subtree)
-        except ConfigurationError as exc:
-            return f"index> {exc}"
-        scope = f" ({subtree})" if subtree else ""
-        kind = "Rebuilt" if full else "Refreshed"
-        return f"index> {kind} the code index{scope}: {report.summary()}"
+        result = await self.commands.index_refresh(full=full, subtree=subtree)
+        return f"index> {result.message}"
 
     def index_status(self) -> str:
         status = self.app.code_index_status()
@@ -121,68 +119,47 @@ class TerminalController:
     # -- interactive terminal (/term) ---------------------------------------
     # The same PTY sessions the model drives through its terminal tools, now
     # reachable by the human: /term types into the session, so user and agent
-    # share one live terminal instead of the user being locked out of it.
+    # share one live terminal instead of the user being locked out of it. The
+    # sessions themselves are driven by SessionCommands, which the bridge uses
+    # as well - only the wording below is the terminal's.
 
     async def terminal_start(self, command: str | None = None) -> str:
-        manager = getattr(self.app, "terminal_manager", None)
-        if manager is None:
-            return "term> Terminal indisponível nesta sessão."
-        try:
-            session_id = manager.create(
-                cwd=self.app.session.config.workspace, command=command
-            )
-        except TerminalSessionError as exc:
-            return f"term> {exc}"
-        await self._emit_terminal_screen(manager, session_id)
+        result = await self.commands.terminal_start(command or "")
+        if not result.ok:
+            return f"term> {result.message}"
+        session_id = str(result.data.get("session_id") or "")
         return (
             f"term> Sessão {session_id[:8]} iniciada. Digite /term <texto> para "
             "enviar comandos; /term ctrl c interrompe; /term kill encerra."
         )
 
     async def terminal_send(self, text: str) -> str:
-        def type_and_run(manager, session_id: str) -> None:
-            manager.send_text(session_id, text)
-            manager.send_enter(session_id)
-
-        return await self._terminal_action(type_and_run)
+        return self._term_line(await self.commands.terminal_write(text))
 
     async def terminal_enter(self) -> str:
-        return await self._terminal_action(
-            lambda manager, session_id: manager.send_enter(session_id)
-        )
+        return self._term_line(await self.commands.terminal_write("", enter=True))
 
     async def terminal_control(self, key: str) -> str:
-        return await self._terminal_action(
-            lambda manager, session_id: manager.send_control(session_id, key)
-        )
+        return self._term_line(await self.commands.terminal_control(key))
 
     async def terminal_kill(self) -> str:
-        manager = getattr(self.app, "terminal_manager", None)
-        session_id = manager.latest_session_id() if manager else None
-        if manager is None or session_id is None:
-            return "term> Nenhuma sessão de terminal ativa."
-        try:
-            manager.terminate(session_id)
-        except TerminalSessionError as exc:
-            return f"term> {exc}"
+        result = await self.commands.terminal_kill()
+        if not result.ok:
+            return f"term> {result.message}"
         self.view_model.terminal_closed = True
-        await self.app.event_bus.emit(
-            "terminal.screen.updated",
-            {"session_id": session_id, "screen": self.view_model.terminal_screen,
-             "closed": True},
-            source="ui.term",
-        )
+        screen = result.data.get("screen") or {}
+        session_id = str(screen.get("session_id") or "")
         return f"term> Sessão {session_id[:8]} encerrada."
 
-    def terminal_status(self) -> str:
-        manager = getattr(self.app, "terminal_manager", None)
-        session_id = manager.latest_session_id() if manager else None
-        if manager is None or session_id is None:
+    async def terminal_status(self) -> str:
+        result = await self.commands.terminal_status()
+        if not result.ok:
             return (
                 "term> Nenhuma sessão ativa. Use /term start [comando] para abrir "
                 "um terminal interativo."
             )
-        screen = manager.read_screen(session_id)
+        screen = result.data.get("screen") or {}
+        session_id = str(result.data.get("session_id") or "")
         return (
             f"term> Sessão {session_id[:8]} · {screen.get('columns')}x"
             f"{screen.get('rows')}"
@@ -190,32 +167,19 @@ class TerminalController:
             f"{screen.get('screen') or '(tela vazia)'}"
         )
 
-    async def _terminal_action(self, action) -> str:
-        """Run one manager action against the latest session and emit its screen."""
-        manager = getattr(self.app, "terminal_manager", None)
-        session_id = manager.latest_session_id() if manager else None
-        if manager is None or session_id is None:
-            return "term> Nenhuma sessão ativa. Use /term start [comando] primeiro."
-        try:
-            action(manager, session_id)
-        except TerminalSessionError as exc:
-            return f"term> {exc}"
-        await self._emit_terminal_screen(manager, session_id)
-        return ""
-
-    async def _emit_terminal_screen(self, manager, session_id: str) -> None:
-        screen = manager.read_screen(session_id)
-        await self.app.event_bus.emit(
-            "terminal.screen.updated", screen, source="ui.term"
-        )
+    @staticmethod
+    def _term_line(result: object) -> str:
+        """An action that worked says nothing: the screen event is the answer."""
+        ok = getattr(result, "ok", False)
+        return "" if ok else f"term> {getattr(result, 'message', '')}"
 
     # -- persistent goal (/goal) -------------------------------------------
 
     async def define_goal(self, objective: str) -> str:
-        try:
-            snapshot = await self.app.define_goal(objective)
-        except GoalStateError as exc:
-            return f"goal> {exc}"
+        result = await self.commands.goal_define(objective)
+        if not result.ok:
+            return f"goal> {result.message}"
+        snapshot = dict(result.data.get("goal") or {})
         lines = self._format_goal_criteria(snapshot)
         if snapshot.get("started"):
             return (
@@ -230,10 +194,10 @@ class TerminalController:
         )
 
     async def start_goal(self) -> str:
-        try:
-            snapshot = await self.app.start_goal()
-        except GoalStateError as exc:
-            return f"goal> {exc}"
+        result = await self.commands.goal_start()
+        if not result.ok:
+            return f"goal> {result.message}"
+        snapshot = dict(result.data.get("goal") or {})
         return (
             "goal> Loop iniciado. O agente vai iterar até todos os critérios "
             f"passarem ({snapshot.get('criteria_progress')} no momento). "
@@ -241,10 +205,10 @@ class TerminalController:
         )
 
     async def stop_goal(self) -> str:
-        try:
-            snapshot = await self.app.stop_goal()
-        except GoalStateError as exc:
-            return f"goal> {exc}"
+        result = await self.commands.goal_stop()
+        if not result.ok:
+            return f"goal> {result.message}"
+        snapshot = dict(result.data.get("goal") or {})
         return f"goal> Parada solicitada. Status: {snapshot.get('status')}."
 
     def goal_status(self) -> str:

@@ -29,7 +29,7 @@ export function CommandMenu({
         <div
           key={cmd.command}
           data-idx={i}
-          className={`cmd-item ${i === active ? "active" : ""}`}
+          className={`cmd-item ${i === active ? "active" : ""} ${cmd.available ? "" : "cmd-off"}`}
           onMouseDown={(e) => {
             // mousedown (not click) so the composer textarea never loses focus.
             e.preventDefault();
@@ -39,6 +39,7 @@ export function CommandMenu({
         >
           <span className="cmd-name">{cmd.command}</span>
           <span className="cmd-desc">{cmd.description}</span>
+          {!cmd.available && <span className="cmd-desc cmd-off-tag">só no terminal</span>}
         </div>
       ))}
     </div>

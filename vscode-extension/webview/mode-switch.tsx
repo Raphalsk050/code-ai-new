@@ -4,9 +4,9 @@ import type { AppMode } from "../src/protocol";
 import { IconBook, IconCI, IconWand } from "./icons";
 
 const MODES: { mode: AppMode; label: string; icon: JSX.Element; title: string }[] = [
-  { mode: "agent", label: "Agent", icon: <IconCI size={13} />, title: "Chat with the agent" },
-  { mode: "refactor", label: "Refactor", icon: <IconWand size={13} />, title: "Suggest architectural improvements for a selection" },
-  { mode: "explain", label: "Explain", icon: <IconBook size={13} />, title: "Explain the selected code on hover" },
+  { mode: "agent", label: "Agente", icon: <IconCI size={13} />, title: "Conversar com o agente" },
+  { mode: "refactor", label: "Refatorar", icon: <IconWand size={13} />, title: "Sugerir melhorias de arquitetura para a seleção" },
+  { mode: "explain", label: "Explicar", icon: <IconBook size={13} />, title: "Explicar o código selecionado ao passar o mouse" },
 ];
 
 /** Segmented control that switches the extension's operating mode. */

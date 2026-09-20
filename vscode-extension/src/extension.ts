@@ -4,12 +4,15 @@ import * as path from "path";
 import * as vscode from "vscode";
 
 import { BridgeClient } from "./bridge-client";
+import { DEFAULT_COMMAND, resolveCommand, spawnFailureHint } from "./resolve-command";
 import type {
   AppMode,
+  BridgeMethod,
   EditorContext,
   EventEnvelope,
   ExplainTarget,
   RefactorImprovement,
+  SlashCommandSpec,
   WebviewToHost,
 } from "./protocol";
 
@@ -442,6 +445,62 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  /**
+   * Answer the composer's `@` picker from the editor's own file index.
+   *
+   * The workspace search lives here rather than in the bridge because VS Code
+   * already knows the workspace, honours `files.exclude` and search.exclude,
+   * and does it without a process hop.
+   */
+  private async searchWorkspaceFiles(query: string): Promise<void> {
+    const pattern = query ? `**/*${query.replace(/[*?{}[\]]/g, "")}*` : "**/*";
+    try {
+      const found = await vscode.workspace.findFiles(
+        pattern,
+        "**/{node_modules,.git,dist,out,build,.venv,__pycache__}/**",
+        200
+      );
+      const paths = found
+        .map((uri) => vscode.workspace.asRelativePath(uri, false).replace(/\\/g, "/"))
+        .sort((a, b) => a.length - b.length);
+      this.webview?.postMessage({ type: "fileMatches", query, paths });
+    } catch (err) {
+      console.error("[code-ai] searchFiles failed", err);
+      this.webview?.postMessage({ type: "fileMatches", query, paths: [] });
+    }
+  }
+
+  /**
+   * Fire a bridge method whose only answer is a status line, and put that line
+   * in the chat. Panel buttons (replan, goal, terminal, index) all go through
+   * here so a failure is never silent.
+   */
+  private runCommand(
+    method: BridgeMethod,
+    params: Record<string, unknown>,
+    client: BridgeClient | null | undefined
+  ): void {
+    if (!client) {
+      this.webview?.postMessage({
+        type: "commandResult",
+        ok: false,
+        text: "Code-AI: a bridge não está rodando.",
+      });
+      return;
+    }
+    client
+      .request<{ message?: string; ok?: boolean }>(method, params, AI_REQUEST_TIMEOUT_MS)
+      .then((result) => {
+        const text = String(result?.message ?? "");
+        if (text.trim()) {
+          this.webview?.postMessage({ type: "commandResult", ok: result?.ok !== false, text });
+        }
+      })
+      .catch((err) =>
+        this.webview?.postMessage({ type: "commandResult", ok: false, text: String(err) })
+      );
+  }
+
   resolveWebviewView(view: vscode.WebviewView): void {
     view.webview.options = {
       enableScripts: true,
@@ -460,7 +519,11 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         case "submit": {
           const context =
             message.includeContext === false ? "" : formatEditorContext(currentEditorContext());
-          client?.send("submitUserMessage", { text: message.text, context });
+          client?.send("submitUserMessage", {
+            text: message.text,
+            context,
+            images: message.images ?? [],
+          });
           break;
         }
         case "newConversation":
@@ -544,6 +607,87 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         case "planRefactor":
           void this.runPlanRefactor(message.id, message.improvements);
           break;
+        case "answerQuestions":
+          client?.send("answerQuestion", { answer: message.text });
+          break;
+        case "setPlannerMode":
+          client?.send("setPlannerMode", { mode: message.mode });
+          break;
+        case "replan":
+          this.runCommand("replan", {}, client);
+          break;
+        case "startPlan":
+          this.runCommand("startPlan", {}, client);
+          break;
+        case "goal": {
+          const method =
+            message.action === "define"
+              ? "goalDefine"
+              : message.action === "start"
+                ? "goalStart"
+                : message.action === "stop"
+                  ? "goalStop"
+                  : "goalStatus";
+          this.runCommand(method, { objective: message.objective ?? "" }, client);
+          break;
+        }
+        case "terminal": {
+          const request = message.request;
+          const method =
+            request.action === "start"
+              ? "terminalStart"
+              : request.action === "write"
+                ? "terminalWrite"
+                : request.action === "ctrl"
+                  ? "terminalControl"
+                  : request.action === "kill"
+                    ? "terminalKill"
+                    : "terminalStatus";
+          const params: Record<string, unknown> =
+            request.action === "start"
+              ? { command: request.command ?? "" }
+              : request.action === "write"
+                ? { text: request.text }
+                : request.action === "ctrl"
+                  ? { key: request.key }
+                  : {};
+          this.runCommand(method, params, client);
+          break;
+        }
+        case "indexRefresh":
+          this.runCommand("indexRefresh", { full: message.full, subtree: message.subtree ?? "" }, client);
+          break;
+        case "summarizeConversation":
+          // Fire and forget: the card updates on the next list, and a summary
+          // that fails is not worth interrupting the user for.
+          client
+            ?.request("summarizeConversation", { conversation_id: message.id }, AI_REQUEST_TIMEOUT_MS)
+            .then(() =>
+              client
+                ?.request<{ conversations: any[] }>("listConversations")
+                .then((r) =>
+                  this.webview?.postMessage({
+                    type: "conversationsList",
+                    conversations: r.conversations ?? [],
+                  })
+                )
+            )
+            .catch((err) => console.error("[code-ai] summarizeConversation failed", err));
+          break;
+        case "runAsset":
+          this.runCommand("runAsset", { token: message.token, argument: message.argument }, client);
+          break;
+        case "searchFiles":
+          void this.searchWorkspaceFiles(message.query);
+          break;
+        case "listSlashCommands":
+          client
+            ?.request<{ commands: SlashCommandSpec[] }>("listSlashCommands")
+            .then((r) =>
+              this.webview?.postMessage({ type: "slashCommands", commands: r.commands ?? [] })
+            )
+            .catch((err) => console.error("[code-ai] listSlashCommands failed", err));
+          break;
         case "restartBridge":
           this.restartBridge();
           break;
@@ -593,7 +737,14 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     const config = vscode.workspace.getConfiguration("code-ai");
     const extraArgs = config.get<string[]>("args", []);
     const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    const command = resolveCommand(config.get<string>("command", "code-ai"), this.extensionUri);
+    const resolved = resolveCommand(
+      config.get<string>("command", DEFAULT_COMMAND),
+      this.extensionUri.fsPath,
+      (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath),
+      { platform: process.platform, exists: fs.existsSync }
+    );
+    const command = resolved.command;
+    if (resolved.source === "bundled") ensureExecutable(command);
 
     let client: BridgeClient;
     try {
@@ -611,10 +762,12 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     });
     client.on("stderr", (chunk: string) => console.error("[code-ai bridge]", chunk));
     client.on("error", (err: Error) => {
+      const code = (err as NodeJS.ErrnoException).code;
+      // EFTYPE is what Windows returns for a file it will not execute, such as
+      // a .py pointed at directly.
       const hint =
-        (err as NodeJS.ErrnoException).code === "ENOENT"
-          ? ` — "${command}" was not found. Set "code-ai.command" to the absolute path of the binary` +
-            ` (e.g. <project>/.venv/bin/code-ai).`
+        code === "ENOENT" || code === "EACCES" || code === "EFTYPE"
+          ? ` — ${spawnFailureHint(resolved, process.platform)}`
           : "";
       vscode.window.showErrorMessage(`Code-AI bridge error: ${err.message}${hint}`);
     });
@@ -692,25 +845,19 @@ function formatEditorContext(context: EditorContext | null): string {
 }
 
 /**
- * Resolve the bridge executable. VSCode launched from the GUI does not inherit
- * the shell PATH, so the bare `code-ai` console script (which lives in a project
- * virtualenv) is usually not found. When the user left the default, probe
- * deterministic locations for a `.venv/bin/code-ai`: relative to the extension
- * itself (works regardless of the open folder) and each workspace folder.
+ * Make a bundled binary executable. A VSIX is a zip, and the bit does not
+ * always survive the round trip (it never does when the zip was produced on
+ * Windows), so the first launch on Linux would fail with EACCES.
  */
-function resolveCommand(configured: string, extensionUri: vscode.Uri): string {
-  if (configured !== "code-ai" || path.isAbsolute(configured)) {
-    return configured;
+function ensureExecutable(file: string): void {
+  if (process.platform === "win32") return;
+  try {
+    const mode = fs.statSync(file).mode;
+    if (mode & 0o111) return;
+    fs.chmodSync(file, mode | 0o755);
+  } catch {
+    // Read-only install or a vanished file: let the spawn report the real error.
   }
-  const roots = [
-    path.dirname(extensionUri.fsPath),
-    ...(vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath),
-  ];
-  for (const root of roots) {
-    const candidate = path.join(root, ".venv", "bin", "code-ai");
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  return configured;
 }
 
 function syntheticStatus(state: string): EventEnvelope {

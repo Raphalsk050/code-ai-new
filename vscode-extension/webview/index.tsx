@@ -7,14 +7,17 @@ import type {
   EditorContext,
   EventEnvelope,
   HostToWebview,
+  PastedImage,
   PermissionMode,
   ServerConversation,
   Settings,
+  SlashCommandSpec,
+  TerminalRequest,
   WebviewToHost,
 } from "../src/protocol";
-import { ApprovalModal } from "./approval";
+import { ApprovalCard } from "./approval";
 import { CommandMenu } from "./command-menu";
-import { exactCommand, matchCommands, SlashCommand } from "./commands";
+import { buildCatalog, matchCommands, resolveCommand, SlashCommand } from "./commands";
 import { ExplainPanel, ExplainViewState, INITIAL_EXPLAIN } from "./explain";
 import { HomeScreen } from "./home";
 import {
@@ -38,12 +41,20 @@ import {
   IconSettings,
   IconStop,
 } from "./icons";
+import { LiveCodePanel } from "./live-code";
+import { MentionMenu } from "./mention-menu";
+import { applyMention, mentionPrefix, rankPaths } from "./mentions";
 import { formatElapsed, ItemView, TypingIndicator } from "./messages";
 import { ModeSwitch } from "./mode-switch";
-import { applyEvent, initialState, isBusy, Item, messagesToItems, ViewState, workingLabel } from "./reducer";
+import { ripple } from "./motion";
+import { QuestionsCard } from "./questions-card";
 import { INITIAL_REFACTOR, RefactorPanel, RefactorViewState } from "./refactor";
 import { ModelsState, SettingsScreen } from "./settings";
+import { applyEvent, initialAppState, isBusy, Item, messagesToItems, workingLabel } from "./store";
 import { STYLE } from "./styles";
+import { RailActions, TaskRail } from "./task-rail";
+import { UsageBar } from "./usage-bar";
+import { useContainerWidth } from "./use-container-width";
 
 declare function acquireVsCodeApi(): {
   postMessage: (message: WebviewToHost) => void;
@@ -53,11 +64,7 @@ declare function acquireVsCodeApi(): {
 const vscode = acquireVsCodeApi();
 const send = (message: WebviewToHost) => vscode.postMessage(message);
 
-function reducer(state: ViewState, event: EventEnvelope): ViewState {
-  return applyEvent(state, event);
-}
-
-/** Build a synthetic envelope so the webview can drive the reducer locally. */
+/** Build a synthetic envelope so the webview can drive the store locally. */
 function clientEvent(event_type: string, payload: Record<string, any> = {}): EventEnvelope {
   return {
     event_id: `client-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -74,7 +81,7 @@ function clientEvent(event_type: string, payload: Record<string, any> = {}): Eve
 type Screen = "home" | "chat" | "settings";
 
 function App(): JSX.Element {
-  const [state, dispatch] = React.useReducer(reducer, initialState);
+  const [state, dispatch] = React.useReducer(applyEvent, initialAppState);
   const [persisted, setPersisted] = React.useState<PersistedState>(
     () => vscode.getState() ?? EMPTY_PERSISTED
   );
@@ -86,18 +93,25 @@ function App(): JSX.Element {
   const [serverConvos, setServerConvos] = React.useState<ServerConversation[]>([]);
   const [refactor, setRefactor] = React.useState<RefactorViewState>(INITIAL_REFACTOR);
   const [explain, setExplain] = React.useState<ExplainViewState>(INITIAL_EXPLAIN);
+  const [catalog, setCatalog] = React.useState<SlashCommand[]>(() => buildCatalog([]));
 
   const [draft, setDraft] = React.useState("");
   const [editorContext, setEditorContext] = React.useState<EditorContext | null>(null);
   const [includeContext, setIncludeContext] = React.useState(true);
   const [cmdIndex, setCmdIndex] = React.useState(0);
   const [menuDismissed, setMenuDismissed] = React.useState(false);
+  const [mention, setMention] = React.useState<{ query: string; paths: string[] } | null>(null);
+  const [mentionIndex, setMentionIndex] = React.useState(0);
+  const mentionQueryRef = React.useRef<string | null>(null);
+  const [images, setImages] = React.useState<PastedImage[]>([]);
+  const [dropping, setDropping] = React.useState(false);
+  const [reveal, setReveal] = React.useState<{ section: "terminal"; nonce: number } | null>(null);
+  const [terminalFocus, setTerminalFocus] = React.useState(0);
 
+  const [rootRef, width] = useContainerWidth<HTMLDivElement>();
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
   const pinnedRef = React.useRef(true);
-  // Id of a conversation opened without a local transcript cache: when the
-  // bridge answers with its stored messages we rebuild the transcript from them.
   const pendingReconstructRef = React.useRef<string | null>(null);
 
   const prefs: ExtPrefs = persisted.prefs ?? DEFAULT_PREFS;
@@ -109,6 +123,20 @@ function App(): JSX.Element {
       const data = e.data;
       if (data?.type === "event") {
         dispatch(data.event as EventEnvelope);
+      } else if (data?.type === "fileMatches") {
+        // A slower answer for a prefix the user has already typed past is noise.
+        if (mentionQueryRef.current === data.query) {
+          setMention({ query: data.query, paths: rankPaths(data.paths, data.query) });
+          setMentionIndex(0);
+        }
+      } else if (data?.type === "slashCommands") {
+        setCatalog(buildCatalog(data.commands as SlashCommandSpec[]));
+      } else if (data?.type === "commandResult") {
+        if (data.text.trim()) {
+          dispatch(
+            clientEvent(data.ok ? "warning" : "error", { message: data.text.trim() })
+          );
+        }
       } else if (data?.type === "editorContext") {
         setEditorContext(data.context);
         setIncludeContext(true);
@@ -123,14 +151,13 @@ function App(): JSX.Element {
       } else if (data?.type === "conversationsList") {
         setServerConvos(data.conversations);
       } else if (data?.type === "conversationLoaded") {
-        // Only rebuild the transcript when we opened a conversation that had no
-        // local cache; otherwise keep the richer client-side items.
         if (pendingReconstructRef.current === data.id) {
           pendingReconstructRef.current = null;
           dispatch(clientEvent("client.load", { items: messagesToItems(data.messages) }));
         }
       } else if (data?.type === "refactorStatus") {
-        if (data.status === "analyzing") setRefactor((r) => ({ ...r, status: "analyzing", error: undefined }));
+        if (data.status === "analyzing")
+          setRefactor((r) => ({ ...r, status: "analyzing", error: undefined }));
       } else if (data?.type === "refactorResult") {
         setRefactor({
           status: "ready",
@@ -151,8 +178,6 @@ function App(): JSX.Element {
           planned: { ...r.planned, [data.id]: data.markdown },
         }));
       } else if (data?.type === "explainStatus") {
-        // A new selection is being analyzed: drop the previous explanation so
-        // the panel never shows a stale result for a different range.
         setExplain({ status: "analyzing", target: data.target });
       } else if (data?.type === "explainResult") {
         setExplain({ status: "ready", markdown: data.markdown, target: data.target });
@@ -164,30 +189,57 @@ function App(): JSX.Element {
     return () => window.removeEventListener("message", onMessage);
   }, []);
 
-  // Tell the host the active mode on first load so editor-driven behaviour
-  // (explain/refactor) knows what to do.
   React.useEffect(() => {
     send({ type: "setMode", mode: prefs.mode, autoRunRefactor: prefs.autoRunRefactor });
+    send({ type: "listSlashCommands" });
+    // The rail names the model and the workspace, so the settings are session
+    // state, not a screen's private fetch.
+    send({ type: "getSettings" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Refresh the durable conversation list from the bridge whenever we land on
-  // the home screen. Re-runs when the session first reaches READY so the list
-  // populates even though the bridge is still spawning on initial mount.
+  // The bridge answers with its catalog once it is up; the first request can
+  // land while it is still spawning, so ask again when the session reports in.
+  React.useEffect(() => {
+    if (state.session.status !== "STARTING") send({ type: "listSlashCommands" });
+  }, [state.session.status]);
+
   React.useEffect(() => {
     if (screen === "home") send({ type: "listConversations" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [screen, state.status]);
+  }, [screen, state.session.status]);
 
   // -- persist the active transcript to local history ----------------------
   React.useEffect(() => {
     if (screen !== "chat" || mode !== "agent" || !activeId) return;
     setPersisted((prev) => {
-      const next = upsertActive(prev, activeId, state.items);
+      const next = upsertActive(prev, activeId, state.transcript.items);
       vscode.setState(next);
       return next;
     });
-  }, [state.items, screen, activeId, mode]);
+  }, [state.transcript.items, screen, activeId, mode]);
+
+  // Esc hands the keyboard to the interactive terminal and back, the binding
+  // the TUI has. Registered on the document because the terminal input lives
+  // in the rail, which the composer knows nothing about.
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      const active = document.activeElement as HTMLElement | null;
+      if (active?.dataset?.terminalInput === "1") {
+        e.preventDefault();
+        textareaRef.current?.focus();
+        return;
+      }
+      if (active === textareaRef.current) {
+        e.preventDefault();
+        setReveal({ section: "terminal", nonce: Date.now() });
+        setTerminalFocus((n) => n + 1);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
 
   // -- autoscroll / auto-grow ---------------------------------------------
   const onScroll = () => {
@@ -206,11 +258,79 @@ function App(): JSX.Element {
     ta.style.height = Math.min(ta.scrollHeight, 180) + "px";
   }, [draft]);
 
-  const busy = isBusy(state.status);
-  const lastItem = state.items[state.items.length - 1];
+  const busy = isBusy(state.session.status);
+  const items = state.transcript.items;
+  const lastItem = items[items.length - 1];
   const showTyping = busy && lastItem?.kind !== "assistant";
 
-  const commands = menuDismissed ? [] : matchCommands(draft);
+  const updateMention = (text: string, caret: number) => {
+    const prefix = mentionPrefix(text, caret);
+    mentionQueryRef.current = prefix;
+    if (prefix === null) {
+      setMention(null);
+      return;
+    }
+    // Ask the host on every keystroke but let the answer decide: the query is
+    // matched against the caret's own prefix when it comes back.
+    send({ type: "searchFiles", query: prefix });
+  };
+
+  /** Read image files into the pending strip, however they arrived. */
+  const attachImages = (files: File[]) => {
+    for (const file of files) {
+      if (!file.type.startsWith("image/")) continue;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = String(reader.result ?? "");
+        const comma = result.indexOf(",");
+        if (comma < 0) return;
+        setImages((prev) => [
+          ...prev,
+          { data: result.slice(comma + 1), media_type: file.type || "image/png" },
+        ]);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const onComposerPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(e.clipboardData?.items ?? [])
+      .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => file !== null);
+    if (files.length === 0) return;
+    e.preventDefault();
+    attachImages(files);
+  };
+
+  // Dropping a screenshot on the composer is the other half of pasting one.
+  // Text drops are left alone: dragging a path in from the editor should type
+  // it, which is the browser's own behaviour.
+  const onComposerDrop = (e: React.DragEvent<HTMLElement>) => {
+    const files = Array.from(e.dataTransfer?.files ?? []).filter((file) =>
+      file.type.startsWith("image/")
+    );
+    if (files.length === 0) return;
+    e.preventDefault();
+    setDropping(false);
+    attachImages(files);
+  };
+
+  const pickMention = (path: string) => {
+    const textarea = textareaRef.current;
+    const caret = textarea ? textarea.selectionStart : draft.length;
+    const next = applyMention(draft, caret, path);
+    setDraft(next.text);
+    setMention(null);
+    mentionQueryRef.current = null;
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (el) el.setSelectionRange(next.caret, next.caret);
+    });
+  };
+
+  const mentionOpen = mention !== null && mention.paths.length > 0;
+  const commands = menuDismissed ? [] : matchCommands(catalog, draft);
   const menuOpen = commands.length > 0;
   React.useEffect(() => setCmdIndex(0), [draft]);
 
@@ -229,12 +349,19 @@ function App(): JSX.Element {
   };
 
   // -- conversation lifecycle ---------------------------------------------
+  // Leaving a thread is when its summary can be written: the turn is over and
+  // the user has moved on, so the model call costs nobody any waiting.
+  const summarizeOutgoing = () => {
+    if (activeId && state.transcript.items.length > 1) {
+      send({ type: "summarizeConversation", id: activeId });
+    }
+  };
+
   const startNewConversation = () => {
+    summarizeOutgoing();
     const id = newId();
     setActiveId(id);
     dispatch(clientEvent("conversation.reset"));
-    // Tag the bridge's fresh thread with this id so the turns it accrues are
-    // saved under it and can be resumed later.
     send({ type: "newConversation", id });
     setDraft("");
     updatePrefs({ mode: "agent" });
@@ -242,13 +369,11 @@ function App(): JSX.Element {
   };
 
   const openConversation = (id: string) => {
+    if (id !== activeId) summarizeOutgoing();
     const convo = persisted.conversations.find((c) => c.id === id);
     const cached = (convo?.items ?? []) as Item[];
     setActiveId(id);
     dispatch(clientEvent("client.load", { items: cached }));
-    // Restore the model's context on the bridge so the thread can be continued.
-    // If we have no local transcript, ask the bridge to send its stored messages
-    // back so we can rebuild the view.
     pendingReconstructRef.current = cached.length === 0 ? id : null;
     send({ type: "loadConversation", id });
     updatePrefs({ mode: "agent" });
@@ -263,16 +388,19 @@ function App(): JSX.Element {
   };
 
   const clearMessages = () => dispatch(clientEvent("conversation.reset"));
-  const goHome = () => setScreen("home");
+  const goHome = () => {
+    summarizeOutgoing();
+    setScreen("home");
+  };
 
   const openSettings = () => {
-    setReturnScreen(screen);
+    setReturnScreen(screen === "settings" ? "chat" : screen);
     if (!settings) send({ type: "getSettings" });
     setScreen("settings");
   };
 
   // -- command + submit ----------------------------------------------------
-  const runCommand = (cmd: SlashCommand) => {
+  const runCommand = (cmd: SlashCommand, argument = "") => {
     setDraft("");
     setMenuDismissed(false);
     switch (cmd.action.kind) {
@@ -281,6 +409,12 @@ function App(): JSX.Element {
         break;
       case "new":
         startNewConversation();
+        break;
+      case "history":
+        setScreen("home");
+        break;
+      case "settings":
+        openSettings();
         break;
       case "compact":
         send({ type: "compact" });
@@ -291,23 +425,130 @@ function App(): JSX.Element {
       case "permission":
         send({ type: "setPermissionMode", mode: cmd.action.mode });
         break;
+      case "planner":
+        send({ type: "setPlannerMode", mode: cmd.action.mode });
+        break;
+      case "replan":
+        send({ type: "replan" });
+        break;
+      case "goal":
+        send({
+          type: "goal",
+          action: cmd.action.action,
+          objective: cmd.action.action === "define" ? argument : undefined,
+        });
+        break;
+      case "index":
+        send({ type: "indexRefresh", full: cmd.action.full, subtree: argument || undefined });
+        break;
+      case "terminal": {
+        const action = cmd.action.action;
+        if (action === "write") send({ type: "terminal", request: { action: "write", text: argument } });
+        else if (action === "ctrl")
+          send({ type: "terminal", request: { action: "ctrl", key: argument || "c" } });
+        else if (action === "start")
+          send({ type: "terminal", request: { action: "start", command: argument || undefined } });
+        else send({ type: "terminal", request: { action } as TerminalRequest });
+        break;
+      }
+      case "assets": {
+        const wanted = cmd.action.which === "skills" ? "skill" : "workflow";
+        const list = catalog.filter((c) => c.kind === wanted);
+        dispatch(
+          clientEvent("warning", {
+            message: list.length
+              ? `${list.length} ${cmd.action.which}: ` +
+                list.map((c) => c.command).join(", ") +
+                " — digite o nome com / para forçar."
+              : `Nenhum ${wanted} encontrado neste workspace.`,
+          })
+        );
+        break;
+      }
+      case "asset":
+        send({ type: "runAsset", token: cmd.command, argument });
+        break;
+      case "settings-update": {
+        if (!argument.trim()) {
+          openSettings();
+          break;
+        }
+        const field = cmd.action.field;
+        const value =
+          field === "learn"
+            ? argument.trim() === "on"
+            : field === "max_context_tokens"
+              ? Number(argument.trim())
+              : argument.trim();
+        send({ type: "updateSettings", updates: { [field]: value } });
+        break;
+      }
+      case "unsupported":
+        dispatch(
+          clientEvent("warning", {
+            message: `${cmd.command} ainda não existe na extensão; use o terminal por enquanto.`,
+          })
+        );
+        break;
     }
   };
 
   const submit = () => {
     const text = draft.trim();
-    if (!text || busy) return;
-    const cmd = exactCommand(text);
-    if (cmd) {
-      runCommand(cmd);
+    if (!text) return;
+    const resolved = resolveCommand(catalog, text);
+    if (resolved) {
+      runCommand(resolved.command, resolved.argument);
       return;
     }
-    send({ type: "submit", text, includeContext: includeContext && !!editorContext });
+    // `/name arg` that matches no command may still be a workflow or a skill on
+    // disk; the bridge resolves it and says so when it is neither.
+    if (text.startsWith("/") && !text.includes("\n")) {
+      const [token, ...rest] = text.split(/\s+/);
+      send({ type: "runAsset", token, argument: rest.join(" ") });
+      setDraft("");
+      setMenuDismissed(false);
+      return;
+    }
+    // Sending while the agent works is steering, not an error: the bridge
+    // queues the message and the running turn picks it up at its next model
+    // step, which is what the terminal does.
+    send({
+      type: "submit",
+      text,
+      includeContext: includeContext && !!editorContext,
+      images: images.length ? images : undefined,
+    });
     setDraft("");
+    setImages([]);
     setMenuDismissed(false);
   };
 
   const onComposerKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (mentionOpen && mention) {
+      const paths = mention.paths;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setMentionIndex((i) => (i + 1) % paths.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setMentionIndex((i) => (i - 1 + paths.length) % paths.length);
+        return;
+      }
+      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+        e.preventDefault();
+        pickMention(paths[mentionIndex]);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setMention(null);
+        mentionQueryRef.current = null;
+        return;
+      }
+    }
     if (menuOpen) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -321,12 +562,14 @@ function App(): JSX.Element {
       }
       if (e.key === "Tab") {
         e.preventDefault();
-        setDraft(commands[cmdIndex].command + " ");
+        setDraft(commands[cmdIndex].completion);
         return;
       }
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        runCommand(commands[cmdIndex]);
+        const picked = commands[cmdIndex];
+        const resolved = resolveCommand(catalog, draft);
+        runCommand(picked, resolved?.command === picked ? resolved.argument : "");
         return;
       }
       if (e.key === "Escape") {
@@ -345,8 +588,6 @@ function App(): JSX.Element {
     send({ type: "resolveApproval", call_id: callId, scope, reason });
   const setPermission = (m: PermissionMode) => send({ type: "setPermissionMode", mode: m });
 
-  // Apply a refactoring plan: hand the markdown to the agent as a normal turn,
-  // which then implements it through the usual edit/approval flow.
   const applyRefactor = (markdown: string) => {
     const target = refactor.path ? ` to \`${refactor.path}\`` : "";
     updatePrefs({ mode: "agent" });
@@ -358,10 +599,26 @@ function App(): JSX.Element {
     });
   };
 
+  const railActions: RailActions = {
+    onIndex: (full) => send({ type: "indexRefresh", full }),
+    onCompact: () => send({ type: "compact" }),
+    onReplan: () => send({ type: "replan" }),
+    onPlannerMode: (m) => send({ type: "setPlannerMode", mode: m }),
+    onGoal: (action) => send({ type: "goal", action }),
+    onTerminal: (request) => send({ type: "terminal", request }),
+    onOpenConversation: openConversation,
+    onDeleteConversation: deleteConversation,
+    onNewConversation: startNewConversation,
+    onSeeAllHistory: goHome,
+    onSettings: openSettings,
+  };
+
+  const history = mergeHistory(persisted.conversations, serverConvos);
+
   // -- screens -------------------------------------------------------------
   if (screen === "settings") {
     return (
-      <div className="app">
+      <div className="app" ref={rootRef} data-w={width}>
         <SettingsScreen
           settings={settings}
           prefs={prefs}
@@ -381,9 +638,9 @@ function App(): JSX.Element {
 
   if (screen === "home") {
     return (
-      <div className="app">
+      <div className="app" ref={rootRef} data-w={width}>
         <HomeScreen
-          entries={mergeHistory(persisted.conversations, serverConvos)}
+          entries={history}
           onNew={startNewConversation}
           onOpen={openConversation}
           onDelete={deleteConversation}
@@ -401,44 +658,49 @@ function App(): JSX.Element {
     : "";
 
   return (
-    <div className="app">
+    <div className="app" ref={rootRef} data-w={width}>
       <div className="statusbar">
         <div className="brand">
-          <button className="icon-btn back-btn" title="Back to history" onClick={goHome}>
+          <button className="icon-btn back-btn" title="Voltar ao histórico" onClick={goHome}>
             <IconBack size={16} />
           </button>
           <span className={`dot ${busy ? "busy" : ""}`} />
           Code-AI
           {busy && (
-            <span className="heartbeat" title="The agent is working — this ticks while the process is alive">
+            <span className="heartbeat" title="O agente está trabalhando">
               <span className="spinner heartbeat-spin" />
-              {workingLabel(state.status)}
-              <span className="heartbeat-clock">{formatElapsed(state.heartbeat)}</span>
+              {state.session.modelWaiting ? "na fila do provedor" : workingLabel(state.session.status)}
+              <span className="heartbeat-clock">{formatElapsed(state.session.heartbeat)}</span>
             </span>
           )}
         </div>
         <div className="meta">
-          {state.contextTokens && <span className="pill">{state.contextTokens} tok</span>}
           <div className="topbar-actions">
             {busy && (
-              <button className="icon-btn danger" title="Stop the agent" onClick={() => send({ type: "cancel" })}>
+              <button
+                className="icon-btn danger"
+                title="Parar o agente"
+                onPointerDown={ripple}
+                onClick={() => send({ type: "cancel" })}
+              >
                 <IconStop size={14} />
               </button>
             )}
-            <button className="icon-btn" title="Clear messages" onClick={clearMessages}>
+            <button className="icon-btn" title="Limpar mensagens" onPointerDown={ripple} onClick={clearMessages}>
               <IconBroom size={16} />
             </button>
-            <button className="icon-btn" title="New conversation" onClick={startNewConversation}>
+            <button className="icon-btn" title="Nova conversa" onPointerDown={ripple} onClick={startNewConversation}>
               <IconPlus size={16} />
             </button>
             <button
               className="icon-btn"
-              title="Restart Code-AI (reload settings without reloading the window)"
+              title="Reiniciar Code-AI"
+              onPointerDown={ripple}
               onClick={() => send({ type: "restartBridge" })}
             >
               <IconRefresh size={15} />
             </button>
-            <button className="icon-btn" title="Settings" onClick={openSettings}>
+            <button className="icon-btn" title="Configurações" onPointerDown={ripple} onClick={openSettings}>
               <IconSettings size={16} />
             </button>
           </div>
@@ -446,10 +708,13 @@ function App(): JSX.Element {
       </div>
 
       <div className="modebar">
-        <ModeSwitch mode={mode} onChange={(m) => updatePrefs({ mode: m })} />
-        <label className="perm" title="Permission mode for running commands and editing files">
+        <ModeSwitch mode={mode} onChange={(m: AppMode) => updatePrefs({ mode: m })} />
+        <label className="perm" title="Modo de permissão para comandos e edições">
           <span>perms</span>
-          <select value={state.permissionMode} onChange={(e) => setPermission(e.target.value as PermissionMode)}>
+          <select
+            value={state.session.permissionMode}
+            onChange={(e) => setPermission(e.target.value as PermissionMode)}
+          >
             <option value="ask">Ask</option>
             <option value="auto">Auto</option>
             <option value="bypass">Bypass</option>
@@ -457,105 +722,189 @@ function App(): JSX.Element {
         </label>
       </div>
 
-      {mode === "agent" ? (
-        <AgentBody
-          state={state}
-          scrollRef={scrollRef}
-          onScroll={onScroll}
-          showTyping={showTyping}
-          resolveApproval={resolveApproval}
-        />
-      ) : mode === "refactor" ? (
-        <RefactorPanel
-          state={refactor}
-          autoRun={prefs.autoRunRefactor}
-          onAnalyze={() => send({ type: "analyzeRefactor" })}
-          onPlan={(id, improvements) => send({ type: "planRefactor", id, improvements })}
-          onApply={applyRefactor}
-        />
-      ) : (
-        <ExplainPanel state={explain} />
-      )}
+      <UsageBar usage={state.usage} onCompact={() => send({ type: "compact" })} />
 
-      {mode === "agent" && (
-        <div className="composer-wrap">
-          {ctxChip && (
-            <div className="ctx-chip" title="This is sent to the agent with your next message">
-              <IconFile size={13} />
-              <span className="ctx-label">{ctxLabel}</span>
-              <span className="ctx-kind">{editorContext?.selection ? "selection" : "open file"}</span>
-              <button className="ctx-remove" title="Don't include editor context" onClick={() => setIncludeContext(false)}>
-                ×
-              </button>
-            </div>
-          )}
-          <div className="composer-stack">
-            {menuOpen && (
-              <CommandMenu commands={commands} active={cmdIndex} onPick={runCommand} onHover={setCmdIndex} />
-            )}
-            <div className="composer">
-              <textarea
-                ref={textareaRef}
-                value={draft}
-                placeholder="Message Code-AI…  (type / for commands)"
-                rows={1}
-                onChange={(e) => {
-                  setDraft(e.target.value);
-                  setMenuDismissed(false);
-                }}
-                onKeyDown={onComposerKey}
-              />
-              {busy ? (
-                <button className="send-btn stop" title="Cancel" onClick={() => send({ type: "cancel" })}>
-                  <IconStop />
-                </button>
-              ) : (
-                <button className="send-btn" title="Send" disabled={!draft.trim()} onClick={submit}>
-                  <IconSend size={15} />
-                </button>
-              )}
-            </div>
-          </div>
-          <div className="hint">Enter to send · Shift+Enter for newline · / for commands</div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function AgentBody({
-  state,
-  scrollRef,
-  onScroll,
-  showTyping,
-  resolveApproval,
-}: {
-  state: ViewState;
-  scrollRef: React.RefObject<HTMLDivElement>;
-  onScroll: () => void;
-  showTyping: boolean;
-  resolveApproval: (callId: string, scope: ApprovalScope, reason?: string) => void;
-}): JSX.Element {
-  return (
-    <>
-      <div className="transcript" ref={scrollRef} onScroll={onScroll}>
-        <div className="transcript-inner">
-          {state.items.length === 0 && !state.pendingApproval ? (
-            <div className="empty">
-              <div className="spark">
-                <IconCI size={30} />
+      <div className="workbench">
+        <div className="workarea">
+          {mode === "agent" ? (
+            <>
+              <div className="transcript" ref={scrollRef} onScroll={onScroll}>
+                <div className="transcript-inner">
+                  {items.length === 0 && !state.approvals.pending ? (
+                    <div className="empty">
+                      <div className="spark">
+                        <IconCI size={30} />
+                      </div>
+                      <h2>Code-AI</h2>
+                      <div>
+                        Pergunte qualquer coisa sobre este workspace. Ferramentas, plano e
+                        aprovações aparecem aqui.
+                      </div>
+                    </div>
+                  ) : (
+                    items.map((item) => <ItemView key={item.id} item={item} />)
+                  )}
+                  {showTyping && (
+                    <TypingIndicator
+                      status={state.session.status}
+                      heartbeat={state.session.heartbeat}
+                    />
+                  )}
+                  {state.approvals.pending && (
+                    <ApprovalCard
+                      approval={state.approvals.pending}
+                      onResolve={resolveApproval}
+                    />
+                  )}
+                  {state.questions.pending.length > 0 && (
+                    <QuestionsCard
+                      questions={state.questions.pending}
+                      onAnswer={(text) => send({ type: "answerQuestions", text })}
+                    />
+                  )}
+                </div>
               </div>
-              <h2>Code-AI</h2>
-              <div>Ask anything about this workspace. Tool runs and approvals show up here.</div>
-            </div>
+
+              <LiveCodePanel code={state.code} />
+
+              <div
+                className={`composer-wrap ${dropping ? "dropping" : ""}`}
+                onDragOver={(e) => {
+                  if (!Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
+                  e.preventDefault();
+                  setDropping(true);
+                }}
+                onDragLeave={() => setDropping(false)}
+                onDrop={onComposerDrop}
+              >
+                {ctxChip && (
+                  <div className="ctx-chip" title="Vai junto com a próxima mensagem">
+                    <IconFile size={13} />
+                    <span className="ctx-label">{ctxLabel}</span>
+                    <span className="ctx-kind">
+                      {editorContext?.selection ? "seleção" : "arquivo aberto"}
+                    </span>
+                    <button
+                      className="ctx-remove"
+                      title="Não incluir o contexto do editor"
+                      onClick={() => setIncludeContext(false)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                )}
+                {images.length > 0 && (
+                  <div className="paste-strip">
+                    {images.map((image, i) => (
+                      <div key={i} className="paste-chip">
+                        <img
+                          src={`data:${image.media_type};base64,${image.data}`}
+                          alt={`Imagem colada ${i + 1}`}
+                        />
+                        <button
+                          aria-label="Remover imagem"
+                          onClick={() => setImages((prev) => prev.filter((_, j) => j !== i))}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="composer-stack">
+                  {mentionOpen && mention && (
+                    <MentionMenu
+                      paths={mention.paths}
+                      active={mentionIndex}
+                      onPick={pickMention}
+                      onHover={setMentionIndex}
+                    />
+                  )}
+                  {menuOpen && !mentionOpen && (
+                    <CommandMenu
+                      commands={commands}
+                      active={cmdIndex}
+                      onPick={(cmd) => runCommand(cmd)}
+                      onHover={setCmdIndex}
+                    />
+                  )}
+                  <div className="composer">
+                    <textarea
+                      ref={textareaRef}
+                      value={draft}
+                      placeholder="Mensagem para o Code-AI…  (/ para comandos)"
+                      rows={1}
+                      onChange={(e) => {
+                        setDraft(e.target.value);
+                        setMenuDismissed(false);
+                        updateMention(e.target.value, e.target.selectionStart ?? 0);
+                      }}
+                      onClick={(e) =>
+                        updateMention(
+                          e.currentTarget.value,
+                          e.currentTarget.selectionStart ?? 0
+                        )
+                      }
+                      onKeyDown={onComposerKey}
+                      onPaste={onComposerPaste}
+                    />
+                    {busy && !draft.trim() ? (
+                      <button
+                        className="send-btn stop"
+                        title="Cancelar"
+                        onPointerDown={ripple}
+                        onClick={() => send({ type: "cancel" })}
+                      >
+                        <IconStop />
+                      </button>
+                    ) : (
+                      <button
+                        className="send-btn"
+                        title="Enviar"
+                        disabled={!draft.trim()}
+                        onPointerDown={ripple}
+                        onClick={submit}
+                      >
+                        <IconSend size={15} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="hint">
+                  {busy
+                    ? "Enter enfileira para o turno em andamento · Esc terminal"
+                    : "Enter envia · Shift+Enter quebra linha · / comandos · @ arquivos · Esc terminal"}
+                </div>
+              </div>
+            </>
+          ) : mode === "refactor" ? (
+            <RefactorPanel
+              state={refactor}
+              autoRun={prefs.autoRunRefactor}
+              onAnalyze={() => send({ type: "analyzeRefactor" })}
+              onPlan={(id: string, improvements) => send({ type: "planRefactor", id, improvements })}
+              onApply={applyRefactor}
+            />
           ) : (
-            state.items.map((item) => <ItemView key={item.id} item={item} />)
+            <ExplainPanel state={explain} />
           )}
-          {showTyping && <TypingIndicator status={state.status} heartbeat={state.heartbeat} />}
         </div>
+
+        <TaskRail
+          width={width}
+          reveal={reveal}
+          focusNonce={terminalFocus}
+          state={state}
+          model={settings?.model ?? ""}
+          workspace={settings?.workspace ?? ""}
+          history={history}
+          activeId={activeId}
+          connected={state.session.status !== "STARTING"}
+          actions={railActions}
+        />
       </div>
-      {state.pendingApproval && <ApprovalModal approval={state.pendingApproval} onResolve={resolveApproval} />}
-    </>
+
+    </div>
   );
 }
 

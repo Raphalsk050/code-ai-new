@@ -102,3 +102,63 @@ def test_id_with_path_separators_cannot_escape_directory(tmp_path: Path) -> None
     files = list((tmp_path / "conversations").glob("*.json"))
     assert len(files) == 1
     assert store.load("../../evil") is not None
+
+
+def test_tokens_accumulate_across_saves(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    messages = [Message(role="user", content="hi")]
+    store.save(conversation_id="c-tok", messages=messages, tokens_delta=1200)
+    store.save(conversation_id="c-tok", messages=messages, tokens_delta=800)
+
+    record = store.load("c-tok")
+    assert record is not None
+    assert record["total_tokens"] == 2000
+
+
+def test_a_negative_delta_never_subtracts(tmp_path: Path) -> None:
+    # The ledger is process-wide: a resumed thread can see it move backwards
+    # relative to its own baseline, and that must not eat the stored total.
+    store = _store(tmp_path)
+    messages = [Message(role="user", content="hi")]
+    store.save(conversation_id="c-neg", messages=messages, tokens_delta=500)
+    store.save(conversation_id="c-neg", messages=messages, tokens_delta=-9000)
+
+    assert store.load("c-neg")["total_tokens"] == 500
+
+
+def test_the_summary_survives_a_later_save_but_goes_stale(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    messages = [Message(role="user", content="arruma o ranking")]
+    store.save(conversation_id="c-sum", messages=messages)
+    assert store.set_summary("c-sum", "Trocou a ordenação do picker.") is True
+
+    fresh = store.load("c-sum")
+    assert fresh["summary"] == "Trocou a ordenação do picker."
+    assert fresh["summary_at"] == fresh["updated_at"]
+
+    store.save(
+        conversation_id="c-sum",
+        messages=[*messages, Message(role="user", content="e os testes?")],
+    )
+    stale = store.load("c-sum")
+    assert stale["summary"] == "Trocou a ordenação do picker."
+    assert stale["summary_at"] < stale["updated_at"], "a new turn makes the summary stale"
+
+
+def test_summarizing_a_conversation_that_is_gone_says_so(tmp_path: Path) -> None:
+    assert _store(tmp_path).set_summary("nope", "x") is False
+
+
+def test_list_carries_the_summary_and_the_token_total(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.save(
+        conversation_id="c-list",
+        messages=[Message(role="user", content="hi")],
+        tokens_delta=4321,
+    )
+    store.set_summary("c-list", "Fez o que foi pedido.")
+
+    (card,) = store.list()
+    assert card["summary"] == "Fez o que foi pedido."
+    assert card["total_tokens"] == 4321
+    assert card["message_count"] == 1

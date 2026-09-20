@@ -20,7 +20,7 @@ export function HomeScreen({
   return (
     <div className="home">
       <div className="home-topbar">
-        <button className="icon-btn" title="Settings" onClick={onSettings}>
+        <button className="icon-btn" title="Configurações" onClick={onSettings}>
           <IconSettings size={16} />
         </button>
       </div>
@@ -29,33 +29,35 @@ export function HomeScreen({
           <IconCI size={30} />
         </div>
         <h2>Code-AI</h2>
-        <div className="home-sub">Pick up a past conversation or start a new one.</div>
+        <div className="home-sub">Retome uma conversa ou comece outra.</div>
         <button className="btn-primary home-new" onClick={onNew}>
           <IconPlus size={15} />
-          New conversation
+          Nova conversa
         </button>
       </div>
 
       <div className="home-history">
         <div className="home-history-head">
           <IconHistory size={14} />
-          <span>History</span>
+          <span>Histórico</span>
         </div>
         {list.length === 0 ? (
-          <div className="home-empty">No conversations yet.</div>
+          <div className="home-empty">Nenhuma conversa ainda.</div>
         ) : (
           <ul className="history-list">
             {list.map((c) => (
               <li key={c.id} className="history-item" onClick={() => onOpen(c.id)}>
                 <div className="history-item-main">
                   <div className="history-title">{c.title}</div>
+                  {c.summary && <div className="history-summary">{c.summary}</div>}
                   <div className="history-meta">
-                    {relativeTime(c.updatedAt)} · {c.count} messages
+                    {relativeTime(c.updatedAt)} · {c.count} mensagens
+                    {c.tokens ? ` · ${c.tokens}` : ""}
                   </div>
                 </div>
                 <button
                   className="history-del icon-btn"
-                  title="Delete conversation"
+                  title="Apagar conversa"
                   onClick={(e) => {
                     e.stopPropagation();
                     onDelete(c.id);

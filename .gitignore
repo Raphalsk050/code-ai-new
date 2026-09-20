@@ -1,4 +1,6 @@
 .venv/
+# Isolated environment the VSIX build freezes the backend in.
+.build-venv/
 .pytest_cache/
 __pycache__/
 *.py[cod]

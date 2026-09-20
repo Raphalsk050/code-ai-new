@@ -3,7 +3,8 @@ import * as React from "react";
 import type { ApprovalScope } from "../src/protocol";
 import { DiffView } from "./diff";
 import { IconTool } from "./icons";
-import type { PendingApproval } from "./reducer";
+import { ripple } from "./motion";
+import type { PendingApproval } from "./store/approvals";
 
 function summarizeArgs(args: Record<string, any>): string {
   if (!args || typeof args !== "object") return "";
@@ -21,15 +22,15 @@ function truncate(s: string, n: number): string {
 function headline(tool: string): React.ReactNode {
   switch (tool) {
     case "edit_code":
-      return "Apply this code edit?";
+      return "Aplicar esta edição?";
     case "write_file":
-      return "Write this file?";
+      return "Escrever este arquivo?";
     case "execute_command":
-      return "Run this command?";
+      return "Rodar este comando?";
     default:
       return (
         <>
-          Allow Code-AI to run <strong>{tool}</strong>?
+          Permitir <strong>{tool}</strong>?
         </>
       );
   }
@@ -49,12 +50,14 @@ function renderDiff(tool: string, args: Record<string, any>): JSX.Element | null
 }
 
 /**
- * Modal popup shown when the agent needs permission to run a gated tool.
- * Allow once / for the session, or deny — and on deny, a text field lets the
- * developer tell the agent why or what to do instead. That text is sent as the
- * denial reason and reaches the model as the tool result.
+ * The decision the agent is blocked on, inline at the end of the transcript.
+ *
+ * It was a modal, and a modal is exactly wrong here: the sidebar is narrow, so
+ * the overlay covered the diff, the command output and the plan - the context
+ * the decision is made from. Inline, the answer sits where the question was
+ * asked, and the transcript above it stays readable.
  */
-export function ApprovalModal(props: {
+export function ApprovalCard(props: {
   approval: PendingApproval;
   onResolve: (callId: string, scope: ApprovalScope, reason?: string) => void;
 }): JSX.Element {
@@ -62,10 +65,34 @@ export function ApprovalModal(props: {
   const [denying, setDenying] = React.useState(false);
   const [feedback, setFeedback] = React.useState("");
   const feedbackRef = React.useRef<HTMLTextAreaElement>(null);
+  const cardRef = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
     if (denying) feedbackRef.current?.focus();
   }, [denying]);
+
+  // A decision that scrolled off screen is a stuck agent, so the card brings
+  // itself into view when it opens.
+  React.useEffect(() => {
+    cardRef.current?.scrollIntoView({ block: "nearest" });
+  }, [approval.call_id]);
+
+  // A, S and D decide without leaving the keyboard, like the terminal's dialog.
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (denying || e.metaKey || e.ctrlKey || e.altKey) return;
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === "TEXTAREA" || target.tagName === "INPUT")) return;
+      const key = e.key.toLowerCase();
+      if (key === "a") onResolve(approval.call_id, "once");
+      else if (key === "s") onResolve(approval.call_id, "session");
+      else if (key === "d") setDenying(true);
+      else return;
+      e.preventDefault();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [approval.call_id, denying, onResolve]);
 
   const args = approval.arguments ?? {};
   const deny = () => onResolve(approval.call_id, "deny", feedback.trim());
@@ -75,13 +102,14 @@ export function ApprovalModal(props: {
   const path = typeof args.path === "string" ? args.path : "";
 
   return (
-    <div className="modal-overlay">
-      <div className="modal">
-        <div className="approval-head">
-          <IconTool size={15} />
-          <span>{headline(approval.tool_name)}</span>
-        </div>
+    <div className="approval-card" ref={cardRef}>
+      <div className="approval-head">
+        <IconTool size={14} />
+        <span>{headline(approval.tool_name)}</span>
+        <span className="rail-section-note">aprovação</span>
+      </div>
 
+      <div className="approval-body">
         {diff && (
           <div className="diff-wrap">
             {path && <div className="diff-path">{path}</div>}
@@ -92,25 +120,36 @@ export function ApprovalModal(props: {
         {approval.reason && <div className="approval-reason">{approval.reason}</div>}
 
         {!denying ? (
-          <div className="approval-actions">
-            <button className="btn-primary" onClick={() => onResolve(approval.call_id, "once")}>
-              Allow once
-            </button>
-            <button className="btn-ghost" onClick={() => onResolve(approval.call_id, "session")}>
-              Allow for session
-            </button>
-            <button className="btn-deny" onClick={() => setDenying(true)}>
-              Deny…
-            </button>
-          </div>
+          <>
+            <div className="approval-actions">
+              <button
+                className="btn-primary"
+                onPointerDown={ripple}
+                onClick={() => onResolve(approval.call_id, "once")}
+              >
+                Permitir uma vez
+              </button>
+              <button
+                className="btn-ghost"
+                onPointerDown={ripple}
+                onClick={() => onResolve(approval.call_id, "session")}
+              >
+                Permitir na sessão
+              </button>
+              <button className="btn-deny" onPointerDown={ripple} onClick={() => setDenying(true)}>
+                Negar…
+              </button>
+            </div>
+            <div className="deny-hint">A permite · S permite na sessão · D nega</div>
+          </>
         ) : (
           <div className="deny-form">
-            <label>Tell the agent why, or what to do instead (optional):</label>
+            <label>Diga ao agente por quê, ou o que fazer em vez disso (opcional):</label>
             <textarea
               ref={feedbackRef}
               value={feedback}
               rows={3}
-              placeholder="e.g. don't delete that file — update the config instead"
+              placeholder="ex.: não apague esse arquivo — atualize o config"
               onChange={(e) => setFeedback(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
@@ -120,14 +159,14 @@ export function ApprovalModal(props: {
               }}
             />
             <div className="approval-actions">
-              <button className="btn-deny" onClick={deny}>
-                Send & deny
+              <button className="btn-deny" onPointerDown={ripple} onClick={deny}>
+                Enviar e negar
               </button>
               <button className="btn-ghost" onClick={() => setDenying(false)}>
-                Back
+                Voltar
               </button>
             </div>
-            <div className="deny-hint">Cmd/Ctrl+Enter to send</div>
+            <div className="deny-hint">Cmd/Ctrl+Enter envia</div>
           </div>
         )}
       </div>
