@@ -25,8 +25,12 @@ const SAVE_LABEL: Record<SaveState["status"], string> = {
   error: "Não salvou",
 };
 
+/** Session states that mean no answer is coming, so waiting is pointless. */
+const DEAD = new Set(["DISCONNECTED", "ERROR"]);
+
 export function SettingsScreen({
   settings,
+  sessionStatus,
   prefs,
   models,
   save,
@@ -37,6 +41,7 @@ export function SettingsScreen({
   onListModels,
 }: {
   settings: Settings | null;
+  sessionStatus: string;
   prefs: ExtPrefs;
   models: ModelsState;
   save: SaveState;
@@ -101,7 +106,23 @@ export function SettingsScreen({
       </div>
 
       {!settings ? (
-        <div className="settings-loading">Carregando configurações…</div>
+        // The settings live in the backend, so a backend that never answered
+        // leaves this screen empty. Saying so beats spinning for ever.
+        <div className="settings-loading">
+          {DEAD.has(sessionStatus) ? (
+            <>
+              <span>
+                O Code-AI não respondeu, então não há configurações para mostrar. O chat diz o
+                que falhou.
+              </span>
+              <button className="btn-primary" onClick={onRestart}>
+                Tentar de novo
+              </button>
+            </>
+          ) : (
+            "Carregando configurações…"
+          )}
+        </div>
       ) : (
         <div className="settings-body">
           {failures.length > 0 && (

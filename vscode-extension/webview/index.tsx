@@ -630,6 +630,7 @@ function App(): JSX.Element {
       <div className="app" ref={rootRef} data-w={width}>
         <SettingsScreen
           settings={settings}
+          sessionStatus={state.session.status}
           prefs={prefs}
           models={models}
           onBack={() => setScreen(returnScreen)}

@@ -442,7 +442,10 @@ button { font-family: inherit; cursor: pointer; }
 }
 .settings-title { font-weight: 600; font-size: 13px; }
 .settings-save { margin-left: auto; font-size: 12px; padding: 5px 14px; }
-.settings-loading { padding: 40px; text-align: center; color: var(--muted); }
+.settings-loading {
+  padding: 40px; text-align: center; color: var(--muted);
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
+}
 .settings-save[data-status="error"] { background: var(--vscode-errorForeground, #f85149); }
 .settings-errors {
   display: flex; flex-direction: column; gap: 6px; margin-bottom: 18px;

@@ -561,7 +561,15 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           client
             ?.request("getSettings")
             .then((settings) => this.webview?.postMessage({ type: "settings", settings }))
-            .catch((err) => console.error("[code-ai] getSettings failed", err));
+            .catch((err) => {
+              console.error("[code-ai] getSettings failed", err);
+              // The settings screen renders nothing until this answer lands, so
+              // a rejection swallowed here is a screen that loads for ever.
+              void this.webview?.postMessage({
+                type: "event",
+                event: syntheticError(`could not read the settings: ${String(err)}`),
+              });
+            });
           break;
         case "updateSettings":
           client
@@ -788,6 +796,14 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           ? ` — ${spawnFailureHint(resolved, process.platform)}`
           : "";
       vscode.window.showErrorMessage(`Code-AI bridge error: ${err.message}${hint}`);
+      // A spawn that never starts emits "error" and no "exit", so the exit
+      // handler below never runs. Without this the panel sits on STARTING for
+      // ever and a dismissed toast is the only trace the failure ever left.
+      void this.webview?.postMessage({ type: "event", event: syntheticStatus("DISCONNECTED") });
+      void this.webview?.postMessage({
+        type: "event",
+        event: syntheticError(`the backend did not start: ${err.message}${hint}`),
+      });
     });
     client.on("exit", (code: number | null) => {
       if (this.client !== client) return; // a restart already replaced this bridge

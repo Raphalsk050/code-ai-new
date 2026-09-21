@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 14,
-  "patch": 3,
-  "build": 15,
+  "patch": 4,
+  "build": 16,
   "updated": "2026-09-21",
-  "note": "Settings panel saves the workspace and the endpoint instead of reverting them"
+  "note": "the panel says why the backend did not start instead of sitting on starting"
 }
