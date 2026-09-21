@@ -3,10 +3,7 @@ import * as React from "react";
 import type { AppMode, Settings, ToolSpec } from "../src/protocol";
 import { ExtPrefs } from "./history";
 import { IconBack, IconRefresh } from "./icons";
-
-// Local, editable mirror of the backend settings. `null` until the bridge
-// answers `getSettings`; the panel shows a loading state meanwhile.
-type Draft = Record<string, string | number | boolean | string[] | null>;
+import { Draft, draftFromSettings, keepRefusedEdits } from "./settings-draft";
 
 /** State of the on-demand "list models" query for the model field. */
 export interface ModelsState {
@@ -15,12 +12,24 @@ export interface ModelsState {
   error?: string;
 }
 
-const RESTART_FIELDS = new Set(["api_mode", "base_url", "api_key", "workspace", "max_context_tokens"]);
+/** What the last save did, keyed by the field the backend complained about. */
+export interface SaveState {
+  status: "idle" | "saving" | "saved" | "error";
+  errors: Record<string, string>;
+}
+
+const SAVE_LABEL: Record<SaveState["status"], string> = {
+  idle: "Salvar",
+  saving: "Salvando…",
+  saved: "Salvo",
+  error: "Não salvou",
+};
 
 export function SettingsScreen({
   settings,
   prefs,
   models,
+  save,
   onBack,
   onSave,
   onPrefsChange,
@@ -30,6 +39,7 @@ export function SettingsScreen({
   settings: Settings | null;
   prefs: ExtPrefs;
   models: ModelsState;
+  save: SaveState;
   onBack: () => void;
   onSave: (updates: Record<string, unknown>) => void;
   onPrefsChange: (next: Partial<ExtPrefs>) => void;
@@ -38,46 +48,40 @@ export function SettingsScreen({
 }): JSX.Element {
   const [draft, setDraft] = React.useState<Draft>({});
   const [apiKey, setApiKey] = React.useState("");
-  const [saved, setSaved] = React.useState(false);
+  const [dirty, setDirty] = React.useState(false);
+  // What the last submit put on the wire, so a refused field can be handed
+  // back to the user instead of the value the backend went on holding.
+  const submittedRef = React.useRef<Draft | null>(null);
+  // The snapshot and the save result land in the same render, so by the time
+  // the effect below runs this already holds the result that goes with it.
+  const saveRef = React.useRef(save);
+  saveRef.current = save;
 
   // Reset the working copy whenever fresh settings arrive from the bridge.
   React.useEffect(() => {
     if (!settings) return;
-    setDraft({
-      model: settings.model,
-      api_mode: settings.api_mode,
-      base_url: settings.base_url,
-      language: settings.language,
-      permission_mode: settings.permission_mode,
-      reasoning_effort: settings.reasoning_effort,
-      learn: settings.learn,
-      inline_hints_enabled: settings.inline_hints_enabled,
-      inline_model: settings.inline_model,
-      max_context_tokens: settings.max_context_tokens,
-      workspace: settings.workspace,
-      disabled_tools: settings.disabled_tools ?? [],
-      subagent_models: settings.subagent_models ?? [],
-      max_concurrent_subagents: settings.max_concurrent_subagents ?? 1,
-      temperature: settings.temperature,
-      top_p: settings.top_p,
-      top_k: settings.top_k,
-    });
-    setApiKey("");
-    setSaved(false);
+    const { errors } = saveRef.current;
+    const submitted = submittedRef.current;
+    submittedRef.current = null;
+    setDraft(keepRefusedEdits(draftFromSettings(settings), submitted, errors));
+    if (!errors.api_key) setApiKey("");
+    setDirty(false);
   }, [settings]);
 
   const set = (key: string, value: string | number | boolean | string[] | null) => {
     setDraft((d) => ({ ...d, [key]: value }));
-    setSaved(false);
+    setDirty(true);
   };
 
-  const save = () => {
+  const submit = () => {
     if (!settings) return;
     const updates: Record<string, unknown> = { ...draft };
     if (apiKey.trim()) updates.api_key = apiKey.trim();
+    submittedRef.current = updates as Draft;
     onSave(updates);
-    setSaved(true);
   };
+
+  const failures = Object.entries(save.errors);
 
   return (
     <div className="settings">
@@ -86,8 +90,13 @@ export function SettingsScreen({
           <IconBack size={16} />
         </button>
         <span className="settings-title">Configurações</span>
-        <button className="btn-primary settings-save" onClick={save} disabled={!settings}>
-          {saved ? "Salvo" : "Salvar"}
+        <button
+          className="btn-primary settings-save"
+          onClick={submit}
+          disabled={!settings || save.status === "saving"}
+          data-status={dirty ? "idle" : save.status}
+        >
+          {dirty ? SAVE_LABEL.idle : SAVE_LABEL[save.status]}
         </button>
       </div>
 
@@ -95,6 +104,19 @@ export function SettingsScreen({
         <div className="settings-loading">Carregando configurações…</div>
       ) : (
         <div className="settings-body">
+          {failures.length > 0 && (
+            <div className="settings-errors" role="alert">
+              <span className="settings-errors-head">
+                O Code-AI recusou {failures.length === 1 ? "este campo" : "estes campos"}; o resto
+                foi salvo. O que você digitou continua aqui para corrigir.
+              </span>
+              {failures.map(([field, message]) => (
+                <div key={field} className="settings-error" data-field={field}>
+                  <code>{field}</code> {message}
+                </div>
+              ))}
+            </div>
+          )}
           <Section title="Modos e automação" hint="Como a extensão se comporta no editor.">
             <Field label="Modo padrão">
               <select
@@ -169,7 +191,7 @@ export function SettingsScreen({
                 value={apiKey}
                 onChange={(e) => {
                   setApiKey(e.target.value);
-                  setSaved(false);
+                  setDirty(true);
                 }}
               />
             </Field>

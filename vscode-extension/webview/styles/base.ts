@@ -443,6 +443,16 @@ button { font-family: inherit; cursor: pointer; }
 .settings-title { font-weight: 600; font-size: 13px; }
 .settings-save { margin-left: auto; font-size: 12px; padding: 5px 14px; }
 .settings-loading { padding: 40px; text-align: center; color: var(--muted); }
+.settings-save[data-status="error"] { background: var(--vscode-errorForeground, #f85149); }
+.settings-errors {
+  display: flex; flex-direction: column; gap: 6px; margin-bottom: 18px;
+  padding: 10px 12px; border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--vscode-errorForeground, #f85149) 45%, transparent);
+  background: color-mix(in srgb, var(--vscode-errorForeground, #f85149) 10%, transparent);
+}
+.settings-errors-head { font-size: 11.5px; color: var(--muted); }
+.settings-error { font-size: 12px; color: var(--vscode-errorForeground, #f85149); }
+.settings-error code { font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px; }
 .settings-body { flex: 1; overflow-y: auto; padding: 16px 18px 28px; max-width: 760px; width: 100%; margin: 0 auto; }
 .settings-section { margin-bottom: 22px; }
 .settings-section-head { margin-bottom: 10px; }

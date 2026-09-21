@@ -49,7 +49,7 @@ import { ModeSwitch } from "./mode-switch";
 import { ripple } from "./motion";
 import { QuestionsCard } from "./questions-card";
 import { INITIAL_REFACTOR, RefactorPanel, RefactorViewState } from "./refactor";
-import { ModelsState, SettingsScreen } from "./settings";
+import { ModelsState, SaveState, SettingsScreen } from "./settings";
 import { applyEvent, initialAppState, isBusy, Item, messagesToItems, workingLabel } from "./store";
 import { STYLE } from "./styles";
 import { RailActions, TaskRail } from "./task-rail";
@@ -90,6 +90,7 @@ function App(): JSX.Element {
   const [activeId, setActiveId] = React.useState<string | null>(null);
   const [settings, setSettings] = React.useState<Settings | null>(null);
   const [models, setModels] = React.useState<ModelsState>({ status: "idle", list: [] });
+  const [save, setSave] = React.useState<SaveState>({ status: "idle", errors: {} });
   const [serverConvos, setServerConvos] = React.useState<ServerConversation[]>([]);
   const [refactor, setRefactor] = React.useState<RefactorViewState>(INITIAL_REFACTOR);
   const [explain, setExplain] = React.useState<ExplainViewState>(INITIAL_EXPLAIN);
@@ -143,7 +144,14 @@ function App(): JSX.Element {
       } else if (data?.type === "settings") {
         setSettings(data.settings);
       } else if (data?.type === "settingsUpdated") {
+        // The snapshot carries the backend's word on each field, so the errors
+        // have to travel with it: the panel needs them to tell "saved" from
+        // "refused and reverted to what you were replacing".
         setSettings(data.result.settings);
+        setSave({
+          status: Object.keys(data.result.errors ?? {}).length ? "error" : "saved",
+          errors: data.result.errors ?? {},
+        });
       } else if (data?.type === "modelsListed") {
         setModels({ status: "ready", list: data.models });
       } else if (data?.type === "modelsError") {
@@ -625,7 +633,11 @@ function App(): JSX.Element {
           prefs={prefs}
           models={models}
           onBack={() => setScreen(returnScreen)}
-          onSave={(updates) => send({ type: "updateSettings", updates })}
+          save={save}
+          onSave={(updates) => {
+            setSave({ status: "saving", errors: {} });
+            send({ type: "updateSettings", updates });
+          }}
           onPrefsChange={updatePrefs}
           onRestart={() => send({ type: "restartBridge" })}
           onListModels={() => {

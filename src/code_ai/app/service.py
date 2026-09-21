@@ -726,6 +726,8 @@ class CodeAIApplication:
     # -- settings (for the VSCode settings panel) --------------------------
 
     # Top-level config fields that take effect on the next call once written.
+    # ``workspace`` is here because retargeting applies it live too; it just
+    # costs a session rebuild rather than being read per call.
     _LIVE_SETTINGS = {
         "model",
         "language",
@@ -735,6 +737,7 @@ class CodeAIApplication:
         "inline_hints_enabled",
         "inline_model",
         "vision_model",
+        "workspace",
     }
     # Fields consumed while the model client is built rather than read per
     # request. They apply live, but only after the client is rebuilt.
@@ -825,7 +828,13 @@ class CodeAIApplication:
         Live fields take effect immediately; restart-only fields are written but
         reported back so the UI can flag a restart. Each field is validated by
         re-running the whole-config validator, so a bad value is rejected in
-        isolation without aborting the rest of the batch.
+        isolation without aborting the rest of the batch - except the provider
+        trio, which shares a cross-field rule and so is validated as a unit.
+
+        Whatever is refused comes back in ``errors`` against the field name.
+        The caller is expected to show it: the returned snapshot carries the
+        old value for those fields, so a panel that ignores ``errors`` looks
+        like it threw the edit away.
         """
         from code_ai.config.loader import persist_config_updates
 
@@ -837,24 +846,57 @@ class CodeAIApplication:
         known = self._LIVE_SETTINGS | self._PROVIDER_SETTINGS | self._RESTART_SETTINGS
         rebuild_provider = False
 
+        # api_mode, base_url and api_key answer to a single cross-field rule -
+        # a non-local endpoint needs a key - so the batch has to persist them
+        # together. One at a time, the panel's "new URL plus new key" save
+        # validates the new URL against the key it is replacing and refuses it.
+        provider_edits = {
+            key: value
+            for key, value in updates.items()
+            if key in self._PROVIDER_SETTINGS
+            # A blank key means "keep the stored one", not "clear it".
+            and not (key == "api_key" and not str(value).strip())
+        }
+        # The panel posts every field on save, changed or not, so an untouched
+        # provider must not cost a client rebuild.
+        if not any(
+            key == "api_key" or str(value) != str(getattr(config, key, ""))
+            for key, value in provider_edits.items()
+        ):
+            provider_edits = {}
+        if provider_edits:
+            try:
+                validated = persist_config_updates(config, provider_edits)
+                for key in provider_edits:
+                    setattr(config, key, getattr(validated, key))
+                applied.extend(provider_edits)
+                rebuild_provider = True
+            except Exception as exc:
+                errors.update(dict.fromkeys(provider_edits, str(exc) or type(exc).__name__))
+
         for key, value in updates.items():
+            if key in self._PROVIDER_SETTINGS:
+                continue  # persisted as one batch above
             try:
                 if key in known:
                     if key == "workspace":
-                        value = str(Path(str(value)).expanduser().resolve())
-                    if key == "api_key" and not str(value).strip():
-                        continue  # blank means "leave the stored key untouched"
+                        target = Path(str(value)).expanduser().resolve()
+                        validated = persist_config_updates(config, {key: str(target)})
+                        # Same reason: the unchanged workspace arrives on every
+                        # save, and retargeting rebuilds the session, which
+                        # closes the terminals the user is working in.
+                        if target == Path(config.workspace).expanduser().resolve():
+                            config.workspace = validated.workspace
+                        else:
+                            await self.retarget_workspace(target)
+                        applied.append(key)
+                        continue
                     validated = persist_config_updates(config, {key: value})
                     if key in self._RESTART_SETTINGS:
                         restart.append(key)
                         continue
-                    if key == "workspace":
-                        await self.retarget_workspace(Path(str(value)))
-                        applied.append(key)
-                        continue
                     setattr(config, key, getattr(validated, key))
                     applied.append(key)
-                    rebuild_provider = rebuild_provider or key in self._PROVIDER_SETTINGS
                 elif key == "reasoning_effort":
                     sampling = asdict(config.sampling)
                     sampling["reasoning_effort"] = None if value == "none" else value

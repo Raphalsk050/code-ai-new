@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 14,
-  "patch": 2,
-  "build": 14,
-  "updated": "2026-09-20",
-  "note": "Section splitters sit above the neighbouring header instead of under it."
+  "patch": 3,
+  "build": 15,
+  "updated": "2026-09-21",
+  "note": "Settings panel saves the workspace and the endpoint instead of reverting them"
 }
