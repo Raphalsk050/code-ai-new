@@ -5,7 +5,7 @@
     {
       "kind": "start",
       "title": "Start",
-      "description": "Onde a linha principal começa. Exatamente um por grafo.",
+      "description": "Where the main line begins. Exactly one per graph.",
       "category": "flow",
       "pure": false,
       "max_instances": 1,
@@ -25,7 +25,7 @@
     {
       "kind": "end",
       "title": "End",
-      "description": "Encerra a execução. O que chegar em `result` é a resposta dela.",
+      "description": "Ends the run. Whatever reaches `result` is the run's answer.",
       "category": "flow",
       "pure": false,
       "max_instances": 0,
@@ -54,7 +54,7 @@
     {
       "kind": "model",
       "title": "Model",
-      "description": "Um endpoint e um nome de modelo. Ligue nos agentes que devem rodar nele; agente sem modelo ligado usa o da sessão.",
+      "description": "An endpoint plus a model name. Feed it into the agents that should run on it; agents with no model wired run on the session's own.",
       "category": "data",
       "pure": true,
       "max_instances": 0,
@@ -73,7 +73,7 @@
         {
           "name": "api_mode",
           "kind": "select",
-          "label": "Modo da API",
+          "label": "API mode",
           "default": "",
           "options": [
             "",
@@ -81,7 +81,7 @@
             "completions",
             "ollama"
           ],
-          "help": "Vazio segue a sessão."
+          "help": "Empty follows the session setting."
         },
         {
           "name": "base_url",
@@ -94,15 +94,15 @@
         {
           "name": "api_key_ref",
           "kind": "text",
-          "label": "Chave da API",
+          "label": "API key",
           "default": "session",
           "options": [],
-          "help": "session (usa a chave da sessão), env:NOME ou secret:NOME. Chave literal é recusada - este arquivo vai para o git."
+          "help": "session (use the session key), env:NAME, or secret:NAME. A literal key is refused - this file goes into git."
         },
         {
           "name": "model",
           "kind": "model",
-          "label": "Modelo",
+          "label": "Model",
           "default": "",
           "options": [],
           "help": ""
@@ -110,7 +110,7 @@
         {
           "name": "temperature",
           "kind": "number",
-          "label": "Temperatura",
+          "label": "Temperature",
           "default": null,
           "options": [],
           "help": ""
@@ -136,7 +136,7 @@
     {
       "kind": "profession",
       "title": "Agent",
-      "description": "Um agente isolado, contratado para uma profissão, que faz uma tarefa e devolve um relatório. A profissão decide em que ferramentas ele pode mexer.",
+      "description": "One isolated agent, hired for a profession, running one task to a report. Its profession decides what tools it may touch.",
       "category": "agent",
       "pure": false,
       "max_instances": 0,
@@ -191,7 +191,7 @@
         {
           "name": "profession",
           "kind": "profession",
-          "label": "Profissão",
+          "label": "Profession",
           "default": "",
           "options": [],
           "help": ""
@@ -199,7 +199,7 @@
         {
           "name": "task",
           "kind": "textarea",
-          "label": "Tarefa",
+          "label": "Task",
           "default": "",
           "options": [],
           "help": ""
@@ -207,33 +207,33 @@
         {
           "name": "role_override",
           "kind": "textarea",
-          "label": "Instruções extras",
+          "label": "Extra instructions",
           "default": "",
           "options": [],
-          "help": "Entram junto com o papel da profissão."
+          "help": "Appended to the profession's own role prompt."
         },
         {
           "name": "max_steps",
           "kind": "number",
-          "label": "Passos no máximo",
+          "label": "Max steps",
           "default": 0,
           "options": [],
-          "help": "0 mantém o orçamento da profissão."
+          "help": "0 keeps the profession's budget."
         },
         {
           "name": "timeout_s",
           "kind": "number",
-          "label": "Tempo limite (s)",
+          "label": "Timeout (s)",
           "default": 0,
           "options": [],
-          "help": "0 mantém o orçamento da profissão."
+          "help": "0 keeps the profession's budget."
         }
       ]
     },
     {
       "kind": "sequence",
       "title": "Sequence",
-      "description": "Dispara cada saída em ordem, esperando um ramo terminar antes de começar o próximo.",
+      "description": "Runs each output in order, waiting for one branch to finish before the next.",
       "category": "flow",
       "pure": false,
       "max_instances": 0,
@@ -271,7 +271,7 @@
     {
       "kind": "decision",
       "title": "Decision",
-      "description": "Dois caminhos. `bool` lê uma condição ligada; `judge` faz uma pergunta de sim/não ao modelo sobre o que aconteceu até aqui.",
+      "description": "Two ways forward. `bool` reads a wired condition; `judge` asks a model a yes/no question about the run so far.",
       "category": "flow",
       "pure": false,
       "max_instances": 0,
@@ -335,7 +335,7 @@
         {
           "name": "mode",
           "kind": "select",
-          "label": "Modo",
+          "label": "Mode",
           "default": "bool",
           "options": [
             "bool",
@@ -346,7 +346,7 @@
         {
           "name": "condition",
           "kind": "bool",
-          "label": "Condição",
+          "label": "Condition",
           "default": false,
           "options": [],
           "help": ""
@@ -354,17 +354,17 @@
         {
           "name": "prompt",
           "kind": "textarea",
-          "label": "Pergunta",
+          "label": "Question",
           "default": "",
           "options": [],
-          "help": "Deve dar para responder com sim ou não."
+          "help": "Answerable with yes or no."
         }
       ]
     },
     {
       "kind": "loop",
       "title": "Loop",
-      "description": "Repete `body` e depois segue por `completed`. Sempre limitado: o teto de voltas vale para qualquer tipo.",
+      "description": "Repeats `body` and then continues from `completed`. Always bounded: the iteration cap applies whatever the kind.",
       "category": "flow",
       "pure": false,
       "max_instances": 0,
@@ -446,19 +446,19 @@
         {
           "name": "kind",
           "kind": "select",
-          "label": "Tipo",
+          "label": "Kind",
           "default": "count",
           "options": [
             "count",
             "while",
             "foreach"
           ],
-          "help": "foreach anda uma linha de `items` por volta."
+          "help": "foreach walks one line of `items` per lap."
         },
         {
           "name": "count",
           "kind": "number",
-          "label": "Voltas",
+          "label": "Count",
           "default": 3,
           "options": [],
           "help": ""
@@ -466,17 +466,17 @@
         {
           "name": "max_iterations",
           "kind": "number",
-          "label": "Voltas no máximo",
+          "label": "Max iterations",
           "default": 0,
           "options": [],
-          "help": "0 usa o teto da configuração."
+          "help": "0 uses the configured ceiling."
         }
       ]
     },
     {
       "kind": "user_chat",
       "title": "Ask the user",
-      "description": "Pausa a execução até o usuário responder no próprio nó.",
+      "description": "Pauses the run until the user types an answer on the node.",
       "category": "agent",
       "pure": false,
       "max_instances": 0,
@@ -522,7 +522,7 @@
         {
           "name": "title",
           "kind": "text",
-          "label": "Título",
+          "label": "Title",
           "default": "",
           "options": [],
           "help": ""
@@ -530,7 +530,7 @@
         {
           "name": "prompt",
           "kind": "textarea",
-          "label": "Pergunta",
+          "label": "Question",
           "default": "",
           "options": [],
           "help": ""
@@ -540,7 +540,7 @@
     {
       "kind": "var_set",
       "title": "Set variable",
-      "description": "Grava uma variável do grafo.",
+      "description": "Writes a graph variable.",
       "category": "data",
       "pure": false,
       "max_instances": 0,
@@ -577,7 +577,7 @@
         {
           "name": "variable",
           "kind": "variable",
-          "label": "Variável",
+          "label": "Variable",
           "default": "",
           "options": [],
           "help": ""
@@ -585,7 +585,7 @@
         {
           "name": "value",
           "kind": "text",
-          "label": "Valor",
+          "label": "Value",
           "default": "",
           "options": [],
           "help": ""
@@ -595,7 +595,7 @@
     {
       "kind": "var_get",
       "title": "Get variable",
-      "description": "Lê uma variável do grafo.",
+      "description": "Reads a graph variable.",
       "category": "data",
       "pure": true,
       "max_instances": 0,
@@ -624,7 +624,7 @@
     {
       "kind": "print",
       "title": "Print",
-      "description": "Escreve um valor no log da execução. O melhor amigo de quem depura.",
+      "description": "Writes a value to the run log. The debugger's best friend.",
       "category": "debug",
       "pure": false,
       "max_instances": 0,
@@ -661,7 +661,7 @@
         {
           "name": "label",
           "kind": "text",
-          "label": "Rótulo",
+          "label": "Label",
           "default": "",
           "options": [],
           "help": ""
@@ -669,7 +669,7 @@
         {
           "name": "value",
           "kind": "textarea",
-          "label": "Valor",
+          "label": "Value",
           "default": "",
           "options": [],
           "help": ""

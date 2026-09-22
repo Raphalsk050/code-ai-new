@@ -396,7 +396,7 @@ function canvasEntries(
   for (const spec of state.catalog?.raw.node_kinds ?? []) {
     entries.push({
       id: `kind-${spec.kind}`,
-      label: spec.title,
+      label: t(spec.title),
       hint: "",
       section: CATEGORY_LABELS[spec.category] ?? spec.category,
       colour: categoryColour(spec.category),
@@ -476,7 +476,7 @@ function pinEntries(
       if (!fits) continue;
       entries.push({
         id: `wire-${spec.kind}-${pin.name}`,
-        label: `${spec.title} - ${pin.label || pin.name}`,
+        label: `${t(spec.title)} - ${pin.label || pin.name}`,
         hint: pin.type === "exec" ? "" : pin.type,
         section: CATEGORY_LABELS[spec.category] ?? spec.category,
         colour: categoryColour(spec.category),

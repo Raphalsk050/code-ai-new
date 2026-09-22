@@ -86,7 +86,7 @@ function NodePanel({ state, dispatch, onListModels, onStoreSecret }: InspectorPr
         <span className="line" />
         <span>{node.id}</span>
       </div>
-      <p className="flow-hint">{spec.description}</p>
+      <p className="flow-hint">{t(spec.description)}</p>
 
       {spec.fields.map((field) => (
         <Field
@@ -334,7 +334,7 @@ function Field({ field, node, state, dispatch, onListModels, onStoreSecret }: Fi
 
   return (
     <div className="flow-field">
-      <label htmlFor={id}>{field.label}</label>
+      <label htmlFor={id}>{t(field.label)}</label>
       {control}
       {isSecretRef && (
         <button
@@ -344,7 +344,7 @@ function Field({ field, node, state, dispatch, onListModels, onStoreSecret }: Fi
           {t("Store the key in the VSCode vault")}
         </button>
       )}
-      {field.help && <span className="help">{field.help}</span>}
+      {field.help && <span className="help">{t(field.help)}</span>}
       {field.kind === "profession" && <ProfessionHint state={state} name={String(value ?? "")} />}
     </div>
   );
@@ -355,7 +355,7 @@ function ProfessionHint({ state, name }: { state: EditorState; name: string }) {
   if (!profession) return null;
   return (
     <span className="help">
-      {profession.description} —{" "}
+      {t(profession.description)} —{" "}
       {profession.read_only ? t("read-only") : t("can edit files")}
     </span>
   );

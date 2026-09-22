@@ -98,6 +98,59 @@ const PT: Record<string, string> = {
   "Fix the graph errors before running it.": "Corrija os erros do grafo antes de executar.",
   "No variables yet. They carry values between nodes and take their type's colour.":
     "Nenhuma variável. Elas guardam valores entre os nós e aparecem com a cor do seu tipo.",
+
+  // -- the node catalog, as the backend serves it -------------------------
+  "Where the main line begins. Exactly one per graph.":
+    "Onde a linha principal começa. Exatamente um por grafo.",
+  "Ends the run. Whatever reaches `result` is the run's answer.":
+    "Encerra a execução. O que chegar em `result` é a resposta dela.",
+  "An endpoint plus a model name. Feed it into the agents that should run on it; agents with no model wired run on the session's own.":
+    "Um endpoint e um nome de modelo. Ligue nos agentes que devem rodar nele; agente sem modelo ligado usa o da sessão.",
+  "One isolated agent, hired for a profession, running one task to a report. Its profession decides what tools it may touch.":
+    "Um agente isolado, contratado para uma profissão, que faz uma tarefa e devolve um relatório. A profissão decide em que ferramentas ele pode mexer.",
+  "Runs each output in order, waiting for one branch to finish before the next.":
+    "Dispara cada saída em ordem, esperando um ramo terminar antes de começar o próximo.",
+  "Two ways forward. `bool` reads a wired condition; `judge` asks a model a yes/no question about the run so far.":
+    "Dois caminhos. `bool` lê uma condição ligada; `judge` faz uma pergunta de sim/não ao modelo sobre o que aconteceu até aqui.",
+  "Repeats `body` and then continues from `completed`. Always bounded: the iteration cap applies whatever the kind.":
+    "Repete `body` e depois segue por `completed`. Sempre limitado: o teto de voltas vale para qualquer tipo.",
+  "Pauses the run until the user types an answer on the node.":
+    "Pausa a execução até o usuário responder no próprio nó.",
+  "Writes a graph variable.": "Grava uma variável do grafo.",
+  "Reads a graph variable.": "Lê uma variável do grafo.",
+  "Writes a value to the run log. The debugger's best friend.":
+    "Escreve um valor no log da execução. O melhor amigo de quem depura.",
+
+  // Node titles are Blueprint vocabulary, so they stay as they are.
+
+  // -- inspector fields ---------------------------------------------------
+  "API mode": "Modo da API",
+  "Empty follows the session setting.": "Vazio segue a sessão.",
+  "API key": "Chave da API",
+  "session (use the session key), env:NAME, or secret:NAME. A literal key is refused - this file goes into git.":
+    "session (usa a chave da sessão), env:NOME ou secret:NOME. Chave literal é recusada - este arquivo vai para o git.",
+  Model: "Modelo",
+  Temperature: "Temperatura",
+  Profession: "Profissão",
+  Task: "Tarefa",
+  "Extra instructions": "Instruções extras",
+  "Appended to the profession's own role prompt.": "Entram junto com o papel da profissão.",
+  "Max steps": "Passos no máximo",
+  "0 keeps the profession's budget.": "0 mantém o orçamento da profissão.",
+  "Timeout (s)": "Tempo limite (s)",
+  Mode: "Modo",
+  Condition: "Condição",
+  Question: "Pergunta",
+  "Answerable with yes or no.": "Deve dar para responder com sim ou não.",
+  Kind: "Tipo",
+  "foreach walks one line of `items` per lap.": "foreach anda uma linha de `items` por volta.",
+  Count: "Voltas",
+  "Max iterations": "Voltas no máximo",
+  "0 uses the configured ceiling.": "0 usa o teto da configuração.",
+  Title: "Título",
+  Value: "Valor",
+  Label: "Rótulo",
+  "Base URL": "URL base",
 };
 
 const TABLES: Record<Lang, Record<string, string>> = { en: {}, pt: PT };

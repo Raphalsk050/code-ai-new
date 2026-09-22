@@ -208,7 +208,7 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
     NodeKindSpec(
         kind=NodeKind.START,
         title="Start",
-        description="Onde a linha principal começa. Exatamente um por grafo.",
+        description="Where the main line begins. Exactly one per graph.",
         category="flow",
         pins=(_exec_out(),),
         max_instances=1,
@@ -216,7 +216,7 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
     NodeKindSpec(
         kind=NodeKind.END,
         title="End",
-        description="Encerra a execução. O que chegar em `result` é a resposta dela.",
+        description="Ends the run. Whatever reaches `result` is the run's answer.",
         category="flow",
         pins=(
             _exec_in(),
@@ -227,8 +227,8 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
         kind=NodeKind.MODEL,
         title="Model",
         description=(
-            "Um endpoint e um nome de modelo. Ligue nos agentes que devem rodar "
-            "nele; agente sem modelo ligado usa o da sessão."
+            "An endpoint plus a model name. Feed it into the agents that should run "
+            "on it; agents with no model wired run on the session's own."
         ),
         category="data",
         pins=(PinSpec(name="model", type=PinType.MODEL, direction="out"),),
@@ -236,10 +236,10 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
             FieldSpec(
                 name="api_mode",
                 kind="select",
-                label="Modo da API",
+                label="API mode",
                 default="",
                 options=("", "responses", "completions", "ollama"),
-                help="Vazio segue a sessão.",
+                help="Empty follows the session setting.",
             ),
             FieldSpec(
                 name="base_url",
@@ -251,15 +251,15 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
             FieldSpec(
                 name="api_key_ref",
                 kind="text",
-                label="Chave da API",
+                label="API key",
                 default="session",
                 help=(
-                    "session (usa a chave da sessão), env:NOME ou secret:NOME. "
-                    "Chave literal é recusada - este arquivo vai para o git."
+                    "session (use the session key), env:NAME, or secret:NAME. "
+                    "A literal key is refused - this file goes into git."
                 ),
             ),
-            FieldSpec(name="model", kind="model", label="Modelo", default=""),
-            FieldSpec(name="temperature", kind="number", label="Temperatura", default=None),
+            FieldSpec(name="model", kind="model", label="Model", default=""),
+            FieldSpec(name="temperature", kind="number", label="Temperature", default=None),
             FieldSpec(name="top_p", kind="number", label="Top P", default=None),
             FieldSpec(name="top_k", kind="number", label="Top K", default=None),
         ),
@@ -268,9 +268,8 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
         kind=NodeKind.PROFESSION,
         title="Agent",
         description=(
-            "Um agente isolado, contratado para uma profissão, que faz uma tarefa "
-            "e devolve um relatório. A profissão decide em que ferramentas ele "
-            "pode mexer."
+            "One isolated agent, hired for a profession, running one task to a "
+            "report. Its profession decides what tools it may touch."
         ),
         category="agent",
         pins=(
@@ -281,38 +280,35 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
             PinSpec(name="report", type=PinType.STRING, direction="out"),
         ),
         fields=(
-            FieldSpec(name="profession", kind="profession", label="Profissão", default=""),
-            FieldSpec(name="task", kind="textarea", label="Tarefa", default=""),
+            FieldSpec(name="profession", kind="profession", label="Profession", default=""),
+            FieldSpec(name="task", kind="textarea", label="Task", default=""),
             FieldSpec(
                 name="role_override",
                 kind="textarea",
-                label="Instruções extras",
+                label="Extra instructions",
                 default="",
-                help="Entram junto com o papel da profissão.",
+                help="Appended to the profession's own role prompt.",
             ),
             FieldSpec(
                 name="max_steps",
                 kind="number",
-                label="Passos no máximo",
+                label="Max steps",
                 default=0,
-                help="0 mantém o orçamento da profissão.",
+                help="0 keeps the profession's budget.",
             ),
             FieldSpec(
                 name="timeout_s",
                 kind="number",
-                label="Tempo limite (s)",
+                label="Timeout (s)",
                 default=0,
-                help="0 mantém o orçamento da profissão.",
+                help="0 keeps the profession's budget.",
             ),
         ),
     ),
     NodeKindSpec(
         kind=NodeKind.SEQUENCE,
         title="Sequence",
-        description=(
-            "Dispara cada saída em ordem, esperando um ramo terminar antes "
-            "de começar o próximo."
-        ),
+        description="Runs each output in order, waiting for one branch to finish before the next.",
         category="flow",
         pins=(
             _exec_in(),
@@ -324,8 +320,8 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
         kind=NodeKind.DECISION,
         title="Decision",
         description=(
-            "Dois caminhos. `bool` lê uma condição ligada; `judge` faz uma "
-            "pergunta de sim/não ao modelo sobre o que aconteceu até aqui."
+            "Two ways forward. `bool` reads a wired condition; `judge` asks a model "
+            "a yes/no question about the run so far."
         ),
         category="flow",
         pins=(
@@ -340,17 +336,17 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
             FieldSpec(
                 name="mode",
                 kind="select",
-                label="Modo",
+                label="Mode",
                 default="bool",
                 options=("bool", "judge"),
             ),
-            FieldSpec(name="condition", kind="bool", label="Condição", default=False),
+            FieldSpec(name="condition", kind="bool", label="Condition", default=False),
             FieldSpec(
                 name="prompt",
                 kind="textarea",
-                label="Pergunta",
+                label="Question",
                 default="",
-                help="Deve dar para responder com sim ou não.",
+                help="Answerable with yes or no.",
             ),
         ),
     ),
@@ -358,8 +354,8 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
         kind=NodeKind.LOOP,
         title="Loop",
         description=(
-            "Repete `body` e depois segue por `completed`. Sempre limitado: o teto "
-            "de voltas vale para qualquer tipo."
+            "Repeats `body` and then continues from `completed`. Always bounded: "
+            "the iteration cap applies whatever the kind."
         ),
         category="flow",
         pins=(
@@ -376,25 +372,25 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
             FieldSpec(
                 name="kind",
                 kind="select",
-                label="Tipo",
+                label="Kind",
                 default="count",
                 options=("count", "while", "foreach"),
-                help="foreach anda uma linha de `items` por volta.",
+                help="foreach walks one line of `items` per lap.",
             ),
-            FieldSpec(name="count", kind="number", label="Voltas", default=3),
+            FieldSpec(name="count", kind="number", label="Count", default=3),
             FieldSpec(
                 name="max_iterations",
                 kind="number",
-                label="Voltas no máximo",
+                label="Max iterations",
                 default=0,
-                help="0 usa o teto da configuração.",
+                help="0 uses the configured ceiling.",
             ),
         ),
     ),
     NodeKindSpec(
         kind=NodeKind.USER_CHAT,
         title="Ask the user",
-        description="Pausa a execução até o usuário responder no próprio nó.",
+        description="Pauses the run until the user types an answer on the node.",
         category="agent",
         pins=(
             _exec_in(),
@@ -403,14 +399,14 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
             PinSpec(name="answer", type=PinType.STRING, direction="out"),
         ),
         fields=(
-            FieldSpec(name="title", kind="text", label="Título", default=""),
-            FieldSpec(name="prompt", kind="textarea", label="Pergunta", default=""),
+            FieldSpec(name="title", kind="text", label="Title", default=""),
+            FieldSpec(name="prompt", kind="textarea", label="Question", default=""),
         ),
     ),
     NodeKindSpec(
         kind=NodeKind.VAR_SET,
         title="Set variable",
-        description="Grava uma variável do grafo.",
+        description="Writes a graph variable.",
         category="data",
         pins=(
             _exec_in(),
@@ -418,14 +414,14 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
             PinSpec(name="value", type=PinType.ANY, direction="in", required=True),
         ),
         fields=(
-            FieldSpec(name="variable", kind="variable", label="Variável", default=""),
-            FieldSpec(name="value", kind="text", label="Valor", default=""),
+            FieldSpec(name="variable", kind="variable", label="Variable", default=""),
+            FieldSpec(name="value", kind="text", label="Value", default=""),
         ),
     ),
     NodeKindSpec(
         kind=NodeKind.VAR_GET,
         title="Get variable",
-        description="Lê uma variável do grafo.",
+        description="Reads a graph variable.",
         category="data",
         pins=(PinSpec(name="value", type=PinType.ANY, direction="out"),),
         fields=(FieldSpec(name="variable", kind="variable", label="Variable", default=""),),
@@ -433,7 +429,7 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
     NodeKindSpec(
         kind=NodeKind.PRINT,
         title="Print",
-        description="Escreve um valor no log da execução. O melhor amigo de quem depura.",
+        description="Writes a value to the run log. The debugger's best friend.",
         category="debug",
         pins=(
             _exec_in(),
@@ -441,8 +437,8 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
             PinSpec(name="value", type=PinType.ANY, direction="in"),
         ),
         fields=(
-            FieldSpec(name="label", kind="text", label="Rótulo", default=""),
-            FieldSpec(name="value", kind="textarea", label="Valor", default=""),
+            FieldSpec(name="label", kind="text", label="Label", default=""),
+            FieldSpec(name="value", kind="textarea", label="Value", default=""),
         ),
     ),
 )

@@ -45,7 +45,7 @@ test("broken JSON is reported, not thrown", () => {
 });
 
 test("a JSON array is not a graph", () => {
-  assert.match(parseFlow("[]").error ?? "", /objeto JSON/);
+  assert.match(parseFlow("[]").error ?? "", /JSON object/);
 });
 
 test("a file from a newer build is refused with its version", () => {
