@@ -887,6 +887,194 @@ export const tests = {
     assert(saves.length === 2, `expected two save requests, got ${saves.length}`);
   },
 
+  // 26 ----------------------------------------------------------------
+  "Escape closes the menu without creating anything": async (ui, assert) => {
+    await boot(ui);
+    await openCanvasMenu(ui);
+
+    await ui.page.press('[data-testid="menu-search"]', "Escape");
+    await ui.page.waitForSelector('[data-testid="context-menu"]', { state: "detached" });
+    assert((await ui.toHost("flowEdit")).length === 0, "Escape created a node");
+  },
+
+  // 27 ----------------------------------------------------------------
+  "clicking elsewhere closes the menu": async (ui, assert) => {
+    await boot(ui);
+    await openCanvasMenu(ui, { x: 400, y: 300 });
+
+    await ui.page.mouse.click(200, 600);
+    await ui.page.waitForSelector('[data-testid="context-menu"]', { state: "detached" });
+    assert((await ui.toHost("flowEdit")).length === 0, "the dismissal created a node");
+  },
+
+  // 28 ----------------------------------------------------------------
+  "a menu opened at the bottom edge stays on screen": async (ui, assert) => {
+    await boot(ui);
+    const size = ui.page.viewportSize();
+    // The bottom-right corner *of the canvas*: below it is the log panel, and
+    // a right-click there is not a canvas gesture at all.
+    const canvas = await ui.page.locator('[data-testid="flow-canvas"]').boundingBox();
+    await openCanvasMenu(ui, {
+      x: canvas.x + canvas.width - 12,
+      y: canvas.y + canvas.height - 8,
+    });
+
+    const box = await ui.page.locator('[data-testid="context-menu"]').boundingBox();
+    assert(box.x + box.width <= size.width + 1, `menu ran off the right edge (${box.x + box.width})`);
+    assert(box.y + box.height <= size.height + 1, `menu ran off the bottom (${box.y + box.height})`);
+    await ui.shot("28-menu-edge");
+  },
+
+  // 29 ----------------------------------------------------------------
+  "arrow keys walk the menu and Enter takes the highlighted row": async (ui, assert) => {
+    await boot(ui, graph([node("n1", "start", [0, 0])], []));
+    await openCanvasMenu(ui);
+
+    await ui.page.press('[data-testid="menu-search"]', "ArrowDown");
+    await ui.page.press('[data-testid="menu-search"]', "ArrowDown");
+    const active = await ui.page.locator(".flow-menu-row.active").getAttribute("data-testid");
+    await ui.page.press('[data-testid="menu-search"]', "Enter");
+
+    const sent = await lastGraph(ui);
+    assert(sent.nodes.length === 2, "Enter created nothing");
+    assert(
+      active.includes(sent.nodes[1].kind) || active.startsWith("menu-kind-"),
+      `the highlighted row was ${active} but ${sent.nodes[1].kind} was created`
+    );
+  },
+
+  // 30 ----------------------------------------------------------------
+  "zooming keeps the point under the cursor still": async (ui, assert) => {
+    await boot(ui);
+    const before = await centre(ui, '[data-testid="node-n3"] .flow-node-box');
+
+    await ui.page.mouse.move(before.x, before.y);
+    await ui.page.mouse.wheel(0, -120);
+    await ui.page.waitForTimeout(60);
+
+    const after = await centre(ui, '[data-testid="node-n3"] .flow-node-box');
+    // The node under the pointer may drift a little (its centre is not the
+    // cursor), but it must not fly off across the canvas.
+    assert(
+      Math.abs(after.x - before.x) < 40 && Math.abs(after.y - before.y) < 40,
+      `the node jumped ${Math.round(after.x - before.x)},${Math.round(after.y - before.y)}px`
+    );
+    await ui.shot("30-zoomed");
+  },
+
+  // 31 ----------------------------------------------------------------
+  "a marquee selects everything it covers": async (ui, assert) => {
+    await boot(ui);
+    await ui.page.click('[data-testid="frame"]');
+
+    const canvas = await ui.page.locator('[data-testid="flow-canvas"]').boundingBox();
+    await ui.page.mouse.move(canvas.x + 8, canvas.y + 8);
+    await ui.page.mouse.down();
+    await ui.page.mouse.move(canvas.x + canvas.width - 8, canvas.y + canvas.height - 8, {
+      steps: 8,
+    });
+    await ui.page.mouse.up();
+
+    const selected = await ui.page.locator("g.flow-node.selected").count();
+    assert(selected === 6, `the marquee selected ${selected} of 6 nodes`);
+    // The inspector talks about the selection, not about whichever node
+    // happens to be first in it.
+    const count = await ui.page.locator('[data-testid="selection-count"]').textContent();
+    assert(count.startsWith("6"), `the inspector said ${count}`);
+    await ui.shot("31-marquee");
+
+    // And Delete then clears the whole graph in one go.
+    await ui.page.keyboard.press("Delete");
+    const sent = await lastGraph(ui);
+    assert(sent.nodes.length === 0 && sent.edges.length === 0, "the selection survived Delete");
+  },
+
+  // 32 ----------------------------------------------------------------
+  "an edge can be selected and deleted from its own menu": async (ui, assert) => {
+    await boot(ui);
+    await ui.page.click('[data-testid="frame"]');
+
+    const path = await ui.page.locator('[data-testid="edge-e1"] .flow-wire-hit').boundingBox();
+    // The hit area is a thick stroke along the curve; its box centre is close
+    // enough for a wire this short.
+    await ui.page.mouse.click(path.x + path.width / 2, path.y + path.height / 2, {
+      button: "right",
+    });
+    await ui.page.waitForSelector('[data-testid="context-menu"]');
+    await ui.page.click('[data-testid="menu-delete-edge"]');
+
+    const sent = await lastGraph(ui);
+    assert(!sent.edges.some((edge) => edge.id === "e1"), "the wire survived its delete entry");
+  },
+
+  // 33 ----------------------------------------------------------------
+  "the log follows the tail and can be cleared": async (ui, assert) => {
+    await boot(ui);
+    await ui.event("graph.run.started", { run_id: "r", name: "p", node_count: 1 });
+    for (let index = 0; index < 40; index += 1) {
+      await ui.event("graph.print", { run_id: "r", node_id: "n5", text: `linha ${index}` });
+    }
+
+    const count = await ui.page.locator('[data-testid="log-row"]').count();
+    assert(count === 40, `the log shows ${count} rows`);
+    const scrolled = await ui.page.locator(".flow-log-rows").evaluate(
+      (element) => element.scrollTop + element.clientHeight >= element.scrollHeight - 4
+    );
+    assert(scrolled, "the log did not follow the tail");
+
+    await ui.page.click('[data-testid="log-clear"]');
+    assert(
+      (await ui.page.locator('[data-testid="log-row"]').count()) === 0,
+      "clearing left rows behind"
+    );
+  },
+
+  // 34 ----------------------------------------------------------------
+  "a secret reference offers to store the key in the vault": async (ui, assert) => {
+    await boot(ui);
+    await ui.page.click('[data-testid="frame"]');
+    await ui.page.click('[data-testid="node-n2"] .flow-node-box');
+
+    await ui.page.fill('[data-testid="field-api_key_ref"]', "secret:trabalho");
+    await ui.page.click('[data-testid="store-secret"]');
+
+    const asked = await ui.toHost("flowStoreSecret");
+    assert(asked.length === 1, "the panel did not ask the host to store the key");
+    assert(asked[0].name === "trabalho", `it asked for ${asked[0].name}`);
+    // The reference is all the document ever holds.
+    const sent = await lastGraph(ui);
+    const model = sent.nodes.find((item) => item.id === "n2");
+    assert(model.data.api_key_ref === "secret:trabalho", "the reference was not saved");
+    assert(!JSON.stringify(sent).includes("sk-"), "something key-shaped reached the document");
+  },
+
+  // 35 ----------------------------------------------------------------
+  "the run panel shows the agents and what they are doing": async (ui, assert) => {
+    await boot(ui);
+    await ui.event("graph.run.started", { run_id: "r", name: "p", node_count: 6 });
+    await ui.event("graph.node.started", { run_id: "r", node_id: "n3", kind: "profession" });
+    await ui.event("graph.agent.started", {
+      run_id: "r",
+      node_id: "n3",
+      agent_name: "Turing",
+      profession: "architect",
+      model: "qwen3.6-35b",
+      writes: false,
+    });
+    await ui.event("graph.node.progress", {
+      run_id: "r",
+      node_id: "n3",
+      event: "tool.call.started",
+      detail: "read_file(src/app.ts)",
+    });
+
+    await ui.page.click('[data-testid="tab-run"]');
+    const text = await ui.page.locator(".flow-inspector-body").textContent();
+    assert(text.includes("Turing"), "the agent is not listed");
+    assert(text.includes("read_file"), "what the agent is doing is not shown");
+    await ui.shot("35-run-panel");
+  },
+
   // 25 ----------------------------------------------------------------
   "an unreadable file is reported instead of a blank canvas": async (ui, assert) => {
     await ui.fromHost({ type: "flowCatalog", catalog: CATALOG });

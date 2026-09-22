@@ -429,6 +429,10 @@ class GraphInterpreter:
         )
         for key, value in (outcome.usage or {}).items():
             self._usage[key] = self._usage.get(key, 0) + int(value)
+        if outcome.status == "cancelled":
+            # An agent that unwound because the run was stopped is not a
+            # failure: the user asked for this.
+            raise _Stop(RunStatus.STOPPED, "stopped by user")
         if not outcome.ok:
             detail = outcome.error or outcome.status
             raise _Stop(RunStatus.FAILED, f"{node.label} ({outcome.status}): {detail}")
@@ -633,6 +637,12 @@ class GraphInterpreter:
         stop = asyncio.ensure_future(self._cancel.wait())
         try:
             done, _ = await asyncio.wait({task, stop}, return_when=asyncio.FIRST_COMPLETED)
+            # The stop wins a tie. Both settle at once when a cancelled agent
+            # returns in the same tick the flag was set, and reading that as the
+            # agent's own answer would report a stop as whatever it came back
+            # with.
+            if self._cancel.is_set():
+                raise _Stop(RunStatus.STOPPED, "stopped by user")
             if task in done:
                 return task.result()
             raise _Stop(RunStatus.STOPPED, "stopped by user")

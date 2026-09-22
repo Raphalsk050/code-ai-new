@@ -44,6 +44,13 @@ function NodePanel({ state, dispatch, onListModels, onStoreSecret }: InspectorPr
   const node = state.graph.nodes.find((item) => item.id === selected);
   const spec = node ? state.catalog?.kinds.get(node.kind) : undefined;
 
+  // More than one node selected: editing fields makes no sense, but acting on
+  // the whole selection does - and showing only the first one's fields would
+  // quietly edit a node the user is not looking at.
+  if (state.selection.length > 1) {
+    return <MultiSelection state={state} dispatch={dispatch} />;
+  }
+
   if (!node || !spec) {
     return (
       <>
@@ -145,6 +152,50 @@ function NodePanel({ state, dispatch, onListModels, onStoreSecret }: InspectorPr
         onClick={() => dispatch({ type: "deleteSelection" })}
       >
         Excluir nó
+      </button>
+    </>
+  );
+}
+
+/** What the inspector offers when several nodes are selected at once. */
+function MultiSelection({
+  state,
+  dispatch,
+}: {
+  state: EditorState;
+  dispatch(action: Action): void;
+}): JSX.Element {
+  const counts = new Map<string, number>();
+  for (const id of state.selection) {
+    const node = state.graph.nodes.find((item) => item.id === id);
+    if (!node) continue;
+    const title = state.catalog?.kinds.get(node.kind)?.title ?? node.kind;
+    counts.set(title, (counts.get(title) ?? 0) + 1);
+  }
+  return (
+    <>
+      <div className="flow-section-title">
+        <span>Seleção</span>
+        <span className="line" />
+        <span data-testid="selection-count">{state.selection.length} nós</span>
+      </div>
+      {[...counts].map(([title, count]) => (
+        <div key={title} className="flow-issue">
+          <span className="marker" style={{ background: "var(--accent)" }} />
+          <span>
+            {count} × {title}
+          </span>
+        </div>
+      ))}
+      <p className="flow-hint">
+        Botão direito em um nó para duplicar a seleção inteira.
+      </p>
+      <button
+        className="danger"
+        data-testid="delete-selection"
+        onClick={() => dispatch({ type: "deleteSelection" })}
+      >
+        Excluir {state.selection.length} nós
       </button>
     </>
   );
