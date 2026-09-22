@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 16,
-  "patch": 3,
-  "build": 21,
+  "patch": 4,
+  "build": 22,
   "updated": "2026-09-22",
-  "note": "Build the backend from a staging copy, never in the source tree."
+  "note": "Install build dependencies when they are missing, not just when node_modules is."
 }

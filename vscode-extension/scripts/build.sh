@@ -45,12 +45,11 @@ if ! command -v npm >/dev/null 2>&1; then
     exit 1
 fi
 
-# vsce, esbuild and typescript all live in devDependencies, so a fresh checkout
-# needs one install before anything can be built.
-if [ ! -d node_modules ]; then
-    echo "Installing build dependencies..."
-    npm install --no-audit --no-fund
-fi
+# vsce, esbuild and typescript live in devDependencies. The question is whether
+# they resolve, not whether node_modules exists: a checkout from before one of
+# them was added has the directory and not the package, and used to fail
+# minutes later inside vsce with a bare MODULE_NOT_FOUND.
+node scripts/ensure-deps.mjs
 
 npm run typecheck
 node scripts/package.mjs "$@"

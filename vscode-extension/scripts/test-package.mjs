@@ -37,6 +37,7 @@ import {
   isStale,
   skipFromCopy,
 } from "./ensure-backend.mjs";
+import { declaredPackages, installReason, missingPackages, vscePath } from "./ensure-deps.mjs";
 import { readZipEntries, verify } from "./verify-vsix.mjs";
 
 const EXT_ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -435,3 +436,70 @@ test("cleaning a tree with no src is a no-op, not a crash", () => {
 
 // Keep the staging directory out of the way of a later real build.
 process.on("exit", () => rmSync(BIN_DIR, { recursive: true, force: true }));
+
+// -- the build's own dependencies -----------------------------------------
+//
+// The bug these pin down: the install was gated on `node_modules` existing, so
+// a checkout that predated @vscode/vsce being added skipped it and died inside
+// the packaging step with a bare MODULE_NOT_FOUND on a hardcoded path.
+
+/** A tree with a manifest and no node_modules, like a fresh clone. */
+function bareRoot() {
+  const root = mkdtempSync(join(tmpdir(), "code-ai-deps-"));
+  writeFileSync(
+    join(root, "package.json"),
+    JSON.stringify({ name: "probe", devDependencies: { "@vscode/vsce": "^3.2.0" } })
+  );
+  return root;
+}
+
+test("what must be installed comes from the manifest, not a hand-kept list", () => {
+  // A dependency added to package.json is covered the moment it is declared.
+  const declared = declaredPackages(EXT_ROOT);
+
+  assert.ok(declared.includes("@vscode/vsce"), `vsce not declared: ${declared}`);
+  assert.ok(declared.includes("esbuild"));
+  assert.ok(declared.includes("typescript"));
+});
+
+test("this tree resolves every declared package", () => {
+  assert.deepEqual(missingPackages(EXT_ROOT), []);
+});
+
+test("an empty node_modules does not pass as installed", () => {
+  // The directory exists - the old check stopped right here.
+  const root = bareRoot();
+  mkdirSync(join(root, "node_modules"), { recursive: true });
+
+  assert.ok(installReason(root), "an empty node_modules passed as installed");
+});
+
+test("a missing package is reported by name, not as a file path", () => {
+  // The exact shape of the bug: the directory is there, from an install that
+  // predates the dependency, so the old check waved it through.
+  const root = bareRoot();
+  mkdirSync(join(root, "node_modules"), { recursive: true });
+
+  const reason = installReason(root);
+
+  assert.match(reason, /@vscode\/vsce/, `unhelpful reason: ${reason}`);
+});
+
+test("a fresh clone is installed before anything else is tried", () => {
+  assert.equal(installReason(bareRoot()), "no node_modules yet");
+});
+
+test("vsce is located through its own bin declaration", () => {
+  const located = vscePath(EXT_ROOT);
+
+  assert.ok(existsSync(located), `${located} does not exist`);
+  // Whatever the layout, it has to be the entry the package itself names.
+  const manifest = JSON.parse(
+    readFileSync(join(EXT_ROOT, "node_modules", "@vscode", "vsce", "package.json"), "utf8")
+  );
+  assert.equal(located, join(EXT_ROOT, "node_modules", "@vscode", "vsce", manifest.bin.vsce));
+});
+
+test("a missing vsce says to run npm install", () => {
+  assert.throws(() => vscePath(bareRoot()), /npm install/);
+});

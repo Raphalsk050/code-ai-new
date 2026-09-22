@@ -25,13 +25,11 @@ if errorlevel 1 (
     goto fail
 )
 
-rem vsce, esbuild and typescript all live in devDependencies, so a fresh
-rem checkout needs one install before anything can be built.
-if not exist "node_modules" (
-    echo Installing build dependencies...
-    call npm install --no-audit --no-fund
-    if errorlevel 1 goto fail
-)
+rem vsce, esbuild and typescript live in devDependencies. The question is
+rem whether they resolve, not whether node_modules exists: a checkout from
+rem before one of them was added has the directory and not the package.
+node scripts\ensure-deps.mjs
+if errorlevel 1 goto fail
 
 call npm run typecheck
 if errorlevel 1 goto fail

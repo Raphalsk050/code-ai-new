@@ -13,14 +13,16 @@ import { fileURLToPath } from "node:url";
 
 import { BIN_DIR, PLATFORMS, stageBinary } from "./bundle-binary.mjs";
 import { SkippedTarget, ensureBackend } from "./ensure-backend.mjs";
+import { vscePath } from "./ensure-deps.mjs";
 import { makeEntryExecutable, verify } from "./verify-vsix.mjs";
 
 const EXT_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const DEFAULT_OUT_DIR = join(EXT_ROOT, "vsix");
 // vsce is a devDependency rather than an `npx --yes` download: packaging then
 // works offline and on the company network, and the version is pinned by the
-// lockfile instead of being whatever npm resolved that morning.
-const VSCE = join(EXT_ROOT, "node_modules", "@vscode", "vsce", "vsce");
+// lockfile instead of being whatever npm resolved that morning. Its path comes
+// from the package's own `bin`, so a new layout upstream does not break us.
+const VSCE = vscePath(EXT_ROOT);
 
 /** VSCode's target triples, and the PyInstaller platform each one needs. */
 const TARGETS = {
