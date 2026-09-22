@@ -148,7 +148,30 @@ class FlowSession {
     );
     this.bridge.ensureStarted();
     void this.sendCatalog();
+    void this.adoptRunningGraph();
     this.pushDocument();
+  }
+
+  /**
+   * Re-attach to a run that is already going.
+   *
+   * A tab closed and reopened mid-run would otherwise show an idle toolbar over
+   * a backend that is still hiring agents - and its Play button would be
+   * refused with "a graph is already running" for no visible reason.
+   */
+  private async adoptRunningGraph(): Promise<void> {
+    try {
+      const status = await this.bridge.request<{
+        running: boolean;
+        run_id?: string;
+      }>("graphStatus", {}, 10000);
+      if (!status?.running) return;
+      this.running = true;
+      this.runId = String(status.run_id ?? "");
+      this.post({ type: "flowRunState", running: true, runId: this.runId, message: "" });
+    } catch (err) {
+      console.error("[code-ai] graphStatus failed", err);
+    }
   }
 
   dispose(): void {
@@ -224,6 +247,7 @@ class FlowSession {
     switch (message.type) {
       case "flowReady":
         void this.sendCatalog();
+        void this.adoptRunningGraph();
         this.pushDocument();
         break;
       case "flowEdit":

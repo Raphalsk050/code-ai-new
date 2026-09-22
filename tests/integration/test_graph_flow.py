@@ -352,6 +352,45 @@ async def test_the_user_chat_node_parks_until_the_answer_arrives(tmp_path) -> No
     assert collector.of("graph.print")[0]["text"] == "the importer"
 
 
+async def test_the_status_says_what_is_running_so_a_reopened_tab_can_rejoin(tmp_path) -> None:
+    app = app_for(tmp_path, ScriptedProvider())
+    collector = Collector()
+    app.subscribe(collector)
+    await app.start()
+
+    assert app.graph_snapshot() == {"running": False}
+
+    doc = graph(
+        [
+            node("start", "start"),
+            node("ask", "user_chat", prompt="esperando"),
+            node("end", "end"),
+        ],
+        [
+            wire("e1", ("start", "out"), ("ask", "in")),
+            wire("e2", ("ask", "out"), ("end", "in")),
+        ],
+    )
+    started = await app.start_graph_run(doc)
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+        if collector.of("graph.user_chat.requested"):
+            break
+
+    snapshot = app.graph_snapshot()
+    assert snapshot["running"] is True
+    assert snapshot["run_id"] == started["run_id"]
+    assert snapshot["pending_questions"] == [
+        collector.of("graph.user_chat.requested")[0]["call_id"]
+    ]
+
+    await app.stop_graph_run()
+    await app._graph_task
+    await app.close()
+
+    assert app.graph_snapshot()["running"] is False
+
+
 async def test_stopping_a_run_ends_it_and_says_so(tmp_path) -> None:
     app = app_for(tmp_path, ScriptedProvider())
     collector = Collector()
