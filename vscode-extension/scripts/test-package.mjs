@@ -26,7 +26,15 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { BIN_DIR, PLATFORMS, assertBinary, stageBinary } from "./bundle-binary.mjs";
-import { SkippedTarget, ensureBackend, findPython, hostPlatform, isStale } from "./ensure-backend.mjs";
+import {
+  SkippedTarget,
+  cleanEggInfo,
+  dockerRunArgs,
+  ensureBackend,
+  findPython,
+  hostPlatform,
+  isStale,
+} from "./ensure-backend.mjs";
 import { readZipEntries, verify } from "./verify-vsix.mjs";
 
 const EXT_ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -294,6 +302,78 @@ function crc32(buf) {
   }
   return ~crc >>> 0;
 }
+
+// -- the cross-build container and what it leaves behind ------------------
+//
+// The bug these pin down: the container ran as root over a bind mount, so it
+// left root-owned `src/*.egg-info` on the host and the next native build died
+// in setuptools with "Cannot update time stamp of directory" - an error that
+// names the timestamp instead of the ownership.
+
+const DOCKER = { image: "python:3.12-bullseye", script: "build.sh", mount: "/repo" };
+
+test("the Linux container runs as the caller, so what it writes is the caller's", () => {
+  const args = dockerRunArgs({ ...DOCKER, platform: "linux", user: "1000:1000" });
+
+  assert.ok(args.includes("--user"), `no --user in ${args.join(" ")}`);
+  assert.equal(args[args.indexOf("--user") + 1], "1000:1000");
+  // A uid with no passwd entry has no home, and pip will not cache into one it
+  // cannot write.
+  assert.ok(args.includes("HOME=/tmp"), "HOME was not moved somewhere writable");
+  assert.equal(args.at(-1), "build.sh", "the Linux script needs no cleanup tail");
+});
+
+test("the wine container stays root but hands its droppings back", () => {
+  const args = dockerRunArgs({
+    ...DOCKER,
+    platform: "win32",
+    image: "tobix/pywine:3.12",
+    user: "1000:1000",
+  });
+
+  // Wine needs its own prefix, so this one cannot drop privileges.
+  assert.ok(!args.includes("--user"), "wine cannot run as an arbitrary uid");
+  const script = args.at(-1);
+  assert.match(script, /^build\.sh &&/, "the build still runs first");
+  assert.match(script, /chown -R 1000:1000 \/work\/dist/, "dist is not handed back");
+  assert.match(script, /rm -rf \/work\/src\/\*\.egg-info/, "the egg-info is left behind");
+});
+
+test("a Windows host maps no uid, so neither trick is applied", () => {
+  const linux = dockerRunArgs({ ...DOCKER, platform: "linux", user: null });
+  const win = dockerRunArgs({ ...DOCKER, platform: "win32", user: null });
+
+  assert.ok(!linux.includes("--user"));
+  assert.equal(linux.at(-1), "build.sh");
+  assert.equal(win.at(-1), "build.sh");
+});
+
+test("the mount and the working directory are always the repo", () => {
+  const args = dockerRunArgs({ ...DOCKER, platform: "linux", user: "1000:1000" });
+
+  assert.ok(args.includes("/repo:/work"), `mount missing from ${args.join(" ")}`);
+  assert.equal(args[args.indexOf("-w") + 1], "/work");
+});
+
+test("a stale egg-info is cleared before the in-tree install", () => {
+  // `pip install .` runs egg_info in place, and egg_info updates the
+  // directory's timestamp; a leftover from another user makes that fail.
+  const repo = mkdtempSync(join(tmpdir(), "code-ai-egg-"));
+  const src = join(repo, "src");
+  mkdirSync(join(src, "code_ai.egg-info"), { recursive: true });
+  writeFileSync(join(src, "code_ai.egg-info", "PKG-INFO"), "stale");
+  mkdirSync(join(src, "code_ai"), { recursive: true });
+
+  cleanEggInfo(repo);
+
+  assert.ok(!existsSync(join(src, "code_ai.egg-info")), "the stale egg-info survived");
+  assert.ok(existsSync(join(src, "code_ai")), "cleaning took the package with it");
+});
+
+test("cleaning a tree with no src is a no-op, not a crash", () => {
+  const repo = mkdtempSync(join(tmpdir(), "code-ai-egg-"));
+  cleanEggInfo(repo);
+});
 
 // Keep the staging directory out of the way of a later real build.
 process.on("exit", () => rmSync(BIN_DIR, { recursive: true, force: true }));

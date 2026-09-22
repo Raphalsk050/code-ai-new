@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 16,
-  "patch": 1,
-  "build": 19,
+  "patch": 2,
+  "build": 20,
   "updated": "2026-09-22",
-  "note": "language dropdown, and the panel follows it without a reload"
+  "note": "the cross-build container no longer leaves root-owned files behind"
 }

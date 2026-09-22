@@ -8,7 +8,7 @@
 // without Docker, and that one is skipped with a reason rather than failed.
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -122,6 +122,86 @@ export function isStale(binary) {
  * from the developer's own `.venv`: this one carries PyInstaller and a
  * non-editable install of the project, and neither belongs in a dev env.
  */
+/**
+ * The uid/gid to run a container as, so what it writes into the mounted repo
+ * belongs to the caller.
+ *
+ * Without this the container runs as root and leaves root-owned
+ * `src/*.egg-info`, `build/` and `dist/` behind on the host; the next native
+ * build then dies in setuptools with "Cannot update time stamp of directory".
+ * Windows hosts do not map uids into the daemon, so there it is left alone.
+ */
+function hostUser() {
+  if (process.platform === "win32") return null;
+  try {
+    return `${process.getuid()}:${process.getgid()}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The `docker run` argv for a cross-build, with the ownership problem handled.
+ *
+ * The Linux image is happy as any uid, so it runs as the caller and writes
+ * files the caller owns; HOME has to move with it, because a uid with no passwd
+ * entry has no home and pip will not cache into one it cannot write. Wine needs
+ * to be root for its prefix, so that image stays root and hands its droppings
+ * back instead - otherwise the next native build meets a root-owned egg-info
+ * and dies in setuptools.
+ *
+ * Exported for the tests: the argv is the whole behaviour, and it is cheaper to
+ * assert on than to observe through a container.
+ */
+export function dockerRunArgs({ platform, image, script, mount, user }) {
+  const asCaller = user && platform === "linux" ? ["--user", user, "-e", "HOME=/tmp"] : [];
+  const handBack =
+    user && platform !== "linux"
+      ? ` && chown -R ${user} /work/dist /work/build 2>/dev/null; rm -rf /work/src/*.egg-info`
+      : "";
+  return [
+    "run",
+    "--rm",
+    ...asCaller,
+    "-v",
+    `${mount}:/work`,
+    "-w",
+    "/work",
+    image,
+    "bash",
+    "-euc",
+    script + handBack,
+  ];
+}
+
+/**
+ * Remove the `*.egg-info` setuptools writes into the source tree.
+ *
+ * `pip install .` runs egg_info in place, and egg_info wants to update the
+ * directory's timestamp. A leftover from another user - a container that ran
+ * as root, a build done with sudo - makes that fail, and the error names the
+ * timestamp rather than the ownership, which sends people looking in the wrong
+ * place. Clearing it first makes the install idempotent; when it cannot be
+ * cleared, say what to run.
+ */
+export function cleanEggInfo(root = REPO_ROOT) {
+  const src = join(root, "src");
+  if (!existsSync(src)) return;
+  for (const name of readdirSync(src)) {
+    if (!name.endsWith(".egg-info")) continue;
+    const path = join(src, name);
+    try {
+      rmSync(path, { recursive: true, force: true });
+    } catch (err) {
+      throw new Error(
+        `${path} cannot be removed (${err.code ?? err.message}).\n` +
+          "It belongs to another user - usually a container or a sudo build that ran here\n" +
+          `before. Remove it and build again:\n\n    sudo rm -rf ${path}\n`
+      );
+    }
+  }
+}
+
 function buildNative({ verifySsl }) {
   const spec = PLATFORMS[hostPlatform()];
   const output = join(REPO_ROOT, "dist", spec.staged);
@@ -140,6 +220,7 @@ function buildNative({ verifySsl }) {
   }
 
   const flags = pipFlags(verifySsl);
+  cleanEggInfo();
   run(python, ["-m", "pip", "install", ...flags, "--upgrade", "pip"], "pip: upgrading", { quiet: true });
   // The project itself, not editable: PyInstaller's analysis follows the
   // installed package, and an editable install hides its data files.
@@ -178,7 +259,8 @@ function buildInDocker(platform, { verifySsl }) {
         `wine python -m PyInstaller --clean --noconfirm packaging/code-ai.spec`;
 
   console.log(`  docker: cross-building in ${image} (slow the first time)`);
-  run("docker", ["run", "--rm", "-v", `${REPO_ROOT}:/work`, "-w", "/work", image, "bash", "-euc", script]);
+  cleanEggInfo();
+  run("docker", dockerRunArgs({ platform, image, script, mount: REPO_ROOT, user: hostUser() }));
   if (!existsSync(output)) throw new Error(`the container finished but ${output} is not there`);
   return output;
 }
