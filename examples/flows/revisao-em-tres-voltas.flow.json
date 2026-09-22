@@ -1,0 +1,391 @@
+{
+  "version": 1,
+  "name": "revisao-em-tres-voltas",
+  "variables": [
+    {
+      "id": "v1",
+      "name": "alvo",
+      "type": "string",
+      "default": "o modulo de importacao"
+    },
+    {
+      "id": "v2",
+      "name": "voltas",
+      "type": "int",
+      "default": 2
+    },
+    {
+      "id": "v3",
+      "name": "aprovado",
+      "type": "bool",
+      "default": false
+    }
+  ],
+  "nodes": [
+    {
+      "id": "n1",
+      "kind": "start",
+      "pos": [
+        -820,
+        40
+      ],
+      "data": {}
+    },
+    {
+      "id": "n2",
+      "kind": "model",
+      "pos": [
+        -820,
+        300
+      ],
+      "data": {
+        "api_key_ref": "session",
+        "api_mode": "",
+        "base_url": "",
+        "model": "",
+        "temperature": 0.2
+      }
+    },
+    {
+      "id": "n3",
+      "kind": "var_get",
+      "pos": [
+        -820,
+        520
+      ],
+      "data": {
+        "variable": "alvo"
+      }
+    },
+    {
+      "id": "n4",
+      "kind": "profession",
+      "pos": [
+        -560,
+        40
+      ],
+      "data": {
+        "profession": "architect",
+        "task": "",
+        "role_override": "Entregue um plano em passos numerados, cada um com o arquivo."
+      }
+    },
+    {
+      "id": "n5",
+      "kind": "var_get",
+      "pos": [
+        -560,
+        340
+      ],
+      "data": {
+        "variable": "voltas"
+      }
+    },
+    {
+      "id": "n6",
+      "kind": "loop",
+      "pos": [
+        -280,
+        40
+      ],
+      "data": {
+        "kind": "count",
+        "count": 2,
+        "max_iterations": 0
+      }
+    },
+    {
+      "id": "n7",
+      "kind": "profession",
+      "pos": [
+        0,
+        40
+      ],
+      "data": {
+        "profession": "code_writer",
+        "task": ""
+      }
+    },
+    {
+      "id": "n8",
+      "kind": "profession",
+      "pos": [
+        280,
+        40
+      ],
+      "data": {
+        "profession": "reviewer",
+        "task": "Revise a mudanca que acabou de ser feita e liste o que falta."
+      }
+    },
+    {
+      "id": "n9",
+      "kind": "decision",
+      "pos": [
+        560,
+        40
+      ],
+      "data": {
+        "mode": "judge",
+        "prompt": "A revisao ficou sem nenhum ponto pendente?"
+      }
+    },
+    {
+      "id": "n10",
+      "kind": "var_set",
+      "pos": [
+        820,
+        -40
+      ],
+      "data": {
+        "variable": "aprovado",
+        "value": true
+      }
+    },
+    {
+      "id": "n11",
+      "kind": "profession",
+      "pos": [
+        -280,
+        400
+      ],
+      "data": {
+        "profession": "documenter",
+        "task": "Documente o que mudou, no formato que o projeto ja usa."
+      }
+    },
+    {
+      "id": "n12",
+      "kind": "print",
+      "pos": [
+        0,
+        400
+      ],
+      "data": {
+        "label": "documentacao"
+      }
+    },
+    {
+      "id": "n13",
+      "kind": "end",
+      "pos": [
+        280,
+        400
+      ],
+      "data": {}
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "kind": "exec",
+      "from": [
+        "n1",
+        "out"
+      ],
+      "to": [
+        "n4",
+        "in"
+      ]
+    },
+    {
+      "id": "e2",
+      "kind": "data",
+      "from": [
+        "n2",
+        "model"
+      ],
+      "to": [
+        "n4",
+        "model"
+      ]
+    },
+    {
+      "id": "e3",
+      "kind": "data",
+      "from": [
+        "n3",
+        "value"
+      ],
+      "to": [
+        "n4",
+        "task"
+      ]
+    },
+    {
+      "id": "e4",
+      "kind": "exec",
+      "from": [
+        "n4",
+        "out"
+      ],
+      "to": [
+        "n6",
+        "in"
+      ]
+    },
+    {
+      "id": "e5",
+      "kind": "data",
+      "from": [
+        "n5",
+        "value"
+      ],
+      "to": [
+        "n6",
+        "count"
+      ]
+    },
+    {
+      "id": "e6",
+      "kind": "exec",
+      "from": [
+        "n6",
+        "body"
+      ],
+      "to": [
+        "n7",
+        "in"
+      ]
+    },
+    {
+      "id": "e7",
+      "kind": "data",
+      "from": [
+        "n4",
+        "report"
+      ],
+      "to": [
+        "n7",
+        "task"
+      ]
+    },
+    {
+      "id": "e8",
+      "kind": "data",
+      "from": [
+        "n2",
+        "model"
+      ],
+      "to": [
+        "n7",
+        "model"
+      ]
+    },
+    {
+      "id": "e9",
+      "kind": "exec",
+      "from": [
+        "n7",
+        "out"
+      ],
+      "to": [
+        "n8",
+        "in"
+      ]
+    },
+    {
+      "id": "e10",
+      "kind": "exec",
+      "from": [
+        "n8",
+        "out"
+      ],
+      "to": [
+        "n9",
+        "in"
+      ]
+    },
+    {
+      "id": "e11",
+      "kind": "data",
+      "from": [
+        "n2",
+        "model"
+      ],
+      "to": [
+        "n9",
+        "model"
+      ]
+    },
+    {
+      "id": "e12",
+      "kind": "exec",
+      "from": [
+        "n9",
+        "true"
+      ],
+      "to": [
+        "n10",
+        "in"
+      ]
+    },
+    {
+      "id": "e13",
+      "kind": "exec",
+      "from": [
+        "n6",
+        "completed"
+      ],
+      "to": [
+        "n11",
+        "in"
+      ]
+    },
+    {
+      "id": "e14",
+      "kind": "exec",
+      "from": [
+        "n11",
+        "out"
+      ],
+      "to": [
+        "n12",
+        "in"
+      ]
+    },
+    {
+      "id": "e15",
+      "kind": "data",
+      "from": [
+        "n11",
+        "report"
+      ],
+      "to": [
+        "n12",
+        "value"
+      ]
+    },
+    {
+      "id": "e16",
+      "kind": "exec",
+      "from": [
+        "n12",
+        "out"
+      ],
+      "to": [
+        "n13",
+        "in"
+      ]
+    },
+    {
+      "id": "e17",
+      "kind": "data",
+      "from": [
+        "n11",
+        "report"
+      ],
+      "to": [
+        "n13",
+        "result"
+      ]
+    }
+  ],
+  "view": {
+    "pan": [
+      900,
+      220
+    ],
+    "zoom": 0.8
+  }
+}

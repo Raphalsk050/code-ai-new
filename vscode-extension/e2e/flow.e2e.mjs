@@ -13,6 +13,10 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const CATALOG = JSON.parse(
   readFileSync(join(root, "e2e", "fixtures", "catalog.json"), "utf8")
 );
+// The example that ships with the repo, opened exactly as a user would open it.
+const EXAMPLE = JSON.parse(
+  readFileSync(join(root, "..", "examples", "flows", "revisao-em-tres-voltas.flow.json"), "utf8")
+);
 
 function node(id, kind, pos, data = {}) {
   return { id, kind, pos, data };
@@ -1073,6 +1077,31 @@ export const tests = {
     assert(text.includes("Turing"), "the agent is not listed");
     assert(text.includes("read_file"), "what the agent is doing is not shown");
     await ui.shot("35-run-panel");
+  },
+
+  // 36 ----------------------------------------------------------------
+  "the example that ships with the repo opens and reads well": async (ui, assert) => {
+    await ui.page.setViewportSize({ width: 1600, height: 950 });
+    await boot(ui, EXAMPLE);
+    await ui.page.click('[data-testid="frame"]');
+
+    const nodes = await ui.page.locator("g.flow-node").count();
+    const wires = await ui.page.locator("path.flow-wire").count();
+    assert(nodes === EXAMPLE.nodes.length, `drew ${nodes} of ${EXAMPLE.nodes.length} nodes`);
+    assert(wires === EXAMPLE.edges.length, `drew ${wires} of ${EXAMPLE.edges.length} wires`);
+
+    // Nothing spills out of the canvas once it is framed.
+    const canvas = await ui.page.locator('[data-testid="flow-canvas"]').boundingBox();
+    const boxes = await ui.page.locator("g.flow-node .flow-node-box").evaluateAll((items) =>
+      items.map((item) => item.getBoundingClientRect())
+    );
+    for (const box of boxes) {
+      assert(
+        box.left >= canvas.x - 1 && box.right <= canvas.x + canvas.width + 1,
+        "a node sits outside the canvas after framing"
+      );
+    }
+    await ui.shot("36-example");
   },
 
   // 25 ----------------------------------------------------------------
