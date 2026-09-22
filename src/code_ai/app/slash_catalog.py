@@ -43,14 +43,14 @@ SLASH_COMMANDS = [
         "/mode ",
     ),
     SlashCommand(
-        "/deep-plan <objetivo>",
+        "/deep-plan <objective>",
         "Plan a task without changing anything (Cline-style plan mode).",
         "/deep-plan ",
     ),
     SlashCommand("/plan-status", "Show planner phase and current step."),
     SlashCommand("/replan", "Request a bounded replan on the next turn."),
     SlashCommand(
-        "/goal <objetivo>",
+        "/goal <objective>",
         "Define a persistent goal; the agent iterates until it is verifiably met.",
         "/goal ",
     ),
@@ -68,7 +68,7 @@ SLASH_COMMANDS = [
         "/index ",
     ),
     SlashCommand(
-        "/term <texto>",
+        "/term <text>",
         "Type a line into the shared interactive terminal session.",
         "/term ",
     ),
@@ -192,7 +192,7 @@ def bridge_supports(command: str) -> bool:
     """Whether ``command`` maps onto a bridge method.
 
     Matched on the command word, not the whole string: the catalog spells
-    arguments out (``/goal <objetivo>``) and those are the same command.
+    arguments out (``/goal <objective>``) and those are the same command.
     """
 
     name = command.split(" <")[0].strip().lower()

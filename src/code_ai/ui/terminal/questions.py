@@ -115,7 +115,7 @@ class QuestionnaireModal(ModalScreen[list[Answer] | None]):
     BINDINGS = [
         ("escape", "cancel", "Fechar"),
         ("left", "previous", "Anterior"),
-        ("right", "advance", "Próxima"),
+        ("right", "advance", "Next"),
     ]
 
     def __init__(self, questionnaire: Questionnaire) -> None:
@@ -141,11 +141,11 @@ class QuestionnaireModal(ModalScreen[list[Answer] | None]):
             # cards: it is one more way to answer, and keeping it out of the
             # fixed chrome is what leaves room for a card on a short terminal.
             with VerticalScroll(id="questions-cards"):
-                yield Input(placeholder="Outra resposta…", id="questions-other")
+                yield Input(placeholder="Another answer…", id="questions-other")
             yield Static("", id="questions-keys", markup=False)
             with Horizontal(id="questions-actions"):
-                yield Button("‹ Anterior", id="questions-previous")
-                yield Button("Avançar ›", variant="primary", id="questions-advance")
+                yield Button("‹ Previous", id="questions-previous")
+                yield Button("Next ›", variant="primary", id="questions-advance")
                 yield Button("Enviar", variant="success", id="questions-submit")
 
     async def on_mount(self) -> None:
@@ -184,7 +184,7 @@ class QuestionnaireModal(ModalScreen[list[Answer] | None]):
         other.value = self._other[self._page]
         other.display = question.allow_other
         other.placeholder = (
-            "Sua resposta…" if not question.keyed_options else "Outra resposta…"
+            "Your answer…" if not question.keyed_options else "Another answer…"
         )
 
         self._refresh_keys()

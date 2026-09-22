@@ -241,12 +241,12 @@ class GoalService:
         if len(unmet) > _MAX_PROMPT_GAP_LINES:
             lines.append(f"- (+{len(unmet) - _MAX_PROMPT_GAP_LINES} more)")
         return (
-            "Continue trabalhando no objetivo persistente e corrija o que "
+            "Keep working on the persistent objective and fix whatever "
             "falta. A avaliação independente reprovou estes critérios de "
             "aceitação:\n"
             + "\n".join(lines)
             + "\n\nImplemente as mudanças necessárias no workspace para "
-            "satisfazer cada critério reprovado e verifique o resultado."
+            "satisfy each failed criterion and verify the result."
         )
 
     def context_block(self, *, iteration: int) -> str:
@@ -305,7 +305,7 @@ class GoalService:
     # ------------------------------------------------------------------ #
     def _require_goal(self) -> Goal:
         if self.goal is None:
-            raise GoalStateError("No goal is defined. Use /goal <objetivo> first.")
+            raise GoalStateError("No goal is defined. Use /goal <objective> first.")
         return self.goal
 
     def _require_active_goal(self) -> Goal:

@@ -65,7 +65,7 @@ class SessionCommands:
     async def goal_define(self, objective: str) -> CommandResult:
         text = objective.strip()
         if not text:
-            return _failed("Give the goal an objective: /goal <objetivo>.")
+            return _failed("Give the goal an objective: /goal <objective>.")
         try:
             snapshot = await self._app.define_goal(text)
         except GoalStateError as exc:

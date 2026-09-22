@@ -172,7 +172,7 @@ class Questionnaire:
         body = "\n\n".join(blocks)
         if total == 1:
             return body
-        return f"Preciso de {total} respostas para seguir:\n\n{body}"
+        return f"I need {total} answers to carry on:\n\n{body}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,8 +193,8 @@ class Answer:
         parts = list(self.chosen)
         extra = self.other.strip()
         if extra:
-            parts.append(extra if not parts else f"além disso: {extra}")
-        return ", ".join(parts) if parts else "(sem resposta)"
+            parts.append(extra if not parts else f"also: {extra}")
+        return ", ".join(parts) if parts else "(no answer)"
 
 
 def render_answers(answers: Sequence[Answer]) -> str:
@@ -216,7 +216,7 @@ def render_answers(answers: Sequence[Answer]) -> str:
 def _render_question(question: Question, *, index: int, total: int) -> str:
     lines: list[str] = []
     if total > 1:
-        heading = f"Pergunta {index} de {total}"
+        heading = f"Question {index} of {total}"
         if question.header:
             heading += f" · {question.header}"
         lines.append(heading)
@@ -225,11 +225,11 @@ def _render_question(question: Question, *, index: int, total: int) -> str:
         lines.append(f"  [{position}] {option.render()}")
     if question.options:
         hint = (
-            "  (responda pelos números, separados por vírgula)"
+            "  (answer with the numbers, comma separated)"
             if question.multi_select
-            else "  (responda pelo número)"
+            else "  (answer with the number)"
         )
         if question.allow_other:
-            hint = hint[:-1] + ", ou escreva a sua resposta)"
+            hint = hint[:-1] + ", or write your own answer)"
         lines.append(hint)
     return "\n".join(lines)

@@ -59,9 +59,8 @@ _TURN_CANCEL_TIMEOUT_S = 10.0
 # starts executing the already-authored checklist instead of waiting for the
 # user to type something.
 _EXECUTE_PLAN_INSTRUCTION = (
-    "Plano aprovado. Execute agora o plano aprovado, passo a passo, usando as "
-    "ferramentas para fazer as mudanças. Não replaneje a menos que a abordagem "
-    "realmente precise mudar."
+    "The plan is approved. Carry it out now, step by step, using the tools to "
+    "make the changes. Do not replan unless the approach genuinely has to change."
 )
 
 
@@ -1362,7 +1361,7 @@ class CodeAIApplication:
             raise GoalStateError("The goal loop is already running.")
         goal = service.goal
         if goal is None:
-            raise GoalStateError("No goal is defined. Use /goal <objetivo> first.")
+            raise GoalStateError("No goal is defined. Use /goal <objective> first.")
         if goal.status == GoalStatus.DRAFT:
             await service.activate()
         elif goal.status == GoalStatus.BLOCKED:
@@ -1535,7 +1534,7 @@ class CodeAIApplication:
             AcceptanceCriterion(
                 kind=CriterionKind.JUDGE,
                 description=(
-                    "O objetivo foi cumprido de forma completa e verificável: "
+                    "The objective was met completely and verifiably: "
                     f"{objective}"
                 ),
             )

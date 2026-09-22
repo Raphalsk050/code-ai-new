@@ -24,7 +24,7 @@ from code_ai.providers.models import (
 )
 
 QUESTION = (
-    "Para começarmos o levantamento de requisitos, qual banco de dados "
+    "To start gathering the requirements, which database "
     "o sistema deve usar?"
 )
 
@@ -134,7 +134,7 @@ async def test_question_records_no_user_answer_evidence_until_the_user_replies(
     assert not planner.ledger.has_record(EvidenceType.USER_ANSWER)
 
     await app.submit_user_message(
-        "Use Postgres e leitor de código de barras.", resume_plan=True
+        "Use Postgres and a barcode reader.", resume_plan=True
     )
     await app.close()
 
@@ -148,7 +148,7 @@ async def test_question_records_no_user_answer_evidence_until_the_user_replies(
 class PlansAsksThenAcknowledgesProvider(_BaseProvider):
     """submit_plan, then ask_user, then prose acknowledgments on later calls."""
 
-    PLAN_STEPS = ["Levantar requisitos com o usuário", "Implementar o módulo de estoque"]
+    PLAN_STEPS = ["Gather the requirements with the user", "Implement the stock module"]
 
     def __init__(self) -> None:
         self.calls = 0
@@ -186,7 +186,7 @@ async def test_plain_reply_to_a_question_resumes_the_paused_plan(tmp_path) -> No
     app = build_application(config=_config(tmp_path), provider=provider)
 
     await app.start()
-    await app.submit_user_message("implemente o módulo de estoque do projeto")
+    await app.submit_user_message("implement the project's stock module")
     planner = app.orchestrator.planner
     assert planner is not None
     assert provider.calls == 2
@@ -236,7 +236,7 @@ async def test_submit_question_answer_reaches_the_model(tmp_path) -> None:
 
 async def test_ask_user_options_render_as_numbered_cards(tmp_path) -> None:
     provider = AsksThenKeepsTalkingProvider(
-        options=["SQLite :: zero configuração", "Postgres"]
+        options=["SQLite :: zero configuration", "Postgres"]
     )
     app = build_application(config=_config(tmp_path), provider=provider)
 
@@ -247,9 +247,9 @@ async def test_ask_user_options_render_as_numbered_cards(tmp_path) -> None:
     assert provider.calls == 1
     assert result.text.startswith(QUESTION)
     # A client with no card UI still gets something answerable by number.
-    assert "[1] SQLite - zero configuração" in result.text
+    assert "[1] SQLite - zero configuration" in result.text
     assert "[2] Postgres" in result.text
-    assert "responda pelo número" in result.text
+    assert "answer with the number" in result.text
 
 
 class AsksSeveralQuestionsProvider(_BaseProvider):
@@ -295,14 +295,14 @@ async def test_every_question_of_one_step_lands_in_a_single_questionnaire(tmp_pa
     app.subscribe(events.append)
 
     await app.start()
-    result = await app.submit_user_message("faz um sistema de estoque")
+    result = await app.submit_user_message("build a stock system")
     await app.close()
 
     # One turn, both questions - not one round trip per question.
     assert provider.calls == 1
-    assert "Preciso de 2 respostas" in result.text
-    assert "Pergunta 1 de 2 · Banco" in result.text
-    assert "Pergunta 2 de 2 · Auth" in result.text
+    assert "I need 2 answers" in result.text
+    assert "Question 1 of 2 · Banco" in result.text
+    assert "Question 2 of 2 · Auth" in result.text
 
     asked = [e for e in events if e.event_type == "interaction.question.requested"]
     assert len(asked) == 2

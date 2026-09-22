@@ -101,7 +101,7 @@ class ModelDebugLogger:
         """Build a logger when debug is on, otherwise ``None`` (a cheap no-op).
 
         Each call gets its own numbered file inside the session folder so the
-        request (entrada) and the raw streamed response (saída) for one exchange
+        request and the raw streamed response for one exchange
         live together: ``logs/<session>/0001-<provider>.log``.
         """
         if not getattr(config, "debug", False):

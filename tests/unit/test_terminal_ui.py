@@ -1978,7 +1978,7 @@ async def test_term_commands_drive_the_shared_terminal_session(tmp_path) -> None
         await pilot.press("enter")
         await pilot.pause(0.2)
         assert any(
-            line.startswith("term> Sessão sess-123") for line in terminal_app.vm.conversation
+            line.startswith("term> Session sess-123") for line in terminal_app.vm.conversation
         )
         assert terminal_app.vm.terminal_visible is True
         assert terminal_app.vm.terminal_screen == "C:\\workspace> _"
@@ -2132,7 +2132,12 @@ async def test_term_without_a_manager_degrades_gracefully(tmp_path) -> None:
         input_widget.value = "/term start"
         await pilot.press("enter")
         await pilot.pause(0.2)
-        assert any("indisponível" in line for line in terminal_app.vm.conversation)
+        # What the facade really answers with; the old wording had been gone
+        # from the source for a while and the test was asserting on a ghost.
+        assert any(
+            "No terminal backend in this session." in line
+            for line in terminal_app.vm.conversation
+        )
         assert terminal_app.vm.terminal_visible is False
 
 

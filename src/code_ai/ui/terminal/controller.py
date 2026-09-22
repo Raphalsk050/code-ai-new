@@ -129,7 +129,7 @@ class TerminalController:
             return f"term> {result.message}"
         session_id = str(result.data.get("session_id") or "")
         return (
-            f"term> Sessão {session_id[:8]} iniciada. Digite /term <texto> para "
+            f"term> Session {session_id[:8]} started. Type /term <text> to "
             "enviar comandos; /term ctrl c interrompe; /term kill encerra."
         )
 
@@ -149,19 +149,19 @@ class TerminalController:
         self.view_model.terminal_closed = True
         screen = result.data.get("screen") or {}
         session_id = str(screen.get("session_id") or "")
-        return f"term> Sessão {session_id[:8]} encerrada."
+        return f"term> Session {session_id[:8]} closed."
 
     async def terminal_status(self) -> str:
         result = await self.commands.terminal_status()
         if not result.ok:
             return (
-                "term> Nenhuma sessão ativa. Use /term start [comando] para abrir "
+                "term> No active session. Use /term start [command] to open "
                 "um terminal interativo."
             )
         screen = result.data.get("screen") or {}
         session_id = str(result.data.get("session_id") or "")
         return (
-            f"term> Sessão {session_id[:8]} · {screen.get('columns')}x"
+            f"term> Session {session_id[:8]} · {screen.get('columns')}x"
             f"{screen.get('rows')}"
             f"{' · encerrada' if screen.get('closed') else ''}\n"
             f"{screen.get('screen') or '(tela vazia)'}"
@@ -183,14 +183,14 @@ class TerminalController:
         lines = self._format_goal_criteria(snapshot)
         if snapshot.get("started"):
             return (
-                "goal> Objetivo definido e loop iniciado (critérios derivados "
+                "goal> Objective set and the loop started (criteria derived "
                 "automaticamente):\n" + lines
             )
         return (
-            "goal> Objetivo definido. Critérios de aceitação propostos:\n"
+            "goal> Objective set. Acceptance criteria proposed:\n"
             + lines
-            + "\n\nUse /goal start para começar (o agente só para quando todos "
-            "os critérios passarem), ou /goal stop para descartar."
+            + "\n\nUse /goal start to begin (the agent only stops once every "
+            "criterion passes), or /goal stop to drop it."
         )
 
     async def start_goal(self) -> str:
@@ -199,7 +199,7 @@ class TerminalController:
             return f"goal> {result.message}"
         snapshot = dict(result.data.get("goal") or {})
         return (
-            "goal> Loop iniciado. O agente vai iterar até todos os critérios "
+            "goal> Loop started. The agent iterates until every criterion "
             f"passarem ({snapshot.get('criteria_progress')} no momento). "
             "Use /goal stop para interromper."
         )
@@ -214,25 +214,25 @@ class TerminalController:
     def goal_status(self) -> str:
         snapshot = self.app.goal_snapshot()
         if snapshot.get("status") == "none":
-            return "goal> Nenhum objetivo definido. Use /goal <objetivo>."
+            return "goal> No objective set. Use /goal <objective>."
         header = (
-            "goal> Status do objetivo\n"
-            f"objetivo: {snapshot.get('objective')}\n"
+            "goal> Objective status\n"
+            f"objective: {snapshot.get('objective')}\n"
             f"status: {snapshot.get('status')}"
-            f"{' (loop rodando)' if snapshot.get('loop_running') else ''}\n"
-            f"iterações: {snapshot.get('iterations')}\n"
-            f"critérios: {snapshot.get('criteria_progress')}"
+            f"{' (loop running)' if snapshot.get('loop_running') else ''}\n"
+            f"iterations: {snapshot.get('iterations')}\n"
+            f"criteria: {snapshot.get('criteria_progress')}"
         )
         reason = str(snapshot.get("stop_reason") or "")
         if reason:
-            header += f"\nmotivo: {reason}"
+            header += f"\nreason: {reason}"
         return header + "\n" + self._format_goal_criteria(snapshot)
 
     @staticmethod
     def _format_goal_criteria(snapshot: dict[str, object]) -> str:
         criteria = snapshot.get("criteria")
         if not isinstance(criteria, list) or not criteria:
-            return "  (nenhum critério)"
+            return "  (no criteria)"
         lines = []
         for item in criteria:
             if not isinstance(item, dict):

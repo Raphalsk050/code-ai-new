@@ -443,7 +443,7 @@ def terminal_panel_title(session_id: str, *, focused: bool, closed: bool) -> str
     where = f"$ terminal {session_id[:8]}" if session_id else "$ terminal"
     if closed:
         return f"{where} · encerrado"
-    return f"{where} · {'digitando aqui' if focused else 'ESC para digitar'}"
+    return f"{where} · {'typing here' if focused else 'ESC to type'}"
 
 
 def render_terminal_screen(

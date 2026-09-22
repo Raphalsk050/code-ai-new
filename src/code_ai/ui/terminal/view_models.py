@@ -429,42 +429,42 @@ class TerminalViewModel:
         payload = event.payload
         if kind == "goal.defined":
             self.conversation.append(
-                f"goal> objetivo definido: {payload.get('objective', '')}"
+                f"goal> objective set: {payload.get('objective', '')}"
             )
         elif kind == "goal.activated":
             self.conversation.append(
-                "goal> loop iniciado "
-                f"(máx. {payload.get('max_iterations')} iterações)"
+                "goal> loop started "
+                f"(max. {payload.get('max_iterations')} iterations)"
             )
         elif kind == "goal.resumed":
-            self.conversation.append("goal> objetivo retomado")
+            self.conversation.append("goal> objective resumed")
         elif kind == "goal.iteration.started":
             self.conversation.append(
-                f"goal> iteração {payload.get('iteration')}/"
-                f"{payload.get('max_iterations')} iniciada"
+                f"goal> iteration {payload.get('iteration')}/"
+                f"{payload.get('max_iterations')} started"
             )
         elif kind == "goal.iteration.completed":
             self.conversation.append(
-                f"goal> iteração {payload.get('iteration')} avaliada: "
+                f"goal> iteration {payload.get('iteration')} evaluated: "
                 f"{payload.get('criteria_met')}/{payload.get('criteria_total')} "
-                "critérios atendidos"
+                "criteria met"
             )
         elif kind == "goal.satisfied":
             self.conversation.append(
-                "goal> ✔ objetivo cumprido em "
-                f"{payload.get('iterations')} iteração(ões)"
+                "goal> ✔ objective met in "
+                f"{payload.get('iterations')} iteration(s)"
             )
         elif kind == "goal.blocked":
             self.conversation.append(
-                f"goal> bloqueado: {payload.get('reason', '')} — use /goal resume "
-                "para continuar ou /goal stop para encerrar"
+                f"goal> blocked: {payload.get('reason', '')} — use /goal resume "
+                "to carry on, or /goal stop to end it"
             )
         elif kind == "goal.exhausted":
             self.conversation.append(
-                f"goal> limite de segurança atingido: {payload.get('reason', '')}"
+                f"goal> safety ceiling reached: {payload.get('reason', '')}"
             )
         elif kind == "goal.stopped":
-            self.conversation.append(f"goal> parado: {payload.get('reason', '')}")
+            self.conversation.append(f"goal> stopped: {payload.get('reason', '')}")
 
     def _apply_tool_progress(self, payload: dict[object, object]) -> None:
         """Render live 'writing code' feedback while a tool call streams in.

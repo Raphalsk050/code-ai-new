@@ -100,7 +100,7 @@ _NEWLINE_KEYS = frozenset({"ctrl+j", "shift+enter", "ctrl+enter"})
 # config values consumed by AppConfig.permission_mode.
 _PERMISSION_MODE_OPTIONS = [
     ("perm: solicitar", "ask"),
-    ("perm: automático", "auto"),
+    ("perm: automatic", "auto"),
     ("perm: ignorar", "bypass"),
 ]
 
@@ -306,7 +306,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 return
             if image_only:
                 self.notify(
-                    "Nenhuma imagem na área de transferência.", severity="warning"
+                    "No image on the clipboard.", severity="warning"
                 )
                 return
             text = paste_from_system_clipboard()
@@ -319,9 +319,9 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 # machine; without a hint the failure is indistinguishable
                 # from an empty clipboard.
                 self.notify(
-                    "Área de transferência inacessível: instale "
+                    "The clipboard is unreachable: install "
                     + " ou ".join(packages)
-                    + " para habilitar o Ctrl+V.",
+                    + " to enable Ctrl+V.",
                     severity="warning",
                 )
 
@@ -1646,7 +1646,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 return
             await self.controller.set_planner_mode("act")
             self._append_conversation_line(
-                "command> Modo act ativado. Descreva a tarefa para começar."
+                "command> Act mode on. Describe the task to get started."
             )
 
         async def _handle_goal_command(self, stripped: str) -> None:
@@ -1668,7 +1668,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 self._append_conversation_line(await self.controller.stop_goal())
                 return
             self._append_conversation_line(
-                "goal> Derivando critérios de aceitação para o objetivo…"
+                "goal> Deriving acceptance criteria for the objective…"
             )
 
             async def _define() -> None:
@@ -1732,9 +1732,9 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                     return
                 await self.action_toggle_terminal_focus()
                 self._append_conversation_line(
-                    "term> Teclado no shell. Esc volta para a conversa."
+                    "term> Keyboard goes to the shell. Esc returns to the chat."
                     if self.vm.terminal_focused
-                    else "term> Teclado de volta na conversa."
+                    else "term> Keyboard is back in the chat."
                 )
                 return
             if argument == "start" or argument.startswith("start "):
@@ -1769,7 +1769,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             await self.controller.set_planner_mode("plan")
             if not objective:
                 self._append_conversation_line(
-                    "command> Plan mode on. Type /deep-plan <objetivo> (ou só "
+                    "command> Plan mode on. Type /deep-plan <objective> (or just "
                     "descreva o que quer planejar) e eu monto o plano sem alterar "
                     "nada. Depois use /act para executar."
                 )
@@ -2219,7 +2219,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self.copy_to_clipboard(selected)
             copy_to_system_clipboard(selected)
             self.screen.clear_selection()
-            self.notify("Texto copiado para a área de transferência.", timeout=2)
+            self.notify("Text copied to the clipboard.", timeout=2)
             return True
 
         def on_mouse_down(self, event) -> None:
@@ -2344,8 +2344,8 @@ def create_terminal_app(application, *, config_path: Path | None = None):
         def _arm_force_quit(self) -> None:
             self._force_quit_armed = True
             self.notify(
-                "Saída travada — o modelo não respondeu. "
-                "Pressione Ctrl+Q novamente para forçar a saída.",
+                "The exit is stuck — the model did not answer. "
+                "Press Ctrl+Q again to force the exit.",
                 severity="warning",
                 timeout=5.0,
             )
@@ -2424,7 +2424,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 closed=self.vm.terminal_closed,
             )
             panel.border_subtitle = (
-                "senha - nao aparece" if self.vm.terminal_awaiting_secret else ""
+                "password - not shown" if self.vm.terminal_awaiting_secret else ""
             )
             screen = (
                 self.vm.terminal_session_id,
@@ -2476,11 +2476,11 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 f"usage: {self.vm.cumulative_usage}\n"
                 f"state: {application.orchestrator.state.value}\n"
                 f"tools: {tools}\n\n"
-                "keys: Ctrl+C copiar seleção / cancelar | Ctrl+L limpar\n"
+                "keys: Ctrl+C copy selection / cancel | Ctrl+L clear\n"
                 "input: Enter envia · Ctrl+J (ou Shift+Enter) nova linha\n"
-                "colar: Ctrl+V texto ou imagem · Alt+V imagem quando o "
-                "terminal fica com o Ctrl+V\n"
-                "copiar: selecione com o mouse, botão direito ou Ctrl+C"
+                "paste: Ctrl+V text or image · Alt+V image when the "
+                "terminal takes Ctrl+V\n"
+                "copy: select with the mouse, right-click or Ctrl+C"
             )
 
     return CodeAITerminalApp()

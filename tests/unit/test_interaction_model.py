@@ -121,9 +121,9 @@ def test_several_questions_are_numbered_and_counted(tmp_path) -> None:
 
     text = questionnaire.render_text()
 
-    assert "Preciso de 2 respostas" in text
-    assert "Pergunta 1 de 2 · Banco de dados" in text
-    assert "Pergunta 2 de 2 · Auth" in text
+    assert "I need 2 answers" in text
+    assert "Question 1 of 2 · Banco de dados" in text
+    assert "Question 2 of 2 · Auth" in text
     # Options restart at 1 on each question, so an answer of "2" is unambiguous
     # only together with the question it belongs to.
     assert text.count("[1]") == 2
@@ -134,9 +134,9 @@ def test_the_text_form_says_how_to_answer(tmp_path) -> None:
     single = Questionnaire(questions=(make_question(),)).render_text()
     multi = Questionnaire(questions=(make_question(multi_select=True),)).render_text()
 
-    assert "responda pelo número" in single
-    assert "separados por vírgula" in multi
-    assert "escreva a sua resposta" in single
+    assert "answer with the number" in single
+    assert "comma separated" in multi
+    assert "write your own answer" in single
 
 
 def test_a_questionnaire_with_options_only_omits_the_free_text_hint() -> None:
@@ -168,7 +168,7 @@ def test_several_choices_are_joined() -> None:
 def test_free_text_alongside_a_choice_is_kept_as_an_addition() -> None:
     answer = Answer(question=make_question(), chosen=("Postgres",), other="mas em RDS")
 
-    assert answer.render() == "Postgres, além disso: mas em RDS"
+    assert answer.render() == "Postgres, also: mas em RDS"
 
 
 def test_free_text_on_its_own_stands_alone() -> None:
