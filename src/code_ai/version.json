@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 15,
+  "minor": 16,
   "patch": 0,
-  "build": 17,
+  "build": 18,
   "updated": "2026-09-22",
-  "note": "orchestrator graph: a blueprint-style editor that runs agents"
+  "note": "english is the product language, portuguese behind the language setting"
 }
