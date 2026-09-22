@@ -1,127 +1,178 @@
 # NOTES
 
-Decisões, trade-offs e pendências. Uma entrada por bloco de trabalho, mais
-recente no topo.
+Decisions, trade-offs and loose ends. One entry per block of work, newest at
+the top.
 
-## 2026-09-20 - Extensão VS Code: paridade fechada, testes e e2e com screenshot
+## 2026-09-22 - Orchestrator graph, and English as the product language
 
-Segunda leva, fechando o que a primeira deixou pendente. Tudo verificado com
-`npm run test` (typecheck + unitários do webview + e2e em Chromium) e
+### What was done
+
+- **Orchestrator graph.** A `*.flow.json` custom editor drives a node graph
+  whose Agent nodes are sub-agent profiles: `src/code_ai/core/graph/` compiles
+  and validates the document, `app/graph_runner.py` runs it, and the editor in
+  `vscode-extension/webview/flow/` is a hand-rolled SVG canvas. Nodes come from
+  a right-click menu, Blueprint-style; dragging a wire off a pin and dropping it
+  on empty canvas offers only the nodes that pin can reach and creates the node
+  already connected.
+- **English is the product language.** Every string the tool shows is the
+  English one, including the pt-BR that predated this work (the chat panel, the
+  TUI, the goal/terminal/question messages). `webview/i18n.ts` applies a pt-BR
+  table only when the backend says that is the language the user picked, and the
+  node catalog travels with that choice so the graph editor follows it too.
+
+### Trade-offs
+
+- **The i18n table is keyed by the English string**, not by a symbolic key.
+  There is no key registry to keep in sync, and a missing translation falls back
+  to readable English instead of to `settings.save.button`. The cost is that
+  editing an English string silently drops its translation until the table
+  catches up, and that two uses of one word need an explicit context
+  (`t("Run", "tab")`).
+- **Only the webviews switch language.** The TUI and the backend messages are
+  English-only; the `language` setting still decides what language the *model*
+  answers in, which is what it always meant. Making the TUI switchable would
+  need the same table threaded through Textual widgets, and nothing asked for it
+  yet.
+- **Undo in the graph editor is snapshot-based**, not a per-command inverse. A
+  whole-graph snapshot per mutation makes "undo restores exactly what was there"
+  true by construction; at a few hundred nodes the memory cost is nothing.
+- **A graph run occupies the session's turn slot.** The app runs one model turn
+  at a time, so starting a graph while the chat is answering is refused with a
+  reason rather than queued.
+
+### Loose ends
+
+- The Portuguese that remains in the repo is data the code matches against:
+  input detectors (`core/planning/models.py`, `core/internet_intent.py`,
+  `tools/documents/tools.py`), the recall stopword list
+  (`core/memory_recall.py`) and the document label tables
+  (`tools/documents/builder.py`, `tools/latex/markup.py`).
+- Two settings-panel e2e scenarios fail on `main` and still fail: after a clean
+  save the button reads "Save" instead of "Saved" and the api key field keeps
+  what was typed. Unrelated to this work, filed separately.
+- Parallel branches in a graph (`max_concurrent_nodes > 1`) would make the
+  single travelling indicator ambiguous; the indicator needs a design pass
+  first.
+
+## 2026-09-20 - VS Code extension: parity closed, tests and e2e with screenshots
+
+Second pass, closing what the first one left open. All of it verified with
+`npm run test` (typecheck + webview unit tests + e2e in Chromium) and
 `pytest tests/unit tests/integration`.
 
-### O que foi feito
+### What was done
 
-- **Resumo por conversa.** `ConversationStore` ganhou `summary`, `summary_at` e
-  `total_tokens`; `CodeAIApplication.summarize_conversation()` escreve o resumo
-  com uma chamada de modelo e não gasta outra enquanto a thread não andar
-  (`summary_at >= updated_at`). O total de tokens é a distância até o
-  `_usage_baseline` gravado quando a conversa virou a corrente, não o valor
-  absoluto do ledger do processo, que conta todas as outras. A extensão pede o
-  resumo quando você sai da conversa (nova, abrir outra, voltar ao histórico).
-- **`@` no composer.** Ranking e inserção em `webview/mentions.ts` (nome vence
-  caminho, mais curto desempata); a busca é do host, via
-  `vscode.workspace.findFiles`, que já respeita `files.exclude` e não custa um
-  hop de processo.
-- **Esc alterna chat e terminal**, como na TUI. O listener é do documento
-  porque o input do terminal vive no rail, que o composer não conhece; abrir a
-  seção certa é um `reveal` com nonce.
-- **Imagens coladas** viram chips no composer e viajam em `submitUserMessage`
-  (`_parse_images` no bridge descarta o que chegou quebrado em vez de derrubar
-  o turno).
-- **`/skills` e `/workflows`** entram no catálogo que a ponte serve, marcados
-  por `kind`, e rodam por `runAsset`; `resolve_asset` devolve o prompt e quem
-  chama decide como rodar o turno. `/doctor`, `/status` e `/config` abrem as
-  configurações, e `/config <campo> <valor>` aplica direto por `updateSettings`.
-- **Doctor na extensão.** `get_settings` passou a expor `disabled_tools`,
-  `subagent_models`, `max_concurrent_subagents` e a amostragem, mais o catálogo
-  de ferramentas lido do registry vivo (não do config: uma ferramenta que a
-  sessão nunca registrou não vira um interruptor que não faz nada).
-  `update_settings` aceita os mesmos campos e chama `registry.set_disabled()`,
-  então desligar uma ferramenta vale já na próxima requisição.
-- **Aprovação virou cartão inline.** Era modal: numa sidebar estreita o overlay
-  cobria justamente o diff, a saída do comando e o plano - o contexto de onde
-  sai a decisão. Agora fica no fim da transcrição, com A/S/D no teclado, e só
-  sai quando a ponte confirma (dois cliques não resolvem a mesma chamada duas
-  vezes).
-- **UI em português** nos componentes do webview. O painel de configurações
-  também.
-- **Testes.** 33 unitários do webview (`node scripts/test-webview.mjs`: esbuild
-  bundla, o runner do próprio node roda - sem framework novo para instalar);
-  40 verificações e2e em Chromium com screenshot de cada estado; no Python, o
-  `SessionCommands`, o catálogo, o store e um `tests/integration/test_bridge_e2e.py`
-  que dirige o `BridgeServer` por linhas JSON-RPC reais contra uma aplicação de
-  verdade.
+- **Per-conversation summary.** `ConversationStore` gained `summary`,
+  `summary_at` and `total_tokens`; `CodeAIApplication.summarize_conversation()`
+  writes the summary with one model call and does not spend another while the
+  thread has not moved (`summary_at >= updated_at`). The token total is the
+  distance from the `_usage_baseline` recorded when the conversation became the
+  current one, not the absolute value of the process ledger, which counts every
+  other thread too. The extension asks for the summary when you leave the
+  conversation (new one, open another, back to the history).
+- **`@` in the composer.** Ranking and insertion in `webview/mentions.ts` (name
+  beats path, shorter wins ties); the search is the host's, through
+  `vscode.workspace.findFiles`, which already respects `files.exclude` and costs
+  no process hop.
+- **Esc switches between chat and terminal**, as in the TUI. The listener is on
+  the document because the terminal input lives in the rail, which the composer
+  knows nothing about; opening the right section is a `reveal` with a nonce.
+- **Pasted images** become chips in the composer and travel in
+  `submitUserMessage` (`_parse_images` on the bridge drops whatever arrived
+  broken rather than failing the turn).
+- **`/skills` and `/workflows`** are in the catalog the bridge serves, tagged by
+  `kind`, and run through `runAsset`; `resolve_asset` returns the prompt and the
+  caller decides how to run the turn. `/doctor`, `/status` and `/config` open the
+  settings, and `/config <field> <value>` applies straight through
+  `updateSettings`.
+- **Doctor in the extension.** `get_settings` now exposes `disabled_tools`,
+  `subagent_models`, `max_concurrent_subagents` and the sampling knobs, plus the
+  tool catalog read from the live registry (not from the config: a tool the
+  session never registered must not become a switch that does nothing).
+  `update_settings` takes the same fields and calls `registry.set_disabled()`, so
+  turning a tool off applies from the next request.
+- **Approval became an inline card.** It used to be a modal: in a narrow sidebar
+  the overlay covered exactly the diff, the command output and the plan - the
+  context the decision comes from. Now it sits at the end of the transcript, with
+  A/S/D on the keyboard, and only leaves once the bridge confirms (two clicks do
+  not resolve the same call twice).
+- **Tests.** 33 webview unit tests (`node scripts/test-webview.mjs`: esbuild
+  bundles, node's own runner executes - no new framework to install); 40 e2e
+  checks in Chromium with a screenshot of each state; on the Python side
+  `SessionCommands`, the catalog, the store, and a
+  `tests/integration/test_bridge_e2e.py` that drives `BridgeServer` over real
+  JSON-RPC lines against a real application.
 
 ### Trade-offs
 
-- **O e2e usa o bundle real, não o VS Code.** `harness.html` fabrica o que o
-  editor daria ao webview (variáveis `--vscode-*` e `acquireVsCodeApi`). Cobre
-  layout, estado e interação; não cobre o host nem a ponte - esses têm os
-  testes de integração em Python. Rodar um VS Code de verdade (`@vscode/test-electron`)
-  cobriria os dois lados e é a evolução natural quando o host ganhar mais lógica.
-- **Screenshot não é comparado pixel a pixel.** Ele documenta o estado e mostra
-  regressão a olho; um baseline de imagem em CI exigiria fixar fonte e
-  renderização, o que é caro para o retorno neste tamanho de projeto.
-- **A gaveta encosta na tira de ícones (sm), e cobre a sidebar (xs).** Abaixo de
-  380px não cabem os dois, então lá o único caminho de volta é o ✕ da gaveta.
-- **O resumo custa uma chamada de modelo por conversa encerrada.** É explícito e
-  só quando a thread mudou; um resumo automático por turno sairia caro sem
-  melhorar a lista.
+- **The e2e uses the real bundle, not VS Code.** `harness.html` fabricates what
+  the editor would give the webview (the `--vscode-*` variables and
+  `acquireVsCodeApi`). It covers layout, state and interaction; it does not cover
+  the host or the bridge - those have the Python integration tests. Running a
+  real VS Code (`@vscode/test-electron`) would cover both sides and is the
+  natural next step once the host grows more logic.
+- **Screenshots are not compared pixel by pixel.** They document the state and
+  show regressions to the eye; an image baseline in CI would mean pinning fonts
+  and rendering, which is expensive for the return at this size of project.
+- **The drawer touches the icon strip (sm) and covers the sidebar (xs).** Below
+  380px the two do not fit, so there the only way back is the drawer's ✕.
+- **The summary costs one model call per conversation closed.** It is explicit
+  and only when the thread changed; an automatic summary per turn would cost a
+  lot without improving the list.
 
-### Pendências
+### Loose ends
 
-- `webview/reducer.ts` ficou órfão e precisa ser apagado (`git rm`).
-- O `/doctor` da TUI ainda tem telas que a extensão não tem (diagnóstico de
-  provedor, experimentos); ferramentas, sub-agentes e amostragem já estão lá.
-- Baseline de screenshot em CI, se o layout estabilizar.
-- Imagens só entram por colagem; arrastar arquivo ainda não.
+- `webview/reducer.ts` is orphaned and should be deleted (`git rm`).
+- The TUI's `/doctor` still has screens the extension does not (provider
+  diagnosis, experiments); tools, sub-agents and sampling are already there.
+- A screenshot baseline in CI, if the layout settles.
+- Images only arrive by pasting; dragging a file in does not work yet.
 
-## 2026-09-20 - Extensão VS Code: chassi de painéis, store fatiado e movimento
+## 2026-09-20 - VS Code extension: panel chassis, sliced store and motion
 
-### O que foi feito
+### What was done
 
-- **Store fatiado no webview** (`webview/store/`). O reducer único virou dez
-  fatias (`transcript`, `session`, `usage`, `approvals`, `plan`, `agents`,
-  `terminal`, `questions`, `code`, `goal`). `applyEvent` chama todas e devolve
-  o mesmo objeto quando nenhuma mudou, então um delta de streaming repinta a
-  transcrição e mais nada. O antigo `webview/reducer.ts` foi substituído por
+- **Sliced store in the webview** (`webview/store/`). The single reducer became
+  ten slices (`transcript`, `session`, `usage`, `approvals`, `plan`, `agents`,
+  `terminal`, `questions`, `code`, `goal`). `applyEvent` calls them all and
+  returns the same object when none changed, so a streaming delta repaints the
+  transcript and nothing else. The old `webview/reducer.ts` was replaced by
   `webview/store/transcript.ts`.
-- **Rail de tarefas** (`webview/task-rail.tsx`). Sessão, Plano, Agentes,
-  Terminal e Histórico como seções de um mesmo componente, com três layouts:
-  coluna encaixada (>520px), gaveta sobreposta (380-520px) e gaveta cheia
-  (<380px). A largura vem de `ResizeObserver` (`use-container-width.ts`), não
-  de media query: o webview só conhece a própria caixa, não a janela.
-- **Paridade com a TUI**: plano com passos e evidência, sub-agentes com
-  circuito aberto, perguntas do `ask_user` inline no chat, código ao vivo
-  durante o `write_file`, barra de contexto sempre visível, terminal
-  interativo, loop de objetivo, índice com progresso.
-- **Camada de comandos compartilhada** (`app/commands.py`). Terminal, objetivo,
-  plano e índice saíram do `TerminalController` para `SessionCommands`, que
-  devolve dados; a TUI formata suas strings e o bridge serializa o mesmo
-  resultado. Antes, a ponte teria que duplicar o comportamento para ter
-  `/term`.
-- **Catálogo de slash commands compartilhado** (`app/slash_catalog.py`). Uma
-  lista só; `bridge_supports()` marca o que a ponte executa hoje e a extensão
-  mostra o resto apagado em vez de fingir que funciona.
-- **Novos métodos JSON-RPC**: `replan`, `startPlan`, `planSnapshot`,
+- **Task rail** (`webview/task-rail.tsx`). Session, Plan, Agents, Terminal and
+  History as sections of one component, with three layouts: docked column
+  (>520px), overlaid drawer (380-520px) and full drawer (<380px). The width comes
+  from a `ResizeObserver` (`use-container-width.ts`), not from a media query: the
+  webview only knows its own box, not the window.
+- **Parity with the TUI**: plan with steps and evidence, sub-agents with an open
+  circuit, `ask_user` questions inline in the chat, live code during
+  `write_file`, a context bar that is always visible, an interactive terminal,
+  the objective loop, and the index with progress.
+- **Shared command layer** (`app/commands.py`). Terminal, objective, plan and
+  index moved out of `TerminalController` into `SessionCommands`, which returns
+  data; the TUI formats its own strings and the bridge serialises the same
+  result. Before this, the bridge would have had to duplicate the behaviour just
+  to have `/term`.
+- **Shared slash-command catalog** (`app/slash_catalog.py`). One list;
+  `bridge_supports()` marks what the bridge runs today and the extension shows
+  the rest greyed out instead of pretending it works.
+- **New JSON-RPC methods**: `replan`, `startPlan`, `planSnapshot`,
   `goalDefine/Start/Stop/Status`, `terminalStart/Write/Control/Kill/Status`,
-  `indexRefresh`, `indexStatus`, `listSlashCommands`. Os que fazem chamada de
-  modelo, andam o workspace ou cancelam o turno entram em
-  `_CONCURRENT_METHODS` - segurar o read loop congelaria as aprovações que
-  chegam pelo mesmo pipe.
+  `indexRefresh`, `indexStatus`, `listSlashCommands`. The ones that make a model
+  call, walk the workspace or cancel the turn go into `_CONCURRENT_METHODS` -
+  holding the read loop would freeze the approvals arriving on the same pipe.
 
 ### Trade-offs
 
-- **Sem biblioteca de animação.** Web Animations API e CSS, nada no bundle. O
-  VS Code 1.74 roda Chromium 102: sem `linear()`, sem View Transitions, sem
-  `interpolate-size`. Mola é `cubic-bezier(.34,1.4,.52,1)`, altura de seção é
-  medida e animada à mão (`useCollapseHeight`), reordenação é FLIP
-  (`useFlipList`). Se o mínimo subir para 1.90+ (Chromium 124), dá para trocar
-  por `linear()` e View Transitions.
-- **Nada anima por evento.** Um turno emite centenas de eventos por segundo;
-  só montagem, desmontagem, reordenação e interação direta animam. O cursor de
-  streaming é CSS puro.
-- **`prefers-reduced-motion` desliga tudo**, inclusive o `transform: scale` do
-  clique e o ripple.
-- **Diff grande sai da sidebar**: cartão compacto no chat e o diff nativo do
-  editor para ler de verdade.
+- **No animation library.** Web Animations API and CSS, nothing in the bundle.
+  VS Code 1.74 runs Chromium 102: no `linear()`, no View Transitions, no
+  `interpolate-size`. The spring is `cubic-bezier(.34,1.4,.52,1)`, section height
+  is measured and animated by hand (`useCollapseHeight`), reordering is FLIP
+  (`useFlipList`). If the minimum rises to 1.90+ (Chromium 124), this can be
+  swapped for `linear()` and View Transitions.
+- **Nothing animates per event.** A turn emits hundreds of events per second;
+  only mounting, unmounting, reordering and direct interaction animate. The
+  streaming cursor is pure CSS.
+- **`prefers-reduced-motion` turns everything off**, including the click's
+  `transform: scale` and the ripple.
+- **A large diff leaves the sidebar**: a compact card in the chat, and the
+  editor's native diff to actually read it.

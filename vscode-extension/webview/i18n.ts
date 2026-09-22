@@ -45,7 +45,7 @@ const PT: Record<string, string> = {
   Nodes: "Nós",
   Variables: "Variáveis",
   Variable: "Variável",
-  Run_tab: "Execução",
+  "tab|Run": "Execução",
   "Add node": "Adicionar nó",
   Connection: "Ligação",
   "Delete connection": "Excluir ligação",
@@ -167,10 +167,21 @@ export function language(): Lang {
   return current;
 }
 
-/** The English source string, translated if the user picked another language. */
-export function t(text: string): string {
+/**
+ * The English source string, translated if the user picked another language.
+ *
+ * `context` disambiguates two uses of the same English word that translate
+ * differently - "Run" the button and "Run" the tab - without inventing a fake
+ * English string that would leak into the panel when no table applies.
+ */
+export function t(text: string, context = ""): string {
   if (current === "en") return text;
-  return TABLES[current][text] ?? text;
+  const table = TABLES[current];
+  if (context) {
+    const keyed = table[`${context}|${text}`];
+    if (keyed) return keyed;
+  }
+  return table[text] ?? text;
 }
 
 /** `t` for a string with one `{0}` placeholder, so word order can move. */

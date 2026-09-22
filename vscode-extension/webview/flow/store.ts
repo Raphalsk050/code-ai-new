@@ -764,7 +764,7 @@ function applyGraphEvent(
         {
           kind: "agent",
           nodeId: String(payload.node_id ?? ""),
-          text: `${payload.agent_name} (${payload.profession}) em ${payload.model}`,
+          text: `${payload.agent_name} (${payload.profession}) on ${payload.model}`,
         }
       );
 

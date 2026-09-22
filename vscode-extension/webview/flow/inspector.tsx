@@ -25,7 +25,7 @@ export function Inspector(props: InspectorProps): JSX.Element {
             data-testid={`tab-${name}`}
             onClick={() => dispatch({ type: "inspectorTab", tab: name })}
           >
-            {name === "node" ? t("Node") : name === "variables" ? t("Variables") : t("Run_tab")}
+            {name === "node" ? t("Node") : name === "variables" ? t("Variables") : t("Run", "tab")}
           </button>
         ))}
       </div>
@@ -533,7 +533,7 @@ function RunPanel({ state }: { state: EditorState }) {
   return (
     <>
       <div className="flow-section-title">
-        <span>{t("Run_tab")}</span>
+        <span>{t("Run", "tab")}</span>
         <span className="line" />
         <span>{run.running ? t("running") : run.status || t("stopped")}</span>
       </div>
