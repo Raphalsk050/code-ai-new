@@ -27,11 +27,32 @@ _WEB = ToolCapability.WEB
 _REVIEW = ToolCapability.REVIEW
 
 # Every profession ends its run by reporting, because a graph node's output pin
-# is the report. Saying so once keeps the role prompts from repeating it.
-_REPORT_RULE = (
+# is the report. Saying so once keeps the role prompts from repeating it, and
+# it is public because a profession written in the editor needs it just as much.
+REPORT_RULE = (
     "\nFinish by replying with the deliverable itself, or a concise report of what "
     "you produced and where it lives. The next node in the graph reads your reply, "
     "so do not pad it and do not ask questions in it."
+)
+
+_GENERALIST = SubagentProfile(
+    name="agent",
+    description=(
+        "Plain agent, no specialism. Reads, edits, runs commands and searches the "
+        "web - the whole toolbox, pointed at whatever the task says. Reach for it "
+        "when no profession below is the obvious fit."
+    ),
+    allowed_capabilities=frozenset({_READ, _WRITE, _PROCESS, _WEB}),
+    max_model_steps=50,
+    timeout_field="subagent_worker_timeout_s",
+    role_prompt=(
+        "You are a capable general-purpose agent running one task to completion. "
+        "The task text is the whole brief: do what it asks and nothing next to it. "
+        "Look before you act - read the files, run the command that tells you the "
+        "state - and prefer the project's own conventions over your habits. When a "
+        "task is ambiguous, pick the reading a careful colleague would and say which "
+        "one you picked." + REPORT_RULE
+    ),
 )
 
 _ARCHITECT = SubagentProfile(
@@ -51,7 +72,7 @@ _ARCHITECT = SubagentProfile(
         "every claim about the codebase to a path.\n"
         "You cannot modify files or run commands. Your output is a design: the "
         "components, their responsibilities, the contracts between them, and the "
-        "order to build them in." + _REPORT_RULE
+        "order to build them in." + REPORT_RULE
     ),
 )
 
@@ -69,7 +90,7 @@ _CODE_WRITER = SubagentProfile(
         "the change directly with the file and command tools - never write code into "
         "your reply as a substitute for editing the workspace. Read before you edit, "
         "follow the surrounding conventions, and work in small increments. Verify by "
-        "running the project's tests or build when one exists." + _REPORT_RULE
+        "running the project's tests or build when one exists." + REPORT_RULE
     ),
 )
 
@@ -87,7 +108,7 @@ _DOCUMENTER = SubagentProfile(
         "actually does, never what its name suggests. Write for someone who has to "
         "use the thing tomorrow: what it is for, how to call it, what it refuses to "
         "do. Match the file's existing voice and format, keep examples runnable, and "
-        "do not restate the signature in prose." + _REPORT_RULE
+        "do not restate the signature in prose." + REPORT_RULE
     ),
 )
 
@@ -105,7 +126,7 @@ _WIKI_WRITER = SubagentProfile(
         "prose: decide the sections a reader needs, then fill them. Lead each section "
         "with its conclusion. Prefer a table or a short list over a paragraph when the "
         "content is really a set of facts, and cite the code you are describing by "
-        "path so a reader can check you." + _REPORT_RULE
+        "path so a reader can check you." + REPORT_RULE
     ),
 )
 
@@ -124,7 +145,7 @@ _UI_DESIGNER = SubagentProfile(
         "spacing value is a last resort, not a starting point. Every state the user "
         "can reach must be drawn: empty, loading, error, long content, narrow "
         "viewport. Contrast and focus visibility are requirements, not polish."
-        + _REPORT_RULE
+        + REPORT_RULE
     ),
 )
 
@@ -142,7 +163,7 @@ _TEACHER = SubagentProfile(
         "see, then build up: the mechanism first, the reasons second, the caveats "
         "last. Use the project's own names for things. Show a real snippet from the "
         "code rather than a synthetic example, and say plainly when something is a "
-        "workaround rather than a design." + _REPORT_RULE
+        "workaround rather than a design." + REPORT_RULE
     ),
 )
 
@@ -159,12 +180,15 @@ _TESTER = SubagentProfile(
         "You are a test-writing agent. Find how this project already tests things and "
         "follow it exactly - same runner, same layout, same naming. Cover the "
         "behaviour and its edges, not the implementation's shape. Run what you write; "
-        "a test you never executed is a guess." + _REPORT_RULE
+        "a test you never executed is a guess." + REPORT_RULE
     ),
 )
 
-# Ordered for the editor's dropdown: the ones a graph reaches for first.
+# Ordered for the editor's dropdown: the ones a graph reaches for first. The
+# generalist leads because it is the honest default - a graph should not have to
+# pick a specialism it does not need.
 GRAPH_PROFESSIONS: tuple[SubagentProfile, ...] = (
+    _GENERALIST,
     _ARCHITECT,
     _CODE_WRITER,
     _DOCUMENTER,

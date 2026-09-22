@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 16,
-  "patch": 4,
-  "build": 22,
+  "minor": 17,
+  "patch": 0,
+  "build": 23,
   "updated": "2026-09-22",
-  "note": "Install build dependencies when they are missing, not just when node_modules is."
+  "note": "Professions written in the editor, and live feedback while agents work."
 }

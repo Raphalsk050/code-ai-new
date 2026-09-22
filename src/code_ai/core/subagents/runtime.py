@@ -98,6 +98,7 @@ class SubagentRuntime:
         max_model_steps: int = 0,
         timeout_seconds: int = 0,
         config_overrides: Mapping[str, Any] | None = None,
+        raw_prompt: bool = False,
     ) -> BuiltSubagent:
         """Assemble one isolated agent.
 
@@ -105,6 +106,11 @@ class SubagentRuntime:
         not the dispatch tool: a graph node brings its own endpoint (``provider``
         plus ``config_overrides``), its own budgets, and instructions appended to
         the profile's role prompt.
+
+        ``raw_prompt`` hands the role text through as the entire system prompt,
+        with none of the sub-agent framing around it. A profession written in the
+        graph editor uses it: the framing is what makes an agent introduce itself
+        and offer to help, and two agents talking to each other need neither.
         """
 
         event_bus = AsyncEventBus()
@@ -128,6 +134,8 @@ class SubagentRuntime:
             )
 
         def system_prompt() -> str:
+            if raw_prompt:
+                return role_prompt
             return build_subagent_system_prompt(
                 role_prompt=role_prompt,
                 workspace=child_config.workspace,

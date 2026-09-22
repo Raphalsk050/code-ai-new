@@ -40,6 +40,7 @@ class NodeKind(StrEnum):
     END = "end"
     MODEL = "model"
     PROFESSION = "profession"
+    CUSTOM_PROFESSION = "custom_profession"
     SEQUENCE = "sequence"
     DECISION = "decision"
     LOOP = "loop"
@@ -56,6 +57,7 @@ class PinType(StrEnum):
     FLOAT = "float"
     BOOL = "bool"
     MODEL = "model"
+    PROFESSION = "profession"
     ANY = "any"
 
 
@@ -68,6 +70,7 @@ PIN_COLORS: dict[str, str] = {
     PinType.FLOAT: "#A4E22E",
     PinType.STRING: "#E040FB",
     PinType.MODEL: "#3794FF",
+    PinType.PROFESSION: "#F5A623",
     PinType.ANY: "#A0A0A0",
 }
 
@@ -276,11 +279,18 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
             _exec_in(),
             _exec_out(),
             PinSpec(name="model", type=PinType.MODEL, direction="in"),
+            PinSpec(name="profession", type=PinType.PROFESSION, direction="in"),
             PinSpec(name="task", type=PinType.STRING, direction="in", required=True),
             PinSpec(name="report", type=PinType.STRING, direction="out"),
         ),
         fields=(
-            FieldSpec(name="profession", kind="profession", label="Profession", default=""),
+            FieldSpec(
+                name="profession",
+                kind="profession",
+                label="Profession",
+                default="",
+                help="Ignored while a Profession node is wired to the profession pin.",
+            ),
             FieldSpec(name="task", kind="textarea", label="Task", default=""),
             FieldSpec(
                 name="role_override",
@@ -302,6 +312,64 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
                 label="Timeout (s)",
                 default=0,
                 help="0 keeps the profession's budget.",
+            ),
+        ),
+    ),
+    NodeKindSpec(
+        kind=NodeKind.CUSTOM_PROFESSION,
+        title="Profession",
+        description=(
+            "A profession you write yourself: the role prompt is the job, the "
+            "switches are what it may touch. Wire it into an Agent's profession pin."
+        ),
+        category="agent",
+        pins=(PinSpec(name="profession", type=PinType.PROFESSION, direction="out"),),
+        fields=(
+            FieldSpec(
+                name="name",
+                kind="text",
+                label="Name",
+                default="",
+                help="What to call it. Shows on the node and in the run log.",
+            ),
+            FieldSpec(
+                name="role",
+                kind="textarea",
+                label="Role",
+                default="",
+                help=(
+                    "Who this agent is and how it works - the same voice as the "
+                    "built-in professions. It is the whole job description."
+                ),
+            ),
+            FieldSpec(name="can_read", kind="bool", label="Read files", default=True),
+            FieldSpec(name="can_write", kind="bool", label="Edit files", default=False),
+            FieldSpec(name="can_run", kind="bool", label="Run commands", default=False),
+            FieldSpec(name="can_browse", kind="bool", label="Search the web", default=False),
+            FieldSpec(
+                name="framing",
+                kind="bool",
+                label="Add workspace framing",
+                default=False,
+                help=(
+                    "Off, the role text is the entire system prompt. On, the usual "
+                    "sub-agent preamble is added: workspace path, rules, report-back "
+                    "instructions. Leave it off for agents that talk to each other."
+                ),
+            ),
+            FieldSpec(
+                name="max_steps",
+                kind="number",
+                label="Max steps",
+                default=40,
+                help="How many tool round-trips it gets before it must report.",
+            ),
+            FieldSpec(
+                name="timeout_s",
+                kind="number",
+                label="Timeout (s)",
+                default=0,
+                help="0 keeps the worker budget from settings.",
             ),
         ),
     ),
@@ -416,6 +484,24 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
         fields=(
             FieldSpec(name="variable", kind="variable", label="Variable", default=""),
             FieldSpec(name="value", kind="text", label="Value", default=""),
+            FieldSpec(
+                name="mode",
+                kind="select",
+                label="Mode",
+                default="set",
+                options=("set", "append"),
+                help=(
+                    "append joins onto what is already there, separated by a blank "
+                    "line - how a transcript grows across a loop."
+                ),
+            ),
+            FieldSpec(
+                name="prefix",
+                kind="text",
+                label="Prefix",
+                default="",
+                help="Put in front of the appended text, e.g. a speaker's name.",
+            ),
         ),
     ),
     NodeKindSpec(

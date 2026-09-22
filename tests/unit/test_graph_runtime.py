@@ -10,6 +10,7 @@ from code_ai.core.graph.runtime import (
     GraphInterpreter,
     GraphLimits,
     ModelBinding,
+    ProfessionBinding,
     RunStatus,
 )
 
@@ -51,11 +52,13 @@ class FakeExecutor:
         max_steps: int,
         timeout_s: int,
         cancel: asyncio.Event,
+        custom: ProfessionBinding | None = None,
     ) -> AgentOutcome:
         self.agent_calls.append(
             {
                 "node_id": node_id,
                 "profession": profession,
+                "custom": custom,
                 "task": task,
                 "extra": extra_instructions,
                 "model": model,
@@ -64,6 +67,8 @@ class FakeExecutor:
             }
         )
         scripted = self.reports.get(node_id, self.reports.get(profession))
+        if callable(scripted):
+            scripted = scripted(task)
         if isinstance(scripted, AgentOutcome):
             return scripted
         if isinstance(scripted, str):
@@ -894,3 +899,113 @@ async def test_node_budgets_travel_to_the_executor() -> None:
     assert call["max_steps"] == 12
     assert call["timeout_s"] == 90
     assert call["extra"] == "use pytest only"
+
+
+async def test_two_custom_agents_hold_a_conversation_across_a_loop() -> None:
+    """The case the editor exists for: two professions the user wrote, talking.
+
+    Each lap appends both replies to one transcript variable, and each agent is
+    handed that transcript as its task - so the second lap proves they are
+    reading each other rather than monologuing in parallel.
+    """
+
+    graph = doc(
+        [
+            node("start", "start"),
+            node("ana_role", "custom_profession", name="Ana", role="You are Ana.", can_read=True),
+            node(
+                "bruno_role",
+                "custom_profession",
+                name="Bruno",
+                role="You are Bruno.",
+                can_read=True,
+            ),
+            node("loop", "loop", kind="count", count=2),
+            node("read_a", "var_get", variable="transcript"),
+            node("ana", "profession"),
+            node("say_a", "var_set", variable="transcript", mode="append", prefix="Ana:"),
+            node("read_b", "var_get", variable="transcript"),
+            node("bruno", "profession"),
+            node("say_b", "var_set", variable="transcript", mode="append", prefix="Bruno:"),
+            node("read_end", "var_get", variable="transcript"),
+            node("end", "end"),
+        ],
+        [
+            wire("e1", ("start", "out"), ("loop", "in")),
+            wire("e2", ("loop", "body"), ("ana", "in")),
+            wire("e3", ("ana_role", "profession"), ("ana", "profession"), "data"),
+            wire("e4", ("read_a", "value"), ("ana", "task"), "data"),
+            wire("e5", ("ana", "out"), ("say_a", "in")),
+            wire("e6", ("ana", "report"), ("say_a", "value"), "data"),
+            wire("e7", ("say_a", "out"), ("bruno", "in")),
+            wire("e8", ("bruno_role", "profession"), ("bruno", "profession"), "data"),
+            wire("e9", ("read_b", "value"), ("bruno", "task"), "data"),
+            wire("e10", ("bruno", "out"), ("say_b", "in")),
+            wire("e11", ("bruno", "report"), ("say_b", "value"), "data"),
+            wire("e12", ("loop", "completed"), ("end", "in")),
+            wire("e13", ("read_end", "value"), ("end", "result"), "data"),
+        ],
+        variables=[{"id": "v1", "name": "transcript", "type": "string", "default": ""}],
+    )
+    # Each reply quotes how much it was told, which is the evidence of reading.
+    executor = FakeExecutor(
+        reports={
+            "ana": lambda heard: f"ana saw {len(heard.splitlines())} lines",
+            "bruno": lambda heard: f"bruno saw {len(heard.splitlines())} lines",
+        }
+    )
+
+    outcome, _, _ = await run(graph, executor)
+
+    assert outcome.status is RunStatus.COMPLETED
+    assert outcome.result.splitlines() == [
+        "Ana: ana saw 0 lines",
+        "",
+        "Bruno: bruno saw 1 lines",
+        "",
+        "Ana: ana saw 3 lines",
+        "",
+        "Bruno: bruno saw 5 lines",
+    ]
+    # Ana opened on an empty transcript and re-entered holding Bruno's turn.
+    ana_tasks = [call["task"] for call in executor.agent_calls if call["node_id"] == "ana"]
+    assert ana_tasks[0] == ""
+    assert "Bruno: bruno saw 1 lines" in ana_tasks[1]
+
+
+async def test_a_profession_written_in_the_editor_reaches_the_executor_verbatim() -> None:
+    graph = doc(
+        [
+            node("start", "start"),
+            node(
+                "role",
+                "custom_profession",
+                name="Ana",
+                role="You are Ana. Speak in one sentence.",
+                can_read=True,
+                can_write=True,
+                max_steps=7,
+            ),
+            node("ana", "profession", task="say hello"),
+            node("end", "end"),
+        ],
+        [
+            wire("e1", ("start", "out"), ("ana", "in")),
+            wire("e2", ("role", "profession"), ("ana", "profession"), "data"),
+            wire("e3", ("ana", "out"), ("end", "in")),
+        ],
+    )
+
+    executor = FakeExecutor()
+
+    outcome, _, _ = await run(graph, executor)
+
+    assert outcome.status is RunStatus.COMPLETED
+    hired = executor.agent_calls[0]["custom"]
+    assert hired is not None
+    # Verbatim: no report rule, no framing, nothing bolted on.
+    assert hired.role == "You are Ana. Speak in one sentence."
+    assert hired.name == "Ana"
+    assert (hired.can_read, hired.can_write, hired.can_run) == (True, True, False)
+    assert hired.max_steps == 7
+    assert hired.framing is False

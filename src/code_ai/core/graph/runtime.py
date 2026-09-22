@@ -67,6 +67,32 @@ class ModelBinding:
 
 
 @dataclass(frozen=True, slots=True)
+class ProfessionBinding:
+    """A Profession node, resolved to the job description an agent is hired for.
+
+    The capability switches travel as booleans rather than as
+    ``ToolCapability`` values: the interpreter is pure and knows nothing about
+    the tool registry. Turning them into a profile is the executor's business,
+    exactly like resolving a key reference.
+    """
+
+    name: str = ""
+    role: str = ""
+    can_read: bool = True
+    can_write: bool = False
+    can_run: bool = False
+    can_browse: bool = False
+    max_steps: int = 0
+    timeout_s: int = 0
+    # False hands the role text through untouched as the whole system prompt.
+    # The default, because a profession written here is written to be exact.
+    framing: bool = False
+
+    def label(self) -> str:
+        return self.name or "custom profession"
+
+
+@dataclass(frozen=True, slots=True)
 class AgentOutcome:
     """What one hired agent came back with."""
 
@@ -89,6 +115,7 @@ class NodeExecutor(Protocol):
         *,
         node_id: str,
         profession: str,
+        custom: ProfessionBinding | None,
         task: str,
         extra_instructions: str,
         model: ModelBinding | None,
@@ -415,10 +442,15 @@ class GraphInterpreter:
     async def _run_profession(self, node: NodeProgram, stack: list[_Step]) -> str:
         task = _as_text(await self._pull(node, "task"))
         model = await self._pull(node, "model")
+        # A wired Profession node is the more specific answer, so it wins over
+        # the dropdown rather than being merged with it.
+        hired = await self._pull(node, "profession")
+        custom = hired if isinstance(hired, ProfessionBinding) else None
         outcome = await self._race(
             self._executor.run_agent(
                 node_id=node.id,
                 profession=str(node.data.get("profession") or ""),
+                custom=custom,
                 task=task,
                 extra_instructions=str(node.data.get("role_override") or ""),
                 model=model if isinstance(model, ModelBinding) else None,
@@ -490,6 +522,10 @@ class GraphInterpreter:
     async def _run_var_set(self, node: NodeProgram, stack: list[_Step]) -> str:
         name = str(node.data.get("variable") or "").strip()
         value = self._coerce_variable(name, await self._pull(node, "value"))
+        if str(node.data.get("mode") or "set").strip() == "append":
+            value = self._coerce_variable(
+                name, _appended(self._vars.get(name), value, str(node.data.get("prefix") or ""))
+            )
         self._vars[name] = value
         await self._emit(
             "graph.variable.changed",
@@ -582,6 +618,10 @@ class GraphInterpreter:
             binding = _binding_from(node)
             self._outputs[(node_id, pin)] = binding
             return binding
+        if node.kind == NodeKind.CUSTOM_PROFESSION:
+            hired = _profession_from(node)
+            self._outputs[(node_id, pin)] = hired
+            return hired
         if node.kind == NodeKind.VAR_GET:
             name = str(node.data.get("variable") or "").strip()
             return self._vars.get(name)
@@ -671,6 +711,38 @@ def _binding_from(node: NodeProgram) -> ModelBinding:
     )
 
 
+def _appended(current: Any, addition: Any, prefix: str) -> str:
+    """Grow a transcript by one turn.
+
+    A blank line between turns rather than a newline: it is what every chat
+    format uses, and it survives an agent that writes multi-line prose.
+    """
+
+    chunk = _as_text(addition).strip()
+    existing = _as_text(current).strip()
+    # An agent that came back with nothing adds nothing - not even its name,
+    # which would read as a turn it never took.
+    if not chunk:
+        return existing
+    if prefix.strip():
+        chunk = f"{prefix.strip()} {chunk}"
+    return f"{existing}\n\n{chunk}" if existing else chunk
+
+
+def _profession_from(node: NodeProgram) -> ProfessionBinding:
+    return ProfessionBinding(
+        name=str(node.data.get("name") or "").strip(),
+        role=str(node.data.get("role") or "").strip(),
+        can_read=_as_bool(node.data.get("can_read", True)),
+        can_write=_as_bool(node.data.get("can_write")),
+        can_run=_as_bool(node.data.get("can_run")),
+        can_browse=_as_bool(node.data.get("can_browse")),
+        max_steps=_as_int(node.data.get("max_steps"), 0),
+        timeout_s=_as_int(node.data.get("timeout_s"), 0),
+        framing=_as_bool(node.data.get("framing")),
+    )
+
+
 def _coerce(value: Any, pin_type: str) -> Any:
     if value is None:
         return None
@@ -692,7 +764,7 @@ def _as_text(value: Any) -> str:
         return ""
     if isinstance(value, bool):
         return "true" if value else "false"
-    if isinstance(value, ModelBinding):
+    if isinstance(value, (ModelBinding, ProfessionBinding)):
         return value.label()
     if isinstance(value, str):
         return value

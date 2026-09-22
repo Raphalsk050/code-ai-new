@@ -131,6 +131,62 @@ async function dragPinToEmpty(ui, pinSelector, to) {
   await ui.page.waitForSelector('[data-testid="context-menu"]');
 }
 
+/** Two professions the user wrote, talking to each other across a loop. */
+function conversation() {
+  return graph(
+    [
+      node("n1", "start", [0, 140]),
+      node("n2", "custom_profession", [0, 330], {
+        name: "Ana",
+        role: "You are Ana. You argue for shipping the smallest thing that works.",
+        can_read: true,
+        can_write: false,
+        can_run: false,
+        can_browse: false,
+        framing: false,
+        max_steps: 20,
+      }),
+      node("n3", "custom_profession", [0, 560], {
+        name: "Bruno",
+        role: "You are Bruno. You argue for the version that will still hold in a year.",
+        can_read: true,
+        framing: false,
+        max_steps: 20,
+      }),
+      node("n4", "loop", [260, 140], { kind: "count", count: 3 }),
+      node("n5", "var_get", [260, 380], { variable: "transcript" }),
+      node("n6", "profession", [520, 140], {}),
+      node("n7", "var_set", [790, 140], {
+        variable: "transcript",
+        mode: "append",
+        prefix: "Ana:",
+      }),
+      node("n8", "profession", [1040, 140], {}),
+      node("n9", "var_set", [1310, 140], {
+        variable: "transcript",
+        mode: "append",
+        prefix: "Bruno:",
+      }),
+      node("n10", "end", [1310, 380]),
+    ],
+    [
+      wire("e1", ["n1", "out"], ["n4", "in"]),
+      wire("e2", ["n4", "body"], ["n6", "in"]),
+      wire("e3", ["n2", "profession"], ["n6", "profession"], "data"),
+      wire("e4", ["n5", "value"], ["n6", "task"], "data"),
+      wire("e5", ["n6", "out"], ["n7", "in"]),
+      wire("e6", ["n6", "report"], ["n7", "value"], "data"),
+      wire("e7", ["n7", "out"], ["n8", "in"]),
+      wire("e8", ["n3", "profession"], ["n8", "profession"], "data"),
+      wire("e9", ["n5", "value"], ["n8", "task"], "data"),
+      wire("e10", ["n8", "out"], ["n9", "in"]),
+      wire("e11", ["n8", "report"], ["n9", "value"], "data"),
+      wire("e12", ["n4", "completed"], ["n10", "in"]),
+    ],
+    { variables: [{ id: "v1", name: "transcript", type: "string", default: "" }] }
+  );
+}
+
 export const tests = {
   // 0 -----------------------------------------------------------------
   // At the width an editor tab really has, with the run half-finished: the
@@ -795,7 +851,6 @@ export const tests = {
     const moved = edits[0].graph.nodes.find((item) => item.id === "n5");
     // 80px right and 60px down at zoom 0.8, snapped to the 10px grid.
     assert(moved.pos[0] === 910 && moved.pos[1] === 200, `node landed at ${moved.pos}`);
-    await ui.shot("20-dragged");
   },
 
   // 21 ----------------------------------------------------------------
@@ -1120,5 +1175,66 @@ export const tests = {
       "the canvas disappeared with the bad file"
     );
     await ui.shot("25-bad-file");
+  },
+
+  // -------------------------------------------------------------------
+  // A profession written in the editor, wired into two agents that talk.
+  "two professions written in the editor drive a conversation": async (ui, assert) => {
+    await ui.page.setViewportSize({ width: 1600, height: 950 });
+    await boot(ui, conversation());
+
+    // The Profession node shows the name it was given, not its kind.
+    const ana = await ui.page.locator('[data-testid="node-n2"] .flow-node-summary').textContent();
+    assert(ana === "Ana", `the Profession node reads ${JSON.stringify(ana)}`);
+
+    // And the Agent stops asking for one, because a wire answered.
+    const agent = await ui.page.locator('[data-testid="node-n6"] .flow-node-summary').textContent();
+    assert(
+      agent === "wired profession",
+      `the Agent still asks for a profession: ${JSON.stringify(agent)}`
+    );
+
+  },
+
+  // -------------------------------------------------------------------
+  // The feedback a long agent owes: a spinner, the tool it is in, the clock.
+  "a working agent says what it is doing on the node": async (ui, assert) => {
+    await ui.page.setViewportSize({ width: 1600, height: 950 });
+    await boot(ui, conversation());
+    await ui.fromHost({ type: "flowRunState", running: true, runId: "run-9", message: "" });
+    await ui.event("graph.run.started", { run_id: "run-9", name: "conversation", node_count: 10 });
+    await ui.event("graph.node.started", { run_id: "run-9", node_id: "n6", kind: "profession", index: 1 });
+    await ui.event("graph.agent.started", {
+      run_id: "run-9",
+      node_id: "n6",
+      agent_name: "Turing",
+      profession: "Ana",
+      model: "qwen3.6-35b",
+      writes: false,
+    });
+    for (const detail of ["read_file(store.ts)", "grep_search(transcript)"]) {
+      await ui.event("graph.node.progress", {
+        run_id: "run-9",
+        node_id: "n6",
+        event: "tool.call.started",
+        detail,
+      });
+    }
+
+    await ui.page.waitForSelector('[data-testid="activity-n6"]');
+    const line = await ui.page.locator('[data-testid="activity-n6"]').textContent();
+    // The tool it is in, and a step count that moved twice.
+    assert(line.includes("grep_search"), `no tool on the node: ${JSON.stringify(line)}`);
+    assert(line.includes("step 2"), `the step counter did not move: ${JSON.stringify(line)}`);
+    assert(
+      (await ui.page.locator('[data-testid="node-n6"] .flow-spinner-arc').count()) === 1,
+      "the working node has no spinner"
+    );
+    // An idle node must not claim to be working.
+    assert(
+      (await ui.page.locator('[data-testid="activity-n8"]').count()) === 0,
+      "an idle node is showing activity"
+    );
+
   },
 };

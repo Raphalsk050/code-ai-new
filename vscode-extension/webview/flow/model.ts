@@ -104,6 +104,10 @@ export function summaryOf(node: FlowNode, spec: NodeKindSpec): string {
       const profession = String(data.profession ?? "").trim();
       return profession ? profession.replace(/_/g, " ") : t("choose a profession");
     }
+    case "custom_profession": {
+      const name = String(data.name ?? "").trim();
+      return name || t("name this profession");
+    }
     case "loop": {
       const kind = String(data.kind ?? "count");
       if (kind === "count") return `count x${Number(data.count ?? 0) || 0}`;

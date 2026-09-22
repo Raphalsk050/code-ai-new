@@ -152,6 +152,48 @@ const PT: Record<string, string> = {
   Label: "Rótulo",
   "Base URL": "URL base",
 
+  // -- the node kinds themselves ------------------------------------------
+  Start: "Início",
+  End: "Fim",
+  Sequence: "Sequência",
+  Decision: "Decisão",
+  Loop: "Laço",
+  Print: "Imprimir",
+  "Ask the user": "Perguntar ao usuário",
+  "Get variable": "Ler variável",
+  "Set variable": "Escrever variável",
+  "Top P": "Top P",
+  "Top K": "Top K",
+
+  // -- a profession written in the editor ---------------------------------
+  Role: "Papel",
+  Prefix: "Prefixo",
+  "Read files": "Ler arquivos",
+  "Edit files": "Editar arquivos",
+  "Run commands": "Rodar comandos",
+  "Search the web": "Buscar na web",
+  "Add workspace framing": "Somar o enquadramento do workspace",
+  "name this profession": "dê um nome a esta profissão",
+  "wired profession": "profissão por fio",
+  "A profession you write yourself: the role prompt is the job, the switches are what it may touch. Wire it into an Agent's profession pin.":
+    "Uma profissão escrita por você: o papel é o trabalho, as chaves dizem no que ela pode mexer. Ligue no pino de profissão de um Agente.",
+  "What to call it. Shows on the node and in the run log.":
+    "Como chamá-la. Aparece no nó e no log da execução.",
+  "Who this agent is and how it works - the same voice as the built-in professions. It is the whole job description.":
+    "Quem é este agente e como ele trabalha - na mesma voz das profissões prontas. É a descrição inteira do cargo.",
+  "How many tool round-trips it gets before it must report.":
+    "Quantas idas e voltas de ferramenta ele tem antes de precisar responder.",
+  "0 keeps the worker budget from settings.":
+    "0 mantém o orçamento de trabalhador da configuração.",
+  "Off, the role text is the entire system prompt. On, the usual sub-agent preamble is added: workspace path, rules, report-back instructions. Leave it off for agents that talk to each other.":
+    "Desligado, o texto do papel é o prompt de sistema inteiro. Ligado, entra o preâmbulo de sub-agente: caminho do workspace, regras, instruções de resposta. Deixe desligado para agentes que conversam entre si.",
+  "Ignored while a Profession node is wired to the profession pin.":
+    "Ignorado enquanto um nó Profissão estiver ligado no pino de profissão.",
+  "append joins onto what is already there, separated by a blank line - how a transcript grows across a loop.":
+    "append emenda no que já está lá, separado por uma linha em branco - é assim que uma transcrição cresce ao longo de um laço.",
+  "Put in front of the appended text, e.g. a speaker's name.":
+    "Vai na frente do texto emendado, por exemplo o nome de quem fala.",
+
   // -- the rest of both panels --------------------------------------------
   " — type the name with / to force it.": " — digite o nome com / para forçar.",
   "(session default)": "(padrão da sessão)",

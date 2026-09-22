@@ -77,7 +77,9 @@ export function Canvas({ state, dispatch, onContext }: CanvasProps): JSX.Element
     return () => observer.disconnect();
   }, []);
 
-  const lit = Object.keys(state.run.active).length > 0;
+  // Lit wires animate their dots; a running agent moves nothing on its own, and
+  // its elapsed clock would freeze without a tick of its own.
+  const lit = Object.keys(state.run.active).length > 0 || state.run.running;
   React.useEffect(() => {
     if (!lit) return;
     const timer = window.setInterval(() => setTick((value) => value + 1), 600);
@@ -407,6 +409,7 @@ export function Canvas({ state, dispatch, onContext }: CanvasProps): JSX.Element
                 hasError={nodeIssues.some((issue) => issue.severity === "error")}
                 hasWarning={nodeIssues.some((issue) => issue.severity === "warning")}
                 badge={badgeFor(state, layout.node.id)}
+                activity={state.run.agents[layout.node.id]}
                 color={(type) => catalog?.color(type) ?? "#888"}
                 connected={(pin, direction) =>
                   connected.has(`${layout.node.id}:${pin}:${direction}`)

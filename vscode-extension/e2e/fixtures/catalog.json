@@ -169,6 +169,15 @@
           "color": "#3794FF"
         },
         {
+          "name": "profession",
+          "type": "profession",
+          "direction": "in",
+          "label": "profession",
+          "required": false,
+          "dynamic": false,
+          "color": "#F5A623"
+        },
+        {
           "name": "task",
           "type": "string",
           "direction": "in",
@@ -194,7 +203,7 @@
           "label": "Profession",
           "default": "",
           "options": [],
-          "help": ""
+          "help": "Ignored while a Profession node is wired to the profession pin."
         },
         {
           "name": "task",
@@ -227,6 +236,99 @@
           "default": 0,
           "options": [],
           "help": "0 keeps the profession's budget."
+        }
+      ]
+    },
+    {
+      "kind": "custom_profession",
+      "title": "Profession",
+      "description": "A profession you write yourself: the role prompt is the job, the switches are what it may touch. Wire it into an Agent's profession pin.",
+      "category": "agent",
+      "pure": true,
+      "max_instances": 0,
+      "pins": [
+        {
+          "name": "profession",
+          "type": "profession",
+          "direction": "out",
+          "label": "profession",
+          "required": false,
+          "dynamic": false,
+          "color": "#F5A623"
+        }
+      ],
+      "fields": [
+        {
+          "name": "name",
+          "kind": "text",
+          "label": "Name",
+          "default": "",
+          "options": [],
+          "help": "What to call it. Shows on the node and in the run log."
+        },
+        {
+          "name": "role",
+          "kind": "textarea",
+          "label": "Role",
+          "default": "",
+          "options": [],
+          "help": "Who this agent is and how it works - the same voice as the built-in professions. It is the whole job description."
+        },
+        {
+          "name": "can_read",
+          "kind": "bool",
+          "label": "Read files",
+          "default": true,
+          "options": [],
+          "help": ""
+        },
+        {
+          "name": "can_write",
+          "kind": "bool",
+          "label": "Edit files",
+          "default": false,
+          "options": [],
+          "help": ""
+        },
+        {
+          "name": "can_run",
+          "kind": "bool",
+          "label": "Run commands",
+          "default": false,
+          "options": [],
+          "help": ""
+        },
+        {
+          "name": "can_browse",
+          "kind": "bool",
+          "label": "Search the web",
+          "default": false,
+          "options": [],
+          "help": ""
+        },
+        {
+          "name": "framing",
+          "kind": "bool",
+          "label": "Add workspace framing",
+          "default": false,
+          "options": [],
+          "help": "Off, the role text is the entire system prompt. On, the usual sub-agent preamble is added: workspace path, rules, report-back instructions. Leave it off for agents that talk to each other."
+        },
+        {
+          "name": "max_steps",
+          "kind": "number",
+          "label": "Max steps",
+          "default": 40,
+          "options": [],
+          "help": "How many tool round-trips it gets before it must report."
+        },
+        {
+          "name": "timeout_s",
+          "kind": "number",
+          "label": "Timeout (s)",
+          "default": 0,
+          "options": [],
+          "help": "0 keeps the worker budget from settings."
         }
       ]
     },
@@ -589,6 +691,25 @@
           "default": "",
           "options": [],
           "help": ""
+        },
+        {
+          "name": "mode",
+          "kind": "select",
+          "label": "Mode",
+          "default": "set",
+          "options": [
+            "set",
+            "append"
+          ],
+          "help": "append joins onto what is already there, separated by a blank line - how a transcript grows across a loop."
+        },
+        {
+          "name": "prefix",
+          "kind": "text",
+          "label": "Prefix",
+          "default": "",
+          "options": [],
+          "help": "Put in front of the appended text, e.g. a speaker's name."
         }
       ]
     },
@@ -684,6 +805,7 @@
     "float": "#A4E22E",
     "string": "#E040FB",
     "model": "#3794FF",
+    "profession": "#F5A623",
     "any": "#A0A0A0"
   },
   "variable_types": [
@@ -693,6 +815,21 @@
     "bool"
   ],
   "professions": [
+    {
+      "name": "agent",
+      "title": "Agent",
+      "description": "Plain agent, no specialism. Reads, edits, runs commands and searches the web - the whole toolbox, pointed at whatever the task says. Reach for it when no profession below is the obvious fit.",
+      "writes": true,
+      "runs_processes": true,
+      "read_only": false,
+      "max_model_steps": 50,
+      "capabilities": [
+        "local_read",
+        "local_write",
+        "process",
+        "web"
+      ]
+    },
     {
       "name": "architect",
       "title": "Architect",

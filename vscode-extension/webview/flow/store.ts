@@ -51,6 +51,18 @@ export interface PendingQuestion {
   prompt: string;
 }
 
+/** What one hired agent is doing right now, as the node draws it. */
+export interface AgentRun {
+  name: string;
+  profession: string;
+  /** The tool it is in, or the last thing it reported. */
+  detail: string;
+  /** Tool calls so far: a number that moves is the proof it is not stuck. */
+  steps: number;
+  /** When it was hired, for the elapsed clock on the node. */
+  since: number;
+}
+
 export interface RunState {
   running: boolean;
   runId: string;
@@ -62,7 +74,7 @@ export interface RunState {
   loops: Record<string, { index: number; item: string }>;
   variables: Record<string, string>;
   question: PendingQuestion | null;
-  agents: Record<string, { name: string; profession: string; detail: string }>;
+  agents: Record<string, AgentRun>;
   startedAt: number;
   nodesExecuted: number;
 }
@@ -757,6 +769,8 @@ function applyGraphEvent(
                 name: String(payload.agent_name ?? ""),
                 profession: String(payload.profession ?? ""),
                 detail: "",
+                steps: 0,
+                since: Date.now(),
               },
             },
           },
@@ -772,11 +786,22 @@ function applyGraphEvent(
       const nodeId = String(payload.node_id ?? "");
       const agent = run.agents[nodeId];
       if (!agent) return state;
+      // Only a call that starts counts: counting its completion too would make
+      // the number jump by two and mean nothing.
+      const started = payload.event === "tool.call.started";
+      const detail = String(payload.detail ?? "");
       return {
         ...state,
         run: {
           ...run,
-          agents: { ...run.agents, [nodeId]: { ...agent, detail: String(payload.detail ?? "") } },
+          agents: {
+            ...run.agents,
+            [nodeId]: {
+              ...agent,
+              detail: detail || agent.detail,
+              steps: started ? agent.steps + 1 : agent.steps,
+            },
+          },
         },
       };
     }

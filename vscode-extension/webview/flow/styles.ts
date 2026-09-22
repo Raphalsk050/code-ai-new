@@ -117,6 +117,21 @@ input[type="checkbox"] { width: auto; }
 .flow-node.failed .flow-node-box { stroke: var(--danger); stroke-width: 2.5; }
 .flow-node-title { font-size: 11.5px; font-weight: 600; fill: #fff; }
 .flow-node-summary { font-size: 10.5px; fill: var(--muted); }
+
+/* ---- a node with an agent working inside it ---- */
+/* The running border already says "this node"; these say "and it is moving". */
+.flow-node-activity { font-size: 10.5px; fill: var(--accent); }
+.flow-spinner-track { fill: none; stroke: #fff; stroke-opacity: .3; stroke-width: 1.6; }
+.flow-spinner-arc {
+  fill: none; stroke: #fff; stroke-width: 1.8; stroke-linecap: round;
+  transform-box: fill-box; transform-origin: 50% 50%;
+  animation: flow-spin 900ms linear infinite;
+}
+@keyframes flow-spin { to { transform: rotate(360deg) } }
+@media (prefers-reduced-motion: reduce) {
+  /* Still alive, without the movement: the arc pulses in place instead. */
+  .flow-spinner-arc { animation: flow-pulse 1.4s ease-in-out infinite; }
+}
 .flow-pin-label { font-size: 10px; fill: var(--vscode-foreground); opacity: .85; }
 .flow-pin { cursor: crosshair; }
 .flow-pin:hover .flow-pin-hit { opacity: .25; }

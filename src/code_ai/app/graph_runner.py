@@ -29,15 +29,17 @@ from code_ai.core.graph.runtime import (
     GraphLimits,
     GraphRunOutcome,
     ModelBinding,
+    ProfessionBinding,
     RunStatus,
 )
 from code_ai.core.orchestration import WIND_DOWN_TIME_BUDGET
 from code_ai.core.subagents.naming import generate_agent_name
-from code_ai.core.subagents.profiles import SubagentProfileRegistry
+from code_ai.core.subagents.profiles import SubagentProfile, SubagentProfileRegistry
 from code_ai.core.subagents.runtime import SubagentRuntime
 from code_ai.events.bus import AsyncEventBus
 from code_ai.events.models import EventEnvelope
 from code_ai.providers.base import ModelProvider
+from code_ai.tools.base import ToolCapability
 from code_ai.tools.output import bound_text
 
 logger = logging.getLogger(__name__)
@@ -144,6 +146,7 @@ class GraphNodeExecutor:
         *,
         node_id: str,
         profession: str,
+        custom: ProfessionBinding | None = None,
         task: str,
         extra_instructions: str,
         model: ModelBinding | None,
@@ -151,7 +154,16 @@ class GraphNodeExecutor:
         timeout_s: int,
         cancel: asyncio.Event,
     ) -> AgentOutcome:
-        profile = self._profiles.get(profession)
+        if custom is not None:
+            try:
+                profile = _profile_from(custom)
+            except ValueError as exc:
+                return AgentOutcome(status="rejected", error=str(exc))
+        else:
+            profile = self._profiles.get(profession)
+        # Only a profession written in the editor may go unframed; a built-in
+        # one is written expecting the framing and breaks without it.
+        raw_prompt = custom is not None and not custom.framing
         if profile is None:
             return AgentOutcome(
                 status="rejected",
@@ -174,6 +186,7 @@ class GraphNodeExecutor:
             max_model_steps=max_steps,
             timeout_seconds=timeout_s,
             config_overrides=overrides,
+            raw_prompt=raw_prompt,
         )
         forwarder = self._forwarder(node_id, name, profile.name)
         built.event_bus.subscribe(forwarder)
@@ -522,6 +535,40 @@ async def _mirror(parent: asyncio.Event, child: asyncio.Event) -> None:
 
     await parent.wait()
     child.set()
+
+
+def _profile_from(binding: ProfessionBinding) -> SubagentProfile:
+    """Turn a Profession node into the profile the sub-agent runtime hires.
+
+    The switches map straight onto capabilities; the role text is the system
+    prompt, verbatim. Nothing is appended - not the report rule the built-in
+    professions carry, not the sub-agent framing - because the point of writing
+    a profession here is to say exactly what the agent is. Two of these talking
+    to each other is the case that proves it: boilerplate about reporting back
+    to a dispatcher is what turns a conversation into a pair of status updates.
+    """
+
+    role = binding.role.strip()
+    if not role:
+        raise ValueError("This profession has no role written for it.")
+    capabilities = {ToolCapability.LOCAL_READ} if binding.can_read else set()
+    if binding.can_write:
+        capabilities.add(ToolCapability.LOCAL_WRITE)
+    if binding.can_run:
+        capabilities.add(ToolCapability.PROCESS)
+    if binding.can_browse:
+        capabilities.add(ToolCapability.WEB)
+    if not capabilities:
+        raise ValueError("This profession may not use any tool; turn at least one switch on.")
+    name = binding.name.strip() or "custom"
+    return SubagentProfile(
+        name=name,
+        description=f"Custom profession defined in the graph: {name}.",
+        allowed_capabilities=frozenset(capabilities),
+        max_model_steps=binding.max_steps if binding.max_steps > 0 else 40,
+        timeout_field="subagent_worker_timeout_s",
+        role_prompt=role,
+    )
 
 
 def _default_provider_factory(config: AppConfig) -> ModelProvider:

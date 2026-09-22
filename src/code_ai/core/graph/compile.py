@@ -410,7 +410,9 @@ def _check_node_data(
             case NodeKind.MODEL:
                 _check_model_node(node_id, node, collector)
             case NodeKind.PROFESSION:
-                _check_profession_node(node_id, node, professions, collector)
+                _check_profession_node(node_id, node, professions, wired, collector)
+            case NodeKind.CUSTOM_PROFESSION:
+                _check_custom_profession_node(node_id, node, collector)
             case NodeKind.DECISION:
                 _check_decision_node(node_id, node, wired, collector)
             case NodeKind.LOOP:
@@ -462,11 +464,24 @@ def _check_model_node(node_id: str, node: NodeSpec, collector: _Collector) -> No
 
 
 def _check_profession_node(
-    node_id: str, node: NodeSpec, professions: tuple[str, ...], collector: _Collector
+    node_id: str,
+    node: NodeSpec,
+    professions: tuple[str, ...],
+    wired: set[tuple[str, str]],
+    collector: _Collector,
 ) -> None:
     profession = str(node.data.get("profession") or "").strip()
+    # A Profession node on the pin answers the question the dropdown asks, so
+    # neither the empty dropdown nor an unknown name matters once it is wired.
+    if (node_id, "profession") in wired:
+        return
     if not profession:
-        collector.error("Choose a profession for this agent.", node_id=node_id, field="profession")
+        collector.error(
+            "Choose a profession for this agent, or wire a Profession node into its "
+            "profession pin.",
+            node_id=node_id,
+            field="profession",
+        )
         return
     if professions and profession not in professions:
         collector.error(
@@ -485,6 +500,55 @@ def _check_profession_node(
             continue
         if number < 0:
             collector.error(f"{name} cannot be negative.", node_id=node_id, field=name)
+
+
+def _check_custom_profession_node(
+    node_id: str, node: NodeSpec, collector: _Collector
+) -> None:
+    if not str(node.data.get("role") or "").strip():
+        collector.error(
+            "Write what this profession is and how it works; the role text is the "
+            "agent's whole brief.",
+            node_id=node_id,
+            field="role",
+        )
+    if not str(node.data.get("name") or "").strip():
+        collector.warn(
+            "Unnamed profession; the run log will call it 'custom'.",
+            node_id=node_id,
+            field="name",
+        )
+    switches = ("can_read", "can_write", "can_run", "can_browse")
+    if not any(_as_flag(node.data.get(name), default=(name == "can_read")) for name in switches):
+        collector.error(
+            "This profession may not use any tool, so its agent can only talk. Turn "
+            "at least one switch on.",
+            node_id=node_id,
+            field="can_read",
+        )
+    for name in ("max_steps", "timeout_s"):
+        value = node.data.get(name)
+        if value in (None, ""):
+            continue
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            collector.error(f"{name} must be a whole number.", node_id=node_id, field=name)
+            continue
+        if number < 0:
+            collector.error(f"{name} cannot be negative.", node_id=node_id, field=name)
+
+
+def _as_flag(value: object, *, default: bool) -> bool:
+    """A checkbox as stored by the editor, tolerating the string forms."""
+
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "yes", "1")
+    return bool(value)
 
 
 def _check_decision_node(
