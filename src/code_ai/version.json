@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 16,
-  "patch": 2,
-  "build": 20,
+  "patch": 3,
+  "build": 21,
   "updated": "2026-09-22",
-  "note": "the cross-build container no longer leaves root-owned files behind"
+  "note": "Build the backend from a staging copy, never in the source tree."
 }

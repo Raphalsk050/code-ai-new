@@ -29,11 +29,13 @@ import { BIN_DIR, PLATFORMS, assertBinary, stageBinary } from "./bundle-binary.m
 import {
   SkippedTarget,
   cleanEggInfo,
+  containerScript,
   dockerRunArgs,
   ensureBackend,
   findPython,
   hostPlatform,
   isStale,
+  skipFromCopy,
 } from "./ensure-backend.mjs";
 import { readZipEntries, verify } from "./verify-vsix.mjs";
 
@@ -368,6 +370,62 @@ test("a stale egg-info is cleared before the in-tree install", () => {
 
   assert.ok(!existsSync(join(src, "code_ai.egg-info")), "the stale egg-info survived");
   assert.ok(existsSync(join(src, "code_ai")), "cleaning took the package with it");
+});
+
+// -- nothing is built inside the source tree ------------------------------
+//
+// The second half of the same bug: `pip install .` runs setuptools' egg_info in
+// the project directory, and PyInstaller writes `build/`. Both fail outright in
+// a tree whose leftovers belong to another user. Building from a copy means
+// there is nothing in the tree left to trip over.
+
+test("neither container installs from the mounted tree", () => {
+  for (const platform of ["linux", "win32"]) {
+    const script = containerScript({ platform, verifySsl: false });
+
+    assert.match(script, /cp -a pyproject\.toml README\.md src \/tmp\//, `${platform} stages no copy`);
+    // Installing happens from inside the copy: the Wine interpreter reads an
+    // absolute unix path as a Windows one, and a bare `.` needs no translation.
+    assert.match(script, /\(cd \/tmp\/code-ai-build && .*pip install \.\)/, `${platform}: wrong cwd`);
+    // And that is the only `pip install .` - the mounted repo keeps none.
+    assert.equal(
+      script.match(/pip install \./g).length,
+      1,
+      `${platform} still installs from the mount: ${script}`
+    );
+  }
+});
+
+test("the Linux container keeps PyInstaller's scratch out of the mount", () => {
+  const script = containerScript({ platform: "linux", verifySsl: false });
+
+  assert.match(script, /--workpath \/tmp\/build/, "build/ still lands in the repo");
+  assert.match(script, /packaging\/code-ai\.spec/, "the spec is still the one in the repo");
+});
+
+test("the SSL escape hatch survives the rewrite", () => {
+  // The company network fails cert checks, so an unverified build has to keep
+  // reaching pypi.
+  assert.match(containerScript({ platform: "linux", verifySsl: false }), /PIP_TRUSTED_HOST/);
+  assert.doesNotMatch(containerScript({ platform: "linux", verifySsl: true }), /PIP_TRUSTED_HOST/);
+});
+
+test("nothing generated travels into the staged copy", () => {
+  assert.ok(skipFromCopy("__pycache__"));
+  assert.ok(skipFromCopy("code_ai.egg-info"));
+  assert.ok(!skipFromCopy("code_ai"));
+  assert.ok(!skipFromCopy("version.json"));
+  // Matched on the name, so the copy behaves the same on either separator.
+  assert.ok(!skipFromCopy("src"));
+});
+
+test("a root-owned egg-info no longer fails the build", () => {
+  // It used to throw and tell the user to sudo. Nothing reads it any more, so
+  // refusing to build over one would be the old bug wearing a new hat.
+  const repo = mkdtempSync(join(tmpdir(), "code-ai-egg-"));
+  mkdirSync(join(repo, "src"), { recursive: true });
+
+  assert.deepEqual(cleanEggInfo(repo), [], "a clean tree reported something stuck");
 });
 
 test("cleaning a tree with no src is a no-op, not a crash", () => {

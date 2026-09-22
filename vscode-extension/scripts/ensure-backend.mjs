@@ -8,8 +8,18 @@
 // without Docker, and that one is skipped with a reason rather than failed.
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import {
+  accessSync,
+  constants,
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  statSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { PLATFORMS, assertBinary } from "./bundle-binary.mjs";
@@ -118,11 +128,6 @@ export function isStale(binary) {
 }
 
 /**
- * Build the host platform's binary with PyInstaller, in a virtualenv kept apart
- * from the developer's own `.venv`: this one carries PyInstaller and a
- * non-editable install of the project, and neither belongs in a dev env.
- */
-/**
  * The uid/gid to run a container as, so what it writes into the mounted repo
  * belongs to the caller.
  *
@@ -175,34 +180,109 @@ export function dockerRunArgs({ platform, image, script, mount, user }) {
 }
 
 /**
- * Remove the `*.egg-info` setuptools writes into the source tree.
+ * Sweep away an `*.egg-info` an older build left in the source tree.
  *
- * `pip install .` runs egg_info in place, and egg_info wants to update the
- * directory's timestamp. A leftover from another user - a container that ran
- * as root, a build done with sudo - makes that fail, and the error names the
- * timestamp rather than the ownership, which sends people looking in the wrong
- * place. Clearing it first makes the install idempotent; when it cannot be
- * cleared, say what to run.
+ * Nothing depends on this any more - the install builds from a copy, so the
+ * source tree is never written to - but a leftover from a build that predates
+ * that change is confusing to come across, and clearing it costs nothing. One
+ * that belongs to another user is left alone: it is inert, and failing a build
+ * over a directory nothing reads would be the old bug wearing a new hat.
+ *
+ * Returns the paths it could not remove, so a caller can mention them.
  */
 export function cleanEggInfo(root = REPO_ROOT) {
   const src = join(root, "src");
-  if (!existsSync(src)) return;
+  if (!existsSync(src)) return [];
+  const stuck = [];
   for (const name of readdirSync(src)) {
     if (!name.endsWith(".egg-info")) continue;
     const path = join(src, name);
     try {
       rmSync(path, { recursive: true, force: true });
-    } catch (err) {
-      throw new Error(
-        `${path} cannot be removed (${err.code ?? err.message}).\n` +
-          "It belongs to another user - usually a container or a sudo build that ran here\n" +
-          `before. Remove it and build again:\n\n    sudo rm -rf ${path}\n`
-      );
+    } catch {
+      stuck.push(path);
     }
+  }
+  return stuck;
+}
+
+/**
+ * The files a wheel build needs: what pyproject declares, and nothing else.
+ *
+ * `readme` points at README.md and the version is read from the package, so a
+ * copy of these three is a complete, buildable project.
+ */
+const BUILD_INPUTS = ["pyproject.toml", "README.md", "src"];
+
+/** Where the cross-build container stages that copy, inside the container. */
+const STAGE = "/tmp/code-ai-build";
+
+/** Names that never travel into the staging copy. Exported for the tests. */
+export function skipFromCopy(name) {
+  return name === "__pycache__" || name.endsWith(".egg-info");
+}
+
+/**
+ * Install the project into `python`, from a copy rather than in place.
+ *
+ * setuptools runs egg_info inside the project directory and updates that
+ * directory's timestamp. In a tree whose `src/*.egg-info` belongs to another
+ * user the install dies there - and says "Cannot update time stamp of
+ * directory", which sends people looking at clocks instead of at ownership.
+ * Building from a copy means the source tree is never written to at all, so a
+ * poisoned leftover (or a read-only checkout) stops mattering.
+ */
+function installProject(python, flags) {
+  const staging = mkdtempSync(join(tmpdir(), "code-ai-build-"));
+  try {
+    for (const name of BUILD_INPUTS) {
+      const from = join(REPO_ROOT, name);
+      if (!existsSync(from)) continue;
+      cpSync(from, join(staging, name), {
+        recursive: true,
+        // Nothing generated travels: an egg-info or a __pycache__ from the
+        // source tree would defeat the point of copying. Matched on the name
+        // rather than on the path, so no separator has to be guessed.
+        filter: (path) => !skipFromCopy(basename(path)),
+      });
+    }
+    // Not editable: PyInstaller's analysis follows the installed package, and
+    // an editable install points back at the tree and hides its data files.
+    run(python, ["-m", "pip", "install", ...flags, staging], "pip: installing code-ai (a few minutes)");
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
   }
 }
 
+/**
+ * Fail before the slow part when the repo cannot take the artifact.
+ *
+ * `dist/` is the one path the build must write in the tree, so a root-owned one
+ * is worth catching in the first second rather than after several minutes of
+ * pip and PyInstaller.
+ */
+function assertDistWritable() {
+  const dist = join(REPO_ROOT, "dist");
+  if (!existsSync(dist)) return;
+  try {
+    accessSync(dist, constants.W_OK);
+  } catch {
+    throw new Error(
+      `${dist} is not writable by this user.\n` +
+        "It belongs to another user - usually a container or a sudo build that ran\n" +
+        "here before. Take it back and build again:\n\n" +
+        `    sudo chown -R "$(id -u):$(id -g)" ${dist}\n`
+    );
+  }
+}
+
+/**
+ * Build the host platform's binary with PyInstaller, in a virtualenv kept apart
+ * from the developer's own `.venv`: this one carries PyInstaller and a
+ * non-editable install of the project, and neither belongs in a dev env.
+ */
 function buildNative({ verifySsl }) {
+  assertDistWritable();
   const spec = PLATFORMS[hostPlatform()];
   const output = join(REPO_ROOT, "dist", spec.staged);
   let python = venvPython(BUILD_VENV);
@@ -222,16 +302,63 @@ function buildNative({ verifySsl }) {
   const flags = pipFlags(verifySsl);
   cleanEggInfo();
   run(python, ["-m", "pip", "install", ...flags, "--upgrade", "pip"], "pip: upgrading", { quiet: true });
-  // The project itself, not editable: PyInstaller's analysis follows the
-  // installed package, and an editable install hides its data files.
-  run(python, ["-m", "pip", "install", ...flags, "."], "pip: installing code-ai (a few minutes)");
+  installProject(python, flags);
   run(python, ["-m", "pip", "install", ...flags, "pyinstaller>=6,<7"], "pip: installing pyinstaller", {
     quiet: true,
   });
-  run(python, ["-m", "PyInstaller", "--clean", "--noconfirm", SPEC], "pyinstaller: freezing");
+  // `build/` is scratch, so it goes to a temp directory: one less path in the
+  // repo that has to be writable, and one less leftover between builds.
+  const workpath = mkdtempSync(join(tmpdir(), "code-ai-pyinstaller-"));
+  try {
+    run(
+      python,
+      ["-m", "PyInstaller", "--clean", "--noconfirm", "--workpath", workpath, SPEC],
+      "pyinstaller: freezing"
+    );
+  } finally {
+    rmSync(workpath, { recursive: true, force: true });
+  }
 
   if (!existsSync(output)) throw new Error(`PyInstaller finished but ${output} is not there`);
   return output;
+}
+
+/**
+ * The shell the cross-build container runs.
+ *
+ * It mirrors the native build: the project is installed from a copy under
+ * `/tmp`, so setuptools never runs egg_info inside the mounted repo, and the
+ * only thing the container writes back into the tree is `dist/`. Installing
+ * happens from inside the copy rather than by absolute path, because the Wine
+ * image's interpreter reads its arguments as Windows paths and a bare `.`
+ * needs no translation.
+ *
+ * Exported for the tests: a container run costs minutes, the string does not.
+ */
+export function containerScript({ platform, verifySsl }) {
+  const trusted = verifySsl ? "" : "export PIP_TRUSTED_HOST='pypi.org files.pythonhosted.org'; ";
+  const stage =
+    `rm -rf ${STAGE} && mkdir -p ${STAGE} && cp -a ${BUILD_INPUTS.join(" ")} ${STAGE}/ && ` +
+    `rm -rf ${STAGE}/src/*.egg-info`;
+  if (platform === "linux") {
+    return (
+      `${trusted}python -m venv /tmp/venv && . /tmp/venv/bin/activate && ` +
+      `pip install --upgrade pip && ${stage} && (cd ${STAGE} && pip install .) && ` +
+      `pip install "pyinstaller>=6,<7" && ` +
+      // Scratch to /tmp as well, so a root-owned `build/` on the host - from a
+      // container that ran before this - cannot fail the freeze.
+      `pyinstaller --clean --noconfirm --workpath /tmp/build packaging/code-ai.spec`
+    );
+  }
+  return (
+    `${trusted}${stage} && wine python -m pip install --upgrade pip && ` +
+    `(cd ${STAGE} && wine python -m pip install .) && ` +
+    `wine python -m pip install "pyinstaller>=6,<7" && ` +
+    // The Wine image keeps the default workpath: it runs as root and hands
+    // `build/` back afterwards, and a unix --workpath would reach its
+    // interpreter as a Windows path.
+    `wine python -m PyInstaller --clean --noconfirm packaging/code-ai.spec`
+  );
 }
 
 /** Is Docker usable from here? Cross-building needs it and nothing else. */
@@ -247,16 +374,8 @@ function hasDocker() {
 function buildInDocker(platform, { verifySsl }) {
   const spec = PLATFORMS[platform];
   const output = join(REPO_ROOT, "dist", spec.staged);
-  const trusted = verifySsl ? "" : "export PIP_TRUSTED_HOST='pypi.org files.pythonhosted.org'; ";
   const image = platform === "linux" ? "python:3.12-bullseye" : "tobix/pywine:3.12";
-  const script =
-    platform === "linux"
-      ? `${trusted}python -m venv /tmp/venv && . /tmp/venv/bin/activate && ` +
-        `pip install --upgrade pip && pip install . "pyinstaller>=6,<7" && ` +
-        `pyinstaller --clean --noconfirm packaging/code-ai.spec`
-      : `${trusted}wine python -m pip install --upgrade pip && ` +
-        `wine python -m pip install . "pyinstaller>=6,<7" && ` +
-        `wine python -m PyInstaller --clean --noconfirm packaging/code-ai.spec`;
+  const script = containerScript({ platform, verifySsl });
 
   console.log(`  docker: cross-building in ${image} (slow the first time)`);
   cleanEggInfo();
