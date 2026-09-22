@@ -108,6 +108,31 @@ a = Analysis(
     noarchive=False,
 )
 
+# The C++ runtime does not travel on Linux.
+#
+# PyInstaller collects libstdc++ from wherever the build interpreter's
+# dependencies live. With a conda environment active that is conda's copy,
+# which is older than the system's - while libraries collected straight from
+# the system (ICU, which the stdlib's sqlite3 pulls in through libsqlite3) are
+# built against the newer one. Inside the bundle the older copy shadows the
+# system's, and the first import of sqlite3 dies with
+#
+#     libstdc++.so.6: version `CXXABI_1.3.15' not found
+#         (required by .../libicui18n.so.78)
+#
+# Leaving it out makes the binary link the host's, which is by definition new
+# enough for the host's own libraries. The trade is that a binary built on a
+# newer distro than it runs on now fails at load instead of silently working -
+# and this project builds each platform on the platform, so that is not a case
+# it has.
+if sys.platform.startswith("linux"):
+    _HOST_RUNTIME = ("libstdc++.so", "libgcc_s.so")
+    a.binaries = [
+        entry
+        for entry in a.binaries
+        if not os.path.basename(entry[0]).startswith(_HOST_RUNTIME)
+    ]
+
 pyz = PYZ(a.pure)
 
 exe = EXE(

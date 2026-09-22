@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 17,
-  "patch": 1,
-  "build": 24,
+  "patch": 2,
+  "build": 25,
   "updated": "2026-09-22",
-  "note": "Surface backend stderr, and smoke-test the binary at build time."
+  "note": "Do not bundle the C++ runtime on Linux; smoke-test every runnable binary."
 }

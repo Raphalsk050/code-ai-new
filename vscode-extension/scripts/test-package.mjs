@@ -202,7 +202,17 @@ function packageFor(target, platform) {
   const outDir = join(SCRATCH, "out");
   execFileSync(
     process.execPath,
-    [join(EXT_ROOT, "scripts", "package.mjs"), "--target", target, flag, source, "--out-dir", outDir],
+    [
+      join(EXT_ROOT, "scripts", "package.mjs"),
+      "--target",
+      target,
+      flag,
+      source,
+      "--out-dir",
+      outDir,
+      // The binary is a fake with the right magic bytes; it cannot start.
+      "--skip-smoke",
+    ],
     { cwd: EXT_ROOT, stdio: "pipe" }
   );
   const version = JSON.parse(readFileSync(join(EXT_ROOT, "package.json"), "utf8")).version;
@@ -573,4 +583,21 @@ test("a binary that cannot be executed at all says so", () => {
   const { spawn } = fakeSpawn({ error: new Error("spawn EACCES"), stdout: "", stderr: "" });
 
   assert.throws(() => smokeTest("/tmp/code-ai", { spawn }), /could not be started: spawn EACCES/);
+});
+
+test("a binary that is merely found, not built, is still started", () => {
+  // The gap this closes: ensureBackend returns a non-stale binary untouched,
+  // so one broken yesterday shipped today without ever being run.
+  const host = hostPlatform();
+  if (!host) return; // macOS builds nothing natively
+
+  const source = fakeBinary(host, `found-${host}${host === "win32" ? ".exe" : ""}`, 6);
+
+  assert.throws(
+    () => ensureBackend(host, { explicit: source }),
+    /never speaks the bridge protocol|could not be started/,
+    "a fake binary was accepted without being started"
+  );
+  // And the escape hatch the packaging tests need still lets it through.
+  assert.equal(ensureBackend(host, { explicit: source, smoke: false }), source);
 });

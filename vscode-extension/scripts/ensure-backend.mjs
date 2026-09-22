@@ -362,8 +362,6 @@ function buildNative({ verifySsl }) {
   }
 
   if (!existsSync(output)) throw new Error(`PyInstaller finished but ${output} is not there`);
-  console.log("  smoke: starting the binary");
-  smokeTest(output);
   return output;
 }
 
@@ -433,39 +431,54 @@ function buildInDocker(platform, { verifySsl }) {
  * takes. Throws {@link SkippedTarget} when this machine cannot produce it, so
  * the caller can carry on with the targets it can.
  */
-export function ensureBackend(platform, { explicit = null, verifySsl = false, refresh = false } = {}) {
+/**
+ * Check a binary is what it claims to be, and - when this machine can run it -
+ * that it actually starts.
+ *
+ * The shape check alone let a binary that dies on its first import ship: it is
+ * an ELF of the right size, so nothing objected until the editor tried to talk
+ * to it. A binary for another platform cannot be started here, so it gets the
+ * shape check and the CI job on its own platform.
+ */
+function accept(path, platform, smoke = true) {
+  assertBinary(path, platform);
+  if (smoke && platform === hostPlatform()) {
+    console.log("  smoke: starting the binary");
+    smokeTest(path);
+  }
+  return path;
+}
+
+export function ensureBackend(
+  platform,
+  { explicit = null, verifySsl = false, refresh = false, smoke = true } = {}
+) {
   if (explicit) {
     const path = resolve(explicit);
     if (!existsSync(path)) throw new Error(`${path} does not exist`);
-    assertBinary(path, platform);
-    return path;
+    return accept(path, platform, smoke);
   }
 
   const buildable = platform === hostPlatform();
   const found = refresh ? null : PLATFORMS[platform].candidates.find((file) => existsSync(file));
   if (found) {
-    assertBinary(found, platform);
     // A binary older than src/ would ship yesterday's agent inside today's
     // package. Rebuild it where that is possible; say so where it is not,
     // because a downloaded artifact is still better than no package at all.
-    if (!isStale(found)) return found;
+    if (!isStale(found)) return accept(found, platform, smoke);
     if (!buildable) {
       console.log(`  warning: ${found} is older than src/, and only a ${platform} machine can refresh it`);
-      return found;
+      return accept(found, platform, smoke);
     }
     console.log("  backend is older than src/, rebuilding");
   }
 
   if (buildable) {
-    const built = buildNative({ verifySsl });
-    assertBinary(built, platform);
-    return built;
+    return accept(buildNative({ verifySsl }), platform, smoke);
   }
 
   if (hasDocker()) {
-    const cross = buildInDocker(platform, { verifySsl });
-    assertBinary(cross, platform);
-    return cross;
+    return accept(buildInDocker(platform, { verifySsl }), platform, smoke);
   }
 
   throw new SkippedTarget(

@@ -41,6 +41,7 @@ function parseArgs(argv) {
     win: null,
     linux: null,
     skipVerify: false,
+    skipSmoke: false,
     verifySsl: false,
     refresh: false,
     outDir: null,
@@ -51,6 +52,9 @@ function parseArgs(argv) {
     else if (arg === "--win") args.win = argv[++i];
     else if (arg === "--linux") args.linux = argv[++i];
     else if (arg === "--skip-verify") args.skipVerify = true;
+    // For a binary this machine cannot start: a fake in the tests, or one
+    // handed in with --win/--linux that was built somewhere else.
+    else if (arg === "--skip-smoke") args.skipSmoke = true;
     else if (arg === "--verify-ssl") args.verifySsl = true;
     else if (arg === "--refresh-backend") args.refresh = true;
     else if (arg === "--out-dir") args.outDir = argv[++i];
@@ -92,6 +96,7 @@ function main() {
           explicit: platform === "win32" ? args.win : args.linux,
           verifySsl: args.verifySsl,
           refresh: args.refresh,
+          smoke: !args.skipSmoke,
         });
       } catch (err) {
         // A target the user named has to be built or the run has failed; one we
