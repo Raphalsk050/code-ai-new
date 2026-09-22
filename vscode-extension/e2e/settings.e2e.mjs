@@ -13,7 +13,10 @@ const SAVE = ".settings-save";
 /** Open the panel with a snapshot already delivered. */
 async function openPanel(ui, snapshot = settingsSnapshot()) {
   await ui.fromHost({ type: "settings", settings: snapshot });
-  await ui.page.click('button[title="Settings"]');
+  // The gear's tooltip follows the language, so a pt-BR snapshot opens by the
+  // pt-BR title.
+  const gear = /^pt/i.test(snapshot.language ?? "en") ? "Configurações" : "Settings";
+  await ui.page.click(`button[title="${gear}"]`);
   await ui.page.waitForSelector(".settings-body");
   await ui.clearToHost();
   return snapshot;
@@ -202,6 +205,143 @@ export const tests = {
     assert(
       (await ui.page.textContent(SAVE)).trim() === "Salvar",
       "the save button stayed English with pt-BR selected"
+    );
+  },
+
+  async "the language field offers English and Portuguese"(ui, assert) {
+    await openPanel(ui);
+
+    const options = await ui.page.$$eval(".language-select option", (items) =>
+      items.map((item) => ({ value: item.value, label: item.textContent.trim() }))
+    );
+    assert(options.length === 2, `the dropdown had ${options.length} options`);
+    assert(
+      options[0].value === "en" && options[0].label === "English",
+      `first option was ${JSON.stringify(options[0])}`
+    );
+    assert(
+      options[1].value === "pt-BR" && options[1].label.startsWith("Portugu"),
+      `second option was ${JSON.stringify(options[1])}`
+    );
+    assert(
+      (await ui.page.inputValue(".language-select")) === "en",
+      "the dropdown did not show the language the backend reported"
+    );
+    // The field sits below the fold, so the shot has to go to it.
+    await ui.page.locator(".language-select").scrollIntoViewIfNeeded();
+    await ui.page.waitForTimeout(80);
+    await ui.shot("settings-language-dropdown");
+  },
+
+  async "a language the panel has no translation for keeps its own option"(ui, assert) {
+    // A config edited by hand must not be silently rewritten to English the
+    // first time the panel is opened.
+    await openPanel(ui, settingsSnapshot({ language: "es-ES" }));
+
+    const values = await ui.page.$$eval(".language-select option", (items) =>
+      items.map((item) => item.value)
+    );
+    assert(values.includes("es-ES"), `the dropdown dropped the stored value: ${values}`);
+    assert(
+      (await ui.page.inputValue(".language-select")) === "es-ES",
+      "the stored language was not selected"
+    );
+  },
+
+  async "picking Portuguese and saving turns the panel Portuguese, with no reload"(
+    ui,
+    assert
+  ) {
+    const snapshot = await openPanel(ui);
+    assert(
+      (await ui.page.textContent(SAVE)).trim() === "Save",
+      "the panel did not start in English"
+    );
+
+    await ui.page.selectOption(".language-select", "pt-BR");
+    await ui.page.click(SAVE);
+
+    // What the panel puts on the wire is the language, not a label.
+    const [sent] = await ui.toHost("updateSettings");
+    assert(sent, "Save posted no updateSettings");
+    assert(sent.updates.language === "pt-BR", `the wire carried ${sent.updates.language}`);
+
+    // The backend answers with the settings as they now stand; the panel has to
+    // follow that without the window being reloaded.
+    await ui.fromHost({
+      type: "settingsUpdated",
+      result: {
+        applied: ["language"],
+        restart_required: [],
+        errors: {},
+        settings: { ...snapshot, language: "pt-BR" },
+      },
+    });
+
+    await ui.page.waitForFunction(
+      () => document.querySelector(".settings-title")?.textContent?.trim() === "Configurações"
+    );
+    assert(
+      (await ui.page.textContent(SAVE)).trim() === "Salvo",
+      `the save button read ${await ui.page.textContent(SAVE)}`
+    );
+    assert(
+      (await ui.page.inputValue(".language-select")) === "pt-BR",
+      "the dropdown lost the language that was just saved"
+    );
+    await ui.page.locator(".language-select").scrollIntoViewIfNeeded();
+    await ui.page.waitForTimeout(80);
+    await ui.shot("settings-language-pt");
+  },
+
+  async "switching back to English repaints the panel in English"(ui, assert) {
+    const snapshot = await openPanel(ui, settingsSnapshot({ language: "pt-BR" }));
+    assert(
+      (await ui.page.textContent(SAVE)).trim() === "Salvar",
+      "the panel did not start in Portuguese"
+    );
+
+    await ui.page.selectOption(".language-select", "en");
+    await ui.page.click(SAVE);
+    await ui.fromHost({
+      type: "settingsUpdated",
+      result: {
+        applied: ["language"],
+        restart_required: [],
+        errors: {},
+        settings: { ...snapshot, language: "en" },
+      },
+    });
+
+    await ui.page.waitForFunction(
+      () => document.querySelector(".settings-title")?.textContent?.trim() === "Settings"
+    );
+    assert((await ui.page.textContent(SAVE)).trim() === "Saved", "the button stayed Portuguese");
+  },
+
+  async "a refused language leaves the panel in the language it still has"(ui, assert) {
+    const snapshot = await openPanel(ui);
+
+    await ui.page.selectOption(".language-select", "pt-BR");
+    await ui.page.click(SAVE);
+    // The backend refused it, so its snapshot still says English.
+    await ui.fromHost({
+      type: "settingsUpdated",
+      result: {
+        applied: [],
+        restart_required: [],
+        errors: { language: "unsupported language tag" },
+        settings: snapshot,
+      },
+    });
+
+    assert(
+      (await ui.page.textContent(".settings-title")).trim() === "Settings",
+      "the panel translated itself on a refusal"
+    );
+    assert(
+      (await ui.page.inputValue(".language-select")) === "pt-BR",
+      "the refused choice must survive so it can be corrected"
     );
   },
 };

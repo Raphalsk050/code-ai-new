@@ -115,12 +115,11 @@ export function SettingsScreen({
             <>
               <span>
                 {t(
-                  "Code-AI did not answer, so there are no settings to show. The chat says"
+                  "Code-AI did not answer, so there are no settings to show. The chat says why."
                 )}
-                que falhou.
               </span>
               <button className="btn-primary" onClick={onRestart}>
-                Tentar de novo
+                {t("Try again")}
               </button>
             </>
           ) : (
@@ -153,8 +152,8 @@ export function SettingsScreen({
                 onChange={(e) => onPrefsChange({ mode: e.target.value as AppMode })}
               >
                 <option value="agent">{t("Agent")}</option>
-                <option value="refactor">Refatorar</option>
-                <option value="explain">Explicar</option>
+                <option value="refactor">{t("Refactor")}</option>
+                <option value="explain">{t("Explain")}</option>
               </select>
             </Field>
             <Toggle
@@ -206,7 +205,7 @@ export function SettingsScreen({
               )}
               {models.status === "error" && <div className="model-error">{models.error}</div>}
             </Field>
-            <Field label="Modo da API" restart>
+            <Field label={t("API mode")} restart>
               <select value={String(draft.api_mode ?? "")} onChange={(e) => set("api_mode", e.target.value)}>
                 {settings.supported.api_mode.map((m) => (
                   <option key={m} value={m}>{m}</option>
@@ -252,7 +251,7 @@ export function SettingsScreen({
             </Field>
           </Section>
 
-          <Section title="Comportamento">
+          <Section title={t("Behaviour")}>
             <Field label={t("Permission mode")}>
               <select value={String(draft.permission_mode ?? "")} onChange={(e) => set("permission_mode", e.target.value)}>
                 {settings.supported.permission_mode.map((m) => (
@@ -267,18 +266,31 @@ export function SettingsScreen({
                 ))}
               </select>
             </Field>
-            <Field label={t("Answer language")}>
-              <input value={String(draft.language ?? "")} onChange={(e) => set("language", e.target.value)} />
+            <Field label={t("Language")}>
+              <select
+                className="language-select"
+                value={String(draft.language ?? "en")}
+                onChange={(e) => set("language", e.target.value)}
+              >
+                {languageOptions(String(draft.language ?? "en")).map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <span className="settings-hint">
+                {t("The panel and the agent's answers both follow this.")}
+              </span>
             </Field>
             <Toggle
-              label="Modo learn"
+              label={t("Learn mode")}
               hint={t("Shows, on approvals, why the model thinks the change is needed.")}
               checked={Boolean(draft.learn)}
               onChange={(v) => set("learn", v)}
             />
           </Section>
 
-          <Section title="Contexto e workspace">
+          <Section title={t("Context and workspace")}>
             <Field label={t("Max context tokens")} restart>
               <input
                 type="number"
@@ -382,6 +394,23 @@ function Section({ title, hint, children }: { title: string; hint?: string; chil
   );
 }
 
+/**
+ * The languages the panel ships a translation for.
+ *
+ * A config holding something else (set by hand, or by a build that knew more
+ * languages) keeps its value as an extra option rather than being silently
+ * rewritten to English the first time the panel is opened.
+ */
+export const LANGUAGES: { value: string; label: string }[] = [
+  { value: "en", label: "English" },
+  { value: "pt-BR", label: "Português (Brasil)" },
+];
+
+export function languageOptions(current: string): { value: string; label: string }[] {
+  if (LANGUAGES.some((item) => item.value === current)) return LANGUAGES;
+  return [...LANGUAGES, { value: current, label: current || "(unset)" }];
+}
+
 function Field({ label, restart, children }: { label: string; restart?: boolean; children: React.ReactNode }) {
   return (
     <label className="settings-field">
@@ -453,7 +482,7 @@ function ToolSwitches({
           className="btn-ghost tool-switch-all"
           onClick={() => onChange(off.size ? [] : tools.map((t) => t.name).sort())}
         >
-          {off.size ? "Ligar todas" : "Desligar todas"}
+          {off.size ? t("Turn all on") : t("Turn all off")}
         </button>
       </div>
       <div className="tool-switch-list">

@@ -38,6 +38,8 @@ export class FlowEditorProvider implements vscode.CustomTextEditorProvider {
 
   /** The panel the user is looking at, for the palette commands. */
   private active?: FlowSession;
+  /** Every open graph tab, so a settings change can reach all of them. */
+  private readonly sessions = new Set<FlowSession>();
   private catalog?: GraphCatalog;
 
   async resolveCustomTextEditor(
@@ -64,15 +66,29 @@ export class FlowEditorProvider implements vscode.CustomTextEditorProvider {
       }
     );
     this.active = session;
+    this.sessions.add(session);
     panel.onDidChangeViewState(() => {
       if (panel.active) this.active = session;
       else if (this.active === session) this.active = undefined;
     });
     panel.onDidDispose(() => {
       if (this.active === session) this.active = undefined;
+      this.sessions.delete(session);
       session.dispose();
     });
     session.start();
+  }
+
+  /**
+   * Drop the cached catalog and hand every open tab a fresh one.
+   *
+   * The catalog carries the language the user picked, so a settings save has to
+   * reach the graph editor too - otherwise that tab keeps the language it was
+   * opened with.
+   */
+  refreshCatalog(): void {
+    this.catalog = undefined;
+    for (const session of this.sessions) void session.reloadCatalog();
   }
 
   runActive(): void {
@@ -150,6 +166,11 @@ class FlowSession {
     void this.sendCatalog();
     void this.adoptRunningGraph();
     this.pushDocument();
+  }
+
+  /** Ask for the catalog again and hand it to the panel. */
+  async reloadCatalog(): Promise<void> {
+    await this.sendCatalog();
   }
 
   /**

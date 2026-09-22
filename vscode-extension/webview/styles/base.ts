@@ -466,6 +466,7 @@ button { font-family: inherit; cursor: pointer; }
 .settings-section-hint { font-size: 11.5px; color: var(--muted); }
 .settings-fields { display: flex; flex-direction: column; gap: 12px; }
 .settings-field { display: flex; flex-direction: column; gap: 5px; }
+.settings-hint { color: var(--muted); font-size: 11px; }
 .settings-field-label { font-size: 12px; color: var(--vscode-foreground); display: flex; align-items: center; gap: 7px; }
 .settings-field input, .settings-field select {
   font-family: inherit; font-size: 12.5px; color: var(--vscode-input-foreground);

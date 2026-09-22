@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 16,
-  "patch": 0,
-  "build": 18,
+  "patch": 1,
+  "build": 19,
   "updated": "2026-09-22",
-  "note": "english is the product language, portuguese behind the language setting"
+  "note": "language dropdown, and the panel follows it without a reload"
 }

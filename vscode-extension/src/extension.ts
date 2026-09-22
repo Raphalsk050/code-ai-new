@@ -28,6 +28,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const bridge = new BridgeSession(context.extensionUri.fsPath);
   const provider = new ChatViewProvider(context.extensionUri, bridge);
   const flowEditor = new FlowEditorProvider(context.extensionUri, bridge, context.secrets);
+  provider.onSettingsSaved = () => flowEditor.refreshCatalog();
   context.subscriptions.push(
     bridge,
     vscode.window.registerWebviewViewProvider("code-ai.chat", provider, {
@@ -80,6 +81,9 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   private get client(): BridgeClient | undefined {
     return this.bridge.client;
   }
+
+  /** Called after a settings save lands, so other views can refresh. */
+  onSettingsSaved?: () => void;
   private view?: vscode.WebviewView;
   private webview?: vscode.Webview;
   private mode: AppMode = "agent";
@@ -598,6 +602,10 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
               // from the settings panel.
               this.applyInlineSettings(result.settings);
               this.webview?.postMessage({ type: "settingsUpdated", result });
+              // The graph editor caches the catalog, and the catalog carries the
+              // language: without this, changing it there leaves that tab in the
+              // old one until the window reloads.
+              this.onSettingsSaved?.();
             })
             .catch((err) =>
               vscode.window.showErrorMessage(`Code-AI: failed to save settings: ${String(err)}`)

@@ -150,7 +150,9 @@ function App(): JSX.Element {
       } else if (data?.type === "settingsUpdated") {
         // The snapshot carries the backend's word on each field, so the errors
         // have to travel with it: the panel needs them to tell "saved" from
-        // "refused and reverted to what you were replacing".
+        // "refused and reverted to what you were replacing". The language is in
+        // there too, so saving it repaints the panel without a reload.
+        setLanguage(data.result.settings.language ?? "en");
         setSettings(data.result.settings);
         setSave({
           status: Object.keys(data.result.errors ?? {}).length ? "error" : "saved",
