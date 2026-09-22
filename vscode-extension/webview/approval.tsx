@@ -1,5 +1,7 @@
 import * as React from "react";
 
+import { t, tf } from "./i18n";
+
 import type { ApprovalScope } from "../src/protocol";
 import { DiffView } from "./diff";
 import { IconTool } from "./icons";
@@ -22,11 +24,11 @@ function truncate(s: string, n: number): string {
 function headline(tool: string): React.ReactNode {
   switch (tool) {
     case "edit_code":
-      return "Aplicar esta edição?";
+      return t("Apply this edit?");
     case "write_file":
-      return "Escrever este arquivo?";
+      return t("Write this file?");
     case "execute_command":
-      return "Rodar este comando?";
+      return t("Run this command?");
     default:
       return (
         <>
@@ -106,7 +108,7 @@ export function ApprovalCard(props: {
       <div className="approval-head">
         <IconTool size={14} />
         <span>{headline(approval.tool_name)}</span>
-        <span className="rail-section-note">aprovação</span>
+        <span className="rail-section-note">{t("approval")}</span>
       </div>
 
       <div className="approval-body">
@@ -134,22 +136,24 @@ export function ApprovalCard(props: {
                 onPointerDown={ripple}
                 onClick={() => onResolve(approval.call_id, "session")}
               >
-                Permitir na sessão
+                {t("Allow for the session")}
               </button>
               <button className="btn-deny" onPointerDown={ripple} onClick={() => setDenying(true)}>
                 Negar…
               </button>
             </div>
-            <div className="deny-hint">A permite · S permite na sessão · D nega</div>
+            <div className="deny-hint">
+              {t("A allows · S allows for the session · D denies")}
+            </div>
           </>
         ) : (
           <div className="deny-form">
-            <label>Diga ao agente por quê, ou o que fazer em vez disso (opcional):</label>
+            <label>{t("Tell the agent why, or what to do instead (optional):")}</label>
             <textarea
               ref={feedbackRef}
               value={feedback}
               rows={3}
-              placeholder="ex.: não apague esse arquivo — atualize o config"
+              placeholder={t("e.g. do not delete that file — update the config instead")}
               onChange={(e) => setFeedback(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
@@ -160,10 +164,10 @@ export function ApprovalCard(props: {
             />
             <div className="approval-actions">
               <button className="btn-deny" onPointerDown={ripple} onClick={deny}>
-                Enviar e negar
+                {t("Send and deny")}
               </button>
               <button className="btn-ghost" onClick={() => setDenying(false)}>
-                Voltar
+                {t("Back")}
               </button>
             </div>
             <div className="deny-hint">Cmd/Ctrl+Enter envia</div>

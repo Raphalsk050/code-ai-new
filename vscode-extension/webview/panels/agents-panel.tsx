@@ -1,5 +1,7 @@
 import * as React from "react";
 
+import { t, tf } from "../i18n";
+
 import { useFlipList } from "../motion";
 import type { AgentsState } from "../store";
 
@@ -9,7 +11,7 @@ export function AgentsPanel({ agents }: { agents: AgentsState }): JSX.Element {
   if (agents.rows.length === 0) {
     return (
       <div className="rail-empty">
-        Nenhum sub-agente neste turno. Eles aparecem aqui assim que o agente delega.
+        No sub-agent in this turn. They show up here as soon as the agent delegates.
       </div>
     );
   }
@@ -29,7 +31,7 @@ export function AgentsPanel({ agents }: { agents: AgentsState }): JSX.Element {
       ))}
       {agents.circuitOpen.length > 0 && (
         <div className="plan-reject">
-          circuito aberto: {agents.circuitOpen.join(", ")} (falhas repetidas, despacho suspenso)
+          circuit open: {agents.circuitOpen.join(", ")} (repeated failures, dispatch paused)
         </div>
       )}
     </div>

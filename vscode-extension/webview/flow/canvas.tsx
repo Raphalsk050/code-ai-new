@@ -15,6 +15,7 @@ import {
   wireLength,
   wirePath,
 } from "./model";
+import { t } from "../i18n";
 import { NodeView } from "./node-view";
 import type { Action, EditorState, NodeRunStatus } from "./store";
 import { issuesByNode } from "./store";
@@ -184,7 +185,7 @@ export function Canvas({ state, dispatch, onContext }: CanvasProps): JSX.Element
       dispatch({
         type: "notice",
         level: "warn",
-        text: "Ligue uma saída em uma entrada.",
+        text: t("Connect an output to an input."),
       });
       return;
     }
@@ -444,7 +445,7 @@ export function Canvas({ state, dispatch, onContext }: CanvasProps): JSX.Element
 
       {state.graph.nodes.length === 0 && (
         <div className="flow-empty">
-          Grafo vazio. Clique com o botão direito na tela para criar o primeiro nó.
+          {t("Empty graph. Right-click the canvas to create the first node.")}
         </div>
       )}
     </div>

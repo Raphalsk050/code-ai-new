@@ -1,5 +1,7 @@
 import * as React from "react";
 
+import { t, tf } from "./i18n";
+
 import { ripple } from "./motion";
 import { Question, renderAnswers } from "./store/questions";
 
@@ -99,7 +101,9 @@ export function QuestionsCard({
           <textarea
             rows={question.options.length ? 2 : 3}
             value={other[index] ?? ""}
-            placeholder={question.options.length ? "ou responda com suas palavras" : "sua resposta"}
+            placeholder={
+              question.options.length ? t("or answer in your own words") : t("your answer")
+            }
             onChange={(e) =>
               setOther((prev) => {
                 const next = prev.slice();
@@ -124,11 +128,11 @@ export function QuestionsCard({
           </span>
           {index > 0 && (
             <button className="panel-btn" onClick={() => setIndex((i) => i - 1)}>
-              Voltar
+              {t("Back")}
             </button>
           )}
           <button className="panel-btn primary" onPointerDown={ripple} onClick={advance}>
-            {last ? "Responder" : "Próxima"}
+            {last ? t("Answer") : t("Next")}
           </button>
         </div>
       </div>

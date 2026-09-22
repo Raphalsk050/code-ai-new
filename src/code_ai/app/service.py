@@ -1131,7 +1131,9 @@ class CodeAIApplication:
         from code_ai.core.graph.models import catalog_payload
         from code_ai.core.graph.professions import professions_payload
 
-        payload = catalog_payload(professions_payload())
+        payload = catalog_payload(
+            professions_payload(), language=self.session.config.language
+        )
         payload["limits"]["run"] = {
             "max_nodes_executed": self.session.config.graph.max_nodes_executed,
             "max_seconds": self.session.config.graph.max_seconds,

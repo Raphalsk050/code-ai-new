@@ -171,7 +171,7 @@ export function settingsSnapshot(overrides = {}) {
     api_mode: "ollama",
     base_url: "http://localhost:11434/v1",
     api_key_set: false,
-    language: "pt-BR",
+    language: "en",
     permission_mode: "ask",
     reasoning_effort: "medium",
     learn: false,

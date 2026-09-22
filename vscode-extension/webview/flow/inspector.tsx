@@ -1,6 +1,7 @@
 import * as React from "react";
 
 import type { FieldSpec, FlowNode } from "../../src/flow-schema";
+import { t, tf } from "../i18n";
 import type { Action, EditorState } from "./store";
 import { defaultFor } from "./store";
 
@@ -24,7 +25,7 @@ export function Inspector(props: InspectorProps): JSX.Element {
             data-testid={`tab-${name}`}
             onClick={() => dispatch({ type: "inspectorTab", tab: name })}
           >
-            {name === "node" ? "Nó" : name === "variables" ? "Variáveis" : "Execução"}
+            {name === "node" ? t("Node") : name === "variables" ? t("Variables") : t("Run_tab")}
           </button>
         ))}
       </div>
@@ -55,11 +56,11 @@ function NodePanel({ state, dispatch, onListModels, onStoreSecret }: InspectorPr
     return (
       <>
         <div className="flow-section-title">
-          <span>Grafo</span>
+          <span>{t("Graph")}</span>
           <span className="line" />
         </div>
         <div className="flow-field">
-          <label htmlFor="flow-name">Nome</label>
+          <label htmlFor="flow-name">{t("Name")}</label>
           <input
             id="flow-name"
             data-testid="graph-name"
@@ -68,8 +69,8 @@ function NodePanel({ state, dispatch, onListModels, onStoreSecret }: InspectorPr
           />
         </div>
         <p className="flow-hint">
-          Selecione um nó para editar. {state.graph.nodes.length} nós, {state.graph.edges.length}{" "}
-          ligações.
+          {t("Select a node to edit it.")}{" "}
+          {tf("{0} nodes, {1} connections.", state.graph.nodes.length, state.graph.edges.length)}
         </p>
         <IssueList state={state} />
       </>
@@ -101,7 +102,7 @@ function NodePanel({ state, dispatch, onListModels, onStoreSecret }: InspectorPr
 
       {node.kind === "sequence" && (
         <div className="flow-field">
-          <label>Saídas</label>
+          <label>{t("Outputs")}</label>
           <div className="row">
             <button
               data-testid="seq-remove"
@@ -128,7 +129,7 @@ function NodePanel({ state, dispatch, onListModels, onStoreSecret }: InspectorPr
                 })
               }
             >
-              + Adicionar pino
+              + {t("Add pin")}
             </button>
           </div>
         </div>
@@ -136,7 +137,7 @@ function NodePanel({ state, dispatch, onListModels, onStoreSecret }: InspectorPr
 
       {nodeIssues.length > 0 && (
         <div className="flow-field">
-          <label>Problemas</label>
+          <label>{t("Problems")}</label>
           {nodeIssues.map((issue, index) => (
             <div key={index} className={`flow-issue ${issue.severity}`}>
               <span className="marker" />
@@ -151,7 +152,7 @@ function NodePanel({ state, dispatch, onListModels, onStoreSecret }: InspectorPr
         data-testid="delete-node"
         onClick={() => dispatch({ type: "deleteSelection" })}
       >
-        Excluir nó
+        {t("Delete node")}
       </button>
     </>
   );
@@ -175,9 +176,11 @@ function MultiSelection({
   return (
     <>
       <div className="flow-section-title">
-        <span>Seleção</span>
+        <span>{t("Selection")}</span>
         <span className="line" />
-        <span data-testid="selection-count">{state.selection.length} nós</span>
+        <span data-testid="selection-count">
+          {tf("{0} nodes", state.selection.length)}
+        </span>
       </div>
       {[...counts].map(([title, count]) => (
         <div key={title} className="flow-issue">
@@ -188,14 +191,14 @@ function MultiSelection({
         </div>
       ))}
       <p className="flow-hint">
-        Botão direito em um nó para duplicar a seleção inteira.
+        {t("Right-click a node to duplicate the whole selection.")}
       </p>
       <button
         className="danger"
         data-testid="delete-selection"
         onClick={() => dispatch({ type: "deleteSelection" })}
       >
-        Excluir {state.selection.length} nós
+        {tf("Delete {0} nodes", state.selection.length)}
       </button>
     </>
   );
@@ -224,7 +227,7 @@ function Field({ field, node, state, dispatch, onListModels, onStoreSecret }: Fi
           <select id={id} data-testid={testId} value={String(value ?? "")} onChange={(e) => set(e.target.value)}>
             {field.options.map((option) => (
               <option key={option} value={option}>
-                {option || "(padrão da sessão)"}
+                {option || t("(session default)")}
               </option>
             ))}
           </select>
@@ -261,7 +264,7 @@ function Field({ field, node, state, dispatch, onListModels, onStoreSecret }: Fi
       case "variable":
         return (
           <select id={id} data-testid={testId} value={String(value ?? "")} onChange={(e) => set(e.target.value)}>
-            <option value="">(escolha)</option>
+            <option value="">{t("(choose)")}</option>
             {state.graph.variables.map((variable) => (
               <option key={variable.id} value={variable.name}>
                 {variable.name} : {variable.type}
@@ -272,7 +275,7 @@ function Field({ field, node, state, dispatch, onListModels, onStoreSecret }: Fi
       case "profession":
         return (
           <select id={id} data-testid={testId} value={String(value ?? "")} onChange={(e) => set(e.target.value)}>
-            <option value="">(escolha)</option>
+            <option value="">{t("(choose)")}</option>
             {(state.catalog?.raw.professions ?? []).map((profession) => (
               <option key={profession.name} value={profession.name}>
                 {profession.title}
@@ -298,7 +301,7 @@ function Field({ field, node, state, dispatch, onListModels, onStoreSecret }: Fi
                 disabled={list?.loading}
                 onClick={() => onListModels(node)}
               >
-                {list?.loading ? "…" : "Listar"}
+                {list?.loading ? "…" : t("List models")}
               </button>
             </div>
             <datalist id={`models-${node.id}`}>
@@ -309,7 +312,7 @@ function Field({ field, node, state, dispatch, onListModels, onStoreSecret }: Fi
             {list?.message && <span className="help">{list.message}</span>}
             {list && !list.loading && list.models.length > 0 && (
               <span className="help" data-testid="models-count">
-                {list.models.length} modelos neste endpoint
+                {tf("{0} models on this endpoint", list.models.length)}
               </span>
             )}
           </>
@@ -338,7 +341,7 @@ function Field({ field, node, state, dispatch, onListModels, onStoreSecret }: Fi
           data-testid="store-secret"
           onClick={() => onStoreSecret(String(value).slice(7))}
         >
-          Guardar a chave no cofre do VSCode
+          {t("Store the key in the VSCode vault")}
         </button>
       )}
       {field.help && <span className="help">{field.help}</span>}
@@ -352,7 +355,8 @@ function ProfessionHint({ state, name }: { state: EditorState; name: string }) {
   if (!profession) return null;
   return (
     <span className="help">
-      {profession.description} — {profession.read_only ? "somente leitura" : "pode editar arquivos"}
+      {profession.description} —{" "}
+      {profession.read_only ? t("read-only") : t("can edit files")}
     </span>
   );
 }
@@ -370,7 +374,7 @@ function VariablesPanel({
   return (
     <>
       <div className="flow-section-title">
-        <span>Variáveis</span>
+        <span>{t("Variables")}</span>
         <span className="line" />
       </div>
       <div className="row" style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
@@ -391,7 +395,9 @@ function VariablesPanel({
 
       {state.graph.variables.length === 0 && (
         <p className="flow-hint">
-          Nenhuma variável. Elas guardam valores entre os nós e aparecem com a cor do seu tipo.
+          {t(
+            "No variables yet. They carry values between nodes and take their type's colour."
+          )}
         </p>
       )}
 
@@ -443,7 +449,7 @@ function VariablesPanel({
       {state.graph.variables.length > 0 && (
         <>
           <div className="flow-section-title">
-            <span>Valores iniciais</span>
+            <span>{t("Starting values")}</span>
             <span className="line" />
           </div>
           {state.graph.variables.map((variable) => (
@@ -488,11 +494,11 @@ function VariablesPanel({
       {state.graph.variables.length > 0 && (
         <>
           <div className="flow-section-title">
-            <span>Valores desta execução</span>
+            <span>{t("Values for this run")}</span>
             <span className="line" />
           </div>
           <p className="flow-hint">
-            Vale só para a próxima execução: nada disso entra no arquivo.
+            {t("Only applies to the next run: none of it goes into the file.")}
           </p>
           {state.graph.variables.map((variable) => (
             <div className="flow-field" key={`override-${variable.id}`}>
@@ -527,21 +533,23 @@ function RunPanel({ state }: { state: EditorState }) {
   return (
     <>
       <div className="flow-section-title">
-        <span>Execução</span>
+        <span>{t("Run_tab")}</span>
         <span className="line" />
-        <span>{run.running ? "rodando" : run.status || "parada"}</span>
+        <span>{run.running ? t("running") : run.status || t("stopped")}</span>
       </div>
-      {!run.runId && <p className="flow-hint">Nada executado ainda nesta sessão.</p>}
+      {!run.runId && (
+        <p className="flow-hint">{t("Nothing ran in this session yet.")}</p>
+      )}
       {run.runId && (
         <p className="flow-hint">
-          run {run.runId} · {run.nodesExecuted} nós
+          run {run.runId} · {tf("{0} nodes", run.nodesExecuted)}
         </p>
       )}
 
       {agents.length > 0 && (
         <>
           <div className="flow-section-title">
-            <span>Agentes</span>
+            <span>{t("Agents")}</span>
             <span className="line" />
           </div>
           {agents.map(([nodeId, agent]) => (
@@ -571,13 +579,13 @@ function RunPanel({ state }: { state: EditorState }) {
       {variables.length > 0 && (
         <>
           <div className="flow-section-title">
-            <span>Valores agora</span>
+            <span>{t("Live values")}</span>
             <span className="line" />
           </div>
           {variables.map(([name, value]) => (
             <div key={name} className="flow-field">
               <label>{name}</label>
-              <div data-testid={`run-var-${name}`}>{String(value) || "(vazio)"}</div>
+              <div data-testid={`run-var-${name}`}>{String(value) || t("(empty)")}</div>
             </div>
           ))}
         </>
@@ -593,7 +601,7 @@ function IssueList({ state }: { state: EditorState }) {
   return (
     <>
       <div className="flow-section-title">
-        <span>Validação</span>
+        <span>{t("Validation")}</span>
         <span className="line" />
       </div>
       {state.issues.map((issue, index) => (

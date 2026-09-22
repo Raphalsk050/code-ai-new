@@ -76,7 +76,7 @@ export function renderAnswers(
   questions.forEach((q, i) => {
     const parts = [...(chosen[i] ?? [])];
     const extra = (other[i] ?? "").trim();
-    if (extra) parts.push(parts.length ? `além disso: ${extra}` : extra);
+    if (extra) parts.push(parts.length ? `also: ${extra}` : extra);
     if (!parts.length) return;
     const title = q.header || q.prompt.split("\n")[0].slice(0, 32);
     lines.push(`${i + 1}. ${title}: ${parts.join(", ")}`);

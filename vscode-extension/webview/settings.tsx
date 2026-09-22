@@ -1,5 +1,7 @@
 import * as React from "react";
 
+import { t, tf } from "./i18n";
+
 import type { AppMode, Settings, ToolSpec } from "../src/protocol";
 import { ExtPrefs } from "./history";
 import { IconBack, IconRefresh } from "./icons";
@@ -19,10 +21,10 @@ export interface SaveState {
 }
 
 const SAVE_LABEL: Record<SaveState["status"], string> = {
-  idle: "Salvar",
-  saving: "Salvando…",
-  saved: "Salvo",
-  error: "Não salvou",
+  idle: "Save",
+  saving: "Saving…",
+  saved: "Saved",
+  error: "Not saved",
 };
 
 /** Session states that mean no answer is coming, so waiting is pointless. */
@@ -91,17 +93,17 @@ export function SettingsScreen({
   return (
     <div className="settings">
       <div className="settings-bar">
-        <button className="icon-btn" title="Voltar" onClick={onBack}>
+        <button className="icon-btn" title={t("Back")} onClick={onBack}>
           <IconBack size={16} />
         </button>
-        <span className="settings-title">Configurações</span>
+        <span className="settings-title">{t("Settings")}</span>
         <button
           className="btn-primary settings-save"
           onClick={submit}
           disabled={!settings || save.status === "saving"}
           data-status={dirty ? "idle" : save.status}
         >
-          {dirty ? SAVE_LABEL.idle : SAVE_LABEL[save.status]}
+          {t(dirty ? SAVE_LABEL.idle : SAVE_LABEL[save.status])}
         </button>
       </div>
 
@@ -112,7 +114,9 @@ export function SettingsScreen({
           {DEAD.has(sessionStatus) ? (
             <>
               <span>
-                O Code-AI não respondeu, então não há configurações para mostrar. O chat diz o
+                {t(
+                  "Code-AI did not answer, so there are no settings to show. The chat says"
+                )}
                 que falhou.
               </span>
               <button className="btn-primary" onClick={onRestart}>
@@ -120,7 +124,7 @@ export function SettingsScreen({
               </button>
             </>
           ) : (
-            "Carregando configurações…"
+            t("Loading settings…")
           )}
         </div>
       ) : (
@@ -128,8 +132,9 @@ export function SettingsScreen({
           {failures.length > 0 && (
             <div className="settings-errors" role="alert">
               <span className="settings-errors-head">
-                O Code-AI recusou {failures.length === 1 ? "este campo" : "estes campos"}; o resto
-                foi salvo. O que você digitou continua aqui para corrigir.
+                {t("Code-AI refused")}{" "}
+                {failures.length === 1 ? t("this field") : t("these fields")}; {t("the rest")}
+                {t("was saved. What you typed is still here so you can fix it.")}
               </span>
               {failures.map(([field, message]) => (
                 <div key={field} className="settings-error" data-field={field}>
@@ -138,27 +143,33 @@ export function SettingsScreen({
               ))}
             </div>
           )}
-          <Section title="Modos e automação" hint="Como a extensão se comporta no editor.">
-            <Field label="Modo padrão">
+          <Section
+            title={t("Modes and automation")}
+            hint={t("How the extension behaves in the editor.")}
+          >
+            <Field label={t("Default mode")}>
               <select
                 value={prefs.mode}
                 onChange={(e) => onPrefsChange({ mode: e.target.value as AppMode })}
               >
-                <option value="agent">Agente</option>
+                <option value="agent">{t("Agent")}</option>
                 <option value="refactor">Refatorar</option>
                 <option value="explain">Explicar</option>
               </select>
             </Field>
             <Toggle
-              label="Analisar a seleção automaticamente"
-              hint="No modo refatorar, analisa o trecho assim que você seleciona."
+              label={t("Analyse the selection automatically")}
+              hint={t("In refactor mode, analyses the snippet as soon as you select it.")}
               checked={prefs.autoRunRefactor}
               onChange={(v) => onPrefsChange({ autoRunRefactor: v })}
             />
           </Section>
 
-          <Section title="Provedor e modelo" hint="Campos restart valem ao reabrir o painel.">
-            <Field label="Modelo">
+          <Section
+            title={t("Provider and model")}
+            hint={t("Fields tagged restart take effect when the panel reopens.")}
+          >
+            <Field label={t("Model")}>
               <div className="model-row">
                 <input
                   className="model-input"
@@ -168,12 +179,12 @@ export function SettingsScreen({
                 <button
                   type="button"
                   className="btn-ghost model-list-btn"
-                  title="Listar os modelos que o provedor configurado serve"
+                  title={t("List the models the configured provider serves")}
                   onClick={onListModels}
                   disabled={models.status === "loading"}
                 >
                   {models.status === "loading" ? <span className="spinner" /> : <IconRefresh size={13} />}
-                  <span>{models.status === "loading" ? "Listando…" : "Listar modelos"}</span>
+                  <span>{models.status === "loading" ? t("Listing…") : t("List models")}</span>
                 </button>
               </div>
               {models.status === "ready" && models.list.length > 0 && (
@@ -184,14 +195,14 @@ export function SettingsScreen({
                     if (e.target.value) set("model", e.target.value);
                   }}
                 >
-                  <option value="">Escolher entre {models.list.length} disponíveis…</option>
+                  <option value="">{tf("Choose from {0} available…", models.list.length)}</option>
                   {models.list.map((m) => (
                     <option key={m} value={m}>{m}</option>
                   ))}
                 </select>
               )}
               {models.status === "ready" && models.list.length === 0 && (
-                <div className="model-note">O provedor não devolveu nenhum modelo.</div>
+                <div className="model-note">{t("The provider returned no models.")}</div>
               )}
               {models.status === "error" && <div className="model-error">{models.error}</div>}
             </Field>
@@ -202,13 +213,17 @@ export function SettingsScreen({
                 ))}
               </select>
             </Field>
-            <Field label="URL base" restart>
+            <Field label={t("Base URL")} restart>
               <input value={String(draft.base_url ?? "")} onChange={(e) => set("base_url", e.target.value)} />
             </Field>
-            <Field label="Chave da API" restart>
+            <Field label={t("API key")} restart>
               <input
                 type="password"
-                placeholder={settings.api_key_set ? "•••••••• (salva - deixe vazio para manter)" : "não configurada"}
+                placeholder={
+                  settings.api_key_set
+                    ? t("•••••••• (stored - leave empty to keep it)")
+                    : t("not set")
+                }
                 value={apiKey}
                 onChange={(e) => {
                   setApiKey(e.target.value);
@@ -219,18 +234,18 @@ export function SettingsScreen({
           </Section>
 
           <Section
-            title="Sugestões inline"
-            hint="Ghost text no editor, pelo mesmo provedor."
+            title={t("Inline suggestions")}
+            hint={t("Ghost text in the editor, from the same provider.")}
           >
             <Toggle
-              label="Sugestões inline no editor"
-              hint="Completa enquanto você digita. Dá para ligar e desligar pela barra de status."
+              label={t("Inline suggestions in the editor")}
+              hint={t("Completes as you type. The status bar toggles it.")}
               checked={Boolean(draft.inline_hints_enabled)}
               onChange={(v) => set("inline_hints_enabled", v)}
             />
-            <Field label="Modelo das sugestões inline">
+            <Field label={t("Model for inline suggestions")}>
               <input
-                placeholder="vazio = usa o modelo principal"
+                placeholder={t("empty = uses the main model")}
                 value={String(draft.inline_model ?? "")}
                 onChange={(e) => set("inline_model", e.target.value)}
               />
@@ -238,57 +253,57 @@ export function SettingsScreen({
           </Section>
 
           <Section title="Comportamento">
-            <Field label="Modo de permissão">
+            <Field label={t("Permission mode")}>
               <select value={String(draft.permission_mode ?? "")} onChange={(e) => set("permission_mode", e.target.value)}>
                 {settings.supported.permission_mode.map((m) => (
                   <option key={m} value={m}>{m}</option>
                 ))}
               </select>
             </Field>
-            <Field label="Esforço de raciocínio">
+            <Field label={t("Reasoning effort")}>
               <select value={String(draft.reasoning_effort ?? "")} onChange={(e) => set("reasoning_effort", e.target.value)}>
                 {settings.supported.reasoning_effort.map((m) => (
                   <option key={m} value={m}>{m}</option>
                 ))}
               </select>
             </Field>
-            <Field label="Idioma das respostas">
+            <Field label={t("Answer language")}>
               <input value={String(draft.language ?? "")} onChange={(e) => set("language", e.target.value)} />
             </Field>
             <Toggle
               label="Modo learn"
-              hint="Mostra, nas aprovações, por que o modelo acha que a mudança é necessária."
+              hint={t("Shows, on approvals, why the model thinks the change is needed.")}
               checked={Boolean(draft.learn)}
               onChange={(v) => set("learn", v)}
             />
           </Section>
 
           <Section title="Contexto e workspace">
-            <Field label="Máx. de tokens de contexto" restart>
+            <Field label={t("Max context tokens")} restart>
               <input
                 type="number"
                 value={Number(draft.max_context_tokens ?? 0)}
                 onChange={(e) => set("max_context_tokens", Number(e.target.value))}
               />
             </Field>
-            <Field label="Workspace" restart>
+            <Field label={t("Workspace")} restart>
               <input value={String(draft.workspace ?? "")} onChange={(e) => set("workspace", e.target.value)} />
             </Field>
           </Section>
 
           <Section
             title="Doctor"
-            hint="O que a TUI edita em /doctor: ferramentas, sub-agentes e amostragem."
+            hint={t("What the TUI edits in /doctor: tools, sub-agents and sampling.")}
           >
             <ToolSwitches
               tools={settings.supported?.tools ?? []}
               disabled={(draft.disabled_tools as string[]) ?? []}
               onChange={(next) => set("disabled_tools", next)}
             />
-            <Field label="Modelos dos sub-agentes">
+            <Field label={t("Sub-agent models")}>
               <input
                 value={((draft.subagent_models as string[]) ?? []).join(", ")}
-                placeholder="vazio = todos herdam o modelo da sessão"
+                placeholder={t("empty = every sub-agent inherits the session model")}
                 onChange={(e) =>
                   set(
                     "subagent_models",
@@ -300,7 +315,7 @@ export function SettingsScreen({
                 }
               />
             </Field>
-            <Field label="Sub-agentes simultâneos">
+            <Field label={t("Concurrent sub-agents")}>
               <input
                 type="number"
                 min={1}
@@ -313,7 +328,7 @@ export function SettingsScreen({
                 type="number"
                 step="0.05"
                 value={draft.temperature == null ? "" : String(draft.temperature)}
-                placeholder="padrão do endpoint"
+                placeholder={t("endpoint default")}
                 onChange={(e) =>
                   set("temperature", e.target.value === "" ? null : Number(e.target.value))
                 }
@@ -324,7 +339,7 @@ export function SettingsScreen({
                 type="number"
                 step="0.05"
                 value={draft.top_p == null ? "" : String(draft.top_p)}
-                placeholder="padrão do endpoint"
+                placeholder={t("endpoint default")}
                 onChange={(e) => set("top_p", e.target.value === "" ? null : Number(e.target.value))}
               />
             </Field>
@@ -332,7 +347,7 @@ export function SettingsScreen({
               <input
                 type="number"
                 value={draft.top_k == null ? "" : String(draft.top_k)}
-                placeholder="padrão do endpoint"
+                placeholder={t("endpoint default")}
                 onChange={(e) => set("top_k", e.target.value === "" ? null : Number(e.target.value))}
               />
             </Field>
@@ -340,8 +355,10 @@ export function SettingsScreen({
 
           <div className="settings-restart">
             <div className="settings-note">
-              Campos marcados com <span className="restart-tag">restart</span> são salvos agora mas
-              só valem depois de reiniciar o Code-AI, o que recarrega a config sem recarregar a janela.
+              {t("Fields tagged")} <span className="restart-tag">restart</span>{" "}
+              {t(
+                "are saved now but only take effect after restarting Code-AI, which reloads the config without reloading the window."
+              )}
             </div>
             <button className="btn-ghost settings-restart-btn" onClick={onRestart}>
               <IconRefresh size={13} /> Reiniciar Code-AI
@@ -419,7 +436,7 @@ function ToolSwitches({
   onChange: (next: string[]) => void;
 }): JSX.Element {
   if (tools.length === 0) {
-    return <div className="settings-note">Esta sessão não expôs a lista de ferramentas.</div>;
+    return <div className="settings-note">{t("This session exposed no tool list.")}</div>;
   }
   const off = new Set(disabled);
   const toggle = (name: string) => {
@@ -431,7 +448,7 @@ function ToolSwitches({
   return (
     <div className="tool-switches">
       <div className="settings-field-label">
-        Ferramentas · {tools.length - off.size} de {tools.length} ligadas
+        {t("Tools")} · {tf("{0} of {1} on", tools.length - off.size, tools.length)}
         <button
           className="btn-ghost tool-switch-all"
           onClick={() => onChange(off.size ? [] : tools.map((t) => t.name).sort())}

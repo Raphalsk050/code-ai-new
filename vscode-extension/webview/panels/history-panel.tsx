@@ -1,5 +1,7 @@
 import * as React from "react";
 
+import { t, tf } from "../i18n";
+
 import type { HistoryEntry } from "../history";
 import { relativeTime } from "../history";
 import { IconTrash } from "../icons";
@@ -22,10 +24,10 @@ export function HistoryPanel({
   if (entries.length === 0) {
     return (
       <div className="rail-empty">
-        Sem conversas salvas ainda.
+        {t("No saved conversations yet.")}
         <div className="panel-actions">
           <button className="panel-btn primary" onClick={onNew}>
-            Nova conversa
+            {t("New conversation")}
           </button>
         </div>
       </div>
@@ -45,7 +47,7 @@ export function HistoryPanel({
             <span className="agent-name">{entry.title}</span>
             <button
               className="rail-btn"
-              title="Apagar conversa"
+              title={t("Delete conversation")}
               onClick={(e) => {
                 e.stopPropagation();
                 onDelete(entry.id);
@@ -71,7 +73,7 @@ export function HistoryPanel({
           Ver todas
         </button>
         <button className="panel-btn primary" onClick={onNew}>
-          Nova conversa
+          {t("New conversation")}
         </button>
       </div>
     </div>

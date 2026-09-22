@@ -6,12 +6,12 @@ import { applyMention, mentionPrefix, rankPaths } from "../mentions";
 test("an @ at the caret opens the picker, even when empty", () => {
   assert.equal(mentionPrefix("@", 1), "");
   assert.equal(mentionPrefix("olha o @men", 11), "men");
-  assert.equal(mentionPrefix("depois de espaço @src/a", 23), "src/a");
+  assert.equal(mentionPrefix("after a space @src/a", 20), "src/a");
 });
 
 test("an @ that is not under the caret is left alone", () => {
   assert.equal(mentionPrefix("mail@example.com", 16), null);
-  assert.equal(mentionPrefix("@arquivo já mencionado", 22), null);
+  assert.equal(mentionPrefix("@file already mentioned", 23), null);
   assert.equal(mentionPrefix("", 0), null);
 });
 

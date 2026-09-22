@@ -50,10 +50,10 @@ function pipeline() {
       }),
       node("n3", "profession", [270, 120], {
         profession: "architect",
-        task: "desenhe o importador",
+        task: "design the importer",
       }),
       node("n4", "profession", [540, 120], { profession: "code_writer" }),
-      node("n5", "print", [810, 120], { label: "resultado" }),
+      node("n5", "print", [810, 120], { label: "result" }),
       node("n6", "end", [1060, 120]),
     ],
     [
@@ -163,7 +163,7 @@ export const tests = {
       run_id: "run-1",
       node_id: "n3",
       event: "tool.call.started",
-      detail: "grep_search(importador)",
+      detail: "grep_search(importer)",
     });
     await ui.event("graph.node.completed", { run_id: "run-1", node_id: "n3", status: "completed" });
     await ui.event("graph.edge.active", { run_id: "run-1", edge_id: "e3", kind: "exec" });
@@ -185,8 +185,8 @@ export const tests = {
     await ui.event("graph.print", {
       run_id: "run-1",
       node_id: "n5",
-      label: "plano",
-      text: "tres modulos: leitor, validador, gravador",
+      label: "plan",
+      text: "three modules: reader, validator, writer",
     });
 
     await ui.page.waitForSelector('[data-testid="dot-e3"]');
@@ -265,7 +265,7 @@ export const tests = {
     await boot(ui, graph([node("n1", "start", [0, 0])], []));
     await openCanvasMenu(ui);
 
-    await ui.page.fill('[data-testid="menu-search"]', "nova");
+    await ui.page.fill('[data-testid="menu-search"]', "new");
     await ui.shot("02c-menu-variables");
     await ui.page.click('[data-testid="menu-new-var-int"]');
 
@@ -440,7 +440,7 @@ export const tests = {
     );
 
     const notice = await ui.page.locator('[data-testid="notice"]').textContent();
-    assert(notice.includes("execução"), `notice was ${notice}`);
+    assert(notice.includes("exec pin"), `notice was ${notice}`);
     const edits = await ui.toHost("flowEdit");
     assert(edits.length === 0, "an illegal wire reached the document");
     await ui.shot("05-illegal-wire");
@@ -564,14 +564,14 @@ export const tests = {
       ok: false,
       issues: [
         {
-          message: "Agent precisa de task: ligue ou preencha.",
+          message: "Agent needs task: wire it or fill it in.",
           node_id: "n4",
           pin: "task",
           field: "",
           severity: "error",
         },
         {
-          message: "Nada lê este nó.",
+          message: "Nothing reads this node.",
           node_id: "n2",
           pin: "",
           field: "",
@@ -585,7 +585,7 @@ export const tests = {
     const marked = await ui.page.locator('[data-testid="node-n4"]').getAttribute("class");
     assert(marked.includes("error"), `node classes were ${marked}`);
     const status = await ui.page.locator('[data-testid="run-status"]').textContent();
-    assert(status.includes("1 erro"), `status was ${status}`);
+    assert(status.includes("1 error"), `status was ${status}`);
     await ui.shot("12-validation-errors");
   },
 
@@ -628,7 +628,7 @@ export const tests = {
       event: "tool.call.started",
       detail: "read_file",
     });
-    await ui.event("graph.print", { run_id: "run-1", node_id: "n5", label: "resultado", text: "tres modulos" });
+    await ui.event("graph.print", { run_id: "run-1", node_id: "n5", label: "result", text: "three modules" });
 
     await ui.page.waitForSelector('[data-testid="dot-e1"]');
     const running = await ui.page.locator('[data-testid="node-n3"]').getAttribute("data-status");
@@ -639,7 +639,7 @@ export const tests = {
     assert(badge === "Turing", `badge was ${badge}`);
     const rows = await ui.page.locator('[data-testid="log-row"]').allTextContents();
     assert(
-      rows.some((row) => row.includes("tres modulos")),
+      rows.some((row) => row.includes("three modules")),
       `log rows were ${JSON.stringify(rows)}`
     );
     // The stop button replaces Play while a run is live.
@@ -666,7 +666,7 @@ export const tests = {
 
     await ui.event("graph.loop.capped", { run_id: "r", node_id: "n2", cap: 50 });
     const rows = await ui.page.locator('[data-testid="log-row"]').allTextContents();
-    assert(rows.some((row) => row.includes("limite de 50")), "the cap was not logged");
+    assert(rows.some((row) => row.includes("cap of 50")), "the cap was not logged");
     await ui.shot("15-loop");
   },
 
@@ -675,7 +675,7 @@ export const tests = {
     const doc = graph(
       [
         node("n1", "start", [-300, 0]),
-        node("n2", "user_chat", [0, 0], { title: "qual módulo?" }),
+        node("n2", "user_chat", [0, 0], { title: "which module?" }),
         node("n3", "end", [300, 0]),
       ],
       [wire("e1", ["n1", "out"], ["n2", "in"]), wire("e2", ["n2", "out"], ["n3", "in"])]
@@ -686,18 +686,18 @@ export const tests = {
       run_id: "run-9",
       node_id: "n2",
       call_id: "c1",
-      prompt: "Qual módulo devo mexer?",
+      prompt: "Which module should I touch?",
     });
 
     await ui.page.waitForSelector('[data-testid="question"]');
     await ui.shot("16-question");
-    await ui.page.fill('[data-testid="question-input"]', "o importador");
+    await ui.page.fill('[data-testid="question-input"]', "the importer");
     await ui.page.click('[data-testid="question-send"]');
 
     const answers = await ui.toHost("flowAnswer");
     assert(answers.length === 1, `expected one answer, got ${answers.length}`);
     assert(answers[0].callId === "c1", `answered call ${answers[0].callId}`);
-    assert(answers[0].text === "o importador", `answered ${answers[0].text}`);
+    assert(answers[0].text === "the importer", `answered ${answers[0].text}`);
 
     await ui.event("graph.user_chat.answered", { run_id: "run-9", node_id: "n2", call_id: "c1" });
     await ui.page.waitForSelector('[data-testid="question"]', { state: "detached" });
@@ -724,7 +724,7 @@ export const tests = {
       message: "",
     });
     const count = await ui.page.locator('[data-testid="models-count"]').textContent();
-    assert(count.includes("3 modelos"), `counter said ${count}`);
+    assert(count.includes("3 models"), `counter said ${count}`);
     await ui.shot("17-model-node");
   },
 
@@ -871,12 +871,12 @@ export const tests = {
     await boot(ui);
     await ui.event("graph.run.started", { run_id: "r", name: "p", node_count: 6 });
     await ui.event("graph.node.started", { run_id: "r", node_id: "n3", kind: "profession", index: 1 });
-    await ui.event("graph.node.failed", { run_id: "r", node_id: "n3", error: "o modelo recusou" });
+    await ui.event("graph.node.failed", { run_id: "r", node_id: "n3", error: "the model refused" });
 
     const status = await ui.page.locator('[data-testid="node-n3"]').getAttribute("data-status");
     assert(status === "failed", `status was ${status}`);
     const rows = await ui.page.locator(".flow-log-row.error .text").allTextContents();
-    assert(rows.some((row) => row.includes("o modelo recusou")), "the error was not logged");
+    assert(rows.some((row) => row.includes("the model refused")), "the error was not logged");
     await ui.shot("23-failed");
   },
 
@@ -1110,7 +1110,7 @@ export const tests = {
     await ui.fromHost({
       type: "flowNotice",
       level: "error",
-      text: "Este arquivo não é JSON válido: Unexpected token }",
+      text: "This file is not valid JSON: Unexpected token }",
     });
 
     const notice = await ui.page.locator('[data-testid="notice"]').textContent();

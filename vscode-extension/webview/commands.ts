@@ -28,10 +28,10 @@ export interface SlashCommand extends SlashCommandSpec {
 
 /** Commands the webview handles by itself, with no backend catalog needed. */
 const LOCAL: { command: string; description: string; action: CommandAction }[] = [
-  { command: "/new", description: "Nova conversa", action: { kind: "new" } },
-  { command: "/clear", description: "Limpa a transcrição desta visão", action: { kind: "clear" } },
-  { command: "/history", description: "Abre o histórico de conversas", action: { kind: "history" } },
-  { command: "/settings", description: "Abre as configurações", action: { kind: "settings" } },
+  { command: "/new", description: "New conversation", action: { kind: "new" } },
+  { command: "/clear", description: "Clears the transcript in this view", action: { kind: "clear" } },
+  { command: "/history", description: "Opens the conversation history", action: { kind: "history" } },
+  { command: "/settings", description: "Opens the settings", action: { kind: "settings" } },
 ];
 
 /** What a backend command maps to in the webview. Prefix match, longest first. */

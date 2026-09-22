@@ -16,6 +16,7 @@ import {
   nextId,
   ValidationIssue,
 } from "../../src/flow-schema";
+import { t, tf } from "../i18n";
 import { Catalog, indexCatalog, pinsOf, snap } from "./model";
 
 export const UNDO_LIMIT = 100;
@@ -232,7 +233,11 @@ export function reduce(state: EditorState, action: Action): EditorState {
           ...state,
           notice: {
             level: "warn",
-            text: `Só pode existir ${spec.max_instances} nó ${spec.title} por grafo.`,
+            text: tf(
+              "A graph may hold only {0} {1} node(s).",
+              spec.max_instances,
+              spec.title
+            ),
           },
         };
       }
@@ -547,29 +552,29 @@ export function pinTypeOf(
 /** Why a connection cannot be made, or `null` if it can. */
 export function connectionProblem(state: EditorState, edge: Omit<FlowEdge, "id">): string | null {
   const catalog = state.catalog;
-  if (!catalog) return "O catálogo de nós ainda não carregou.";
+  if (!catalog) return t("The node catalog has not loaded yet.");
   const [fromId, fromPin] = edge.from;
   const [toId, toPin] = edge.to;
-  if (fromId === toId) return "Um nó não pode se ligar a si mesmo.";
+  if (fromId === toId) return t("A node cannot connect to itself.");
   const fromNode = state.graph.nodes.find((node) => node.id === fromId);
   const toNode = state.graph.nodes.find((node) => node.id === toId);
-  if (!fromNode || !toNode) return "Um dos nós não existe mais.";
+  if (!fromNode || !toNode) return t("One of the nodes is gone.");
   const fromSpec = catalog.kinds.get(fromNode.kind);
   const toSpec = catalog.kinds.get(toNode.kind);
-  if (!fromSpec || !toSpec) return "Tipo de nó desconhecido.";
+  if (!fromSpec || !toSpec) return t("Unknown node kind.");
   const out = pinsOf(fromSpec, fromNode).find(
     (pin) => pin.name === fromPin && pin.direction === "out"
   );
   const into = pinsOf(toSpec, toNode).find((pin) => pin.name === toPin && pin.direction === "in");
-  if (!out || !into) return "Esse pino não existe.";
+  if (!out || !into) return t("That pin does not exist.");
   if ((out.type === "exec") !== (into.type === "exec")) {
-    return "Um pino de execução não conecta em um pino de dados.";
+    return t("An exec pin does not connect to a data pin.");
   }
   if (out.type !== "exec") {
     const sourceType = resolvedPinType(state, fromNode.id, out.type);
     const targetType = resolvedPinType(state, toNode.id, into.type);
     if (!canConnect(sourceType, targetType)) {
-      return `Um valor ${sourceType} não entra em um pino ${targetType}.`;
+      return tf("A {0} value cannot feed a {1} pin.", sourceType, targetType);
     }
   }
   const duplicate = state.graph.edges.some(
@@ -579,7 +584,7 @@ export function connectionProblem(state: EditorState, edge: Omit<FlowEdge, "id">
       item.to[0] === toId &&
       item.to[1] === toPin
   );
-  if (duplicate) return "Essa ligação já existe.";
+  if (duplicate) return t("That connection already exists.");
   return null;
 }
 
@@ -608,12 +613,12 @@ function livePin(graph: FlowGraph, state: EditorState, edge: FlowEdge): boolean 
 /** A name no other variable has, so two + clicks do not collide. */
 export function freshVariableName(used: string[]): string {
   const taken = new Set(used);
-  if (!taken.has("nova")) return "nova";
+  if (!taken.has("newVar")) return "newVar";
   for (let index = 2; index < 1000; index += 1) {
-    const candidate = `nova${index}`;
+    const candidate = `newVar${index}`;
     if (!taken.has(candidate)) return candidate;
   }
-  return `nova${Date.now()}`;
+  return `newVar${Date.now()}`;
 }
 
 export function defaultFor(type: string): unknown {
@@ -682,8 +687,12 @@ function applyGraphEvent(
           nodeId: "",
           text:
             status === "completed"
-              ? `Execução concluída em ${payload.seconds}s (${payload.nodes_executed} nós).`
-              : `Execução ${status}: ${payload.reason || payload.error || ""}`,
+              ? tf(
+                  "Run finished in {0}s ({1} nodes).",
+                  payload.seconds,
+                  payload.nodes_executed
+                )
+              : tf("Run {0}: {1}", status, payload.reason || payload.error || ""),
         }
       );
       return next;
@@ -800,14 +809,14 @@ function applyGraphEvent(
       return log(state, {
         kind: "warn",
         nodeId: String(payload.node_id ?? ""),
-        text: `O laço parou no limite de ${payload.cap} voltas.`,
+        text: tf("The loop stopped at its cap of {0} laps.", payload.cap),
       });
 
     case "graph.decision":
       return log(state, {
         kind: "decision",
         nodeId: String(payload.node_id ?? ""),
-        text: `decisão (${payload.mode}): ${payload.verdict ? "true" : "false"}`,
+        text: tf("decision ({0}): {1}", payload.mode, payload.verdict ? "true" : "false"),
       });
 
     case "graph.user_chat.requested":
@@ -823,7 +832,11 @@ function applyGraphEvent(
             },
           },
         },
-        { kind: "info", nodeId: String(payload.node_id ?? ""), text: "Esperando sua resposta." }
+        {
+          kind: "info",
+          nodeId: String(payload.node_id ?? ""),
+          text: t("Waiting for your answer."),
+        }
       );
 
     case "graph.user_chat.answered":

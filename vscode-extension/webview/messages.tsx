@@ -1,5 +1,7 @@
 import * as React from "react";
 
+import { t, tf } from "./i18n";
+
 import {
   IconBrain,
   IconCheck,
@@ -46,7 +48,7 @@ function Row(props: { role: string; avatar: React.ReactNode; name: string; child
 
 function UserRow({ text }: { text: string }) {
   return (
-    <Row role="user" name="Você" avatar={<IconUser size={15} />}>
+    <Row role="user" name={t("You")} avatar={<IconUser size={15} />}>
       <div className="user-text">{text}</div>
     </Row>
   );
@@ -85,7 +87,7 @@ function ThinkingRow({ text, streaming }: { text: string; streaming?: boolean })
       <button className="thinking-head" onClick={() => setChoice(!open)}>
         <IconChevron size={13} className="chev" />
         <IconBrain size={13} />
-        <span>Raciocínio</span>
+        <span>{t("Reasoning")}</span>
         {streaming && <span className="thinking-live" aria-label="em andamento" />}
       </button>
       {open && (

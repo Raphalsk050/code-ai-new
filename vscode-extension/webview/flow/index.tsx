@@ -9,6 +9,7 @@ import type {
 } from "../../src/flow-schema";
 import { Canvas, ContextTarget, frameAll } from "./canvas";
 import { buildClip, instantiate, lastClip, parseClip, writeClip } from "./clipboard";
+import { setLanguage, t, tf } from "../i18n";
 import { categoryColour, ContextMenu, MenuEntry } from "./context-menu";
 import { Inspector } from "./inspector";
 import { LogPanel } from "./log";
@@ -51,6 +52,9 @@ function App(): JSX.Element {
       const message = event.data as FlowHostToWebview;
       switch (message.type) {
         case "flowCatalog":
+          // The backend owns the language the user picked, so the panel
+          // follows it rather than guessing from the host.
+          setLanguage(message.catalog.language ?? "en");
           dispatch({ type: "catalog", catalog: message.catalog });
           break;
         case "flowDocument":
@@ -86,7 +90,11 @@ function App(): JSX.Element {
           dispatch({ type: "notice", level: message.level, text: message.text });
           break;
         case "flowSecretStored":
-          dispatch({ type: "notice", level: "info", text: `Chave ${message.name} guardada.` });
+          dispatch({
+            type: "notice",
+            level: "info",
+            text: tf("Key {0} stored.", message.name),
+          });
           break;
         case "flowCommand":
           if (message.command === "run") runGraph();
@@ -116,7 +124,7 @@ function App(): JSX.Element {
       dispatch({
         type: "notice",
         level: "warn",
-        text: "Corrija os erros marcados antes de executar.",
+        text: t("Fix the errors marked on the graph before running it."),
       });
       return;
     }
@@ -242,7 +250,7 @@ function App(): JSX.Element {
         <div className={`flow-notice ${state.notice.level}`} data-testid="notice">
           <span>{state.notice.text}</span>
           <span className="spacer" />
-          <button onClick={() => dispatch({ type: "dismissNotice" })}>Fechar</button>
+          <button onClick={() => dispatch({ type: "dismissNotice" })}>{t("Close")}</button>
         </div>
       )}
 
@@ -291,21 +299,21 @@ function App(): JSX.Element {
 function menuTitle(target: ContextTarget): string {
   switch (target.kind) {
     case "node":
-      return "Nó";
+      return t("Node");
     case "edge":
-      return "Ligação";
+      return t("Connection");
     case "pin":
-      return `Ligar de ${target.pin.pin.pin.label || target.pin.pin.pin.name}`;
+      return tf("Connect from {0}", target.pin.pin.pin.label || target.pin.pin.pin.name);
     default:
-      return "Adicionar nó";
+      return t("Add node");
   }
 }
 
 const CATEGORY_LABELS: Record<string, string> = {
-  flow: "Fluxo",
-  agent: "Agentes",
-  data: "Dados",
-  debug: "Depuração",
+  flow: "Flow",
+  agent: "Agents",
+  data: "Data",
+  debug: "Debug",
 };
 
 /**
@@ -328,9 +336,9 @@ export function buildEntries(
       return [
         {
           id: "delete-edge",
-          label: "Excluir ligação",
+          label: t("Delete connection"),
           hint: "Del",
-          section: "Ligação",
+          section: t("Connection"),
           colour: "var(--danger)",
           run: () => dispatch({ type: "deleteEdge", id: target.id }),
         },
@@ -348,12 +356,12 @@ function nodeEntries(
   dispatch: (action: Action) => void
 ): MenuEntry[] {
   const node = state.graph.nodes.find((item) => item.id === nodeId);
-  const section = node ? state.catalog?.kinds.get(node.kind)?.title ?? "Nó" : "Nó";
+  const section = node ? state.catalog?.kinds.get(node.kind)?.title ?? t("Node") : t("Node");
   const ids = state.selection.includes(nodeId) ? state.selection : [nodeId];
   return [
     {
       id: "duplicate",
-      label: ids.length > 1 ? `Duplicar ${ids.length} nós` : "Duplicar",
+      label: ids.length > 1 ? tf("Duplicate {0} nodes", ids.length) : t("Duplicate"),
       hint: "Ctrl+C, Ctrl+V",
       section,
       colour: "var(--accent)",
@@ -367,7 +375,7 @@ function nodeEntries(
     },
     {
       id: "delete-node",
-      label: ids.length > 1 ? `Excluir ${ids.length} nós` : "Excluir",
+      label: ids.length > 1 ? tf("Delete {0} nodes", ids.length) : t("Delete"),
       hint: "Del",
       section,
       colour: "var(--danger)",
@@ -412,9 +420,9 @@ function variableEntries(
       if (filter && !filter(variable.type, mode)) continue;
       entries.push({
         id: `var-${mode}-${variable.id}`,
-        label: `${mode === "get" ? "Ler" : "Gravar"} ${variable.name}`,
+        label: tf(mode === "get" ? "Get {0}" : "Set {0}", variable.name),
         hint: variable.type,
-        section: "Variáveis",
+        section: t("Variables"),
         colour: state.catalog?.color(variable.type) ?? "#888",
         run: () =>
           dispatch({
@@ -430,9 +438,9 @@ function variableEntries(
     if (filter && !filter(type, "get")) continue;
     entries.push({
       id: `new-var-${type}`,
-      label: `Nova variável ${type}`,
+      label: tf("New {0} variable", type),
       hint: "+",
-      section: "Nova variável",
+      section: t("New variable"),
       colour: state.catalog?.color(type) ?? "#888",
       run: () => dispatch({ type: "createVariableWithNode", varType: type, at, mode: "get" }),
     });
@@ -534,12 +542,14 @@ function QuestionCard({
   return (
     <div className="flow-question" data-testid="question">
       <strong>{question.nodeId}</strong>
-      <span className="prompt">{question.prompt || "O grafo está esperando sua resposta."}</span>
+      <span className="prompt">
+        {question.prompt || t("The graph is waiting for your answer.")}
+      </span>
       <textarea
         ref={inputRef}
         data-testid="question-input"
         value={text}
-        placeholder="Sua resposta…"
+        placeholder={t("Your answer…")}
         onChange={(event) => setText(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey) {
@@ -550,7 +560,7 @@ function QuestionCard({
       />
       <div className="row">
         <button className="primary" data-testid="question-send" onClick={submit}>
-          Responder
+          {t("Answer")}
         </button>
       </div>
     </div>

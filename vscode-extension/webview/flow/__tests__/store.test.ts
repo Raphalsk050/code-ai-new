@@ -174,7 +174,7 @@ test("an exec pin cannot be wired to a data pin", () => {
   });
 
   assert.deepEqual(state.graph.edges, []);
-  assert.match(state.notice?.text ?? "", /execução/);
+  assert.match(state.notice?.text ?? "", /exec pin/);
 });
 
 test("a bool value cannot feed a model pin", () => {
@@ -228,7 +228,7 @@ test("the same wire cannot be made twice", () => {
   state = apply(state, { type: "connect", edge });
 
   assert.equal(state.graph.edges.length, 1);
-  assert.match(state.notice?.text ?? "", /já existe/);
+  assert.match(state.notice?.text ?? "", /already exists/);
 });
 
 test("shrinking a Sequence drops the wires on the pins it lost", () => {
@@ -475,7 +475,7 @@ test("warnings alone do not block Play", () => {
   const state = reduce(booted(), {
     type: "validation",
     ok: true,
-    issues: [{ message: "nada lê", node_id: "n1", pin: "", field: "", severity: "warning" }],
+    issues: [{ message: "nothing reads it", node_id: "n1", pin: "", field: "", severity: "warning" }],
   });
 
   assert.equal(hasErrors(state.issues), false);

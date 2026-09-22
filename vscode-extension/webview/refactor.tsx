@@ -1,5 +1,7 @@
 import * as React from "react";
 
+import { t, tf } from "./i18n";
+
 import type { RefactorImprovement } from "../src/protocol";
 import { IconCheck, IconWand } from "./icons";
 
@@ -68,8 +70,8 @@ export function RefactorPanel({
         {status === "idle" && (
           <div className="refactor-empty">
             {autoRun
-              ? "Selecione um trecho no editor para ver as melhorias sugeridas."
-              : "Selecione um trecho no editor e rode a análise."}
+              ? t("Select a snippet in the editor to see the suggested improvements.")
+              : t("Select a snippet in the editor and run the analysis.")}
           </div>
         )}
 
@@ -140,7 +142,7 @@ function Card({
       </div>
       <div className="refactor-card-action">
         {planned ? (
-          <button className="btn-primary" onClick={onApply} title="Aplicar com o agente">
+          <button className="btn-primary" onClick={onApply} title={t("Apply with the agent")}>
             Apply changes
           </button>
         ) : planning ? (
@@ -148,7 +150,7 @@ function Card({
             <span className="spinner" /> Planning…
           </button>
         ) : (
-          <button className="btn-ghost" onClick={onPlan} title="Gerar um plano detalhado">
+          <button className="btn-ghost" onClick={onPlan} title={t("Write a detailed plan")}>
             Planning
           </button>
         )}

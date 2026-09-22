@@ -1,5 +1,6 @@
 import * as React from "react";
 
+import { t, tf } from "../i18n";
 import type { Action, EditorState } from "./store";
 
 export interface LogPanelProps {
@@ -23,26 +24,28 @@ export function LogPanel({ state, dispatch }: LogPanelProps): JSX.Element {
     <div className="flow-log" data-testid="log">
       <div className="flow-log-head">
         <button data-testid="log-toggle" onClick={() => dispatch({ type: "toggleLog" })}>
-          {state.logOpen ? "▾" : "▸"} Log
+          {state.logOpen ? "▾" : "▸"} {t("Log")}
         </button>
         <span className="flow-hint" data-testid="log-count">
-          {count} linha(s)
+          {tf("{0} line(s)", count)}
         </span>
         <span className="spacer" />
         {state.run.runId && (
           <span className="flow-hint">
-            {state.run.running ? "rodando" : state.run.status}
+            {state.run.running ? t("running") : state.run.status}
           </span>
         )}
         <button data-testid="log-clear" onClick={() => dispatch({ type: "clearLog" })}>
-          Limpar
+          {t("Clear")}
         </button>
       </div>
       {state.logOpen && (
         <div className="flow-log-rows" ref={rowsRef}>
           {count === 0 && (
             <span className="flow-hint">
-              Nada ainda. Um nó Print escreve aqui, e é assim que se depura um grafo.
+              {t(
+                "Nothing yet. A Print node writes here, and that is how a graph gets debugged."
+              )}
             </span>
           )}
           {state.log.map((row) => (

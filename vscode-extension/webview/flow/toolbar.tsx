@@ -1,5 +1,6 @@
 import * as React from "react";
 
+import { t, tf } from "../i18n";
 import type { Action, EditorState } from "./store";
 import { hasErrors } from "./store";
 
@@ -21,33 +22,35 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
       <div className="flow-toolbar">
         <span className="brand">
           <span className={`dot${running ? " running" : ""}`} />
-          Orquestrador
-          <span className="name">{state.fileName || state.graph.name || "sem nome"}</span>
+          {t("Orchestrator")}
+          <span className="name">{state.fileName || state.graph.name || t("unnamed")}</span>
           {state.dirty && <span className="name">•</span>}
         </span>
 
         <div className="flow-play">
           {running ? (
             <button className="danger" data-testid="stop" onClick={props.onStop}>
-              ■ Parar
+              ■ {t("Stop")}
             </button>
           ) : (
             <button
               className="primary"
               data-testid="play"
               disabled={blocked || !state.catalog}
-              title={blocked ? "Corrija os erros do grafo antes de executar." : "Executar (F5)"}
+              title={
+                blocked ? t("Fix the graph errors before running it.") : `${t("Run")} (F5)`
+              }
               onClick={props.onRun}
             >
-              ▶ Executar
+              ▶ {t("Run")}
             </button>
           )}
           <span className="run-status" data-testid="run-status">
             {running
-              ? `${state.run.nodesExecuted} nós`
+              ? tf("{0} nodes", state.run.nodesExecuted)
               : blocked
-                ? `${state.issues.filter((i) => i.severity === "error").length} erro(s)`
-                : state.run.status || "pronto"}
+                ? tf("{0} error(s)", state.issues.filter((i) => i.severity === "error").length)
+                : state.run.status || t("ready")}
           </span>
         </div>
 
@@ -55,7 +58,7 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
         <button
           data-testid="undo"
           disabled={state.undo.length === 0}
-          title="Desfazer (Ctrl+Z)"
+          title={`${t("Undo")} (Ctrl+Z)`}
           onClick={() => dispatch({ type: "undo" })}
         >
           ↶
@@ -63,16 +66,16 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
         <button
           data-testid="redo"
           disabled={state.redo.length === 0}
-          title="Refazer (Ctrl+Shift+Z)"
+          title={`${t("Redo")} (Ctrl+Shift+Z)`}
           onClick={() => dispatch({ type: "redo" })}
         >
           ↷
         </button>
-        <button data-testid="frame" title="Enquadrar tudo (F)" onClick={props.onFrame}>
+        <button data-testid="frame" title={`${t("Fit everything")} (F)`} onClick={props.onFrame}>
           ⤢
         </button>
-        <button data-testid="save" title="Salvar (Ctrl+S)" onClick={props.onSave}>
-          Salvar
+        <button data-testid="save" title={`${t("Save")} (Ctrl+S)`} onClick={props.onSave}>
+          {t("Save")}
         </button>
       </div>
 

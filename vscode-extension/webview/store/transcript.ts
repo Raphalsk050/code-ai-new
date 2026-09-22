@@ -181,13 +181,13 @@ export function applyTranscript(state: TranscriptState, event: EventEnvelope): T
     // same, the note says it will be answered on its own.
     case "user.message.enqueued": {
       const position = Number(p.position ?? 0);
-      const place = position > 1 ? ` (${position}º na fila)` : "";
+      const place = position > 1 ? ` (#${position} in the queue)` : "";
       return {
         items: push(push(items, { kind: "user", id, text: String(p.text ?? "") }), {
           kind: "notice",
           id: id + "-w",
           level: "info",
-          text: `na fila: responde quando o turno atual terminar${place}`,
+          text: `queued: answered once the running turn ends${place}`,
         }),
       };
     }

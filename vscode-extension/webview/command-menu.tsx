@@ -1,5 +1,7 @@
 import * as React from "react";
 
+import { t, tf } from "./i18n";
+
 import type { SlashCommand } from "./commands";
 
 /** Terminal-style slash-command palette that floats above the composer. */
@@ -39,7 +41,9 @@ export function CommandMenu({
         >
           <span className="cmd-name">{cmd.command}</span>
           <span className="cmd-desc">{cmd.description}</span>
-          {!cmd.available && <span className="cmd-desc cmd-off-tag">só no terminal</span>}
+          {!cmd.available && (
+            <span className="cmd-desc cmd-off-tag">{t("terminal only")}</span>
+          )}
         </div>
       ))}
     </div>

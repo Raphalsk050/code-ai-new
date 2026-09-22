@@ -1,5 +1,6 @@
 import * as React from "react";
 
+import { t } from "../i18n";
 import { CATEGORY_COLORS } from "./model";
 
 /** One thing the menu can do, with the section it is filed under. */
@@ -119,13 +120,15 @@ export function ContextMenu({
           ref={inputRef}
           className="flow-menu-search"
           data-testid="menu-search"
-          placeholder="Buscar…"
+          placeholder={`${t("Search")}…`}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
         />
       )}
       <div className="flow-menu-list">
-        {matches.length === 0 && <div className="flow-menu-empty">Nada com esse nome.</div>}
+        {matches.length === 0 && (
+          <div className="flow-menu-empty">{t("Nothing with that name.")}</div>
+        )}
         {sections.map((section) => (
           <React.Fragment key={section.name}>
             <div className="flow-menu-section">{section.name}</div>

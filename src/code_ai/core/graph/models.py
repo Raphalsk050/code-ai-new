@@ -450,11 +450,19 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
 NODE_KINDS: dict[str, NodeKindSpec] = {str(spec.kind): spec for spec in _KIND_LIST}
 
 
-def catalog_payload(professions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    """What ``graphCatalog`` serves: everything the editor needs to draw a graph."""
+def catalog_payload(
+    professions: list[dict[str, Any]] | None = None, *, language: str = "en"
+) -> dict[str, Any]:
+    """What ``graphCatalog`` serves: everything the editor needs to draw a graph.
+
+    ``language`` travels with it because the panel has no other source for it:
+    English is what the source carries, and anything else is a translation the
+    editor applies once it knows what the user picked.
+    """
 
     return {
         "schema_version": SCHEMA_VERSION,
+        "language": language or "en",
         "node_kinds": [spec.payload() for spec in _KIND_LIST],
         "pin_colors": {str(key): value for key, value in PIN_COLORS.items()},
         "variable_types": [str(item) for item in VARIABLE_TYPES],

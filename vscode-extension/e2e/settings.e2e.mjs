@@ -1,10 +1,10 @@
-// The settings panel, end to end: click Salvar, answer as the bridge answers,
+// The settings panel, end to end: click Save, answer as the bridge answers,
 // read what the form is left holding.
 //
 // The bug these pin down: `updateSettings` answers with the configuration as
 // it stands, so a field the backend refused comes back carrying the value the
 // user was replacing. The panel rewrote its whole form from that snapshot and
-// reported "Salvo", so a refusal read as the save button wiping the edit.
+// reported "Saved", so a refusal read as the save button wiping the edit.
 
 import { settingsSnapshot } from "./harness.mjs";
 
@@ -13,14 +13,14 @@ const SAVE = ".settings-save";
 /** Open the panel with a snapshot already delivered. */
 async function openPanel(ui, snapshot = settingsSnapshot()) {
   await ui.fromHost({ type: "settings", settings: snapshot });
-  await ui.page.click('button[title="Configurações"]');
+  await ui.page.click('button[title="Settings"]');
   await ui.page.waitForSelector(".settings-body");
   await ui.clearToHost();
   return snapshot;
 }
 
 const value = (ui, selector) => ui.page.inputValue(selector);
-const baseUrlField = '.settings-field:has(> .settings-field-label:text-is("URL base")) input';
+const baseUrlField = '.settings-field:has(> .settings-field-label:text-is("Base URL")) input';
 const workspaceField = '.settings-field:has(> .settings-field-label:text-is("Workspace")) input';
 const modelField = ".model-input";
 const apiKeyField = '.settings-field input[type="password"]';
@@ -34,7 +34,7 @@ export const tests = {
     await ui.page.click(SAVE);
 
     const [sent] = await ui.toHost("updateSettings");
-    assert(sent, "Salvar should post updateSettings");
+    assert(sent, "Save should post updateSettings");
     assert(sent.updates.model === "modelo-novo", "the edited model should be on the wire");
     assert(sent.updates.api_key === "sk-chave", "the typed key should be on the wire");
     assert(
@@ -64,7 +64,7 @@ export const tests = {
       "the saved model should stay in the form"
     );
     assert(
-      (await ui.page.textContent(SAVE)).trim() === "Salvo",
+      (await ui.page.textContent(SAVE)).trim() === "Saved",
       "a clean save should say so"
     );
     assert(
@@ -101,7 +101,7 @@ export const tests = {
     );
   },
 
-  async "a refusal is named on screen instead of reading as Salvo"(ui, assert) {
+  async "a refusal is named on screen instead of reading as Saved"(ui, assert) {
     const snapshot = await openPanel(ui);
 
     await ui.page.fill(baseUrlField, "https://llm.empresa.example/v1");
@@ -117,7 +117,7 @@ export const tests = {
     });
 
     const label = (await ui.page.textContent(SAVE)).trim();
-    assert(label !== "Salvo", `a refused save must not claim "Salvo", said ${label}`);
+    assert(label !== "Saved", `a refused save must not claim "Saved", said ${label}`);
     const shown = await ui.page.textContent('.settings-error[data-field="base_url"]');
     assert(
       shown.includes("api_key is required"),
@@ -185,8 +185,23 @@ export const tests = {
 
     await ui.page.fill(workspaceField, "C:/projetos/terceiro");
     assert(
+      (await ui.page.textContent(SAVE)).trim() === "Save",
+      "a fresh edit puts the button back to Save"
+    );
+  },
+
+  async "the panel speaks Portuguese only when Portuguese is the chosen language"(ui, assert) {
+    // English is what the source carries; the table is applied only once the
+    // backend says the user picked another language.
+    await ui.fromHost({ type: "settings", settings: settingsSnapshot({ language: "pt-BR" }) });
+    await ui.page.click('button[title="Configurações"]');
+    await ui.page.waitForSelector(".settings-body");
+
+    const title = await ui.page.textContent(".settings-title");
+    assert(title.trim() === "Configurações", `the title read ${title}`);
+    assert(
       (await ui.page.textContent(SAVE)).trim() === "Salvar",
-      "a fresh edit puts the button back to Salvar"
+      "the save button stayed English with pt-BR selected"
     );
   },
 };

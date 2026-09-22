@@ -77,7 +77,7 @@ export class FlowEditorProvider implements vscode.CustomTextEditorProvider {
 
   runActive(): void {
     if (!this.active) {
-      void vscode.window.showInformationMessage("Abra um grafo (.flow.json) para executar.");
+      void vscode.window.showInformationMessage("Open a graph (.flow.json) to run it.");
       return;
     }
     this.active.runFromCommand();
@@ -196,7 +196,7 @@ class FlowSession {
       this.post({
         type: "flowNotice",
         level: "error",
-        text: "O backend do Code-AI não respondeu ao catálogo de nós. Use Code-AI: Restart.",
+        text: "The Code-AI backend did not answer with the node catalog. Use Code-AI: Restart.",
       });
     }
   }
@@ -207,7 +207,7 @@ class FlowSession {
       this.post({
         type: "flowNotice",
         level: "error",
-        text: parsed.error ?? "Não foi possível ler este arquivo.",
+        text: parsed.error ?? "This file could not be read.",
       });
       return;
     }
@@ -342,7 +342,7 @@ class FlowSession {
         issues?: ValidationIssue[];
       }>("graphRun", { graph, variables, secrets }, 30000);
       if (!result?.ok) {
-        this.notify("warn", result?.message ?? "O grafo não pôde ser executado.");
+        this.notify("warn", result?.message ?? "The graph could not be run.");
         if (result?.issues?.length) {
           this.post({ type: "flowValidation", ok: false, issues: result.issues });
         }
@@ -353,7 +353,7 @@ class FlowSession {
       this.running = true;
       this.post({ type: "flowRunState", running: true, runId: this.runId, message: "" });
     } catch (err) {
-      this.notify("error", `Falha ao iniciar: ${String(err)}`);
+      this.notify("error", `Could not start: ${String(err)}`);
       this.post({ type: "flowRunState", running: false, runId: "", message: "" });
     }
   }
@@ -420,11 +420,11 @@ class FlowSession {
       if (!value) {
         value = await vscode.window.showInputBox({
           title: `Chave de API: ${name}`,
-          prompt: "Guardada no cofre do VSCode, nunca no arquivo do grafo.",
+          prompt: "Stored in the VSCode vault, never in the graph file.",
           password: true,
           ignoreFocusOut: true,
         });
-        if (!value) throw new Error(`A execução precisa da chave ${name}.`);
+        if (!value) throw new Error(`The run needs the key ${name}.`);
         await this.secrets.store(secretKey(name), value);
       }
       resolved[name] = value;
@@ -473,15 +473,15 @@ function secretKey(name: string): string {
 export async function createFlowFile(): Promise<void> {
   const folder = vscode.workspace.workspaceFolders?.[0];
   if (!folder) {
-    void vscode.window.showErrorMessage("Abra uma pasta antes de criar um grafo.");
+    void vscode.window.showErrorMessage("Open a folder before creating a graph.");
     return;
   }
   const name = await vscode.window.showInputBox({
-    title: "Novo grafo de orquestração",
-    prompt: "Nome do arquivo (sem extensão)",
+    title: "New orchestrator graph",
+    prompt: "File name (without the extension)",
     value: "pipeline",
     validateInput: (value) =>
-      /^[\w.-]+$/.test(value.trim()) ? undefined : "Use letras, números, ponto, hífen ou _.",
+      /^[\w.-]+$/.test(value.trim()) ? undefined : "Use letters, digits, dot, hyphen or _.",
   });
   if (!name) return;
   const target = vscode.Uri.joinPath(
@@ -492,7 +492,7 @@ export async function createFlowFile(): Promise<void> {
   );
   try {
     await vscode.workspace.fs.stat(target);
-    void vscode.window.showWarningMessage("Já existe um grafo com esse nome; abrindo o existente.");
+    void vscode.window.showWarningMessage("A graph with that name already exists; opening it.");
   } catch {
     const content = Buffer.from(serializeFlow(emptyFlow(name.trim())), "utf8");
     await vscode.workspace.fs.writeFile(target, content);

@@ -20,6 +20,7 @@ import { CommandMenu } from "./command-menu";
 import { buildCatalog, matchCommands, resolveCommand, SlashCommand } from "./commands";
 import { ExplainPanel, ExplainViewState, INITIAL_EXPLAIN } from "./explain";
 import { HomeScreen } from "./home";
+import { setLanguage, t, tf } from "./i18n";
 import {
   DEFAULT_PREFS,
   EMPTY_PERSISTED,
@@ -142,6 +143,9 @@ function App(): JSX.Element {
         setEditorContext(data.context);
         setIncludeContext(true);
       } else if (data?.type === "settings") {
+        // The backend owns the language the user picked; the panel is
+        // written in English and translates only once it knows.
+        setLanguage(data.settings.language ?? "en");
         setSettings(data.settings);
       } else if (data?.type === "settingsUpdated") {
         // The snapshot carries the backend's word on each field, so the errors
@@ -467,8 +471,8 @@ function App(): JSX.Element {
             message: list.length
               ? `${list.length} ${cmd.action.which}: ` +
                 list.map((c) => c.command).join(", ") +
-                " — digite o nome com / para forçar."
-              : `Nenhum ${wanted} encontrado neste workspace.`,
+                t(" — type the name with / to force it.")
+              : tf("No {0} found in this workspace.", wanted),
           })
         );
         break;
@@ -494,7 +498,10 @@ function App(): JSX.Element {
       case "unsupported":
         dispatch(
           clientEvent("warning", {
-            message: `${cmd.command} ainda não existe na extensão; use o terminal por enquanto.`,
+            message: tf(
+              "{0} is not in the extension yet; use the terminal for now.",
+              cmd.command
+            ),
           })
         );
         break;
@@ -675,15 +682,17 @@ function App(): JSX.Element {
     <div className="app" ref={rootRef} data-w={width}>
       <div className="statusbar">
         <div className="brand">
-          <button className="icon-btn back-btn" title="Voltar ao histórico" onClick={goHome}>
+          <button className="icon-btn back-btn" title={t("Back to the history")} onClick={goHome}>
             <IconBack size={16} />
           </button>
           <span className={`dot ${busy ? "busy" : ""}`} />
           Code-AI
           {busy && (
-            <span className="heartbeat" title="O agente está trabalhando">
+            <span className="heartbeat" title={t("The agent is working")}>
               <span className="spinner heartbeat-spin" />
-              {state.session.modelWaiting ? "na fila do provedor" : workingLabel(state.session.status)}
+              {state.session.modelWaiting
+                ? t("queued at the provider")
+                : workingLabel(state.session.status)}
               <span className="heartbeat-clock">{formatElapsed(state.session.heartbeat)}</span>
             </span>
           )}
@@ -693,17 +702,27 @@ function App(): JSX.Element {
             {busy && (
               <button
                 className="icon-btn danger"
-                title="Parar o agente"
+                title={t("Stop the agent")}
                 onPointerDown={ripple}
                 onClick={() => send({ type: "cancel" })}
               >
                 <IconStop size={14} />
               </button>
             )}
-            <button className="icon-btn" title="Limpar mensagens" onPointerDown={ripple} onClick={clearMessages}>
+            <button
+              className="icon-btn"
+              title={t("Clear messages")}
+              onPointerDown={ripple}
+              onClick={clearMessages}
+            >
               <IconBroom size={16} />
             </button>
-            <button className="icon-btn" title="Nova conversa" onPointerDown={ripple} onClick={startNewConversation}>
+            <button
+              className="icon-btn"
+              title={t("New conversation")}
+              onPointerDown={ripple}
+              onClick={startNewConversation}
+            >
               <IconPlus size={16} />
             </button>
             <button
@@ -714,7 +733,12 @@ function App(): JSX.Element {
             >
               <IconRefresh size={15} />
             </button>
-            <button className="icon-btn" title="Configurações" onPointerDown={ripple} onClick={openSettings}>
+            <button
+              className="icon-btn"
+              title={t("Settings")}
+              onPointerDown={ripple}
+              onClick={openSettings}
+            >
               <IconSettings size={16} />
             </button>
           </div>
@@ -723,7 +747,7 @@ function App(): JSX.Element {
 
       <div className="modebar">
         <ModeSwitch mode={mode} onChange={(m: AppMode) => updatePrefs({ mode: m })} />
-        <label className="perm" title="Modo de permissão para comandos e edições">
+        <label className="perm" title={t("Permission mode for commands and edits")}>
           <span>perms</span>
           <select
             value={state.session.permissionMode}
@@ -751,8 +775,8 @@ function App(): JSX.Element {
                       </div>
                       <h2>Code-AI</h2>
                       <div>
-                        Pergunte qualquer coisa sobre este workspace. Ferramentas, plano e
-                        aprovações aparecem aqui.
+                        {t("Ask anything about this workspace. Tools, plan and")}
+                        {t("approvals show up here.")}
                       </div>
                     </div>
                   ) : (
@@ -792,15 +816,15 @@ function App(): JSX.Element {
                 onDrop={onComposerDrop}
               >
                 {ctxChip && (
-                  <div className="ctx-chip" title="Vai junto com a próxima mensagem">
+                  <div className="ctx-chip" title={t("Travels with the next message")}>
                     <IconFile size={13} />
                     <span className="ctx-label">{ctxLabel}</span>
                     <span className="ctx-kind">
-                      {editorContext?.selection ? "seleção" : "arquivo aberto"}
+                      {editorContext?.selection ? t("selection") : t("open file")}
                     </span>
                     <button
                       className="ctx-remove"
-                      title="Não incluir o contexto do editor"
+                      title={t("Do not include the editor context")}
                       onClick={() => setIncludeContext(false)}
                     >
                       ×
@@ -846,7 +870,7 @@ function App(): JSX.Element {
                     <textarea
                       ref={textareaRef}
                       value={draft}
-                      placeholder="Mensagem para o Code-AI…  (/ para comandos)"
+                      placeholder={t("Message for Code-AI…  (/ for commands)")}
                       rows={1}
                       onChange={(e) => {
                         setDraft(e.target.value);
@@ -874,7 +898,7 @@ function App(): JSX.Element {
                     ) : (
                       <button
                         className="send-btn"
-                        title="Enviar (Alt para guiar o turno atual)"
+                        title={t("Send (Alt to steer the running turn)")}
                         disabled={!draft.trim()}
                         onPointerDown={ripple}
                         onClick={(e) => submit(e.altKey)}
@@ -886,7 +910,7 @@ function App(): JSX.Element {
                 </div>
                 <div className="hint">
                   {busy
-                    ? "Enter responde depois · Alt+Enter guia o turno atual · Esc terminal"
+                    ? t("Enter answers later · Alt+Enter steers this turn · Esc terminal")
                     : "Enter envia · Shift+Enter quebra linha · / comandos · @ arquivos · Esc terminal"}
                 </div>
               </div>

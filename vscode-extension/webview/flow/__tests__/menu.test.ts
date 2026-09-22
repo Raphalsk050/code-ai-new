@@ -17,15 +17,15 @@ function entry(label: string, section = "Fluxo", hint = ""): MenuEntry {
 // -- the filter ----------------------------------------------------------
 
 test("an empty query keeps every entry, in order", () => {
-  const entries = [entry("Start"), entry("Print", "Depuração")];
+  const entries = [entry("Start"), entry("Print", "Debug")];
   assert.deepEqual(filterEntries(entries, "  "), entries);
 });
 
 test("the filter matches label, hint and section", () => {
-  const entries = [entry("Start"), entry("Print", "Depuração"), entry("Agent", "Agentes", "string")];
+  const entries = [entry("Start"), entry("Print", "Debug"), entry("Agent", "Agents", "string")];
 
   assert.deepEqual(filterEntries(entries, "print").map((item) => item.label), ["Print"]);
-  assert.deepEqual(filterEntries(entries, "agentes").map((item) => item.label), ["Agent"]);
+  assert.deepEqual(filterEntries(entries, "agents").map((item) => item.label), ["Agent"]);
   assert.deepEqual(filterEntries(entries, "string").map((item) => item.label), ["Agent"]);
 });
 

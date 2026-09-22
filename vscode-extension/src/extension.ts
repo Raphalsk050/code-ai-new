@@ -502,7 +502,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       this.webview?.postMessage({
         type: "commandResult",
         ok: false,
-        text: "Code-AI: a bridge não está rodando.",
+        text: "Code-AI: the bridge is not running.",
       });
       return;
     }

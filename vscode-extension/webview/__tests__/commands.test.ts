@@ -43,9 +43,9 @@ test("typing a prefix narrows the menu", () => {
 
 test("resolving splits the command from its argument", () => {
   const catalog = buildCatalog([spec("/goal <objetivo>")]);
-  const resolved = resolveCommand(catalog, "/goal deixar a suíte verde");
+  const resolved = resolveCommand(catalog, "/goal get the suite green");
   assert.equal(resolved?.command.command, "/goal <objetivo>");
-  assert.equal(resolved?.argument, "deixar a suíte verde");
+  assert.equal(resolved?.argument, "get the suite green");
 });
 
 test("the longest matching command wins over its prefix", () => {
@@ -66,5 +66,5 @@ test("permission and planner modes are distinct routes", () => {
 });
 
 test("text that is not a command resolves to nothing", () => {
-  assert.equal(resolveCommand(buildCatalog([]), "só uma pergunta"), null);
+  assert.equal(resolveCommand(buildCatalog([]), "just a question"), null);
 });

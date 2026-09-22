@@ -1,5 +1,7 @@
 import * as React from "react";
 
+import { t, tf } from "./i18n";
+
 import type { HistoryEntry } from "./history";
 import {
   IconAgents,
@@ -69,11 +71,11 @@ const ICONS: Record<SectionId, (props: { size?: number }) => JSX.Element> = {
 };
 
 const TITLES: Record<SectionId, string> = {
-  session: "Sessão",
+  session: "Session",
   plan: "Plano",
   agents: "Agentes",
   terminal: "Terminal",
-  history: "Histórico",
+  history: "History",
 };
 
 const ORDER: SectionId[] = ["session", "plan", "agents", "terminal", "history"];
@@ -145,8 +147,8 @@ export function TaskRail(props: RailProps): JSX.Element {
         <div className="rail-strip">
           <button
             className="rail-btn"
-            title={wide ? "Encaixar painel" : "Painel de tarefas"}
-            aria-label="Painel de tarefas"
+            title={wide ? t("Dock the panel") : t("Task panel")}
+            aria-label={t("Task panel")}
             onPointerDown={ripple}
             onClick={() => (wide ? setDocked(true) : setDrawer(drawer ? null : "plan"))}
           >
@@ -160,8 +162,8 @@ export function TaskRail(props: RailProps): JSX.Element {
               <button
                 key={id}
                 className={`rail-btn ${drawer === id ? "active" : ""}`}
-                title={TITLES[id]}
-                aria-label={TITLES[id]}
+                title={t(TITLES[id])}
+                aria-label={t(TITLES[id])}
                 onPointerDown={ripple}
                 onClick={() => toggleSection(id)}
               >
@@ -174,8 +176,8 @@ export function TaskRail(props: RailProps): JSX.Element {
           <div style={{ flex: 1 }} />
           <button
             className="rail-btn"
-            title="Configurações"
-            aria-label="Configurações"
+            title={t("Settings")}
+            aria-label={t("Settings")}
             onPointerDown={ripple}
             onClick={props.actions.onSettings}
           >
@@ -188,7 +190,7 @@ export function TaskRail(props: RailProps): JSX.Element {
         <>
           <RailGrip
             axis="x"
-            label="Redimensionar painel de tarefas"
+            label={t("Resize the task panel")}
             onStart={() => {
               dragFromWidth.current = railWidth;
             }}
@@ -216,8 +218,8 @@ export function TaskRail(props: RailProps): JSX.Element {
             </span>
             <button
               className="rail-btn"
-              title="Recolher painel"
-              aria-label="Recolher painel de tarefas"
+              title={t("Collapse the panel")}
+              aria-label={t("Collapse the task panel")}
               onPointerDown={ripple}
               onClick={() => setDocked(false)}
             >
@@ -251,7 +253,7 @@ export function TaskRail(props: RailProps): JSX.Element {
           </div>
         </>
       ) : (
-        <RailDrawer section={drawer} onClose={() => setDrawer(null)} title={drawer ? TITLES[drawer] : ""}>
+        <RailDrawer section={drawer} onClose={() => setDrawer(null)} title={drawer ? t(TITLES[drawer]) : ""}>
           {drawer ? body(drawer) : null}
         </RailDrawer>
       )}
@@ -366,7 +368,7 @@ function RailSection({
         onClick={onToggle}
       >
         <IconChevron size={12} className="chev" />
-        <span className="rail-section-title">{TITLES[id]}</span>
+        <span className="rail-section-title">{t(TITLES[id])}</span>
         {note && <span className="rail-section-note">{note}</span>}
       </button>
       <div ref={ref} id={`rail-body-${id}`}>
@@ -384,7 +386,7 @@ function RailSection({
       {open && (
         <RailGrip
           axis="y"
-          label={`Redimensionar ${TITLES[id]}`}
+          label={tf("Resize {0}", t(TITLES[id]))}
           onStart={() => {
             dragFrom.current = height ?? bodyRef.current?.getBoundingClientRect().height ?? 0;
           }}
@@ -421,7 +423,7 @@ function RailDrawer({
           <span className="rail-section-title rail-section-head" style={{ padding: 0 }}>
             {title}
           </span>
-          <button className="rail-btn" aria-label="Fechar" onPointerDown={ripple} onClick={onClose}>
+          <button className="rail-btn" aria-label={t("Close")} onPointerDown={ripple} onClick={onClose}>
             ✕
           </button>
         </div>

@@ -1,5 +1,7 @@
 import * as React from "react";
 
+import { t } from "../i18n";
+
 import type { TerminalState } from "../store";
 
 export type TerminalAction =
@@ -36,10 +38,10 @@ export function TerminalPanel({
   if (!terminal.live) {
     return (
       <div className="rail-empty">
-        Nenhuma sessão de terminal. A mesma sessão serve você e o agente.
+        No terminal session. The same session serves you and the agent.
         <div className="panel-actions">
           <button className="panel-btn primary" onClick={() => onAction({ action: "start" })}>
-            Abrir terminal
+            {t("Open a terminal")}
           </button>
         </div>
       </div>
@@ -74,7 +76,7 @@ export function TerminalPanel({
           data-terminal-input="1"
           value={line}
           disabled={terminal.closed}
-          placeholder={terminal.closed ? "sessão encerrada" : "digite e Enter"}
+          placeholder={terminal.closed ? "session closed" : "type and press Enter"}
           onChange={(e) => setLine(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
@@ -96,7 +98,7 @@ export function TerminalPanel({
         </button>
         {terminal.closed ? (
           <button className="panel-btn primary" onClick={() => onAction({ action: "start" })}>
-            Nova sessão
+            New session
           </button>
         ) : (
           <button className="panel-btn danger" onClick={() => onAction({ action: "kill" })}>

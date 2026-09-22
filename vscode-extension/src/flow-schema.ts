@@ -93,6 +93,8 @@ export interface ProfessionSpec {
 
 export interface GraphCatalog {
   schema_version: number;
+  /** The language the user picked, so the panel can follow it. */
+  language: string;
   node_kinds: NodeKindSpec[];
   pin_colors: Record<string, string>;
   variable_types: string[];
@@ -172,16 +174,16 @@ export function parseFlow(text: string): { graph?: FlowGraph; error?: string } {
   try {
     raw = JSON.parse(trimmed);
   } catch (err) {
-    return { error: `Este arquivo não é JSON válido: ${(err as Error).message}` };
+    return { error: `This file is not valid JSON: ${(err as Error).message}` };
   }
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    return { error: "Um grafo precisa ser um objeto JSON." };
+    return { error: "A graph must be a JSON object." };
   }
   const doc = raw as Record<string, unknown>;
   const version = typeof doc.version === "number" ? doc.version : FLOW_SCHEMA_VERSION;
   if (version > FLOW_SCHEMA_VERSION) {
     return {
-      error: `Este grafo foi salvo no formato ${version}; esta versão lê até o ${FLOW_SCHEMA_VERSION}.`,
+      error: `This graph was written for format ${version}; this build reads up to ${FLOW_SCHEMA_VERSION}.`,
     };
   }
   return {

@@ -1,5 +1,7 @@
 import * as React from "react";
 
+import { t, tf } from "../i18n";
+
 import { useFlipList } from "../motion";
 import type { GoalState, PlanState } from "../store";
 
@@ -31,7 +33,7 @@ export function PlanPanel({
   if (plan.steps.length === 0 && goal.phase === "none") {
     return (
       <div className="rail-empty">
-        Sem plano neste turno. Em <code>plan</code> o agente escreve os passos antes de agir.
+        No plan in this turn. In <code>plan</code> the agent writes the steps before acting.
         <div className="panel-actions">
           {["auto", "plan", "act"].map((m) => (
             <button
@@ -70,7 +72,7 @@ export function PlanPanel({
         </div>
       )}
 
-      {plan.rejection && <div className="plan-reject">conclusão rejeitada: {plan.rejection}</div>}
+      {plan.rejection && <div className="plan-reject">completion rejected: {plan.rejection}</div>}
 
       {goal.phase !== "none" && (
         <div className="plan-reject" style={{ borderColor: "var(--border)" }}>
@@ -81,7 +83,7 @@ export function PlanPanel({
           <div style={{ marginTop: 3 }}>{goal.objective}</div>
           {goal.criteria.length > 0 && (
             <div style={{ marginTop: 3 }}>
-              critérios: {goal.met}/{goal.criteria.length}
+              criteria: {goal.met}/{goal.criteria.length}
             </div>
           )}
           {goal.note && <div style={{ marginTop: 3 }}>{goal.note}</div>}
@@ -93,7 +95,7 @@ export function PlanPanel({
             )}
             {goal.phase === "running" && (
               <button className="panel-btn danger" onClick={() => onGoal("stop")}>
-                Parar
+                {t("Stop")}
               </button>
             )}
           </div>

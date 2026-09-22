@@ -59,7 +59,7 @@ export class BridgeSession {
     timeoutMs?: number
   ): Promise<T> {
     const client = this.bridge;
-    if (!client) return Promise.reject(new Error("O backend do Code-AI não está em execução."));
+    if (!client) return Promise.reject(new Error("The Code-AI backend is not running."));
     return client.request<T>(method, params, timeoutMs);
   }
 

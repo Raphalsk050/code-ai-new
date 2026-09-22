@@ -1,5 +1,7 @@
 import * as React from "react";
 
+import { t, tf } from "../i18n";
+
 import type { SessionState } from "../store";
 import type { UsageState } from "../store";
 import { formatTokens } from "../store/usage";
@@ -24,7 +26,7 @@ export function SessionPanel({
   return (
     <div className="panel-card">
       <div className="kv">
-        <span className="k">modelo</span>
+        <span className="k">model</span>
         <span className="v">{model || "-"}</span>
       </div>
       <div className="kv">
@@ -44,11 +46,11 @@ export function SessionPanel({
         <span className="v">{session.plannerMode}</span>
       </div>
       <div className="kv">
-        <span className="k">permissão</span>
+        <span className="k">permission</span>
         <span className="v">{session.permissionMode}</span>
       </div>
       <div className="kv">
-        <span className="k">verificação</span>
+        <span className="k">verification</span>
         <span className={`v ${session.verification === "passed" ? "ok" : "warn"}`}>
           {session.verification}
         </span>
@@ -68,7 +70,7 @@ export function SessionPanel({
       {indexing && (
         <>
           <div className="kv">
-            <span className="k">índice</span>
+            <span className="k">index</span>
             <span className="v">
               {session.indexPhase} {session.indexDone}/{session.indexTotal}
             </span>
@@ -84,7 +86,7 @@ export function SessionPanel({
           Reindexar
         </button>
         <button className="panel-btn" onClick={() => onIndex(true)}>
-          Índice completo
+          Full index
         </button>
         <button className="panel-btn" onClick={onCompact}>
           Compactar

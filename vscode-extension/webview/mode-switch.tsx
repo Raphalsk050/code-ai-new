@@ -1,12 +1,24 @@
 import * as React from "react";
 
+import { t } from "./i18n";
+
 import type { AppMode } from "../src/protocol";
 import { IconBook, IconCI, IconWand } from "./icons";
 
 const MODES: { mode: AppMode; label: string; icon: JSX.Element; title: string }[] = [
-  { mode: "agent", label: "Agente", icon: <IconCI size={13} />, title: "Conversar com o agente" },
-  { mode: "refactor", label: "Refatorar", icon: <IconWand size={13} />, title: "Sugerir melhorias de arquitetura para a seleção" },
-  { mode: "explain", label: "Explicar", icon: <IconBook size={13} />, title: "Explicar o código selecionado ao passar o mouse" },
+  { mode: "agent", label: "Agent", icon: <IconCI size={13} />, title: "Talk to the agent" },
+  {
+    mode: "refactor",
+    label: "Refactor",
+    icon: <IconWand size={13} />,
+    title: "Suggest architectural improvements for the selection",
+  },
+  {
+    mode: "explain",
+    label: "Explain",
+    icon: <IconBook size={13} />,
+    title: "Explain the selected code on hover",
+  },
 ];
 
 /** Segmented control that switches the extension's operating mode. */
@@ -19,11 +31,11 @@ export function ModeSwitch({ mode, onChange }: { mode: AppMode; onChange: (m: Ap
           role="tab"
           aria-selected={mode === m.mode}
           className={`mode-opt ${mode === m.mode ? "active" : ""}`}
-          title={m.title}
+          title={t(m.title)}
           onClick={() => onChange(m.mode)}
         >
           {m.icon}
-          <span>{m.label}</span>
+          <span>{t(m.label)}</span>
         </button>
       ))}
     </div>

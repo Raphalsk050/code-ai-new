@@ -34,11 +34,11 @@ test("streaming deltas merge into one assistant bubble", () => {
   const state = feed([
     ["user.message", { text: "oi" }],
     ["model.stream.delta", { text: "ok" }],
-    ["model.stream.delta", { text: " então" }],
+    ["model.stream.delta", { text: " then" }],
   ]);
   const last = state.transcript.items[state.transcript.items.length - 1];
   assert.equal(last.kind, "assistant");
-  assert.equal((last as { text: string }).text, "ok então");
+  assert.equal((last as { text: string }).text, "ok then");
 });
 
 test("the final answer replaces the streamed duplicate instead of doubling it", () => {
@@ -107,8 +107,8 @@ test("a failed step is marked failed, not just not-done", () => {
         status: "RUNNING",
         current_step_status: "FAILED",
         completed_steps: [],
-        remaining_steps: ["rodar suíte"],
-        current_step: "rodar suíte",
+        remaining_steps: ["run the suite"],
+        current_step: "run the suite",
       },
     ],
   ]);
@@ -202,7 +202,7 @@ test("a new turn clears the turn-scoped panels but keeps the terminal", () => {
     ["interaction.question.requested", { question: "?" }],
     ["planning.plan.created", { completed_steps: [], remaining_steps: ["x"], current_step: "x" }],
   ]);
-  const after = applyEvent(before, ev("user.message", { text: "próxima" }));
+  const after = applyEvent(before, ev("user.message", { text: "next" }));
   assert.equal(after.plan.steps.length, 0);
   assert.equal(after.agents.rows.length, 0);
   assert.equal(after.questions.pending.length, 0);
@@ -223,7 +223,7 @@ test("the goal loop reports its phase and iteration", () => {
     ["goal.defined", { objective: "verde", criteria: ["testes passam"] }],
     ["goal.activated", { max_iterations: 6 }],
     ["goal.iteration.started", { iteration: 2, max_iterations: 6 }],
-    ["goal.iteration.completed", { met: 1, summary: "um critério" }],
+    ["goal.iteration.completed", { met: 1, summary: "one criterion" }],
   ]);
   assert.equal(state.goal.phase, "running");
   assert.equal(state.goal.iteration, 2);
@@ -288,12 +288,12 @@ test("a message that waits its turn says so, and is not marked as steering", () 
   assert.equal(items[1].kind, "user");
   assert.equal((items[1] as { text: string }).text, "e depois Y?");
   assert.equal(items[2].kind, "notice");
-  assert.match((items[2] as { text: string }).text, /^na fila:/);
+  assert.match((items[2] as { text: string }).text, /^queued:/);
 });
 
 test("the queue position only shows once there is a queue", () => {
   const first = feed([["user.message.enqueued", { text: "a", position: 1 }]]);
   assert.doesNotMatch((first.transcript.items[1] as { text: string }).text, /na fila\)/);
   const third = feed([["user.message.enqueued", { text: "c", position: 3 }]]);
-  assert.match((third.transcript.items[1] as { text: string }).text, /3.* na fila\)/);
+  assert.match((third.transcript.items[1] as { text: string }).text, /#3 in the queue\)/);
 });
