@@ -281,6 +281,48 @@ function assertDistWritable() {
  * from the developer's own `.venv`: this one carries PyInstaller and a
  * non-editable install of the project, and neither belongs in a dev env.
  */
+/**
+ * Start the binary the way the extension does and require it to answer.
+ *
+ * `bridge` with stdin already closed is the whole contract: the backend boots,
+ * writes its startup events to stdout as JSON lines, sees EOF and exits. A
+ * binary missing a hidden import dies before the first line, which is the
+ * failure this catches - and it catches it here, where the stderr is visible,
+ * rather than in an editor that logs it somewhere nobody looks.
+ *
+ * Only ever called for a binary this machine can execute; a cross-built one is
+ * verified by the CI job that runs on its own platform.
+ */
+export function smokeTest(binary, { timeout = 180_000, spawn = spawnSync } = {}) {
+  const probe = spawn(binary, ["--workspace", REPO_ROOT, "bridge"], {
+    input: "",
+    encoding: "utf8",
+    timeout,
+    cwd: REPO_ROOT,
+  });
+  if (probe.error) {
+    throw new Error(`${binary} could not be started: ${probe.error.message}`);
+  }
+  const stdout = probe.stdout || "";
+  const spoke = stdout.split(/\r?\n/).some((line) => {
+    const text = line.trim();
+    if (!text.startsWith("{")) return false;
+    try {
+      return typeof JSON.parse(text) === "object";
+    } catch {
+      return false;
+    }
+  });
+  if (spoke) return;
+  const said = (probe.stderr || "").trim().split(/\r?\n/).slice(-12).join("\n");
+  throw new Error(
+    `${binary} starts but never speaks the bridge protocol (exit ${probe.status}).\n` +
+      "The extension would show \"bridge process exited\". What it printed:\n\n" +
+      (said || "(nothing on stderr)") +
+      "\n"
+  );
+}
+
 function buildNative({ verifySsl }) {
   assertDistWritable();
   const spec = PLATFORMS[hostPlatform()];
@@ -320,6 +362,8 @@ function buildNative({ verifySsl }) {
   }
 
   if (!existsSync(output)) throw new Error(`PyInstaller finished but ${output} is not there`);
+  console.log("  smoke: starting the binary");
+  smokeTest(output);
   return output;
 }
 

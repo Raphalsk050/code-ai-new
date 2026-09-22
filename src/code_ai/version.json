@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 17,
-  "patch": 0,
-  "build": 23,
+  "patch": 1,
+  "build": 24,
   "updated": "2026-09-22",
-  "note": "Professions written in the editor, and live feedback while agents work."
+  "note": "Surface backend stderr, and smoke-test the binary at build time."
 }

@@ -36,6 +36,7 @@ import {
   hostPlatform,
   isStale,
   skipFromCopy,
+  smokeTest,
 } from "./ensure-backend.mjs";
 import { declaredPackages, installReason, missingPackages, vscePath } from "./ensure-deps.mjs";
 import { readZipEntries, verify } from "./verify-vsix.mjs";
@@ -502,4 +503,74 @@ test("vsce is located through its own bin declaration", () => {
 
 test("a missing vsce says to run npm install", () => {
   assert.throws(() => vscePath(bareRoot()), /npm install/);
+});
+
+// -- the build runs what it built -----------------------------------------
+//
+// The bug these pin down: `assertBinary` checks the size and the magic bytes,
+// so a binary that cannot start still passes every gate and ships. The user
+// then sees "bridge process exited" and the reason is nowhere.
+
+/** A spawnSync that answers with whatever the test scripted. */
+function fakeSpawn(result) {
+  const calls = [];
+  const spawn = (command, args, options) => {
+    calls.push({ command, args, options });
+    return result;
+  };
+  return { spawn, calls };
+}
+
+const SPOKE = {
+  status: 0,
+  stdout: '{"jsonrpc": "2.0", "method": "event", "params": {"event_type": "session.ready"}}\n',
+  stderr: "",
+};
+
+test("a binary that speaks the protocol passes", () => {
+  const { spawn, calls } = fakeSpawn(SPOKE);
+
+  smokeTest("/tmp/code-ai", { spawn });
+
+  // Started exactly the way the extension starts it.
+  assert.deepEqual(calls[0].args.slice(-1), ["bridge"]);
+  // stdin closed immediately, or the probe would wait for input for ever.
+  assert.equal(calls[0].options.input, "");
+});
+
+test("a binary that dies on startup fails the build, quoting what it said", () => {
+  const { spawn } = fakeSpawn({
+    status: 1,
+    stdout: "",
+    stderr: "Traceback (most recent call last):\n  File \"x\", line 1\nModuleNotFoundError: no tiktoken_ext\n",
+  });
+
+  assert.throws(
+    () => smokeTest("/tmp/code-ai", { spawn }),
+    (err) => {
+      // The reason has to travel, or the build is as unhelpful as the editor.
+      assert.match(err.message, /ModuleNotFoundError: no tiktoken_ext/);
+      assert.match(err.message, /exit 1/);
+      return true;
+    }
+  );
+});
+
+test("a binary that prints nothing at all is still a failure", () => {
+  const { spawn } = fakeSpawn({ status: 0, stdout: "", stderr: "" });
+
+  assert.throws(() => smokeTest("/tmp/code-ai", { spawn }), /nothing on stderr/);
+});
+
+test("noise on stdout is not mistaken for the protocol", () => {
+  // A bootloader warning is not a JSON-RPC line.
+  const { spawn } = fakeSpawn({ status: 0, stdout: "loading...\nnot json\n", stderr: "" });
+
+  assert.throws(() => smokeTest("/tmp/code-ai", { spawn }), /never speaks the bridge protocol/);
+});
+
+test("a binary that cannot be executed at all says so", () => {
+  const { spawn } = fakeSpawn({ error: new Error("spawn EACCES"), stdout: "", stderr: "" });
+
+  assert.throws(() => smokeTest("/tmp/code-ai", { spawn }), /could not be started: spawn EACCES/);
 });

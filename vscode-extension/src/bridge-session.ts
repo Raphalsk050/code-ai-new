@@ -21,6 +21,9 @@ export interface BridgeSubscriber {
   onRestart?(): void;
 }
 
+/** How many stderr lines to keep, so a traceback survives whole. */
+const STDERR_TAIL = 40;
+
 export class BridgeSession {
   constructor(private readonly extensionPath: string) {}
 
@@ -28,6 +31,10 @@ export class BridgeSession {
   private readonly subscribers = new Set<BridgeSubscriber>();
   /** Last `code-ai.command` warning shown, so a restart does not repeat it. */
   private warnedAbout?: string;
+  /** Everything the backend wrote to stderr, for the user to read. */
+  private log?: vscode.OutputChannel;
+  /** The tail of it, to quote when the process dies without explaining itself. */
+  private stderrTail: string[] = [];
 
   /** The live client, or `undefined` while the backend is down. */
   get client(): BridgeClient | undefined {
@@ -41,6 +48,31 @@ export class BridgeSession {
   subscribe(subscriber: BridgeSubscriber): vscode.Disposable {
     this.subscribers.add(subscriber);
     return new vscode.Disposable(() => this.subscribers.delete(subscriber));
+  }
+
+  /** Record a chunk of backend stderr, and keep the tail of it. */
+  private note(chunk: string): void {
+    if (!this.log) this.log = vscode.window.createOutputChannel("Code-AI Backend");
+    this.log.append(chunk);
+    for (const line of chunk.split(/\r?\n/)) {
+      if (line.trim()) this.stderrTail.push(line);
+    }
+    if (this.stderrTail.length > STDERR_TAIL) {
+      this.stderrTail = this.stderrTail.slice(-STDERR_TAIL);
+    }
+  }
+
+  /**
+   * The one line worth showing from a dead backend's stderr.
+   *
+   * A Python traceback puts the exception last, which is the line that names
+   * the problem; the frames above it are noise in a toast. The full text is in
+   * the output channel either way.
+   */
+  private lastWords(): string {
+    const lines = this.stderrTail.filter((line) => !/^\s*(File "|\s+\S)/.test(line));
+    const last = (lines.length ? lines : this.stderrTail).at(-1) ?? "";
+    return last.trim().slice(0, 300);
   }
 
   /** Spawn the backend if it is not already up. Safe to call from every view. */
@@ -136,9 +168,10 @@ export class BridgeSession {
       return;
     }
     this.bridge = client;
+    this.stderrTail = [];
 
     client.on("event", (event: EventEnvelope) => this.broadcast(event));
-    client.on("stderr", (chunk: string) => console.error("[code-ai bridge]", chunk));
+    client.on("stderr", (chunk: string) => this.note(chunk));
     client.on("error", (err: Error) => {
       const code = (err as NodeJS.ErrnoException).code;
       // EFTYPE is what Windows returns for a file it will not execute, such as
@@ -159,7 +192,19 @@ export class BridgeSession {
       this.bridge = undefined;
       // Leave the busy state so the "working" heartbeat stops, then show why.
       this.broadcast(syntheticStatus("DISCONNECTED"));
-      this.broadcast(syntheticError(`bridge exited (${code})`));
+      // A backend that died on startup already said why on stderr. Quoting it
+      // here is the difference between a bug report and a guess.
+      const said = this.lastWords();
+      this.broadcast(
+        syntheticError(said ? `bridge exited (${code}): ${said}` : `bridge exited (${code})`)
+      );
+      if (said) {
+        vscode.window
+          .showErrorMessage(`Code-AI backend stopped: ${said}`, "Show log")
+          .then((choice) => {
+            if (choice === "Show log") this.log?.show(true);
+          });
+      }
     });
   }
 }
