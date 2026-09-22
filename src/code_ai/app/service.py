@@ -14,6 +14,7 @@ from typing import Any
 
 from code_ai.app.conversation_store import ConversationStore
 from code_ai.app.goal_runner import GoalRunner
+from code_ai.app.graph_runner import GraphRunner
 from code_ai.app.session import ApplicationSession
 from code_ai.context.compression import CompressionResult, ContextCompressor
 from code_ai.core.errors import ConfigurationError, GoalStateError
@@ -82,6 +83,7 @@ class CodeAIApplication:
         sandbox: SessionSandbox | None = None,
         code_index: CodeIndexService | None = None,
         browser: Any = None,
+        subagent_runtime: Any = None,
     ) -> None:
         self.session = session
         self.event_bus = event_bus
@@ -114,6 +116,10 @@ class CodeAIApplication:
         # The agent's browser. Started lazily on first use, so a session that
         # never browses never pays for a Chromium process.
         self.browser = browser
+        # Factory for isolated sub-agents. The chat agent reaches it through the
+        # dispatch tool's coordinator; the orchestrator graph needs it directly,
+        # because a Profession node *is* a sub-agent profile.
+        self.subagent_runtime = subagent_runtime
         # Id of the conversation currently loaded in the live session. Assigned
         # by the client via reset_conversation/load_conversation; a turn persists
         # under it so the user can resume the thread later.
@@ -139,6 +145,10 @@ class CodeAIApplication:
         self._goal_service: GoalService | None = None
         self._goal_runner: GoalRunner | None = None
         self._goal_task: asyncio.Task[Any] | None = None
+        # The orchestrator graph currently running (one per session, because it
+        # occupies the same turn slot a chat message would).
+        self._graph_runner: GraphRunner | None = None
+        self._graph_task: asyncio.Task[Any] | None = None
         # Background drain of interactive terminal sessions (see
         # _poll_terminal_screens); exists only while the app is running.
         self._terminal_poll_task: asyncio.Task[None] | None = None
@@ -636,6 +646,9 @@ class CodeAIApplication:
             )
 
     async def cancel_current_turn(self) -> None:
+        # A graph run holds the turn slot, so the same stop has to reach it.
+        if self._graph_runner is not None and self.graph_run_active():
+            self._graph_runner.request_stop()
         if self._current_cancel is not None:
             await self.event_bus.emit(
                 "status.changed", {"state": AgentState.CANCELLING.value}, source="app"
@@ -1110,6 +1123,193 @@ class CodeAIApplication:
             return {"planner": "not configured"}
         return self.orchestrator.planner.plan_snapshot()
 
+    # -- orchestrator graph (the Blueprint editor) -------------------------
+
+    def graph_catalog(self) -> dict[str, Any]:
+        """Node kinds, pin colours and professions, as the editor draws them."""
+
+        from code_ai.core.graph.models import catalog_payload
+        from code_ai.core.graph.professions import professions_payload
+
+        payload = catalog_payload(professions_payload())
+        payload["limits"]["run"] = {
+            "max_nodes_executed": self.session.config.graph.max_nodes_executed,
+            "max_seconds": self.session.config.graph.max_seconds,
+            "max_loop_iterations": self.session.config.graph.max_loop_iterations,
+        }
+        return payload
+
+    def validate_graph(self, graph: dict[str, Any]) -> dict[str, Any]:
+        """Compile a graph without running it, for the editor's live markers."""
+
+        runner = self._new_graph_runner(graph)
+        issues = runner.validate()
+        return {
+            "ok": runner.program is not None,
+            "issues": [item.payload() for item in issues],
+        }
+
+    def graph_run_active(self) -> bool:
+        return bool(self._graph_task and not self._graph_task.done())
+
+    def graph_snapshot(self) -> dict[str, Any]:
+        runner = self._graph_runner
+        if runner is None:
+            return {"running": False}
+        return {
+            "running": self.graph_run_active(),
+            "run_id": runner.run_id,
+            "pending_questions": list(runner.gateway.pending),
+        }
+
+    async def start_graph_run(
+        self,
+        graph: dict[str, Any],
+        *,
+        variables: dict[str, Any] | None = None,
+        secrets: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Start a graph in the background and return its run id.
+
+        A run occupies the session's turn slot: it hires sub-agents on the same
+        conversation-free runtime a chat turn would, and letting both go at once
+        would have two things approving tool calls and spending the same budget.
+        """
+
+        if self.graph_run_active():
+            return {
+                "ok": False,
+                "message": "A graph is already running. Stop it before starting another.",
+            }
+        if self._current_task and not self._current_task.done():
+            return {
+                "ok": False,
+                "message": "The agent is working on a message. Wait for it, or stop it, first.",
+            }
+        if self.subagent_runtime is None:
+            return {
+                "ok": False,
+                "message": (
+                    "This session was built without a sub-agent runtime, "
+                    "so it cannot run graphs."
+                ),
+            }
+
+        runner = self._new_graph_runner(graph, variables=variables, secrets=secrets)
+        issues = runner.validate()
+        if runner.program is None:
+            await self.event_bus.emit(
+                "graph.validation.failed",
+                {"run_id": runner.run_id, "issues": [item.payload() for item in issues]},
+                source="graph",
+            )
+            return {
+                "ok": False,
+                "message": "Fix the errors on the graph before running it.",
+                "issues": [item.payload() for item in issues],
+            }
+
+        self._graph_runner = runner
+        task = asyncio.create_task(runner.run())
+        self._graph_task = task
+        task.add_done_callback(self._on_graph_done)
+        return {
+            "ok": True,
+            "run_id": runner.run_id,
+            "issues": [item.payload() for item in issues],
+        }
+
+    async def stop_graph_run(self, run_id: str = "") -> dict[str, Any]:
+        runner = self._graph_runner
+        if runner is None or not self.graph_run_active():
+            return {"ok": False, "message": "No graph is running."}
+        if run_id and run_id != runner.run_id:
+            return {"ok": False, "message": f"Run {run_id} is not the one running."}
+        runner.request_stop()
+        return {"ok": True, "run_id": runner.run_id}
+
+    def answer_graph_question(self, run_id: str, call_id: str, text: str) -> dict[str, Any]:
+        runner = self._graph_runner
+        if runner is None or (run_id and run_id != runner.run_id):
+            return {"ok": False, "message": "That run is no longer active."}
+        if not runner.answer(call_id, text):
+            return {"ok": False, "message": "Nothing is waiting on that question."}
+        return {"ok": True}
+
+    async def list_models_for_endpoint(
+        self, *, base_url: str = "", api_mode: str = "", api_key_ref: str = "session"
+    ) -> list[str]:
+        """List what one Model node's endpoint serves.
+
+        Same catalog call the settings panel uses, against a copy of the config
+        with this node's endpoint patched in - which is why a graph can point a
+        node at a second server and still pick its model from a list.
+        """
+
+        import dataclasses
+
+        from code_ai.providers.model_listing import list_available_models
+
+        config = self.session.config
+        if base_url or api_mode:
+            config = dataclasses.replace(
+                config,
+                base_url=base_url or config.base_url,
+                api_mode=api_mode or config.api_mode,
+            )
+        if api_key_ref.startswith("env:"):
+            import os
+
+            config = dataclasses.replace(config, api_key=os.environ.get(api_key_ref[4:], ""))
+        return await list_available_models(config)
+
+    def _new_graph_runner(
+        self,
+        graph: dict[str, Any],
+        *,
+        variables: dict[str, Any] | None = None,
+        secrets: dict[str, str] | None = None,
+    ) -> GraphRunner:
+        return GraphRunner(
+            raw_graph=graph,
+            config=self.session.config,
+            runtime=self.subagent_runtime,
+            event_bus=self.event_bus,
+            judge_call=self._graph_judge,
+            variables=variables,
+            secrets=secrets,
+        )
+
+    async def _graph_judge(self, system: str, user: str, model: Any = None) -> str:
+        """One-off model call behind a judge decision.
+
+        Runs on the session provider even when the node names another endpoint:
+        a yes/no verdict is not worth a second client, and the model name is
+        honoured because that is what changes the answer.
+        """
+
+        from code_ai.providers.models import Message, ModelRequest
+
+        name = getattr(model, "model", "") or self.session.config.model
+        request = ModelRequest(
+            model=name,
+            messages=[
+                Message(role="system", content=system),
+                Message(role="user", content=user),
+            ],
+            max_output_tokens=2048,
+        )
+        response = await self.provider.complete(request)
+        return response.text or ""
+
+    def _on_graph_done(self, task: asyncio.Task[Any]) -> None:
+        self._graph_task = None
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.error("Graph run failed", exc_info=error)
+
     # -- persistent goal (/goal) -------------------------------------------
 
     def _goal(self) -> GoalService:
@@ -1364,6 +1564,14 @@ class CodeAIApplication:
         self.event_bus.unsubscribe(subscriber)
 
     async def close(self) -> None:
+        if self._graph_runner is not None:
+            self._graph_runner.request_stop()
+        if self._graph_task and not self._graph_task.done():
+            self._graph_task.cancel()
+            try:
+                await self._graph_task
+            except BaseException:  # noqa: BLE001 - shutdown must not propagate
+                pass
         if self._goal_runner is not None:
             self._goal_runner.request_stop()
         if self._goal_task and not self._goal_task.done():

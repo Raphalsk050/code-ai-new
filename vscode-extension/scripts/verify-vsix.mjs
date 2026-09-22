@@ -141,7 +141,15 @@ export function verify(file, target) {
   const problems = [];
   const warnings = [];
 
-  for (const required of ["extension/dist/extension.js", "extension/dist/webview.js", "extension/package.json"]) {
+  // dist/flow.js is the orchestrator-graph editor: a package without it
+  // installs fine and then shows a blank tab on any *.flow.json.
+  const REQUIRED = [
+    "extension/dist/extension.js",
+    "extension/dist/webview.js",
+    "extension/dist/flow.js",
+    "extension/package.json",
+  ];
+  for (const required of REQUIRED) {
     if (!byName.has(required)) problems.push(`missing ${required}`);
   }
 

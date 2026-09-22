@@ -549,6 +549,9 @@ def build_application(
         sandbox=sandbox,
         code_index=code_index,
         browser=browser,
+        # The orchestrator graph hires sub-agents directly, so it needs the
+        # factory rather than the dispatch tool's coordinator.
+        subagent_runtime=subagent_runtime,
     )
 
 

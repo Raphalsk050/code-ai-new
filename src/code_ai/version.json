@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 14,
-  "patch": 4,
-  "build": 16,
-  "updated": "2026-09-21",
-  "note": "the panel says why the backend did not start instead of sitting on starting"
+  "minor": 15,
+  "patch": 0,
+  "build": 17,
+  "updated": "2026-09-22",
+  "note": "orchestrator graph: a blueprint-style editor that runs agents"
 }

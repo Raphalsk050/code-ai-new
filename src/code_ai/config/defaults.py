@@ -360,6 +360,18 @@ DEFAULT_GOAL: dict[str, object] = {
     "confirm_criteria": True,
 }
 
+DEFAULT_GRAPH: dict[str, object] = {
+    # Hard ceilings for one orchestrator-graph run. A graph mixes loops with
+    # agents that can write, so the ceilings are the difference between a
+    # pipeline and a runaway.
+    "max_nodes_executed": 200,
+    "max_seconds": 3600,
+    "max_loop_iterations": 50,
+    # Agents running at once inside a graph. One keeps the travelling
+    # indicator honest and the approval prompts sequential.
+    "max_concurrent_nodes": 1,
+}
+
 
 DEFAULT_FILE_IO: dict[str, object] = {
     # Windows holds mandatory locks, so an antivirus, a search indexer, a sync
@@ -485,6 +497,7 @@ DEFAULT_CONFIG: dict[str, object] = {
     "permission_mode": "ask",
     "budgets": DEFAULT_BUDGETS,
     "goal": DEFAULT_GOAL,
+    "graph": DEFAULT_GRAPH,
     "memory": DEFAULT_MEMORY,
     "planner": DEFAULT_PLANNER,
     "sandbox": DEFAULT_SANDBOX,

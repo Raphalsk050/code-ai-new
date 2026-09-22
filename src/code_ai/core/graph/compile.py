@@ -1,0 +1,663 @@
+"""Turn a `*.flow.json` document into a runnable program, or say exactly why not.
+
+Validation is the editor's feedback loop, so every problem is reported as a
+:class:`ValidationIssue` carrying the node and pin it belongs to - the editor
+paints a marker on that node and lists the message. Errors block Play; warnings
+do not (an orphan node is a work in progress, not a mistake).
+
+The one rule worth stating out loud: this is the *only* authority on whether a
+graph is legal. The editor has a mirror of the schema for ergonomics, never as a
+second opinion.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from typing import Any
+
+from pydantic import ValidationError
+
+from code_ai.core.graph.models import (
+    MAX_EDGES,
+    MAX_NODES,
+    MAX_VARIABLES,
+    NODE_KINDS,
+    SCHEMA_VERSION,
+    EdgeSpec,
+    GraphDoc,
+    NodeKind,
+    NodeSpec,
+    PinType,
+    can_connect,
+)
+from code_ai.core.graph.program import GraphProgram, NodeProgram
+
+# An api_key_ref the runtime knows how to resolve. Anything else that looks like
+# a secret is refused: this file is committed, and a leaked key is not a problem
+# a later validation pass can fix.
+_KEY_REF_RE = re.compile(r"^(session|env:[A-Za-z_][A-Za-z0-9_]*|secret:[\w.-]+)$")
+
+SEVERITY_ERROR = "error"
+SEVERITY_WARNING = "warning"
+
+
+@dataclass(frozen=True, slots=True)
+class ValidationIssue:
+    message: str
+    node_id: str = ""
+    pin: str = ""
+    field: str = ""
+    severity: str = SEVERITY_ERROR
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "message": self.message,
+            "node_id": self.node_id,
+            "pin": self.pin,
+            "field": self.field,
+            "severity": self.severity,
+        }
+
+
+class _Collector:
+    def __init__(self) -> None:
+        self.issues: list[ValidationIssue] = []
+
+    def error(self, message: str, **where: str) -> None:
+        self.issues.append(ValidationIssue(message=message, severity=SEVERITY_ERROR, **where))
+
+    def warn(self, message: str, **where: str) -> None:
+        self.issues.append(ValidationIssue(message=message, severity=SEVERITY_WARNING, **where))
+
+    @property
+    def failed(self) -> bool:
+        return any(item.severity == SEVERITY_ERROR for item in self.issues)
+
+
+def compile_graph(
+    raw: dict[str, Any],
+    *,
+    professions: tuple[str, ...] = (),
+    max_loop_iterations: int = 50,
+) -> tuple[GraphProgram | None, list[ValidationIssue]]:
+    """Validate ``raw`` and, if it holds up, return the program to run."""
+
+    collector = _Collector()
+    doc = _parse(raw, collector)
+    if doc is None:
+        return None, collector.issues
+
+    _check_limits(doc, collector)
+    nodes = _index_nodes(doc, collector)
+    variables = _index_variables(doc, collector)
+    edges = _check_edges(doc, nodes, collector)
+    start_id = _find_start(doc, collector)
+
+    pin_types = _resolve_pin_types(nodes, variables)
+    wired = {(edge.target[0], edge.target[1]) for edge in edges if edge.kind == "data"}
+    _check_edge_types(edges, nodes, pin_types, collector)
+    _check_node_data(nodes, variables, professions, max_loop_iterations, wired, collector)
+    _check_required_inputs(nodes, wired, collector)
+    _check_data_cycles(edges, collector)
+
+    if collector.failed:
+        return None, collector.issues
+
+    program = _build_program(doc, nodes, variables, edges, start_id, pin_types)
+    _warn_unreachable(program, collector)
+    return program, collector.issues
+
+
+# -- parsing --------------------------------------------------------------
+
+
+def _parse(raw: Any, collector: _Collector) -> GraphDoc | None:
+    if not isinstance(raw, dict):
+        collector.error("A graph must be a JSON object.")
+        return None
+    version = raw.get("version", SCHEMA_VERSION)
+    if not isinstance(version, int) or version > SCHEMA_VERSION:
+        collector.error(
+            f"This graph was written for schema version {version}; this build reads "
+            f"up to {SCHEMA_VERSION}. Update Code-AI."
+        )
+        return None
+    try:
+        return GraphDoc.model_validate(raw)
+    except ValidationError as exc:
+        for error in exc.errors()[:20]:
+            location = ".".join(str(part) for part in error.get("loc", ()))
+            collector.error(f"{location or 'graph'}: {error.get('msg', 'invalid value')}")
+        return None
+
+
+def _check_limits(doc: GraphDoc, collector: _Collector) -> None:
+    if len(doc.nodes) > MAX_NODES:
+        collector.error(f"A graph may hold at most {MAX_NODES} nodes ({len(doc.nodes)} found).")
+    if len(doc.edges) > MAX_EDGES:
+        collector.error(f"A graph may hold at most {MAX_EDGES} edges ({len(doc.edges)} found).")
+    if len(doc.variables) > MAX_VARIABLES:
+        collector.error(f"A graph may declare at most {MAX_VARIABLES} variables.")
+
+
+def _index_nodes(doc: GraphDoc, collector: _Collector) -> dict[str, NodeSpec]:
+    nodes: dict[str, NodeSpec] = {}
+    counts: dict[str, int] = {}
+    for node in doc.nodes:
+        if not node.id:
+            collector.error("A node is missing its id.")
+            continue
+        if node.id in nodes:
+            collector.error(f"Duplicate node id {node.id!r}.", node_id=node.id)
+            continue
+        spec = NODE_KINDS.get(node.kind)
+        if spec is None:
+            collector.error(
+                f"Unknown node kind {node.kind!r}. Known kinds: "
+                f"{', '.join(sorted(NODE_KINDS))}.",
+                node_id=node.id,
+            )
+            continue
+        counts[node.kind] = counts.get(node.kind, 0) + 1
+        if spec.max_instances and counts[node.kind] > spec.max_instances:
+            collector.error(
+                f"A graph may hold only {spec.max_instances} {spec.title} node(s).",
+                node_id=node.id,
+            )
+        nodes[node.id] = node
+    return nodes
+
+
+def _index_variables(doc: GraphDoc, collector: _Collector) -> dict[str, Any]:
+    variables: dict[str, Any] = {}
+    for variable in doc.variables:
+        name = variable.name.strip()
+        if not name:
+            collector.error("A variable is missing its name.")
+            continue
+        if name in variables:
+            collector.error(f"Duplicate variable name {name!r}.")
+            continue
+        variables[name] = variable
+    return variables
+
+
+def _find_start(doc: GraphDoc, collector: _Collector) -> str:
+    starts = [node.id for node in doc.nodes if node.kind == NodeKind.START]
+    if not starts:
+        collector.error("The graph has no Start node, so there is nothing to run.")
+        return ""
+    return starts[0]
+
+
+# -- edges ----------------------------------------------------------------
+
+
+def _check_edges(
+    doc: GraphDoc, nodes: dict[str, NodeSpec], collector: _Collector
+) -> list[EdgeSpec]:
+    kept: list[EdgeSpec] = []
+    seen_ids: set[str] = set()
+    exec_sources: dict[tuple[str, str], str] = {}
+    data_targets: dict[tuple[str, str], str] = {}
+
+    for edge in doc.edges:
+        if edge.id in seen_ids:
+            collector.error(f"Duplicate edge id {edge.id!r}.")
+            continue
+        seen_ids.add(edge.id)
+
+        source_node, source_pin = edge.source
+        target_node, target_pin = edge.target
+        if source_node not in nodes:
+            collector.error(f"Edge {edge.id} starts at an unknown node {source_node!r}.")
+            continue
+        if target_node not in nodes:
+            collector.error(f"Edge {edge.id} ends at an unknown node {target_node!r}.")
+            continue
+
+        source_spec = NODE_KINDS[nodes[source_node].kind]
+        target_spec = NODE_KINDS[nodes[target_node].kind]
+        out_pin = source_spec.pin(source_pin, "out")
+        in_pin = target_spec.pin(target_pin, "in")
+        if out_pin is None:
+            collector.error(
+                f"{source_spec.title} has no output pin {source_pin!r}.",
+                node_id=source_node,
+                pin=source_pin,
+            )
+            continue
+        if in_pin is None:
+            collector.error(
+                f"{target_spec.title} has no input pin {target_pin!r}.",
+                node_id=target_node,
+                pin=target_pin,
+            )
+            continue
+
+        is_exec = out_pin.type == PinType.EXEC
+        if (in_pin.type == PinType.EXEC) != is_exec:
+            collector.error(
+                "An exec pin cannot be wired to a data pin.",
+                node_id=source_node,
+                pin=source_pin,
+            )
+            continue
+        declared = PinType.EXEC if is_exec else "data"
+        if edge.kind != declared:
+            collector.error(
+                f"Edge {edge.id} says {edge.kind!r} but connects {declared} pins.",
+                node_id=source_node,
+                pin=source_pin,
+            )
+            continue
+
+        if is_exec:
+            key = (source_node, source_pin)
+            if key in exec_sources:
+                collector.error(
+                    "An exec output drives one wire. Use a Sequence node to fan out.",
+                    node_id=source_node,
+                    pin=source_pin,
+                )
+                continue
+            exec_sources[key] = edge.id
+        else:
+            key = (target_node, target_pin)
+            if key in data_targets:
+                collector.error(
+                    "A data input takes one value.",
+                    node_id=target_node,
+                    pin=target_pin,
+                )
+                continue
+            data_targets[key] = edge.id
+            if source_node == target_node:
+                collector.error(
+                    "A node cannot feed its own input.", node_id=source_node, pin=source_pin
+                )
+                continue
+
+        kept.append(edge)
+    return kept
+
+
+def _resolve_pin_types(
+    nodes: dict[str, NodeSpec], variables: dict[str, Any]
+) -> dict[tuple[str, str], str]:
+    """Pin types after per-node refinement.
+
+    Only the variable nodes need it: ``var_get`` is declared ``any`` in the
+    catalog because its real type is whatever variable the user picked.
+    """
+
+    resolved: dict[tuple[str, str], str] = {}
+    for node_id, node in nodes.items():
+        spec = NODE_KINDS[node.kind]
+        for pin in spec.pins:
+            resolved[(node_id, pin.name)] = str(pin.type)
+        if node.kind in (NodeKind.VAR_GET, NodeKind.VAR_SET):
+            declared = variables.get(str(node.data.get("variable") or "").strip())
+            if declared is not None:
+                pin_name = "value"
+                resolved[(node_id, pin_name)] = str(declared.type)
+    return resolved
+
+
+def _check_edge_types(
+    edges: list[EdgeSpec],
+    nodes: dict[str, NodeSpec],
+    pin_types: dict[tuple[str, str], str],
+    collector: _Collector,
+) -> None:
+    for edge in edges:
+        if edge.kind != "data":
+            continue
+        source_node, source_pin = edge.source
+        target_node, target_pin = edge.target
+        source_type = pin_types.get((source_node, source_pin), PinType.ANY)
+        target_type = pin_types.get((target_node, target_pin), PinType.ANY)
+        if not can_connect(source_type, target_type):
+            collector.error(
+                f"A {source_type} value cannot feed a {target_type} pin.",
+                node_id=target_node,
+                pin=target_pin,
+            )
+
+
+def _check_required_inputs(
+    nodes: dict[str, NodeSpec], wired: set[tuple[str, str]], collector: _Collector
+) -> None:
+    for node_id, node in nodes.items():
+        spec = NODE_KINDS[node.kind]
+        for pin in spec.pins:
+            if pin.direction != "in" or not pin.required:
+                continue
+            if (node_id, pin.name) in wired:
+                continue
+            literal = node.data.get(pin.name)
+            if literal is None or (isinstance(literal, str) and not literal.strip()):
+                collector.error(
+                    f"{spec.title} needs {pin.label or pin.name}: wire it or fill it in.",
+                    node_id=node_id,
+                    pin=pin.name,
+                )
+
+
+def _check_data_cycles(edges: list[EdgeSpec], collector: _Collector) -> None:
+    """A data pull that depends on itself would recurse forever at run time."""
+
+    graph: dict[str, set[str]] = {}
+    for edge in edges:
+        if edge.kind != "data":
+            continue
+        graph.setdefault(edge.target[0], set()).add(edge.source[0])
+
+    visiting: set[str] = set()
+    done: set[str] = set()
+
+    def walk(node_id: str, trail: list[str]) -> bool:
+        if node_id in visiting:
+            cycle = " -> ".join([*trail, node_id])
+            collector.error(f"The data wires form a cycle: {cycle}.", node_id=node_id)
+            return True
+        if node_id in done:
+            return False
+        visiting.add(node_id)
+        for parent in sorted(graph.get(node_id, ())):
+            if walk(parent, [*trail, node_id]):
+                visiting.discard(node_id)
+                return True
+        visiting.discard(node_id)
+        done.add(node_id)
+        return False
+
+    for node_id in sorted(graph):
+        if walk(node_id, []):
+            return
+
+
+# -- per-kind data --------------------------------------------------------
+
+
+def _check_node_data(
+    nodes: dict[str, NodeSpec],
+    variables: dict[str, Any],
+    professions: tuple[str, ...],
+    max_loop_iterations: int,
+    wired: set[tuple[str, str]],
+    collector: _Collector,
+) -> None:
+    for node_id, node in nodes.items():
+        spec = NODE_KINDS[node.kind]
+        known = {item.name for item in spec.fields} | {
+            pin.name for pin in spec.pins if pin.direction == "in"
+        }
+        # Sequence stores its dynamic pin count; every other unknown key is a
+        # typo the user wants to hear about now rather than mid-run.
+        if node.kind == NodeKind.SEQUENCE:
+            known.add("outputs")
+        for key in node.data:
+            if key not in known:
+                collector.warn(
+                    f"{spec.title} has no field {key!r}; it will be ignored.",
+                    node_id=node_id,
+                    field=key,
+                )
+
+        match node.kind:
+            case NodeKind.MODEL:
+                _check_model_node(node_id, node, collector)
+            case NodeKind.PROFESSION:
+                _check_profession_node(node_id, node, professions, collector)
+            case NodeKind.DECISION:
+                _check_decision_node(node_id, node, wired, collector)
+            case NodeKind.LOOP:
+                _check_loop_node(node_id, node, max_loop_iterations, collector)
+            case NodeKind.VAR_GET | NodeKind.VAR_SET:
+                _check_variable_node(node_id, node, variables, collector)
+            case NodeKind.SEQUENCE:
+                _check_sequence_node(node_id, node, collector)
+
+
+def _check_model_node(node_id: str, node: NodeSpec, collector: _Collector) -> None:
+    key_ref = str(node.data.get("api_key_ref") or "session").strip()
+    if not _KEY_REF_RE.match(key_ref):
+        collector.error(
+            "An API key must not be stored in a graph file - it goes into git. Use "
+            "'session', 'env:NAME', or 'secret:NAME'.",
+            node_id=node_id,
+            field="api_key_ref",
+        )
+    base_url = str(node.data.get("base_url") or "").strip()
+    if base_url and not base_url.startswith(("http://", "https://")):
+        collector.error(
+            "Base URL must start with http:// or https://.", node_id=node_id, field="base_url"
+        )
+    api_mode = str(node.data.get("api_mode") or "").strip()
+    if api_mode and api_mode not in ("responses", "completions", "ollama"):
+        collector.error(
+            f"Unknown API mode {api_mode!r}.", node_id=node_id, field="api_mode"
+        )
+    for name, low, high in (("temperature", 0.0, 2.0), ("top_p", 0.0, 1.0)):
+        value = node.data.get(name)
+        if value is None or value == "":
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            collector.error(f"{name} must be a number.", node_id=node_id, field=name)
+            continue
+        if not low <= number <= high:
+            collector.error(
+                f"{name} must be between {low} and {high}.", node_id=node_id, field=name
+            )
+    if not str(node.data.get("model") or "").strip():
+        collector.warn(
+            "No model chosen; agents wired to this node fall back to the session model.",
+            node_id=node_id,
+            field="model",
+        )
+
+
+def _check_profession_node(
+    node_id: str, node: NodeSpec, professions: tuple[str, ...], collector: _Collector
+) -> None:
+    profession = str(node.data.get("profession") or "").strip()
+    if not profession:
+        collector.error("Choose a profession for this agent.", node_id=node_id, field="profession")
+        return
+    if professions and profession not in professions:
+        collector.error(
+            f"Unknown profession {profession!r}. Available: {', '.join(professions)}.",
+            node_id=node_id,
+            field="profession",
+        )
+    for name in ("max_steps", "timeout_s"):
+        value = node.data.get(name)
+        if value in (None, ""):
+            continue
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            collector.error(f"{name} must be a whole number.", node_id=node_id, field=name)
+            continue
+        if number < 0:
+            collector.error(f"{name} cannot be negative.", node_id=node_id, field=name)
+
+
+def _check_decision_node(
+    node_id: str, node: NodeSpec, wired: set[tuple[str, str]], collector: _Collector
+) -> None:
+    mode = str(node.data.get("mode") or "bool").strip()
+    if mode not in ("bool", "judge"):
+        collector.error(
+            f"Decision mode must be 'bool' or 'judge', not {mode!r}.",
+            node_id=node_id,
+            field="mode",
+        )
+        return
+    if mode == "judge":
+        has_prompt = bool(str(node.data.get("prompt") or "").strip())
+        if not has_prompt and (node_id, "prompt") not in wired:
+            collector.error(
+                "A judge decision needs a question - fill it in or wire `prompt`.",
+                node_id=node_id,
+                field="prompt",
+            )
+    elif (node_id, "condition") not in wired and "condition" not in node.data:
+        collector.warn(
+            "Nothing feeds `condition`, so this decision always takes `false`.",
+            node_id=node_id,
+            pin="condition",
+        )
+
+
+def _check_loop_node(
+    node_id: str, node: NodeSpec, max_loop_iterations: int, collector: _Collector
+) -> None:
+    kind = str(node.data.get("kind") or "count").strip()
+    if kind not in ("count", "while", "foreach"):
+        collector.error(
+            f"Loop kind must be 'count', 'while' or 'foreach', not {kind!r}.",
+            node_id=node_id,
+            field="kind",
+        )
+        return
+    if kind == "count":
+        try:
+            count = int(node.data.get("count") or 0)
+        except (TypeError, ValueError):
+            collector.error("Count must be a whole number.", node_id=node_id, field="count")
+            return
+        if count <= 0:
+            collector.warn(
+                "A count of zero never enters the body.", node_id=node_id, field="count"
+            )
+    cap = node.data.get("max_iterations")
+    if cap in (None, "", 0, "0"):
+        return
+    try:
+        number = int(cap)
+    except (TypeError, ValueError):
+        collector.error(
+            "Max iterations must be a whole number.", node_id=node_id, field="max_iterations"
+        )
+        return
+    if number > max_loop_iterations:
+        collector.error(
+            f"Max iterations is capped at {max_loop_iterations} by the configuration.",
+            node_id=node_id,
+            field="max_iterations",
+        )
+
+
+def _check_variable_node(
+    node_id: str, node: NodeSpec, variables: dict[str, Any], collector: _Collector
+) -> None:
+    name = str(node.data.get("variable") or "").strip()
+    if not name:
+        collector.error("Choose a variable.", node_id=node_id, field="variable")
+        return
+    if name not in variables:
+        collector.error(
+            f"No variable named {name!r} is declared on this graph.",
+            node_id=node_id,
+            field="variable",
+        )
+
+
+def _check_sequence_node(node_id: str, node: NodeSpec, collector: _Collector) -> None:
+    outputs = node.data.get("outputs", 2)
+    try:
+        count = int(outputs)
+    except (TypeError, ValueError):
+        collector.error("Sequence outputs must be a whole number.", node_id=node_id)
+        return
+    if not 1 <= count <= 12:
+        collector.error("A Sequence holds between 1 and 12 outputs.", node_id=node_id)
+
+
+# -- assembly -------------------------------------------------------------
+
+
+def _build_program(
+    doc: GraphDoc,
+    nodes: dict[str, NodeSpec],
+    variables: dict[str, Any],
+    edges: list[EdgeSpec],
+    start_id: str,
+    pin_types: dict[tuple[str, str], str],
+) -> GraphProgram:
+    exec_out: dict[str, dict[str, tuple[str, str]]] = {node_id: {} for node_id in nodes}
+    data_in: dict[str, dict[str, tuple[str, str, str]]] = {node_id: {} for node_id in nodes}
+    for edge in edges:
+        source_node, source_pin = edge.source
+        target_node, target_pin = edge.target
+        if edge.kind == "exec":
+            exec_out[source_node][source_pin] = (target_node, edge.id)
+        else:
+            data_in[target_node][target_pin] = (source_node, source_pin, edge.id)
+
+    built: dict[str, NodeProgram] = {}
+    for node_id, node in nodes.items():
+        spec = NODE_KINDS[node.kind]
+        if node.kind == NodeKind.SEQUENCE:
+            count = int(node.data.get("outputs", 2) or 2)
+            ordered = tuple(f"out_{index}" for index in range(count))
+        else:
+            ordered = tuple(pin.name for pin in spec.pins if pin.direction == "out")
+        built[node_id] = NodeProgram(
+            id=node_id,
+            kind=str(node.kind),
+            spec=spec,
+            data=dict(node.data),
+            label=_label_for(node, spec.title),
+            exec_out=exec_out[node_id],
+            data_in=data_in[node_id],
+            ordered_exec=ordered,
+        )
+
+    return GraphProgram(
+        name=doc.name or "flow",
+        start_id=start_id,
+        nodes=built,
+        variables=dict(variables),
+        pin_types=pin_types,
+    )
+
+
+def _label_for(node: NodeSpec, fallback: str) -> str:
+    """A short human label for logs and node headers."""
+
+    for key in ("label", "title", "profession", "variable", "model", "kind"):
+        value = node.data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:60]
+    return fallback
+
+
+def _warn_unreachable(program: GraphProgram, collector: _Collector) -> None:
+    reachable: set[str] = set()
+    stack = [program.start_id]
+    while stack:
+        node_id = stack.pop()
+        if node_id in reachable or node_id not in program.nodes:
+            continue
+        reachable.add(node_id)
+        stack.extend(target for target, _ in program.nodes[node_id].exec_out.values())
+
+    # A pure node is pulled rather than walked into, so "unreachable" means
+    # something different for it: nobody reads it.
+    consumed: set[str] = set()
+    for node in program.nodes.values():
+        for source, _, _ in node.data_in.values():
+            consumed.add(source)
+
+    for node_id, node in program.nodes.items():
+        if node.spec.pure:
+            if node_id not in consumed:
+                collector.warn("Nothing reads this node.", node_id=node_id)
+        elif node_id not in reachable:
+            collector.warn("Nothing leads here, so this node never runs.", node_id=node_id)

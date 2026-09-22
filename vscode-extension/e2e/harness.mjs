@@ -5,7 +5,7 @@
 // so a spec drives the panel exactly as the extension does - no VS Code, no
 // bridge, no Python.
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,7 +17,31 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 
 const PAGE = `<!DOCTYPE html>
 <html lang="pt-BR">
-  <head><meta charset="UTF-8" /><title>Code-AI e2e</title></head>
+  <head>
+    <meta charset="UTF-8" /><title>Code-AI e2e</title>
+    <!-- The variables VSCode injects into a webview (Dark Modern), so what a
+         screenshot shows is what the user sees rather than CSS fallbacks. -->
+    <style>
+      :root {
+        --vscode-font-family: "Segoe UI", system-ui, sans-serif;
+        --vscode-editor-font-family: Consolas, "Courier New", monospace;
+        --vscode-foreground: #cccccc;
+        --vscode-editor-background: #1f1f1f;
+        --vscode-editor-foreground: #cccccc;
+        --vscode-editorWidget-background: #252526;
+        --vscode-editor-inactiveSelectionBackground: #3a3d41;
+        --vscode-panel-border: #3c3c3c;
+        --vscode-descriptionForeground: #9d9d9d;
+        --vscode-textLink-foreground: #4daafc;
+        --vscode-input-background: #313131;
+        --vscode-input-foreground: #cccccc;
+        --vscode-input-border: #3c3c3c;
+        --vscode-errorForeground: #f85149;
+        --vscode-editorWarning-foreground: #cca700;
+        --vscode-testing-iconPassed: #3fb950;
+      }
+    </style>
+  </head>
   <body>
     <div id="root"></div>
     <script>
@@ -33,19 +57,28 @@ const PAGE = `<!DOCTYPE html>
   </body>
 </html>`;
 
-/** Bundle the webview the way `npm run build` does, into a throwaway dir. */
-export async function buildWebview() {
+/**
+ * Bundle a webview the way `npm run build` does, into a throwaway dir.
+ *
+ * `entry` picks which one: the chat panel (default) or the orchestrator graph
+ * editor, which is a second bundle with the same host contract.
+ */
+export async function buildWebview(entry = "webview/index.tsx", bundleName = "webview.js") {
   const out = mkdtempSync(join(tmpdir(), "code-ai-e2e-"));
   await esbuild.build({
-    entryPoints: [join(root, "webview/index.tsx")],
-    outfile: join(out, "webview.js"),
+    entryPoints: [join(root, entry)],
+    outfile: join(out, bundleName),
     bundle: true,
     platform: "browser",
     format: "iife",
     target: "es2021",
   });
-  writeFileSync(join(out, "index.html"), PAGE, "utf8");
+  writeFileSync(join(out, "index.html"), PAGE.replace("./webview.js", `./${bundleName}`), "utf8");
   return { dir: out, dispose: () => rmSync(out, { recursive: true, force: true }) };
+}
+
+export function buildFlowWebview() {
+  return buildWebview("webview/flow/index.tsx", "flow.js");
 }
 
 /**
@@ -70,12 +103,13 @@ export async function launchBrowser() {
 }
 
 /** The panel, open and talking to a host the spec controls. */
-export async function openWebview(browser, dir) {
-  const page = await browser.newPage({ viewport: { width: 900, height: 900 } });
+export async function openWebview(browser, dir, options = {}) {
+  const viewport = options.viewport ?? { width: 1100, height: 900 };
+  const page = await browser.newPage({ viewport });
   const errors = [];
   page.on("pageerror", (err) => errors.push(String(err)));
   await page.goto(`file://${join(dir, "index.html").replace(/\\/g, "/")}`);
-  await page.waitForSelector("#root .app");
+  await page.waitForSelector(options.ready ?? "#root .app");
 
   return {
     page,
@@ -95,7 +129,39 @@ export async function openWebview(browser, dir) {
         message
       );
     },
+    /** Deliver a bus event the way the extension forwards one. */
+    async event(event_type, payload = {}) {
+      await page.evaluate(
+        (data) => window.dispatchEvent(new MessageEvent("message", { data })),
+        {
+          type: "flowEvent",
+          event: {
+            event_id: `e-${Math.random()}`,
+            event_type,
+            event_version: 1,
+            session_id: "s",
+            sequence: 0,
+            timestamp: new Date().toISOString(),
+            source: "graph",
+            payload,
+          },
+        }
+      );
+    },
+    /** Save a screenshot of the panel into the shots directory. */
+    async shot(name) {
+      const file = join(shotsDir(), `${name}.png`);
+      await page.screenshot({ path: file });
+      return file;
+    },
   };
+}
+
+/** Where e2e screenshots land (git-ignored), so a run can be eyeballed. */
+export function shotsDir() {
+  const dir = join(root, "e2e", "screenshots");
+  mkdirSync(dir, { recursive: true });
+  return dir;
 }
 
 /** A backend snapshot shaped like the one `getSettings` answers with. */

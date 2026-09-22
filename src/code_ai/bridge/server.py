@@ -384,6 +384,53 @@ class BridgeServer:
             str(conversation_id) if conversation_id else None
         )
 
+    # -- orchestrator graph ------------------------------------------------
+
+    async def _h_graph_catalog(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._app.graph_catalog()
+
+    async def _h_graph_validate(self, params: dict[str, Any]) -> dict[str, Any]:
+        graph = params.get("graph")
+        if not isinstance(graph, dict):
+            return {"ok": False, "issues": [{"message": "No graph was sent.", "severity": "error"}]}
+        return self._app.validate_graph(graph)
+
+    async def _h_graph_run(self, params: dict[str, Any]) -> dict[str, Any]:
+        graph = params.get("graph")
+        if not isinstance(graph, dict):
+            return {"ok": False, "message": "No graph was sent."}
+        variables = params.get("variables")
+        secrets = params.get("secrets")
+        return await self._app.start_graph_run(
+            graph,
+            variables=variables if isinstance(variables, dict) else None,
+            secrets=secrets if isinstance(secrets, dict) else None,
+        )
+
+    async def _h_graph_stop(self, params: dict[str, Any]) -> dict[str, Any]:
+        return await self._app.stop_graph_run(str(params.get("run_id") or ""))
+
+    async def _h_graph_answer(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._app.answer_graph_question(
+            str(params.get("run_id") or ""),
+            str(params.get("call_id") or ""),
+            str(params.get("text") or ""),
+        )
+
+    async def _h_graph_status(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._app.graph_snapshot()
+
+    async def _h_graph_list_models(self, params: dict[str, Any]) -> dict[str, Any]:
+        try:
+            models = await self._app.list_models_for_endpoint(
+                base_url=str(params.get("base_url") or ""),
+                api_mode=str(params.get("api_mode") or ""),
+                api_key_ref=str(params.get("api_key_ref") or "session"),
+            )
+        except Exception as exc:  # the editor shows the reason next to the field
+            return {"ok": False, "message": str(exc) or type(exc).__name__, "models": []}
+        return {"ok": True, "models": models}
+
     async def _h_shutdown(self, params: dict[str, Any]) -> dict[str, Any]:
         self._stop.set()
         return {"status": "closing"}
@@ -425,6 +472,13 @@ class BridgeServer:
         "listAssets": _h_list_assets,
         "runAsset": _h_run_asset,
         "summarizeConversation": _h_summarize_conversation,
+        "graphCatalog": _h_graph_catalog,
+        "graphValidate": _h_graph_validate,
+        "graphRun": _h_graph_run,
+        "graphStop": _h_graph_stop,
+        "graphAnswer": _h_graph_answer,
+        "graphStatus": _h_graph_status,
+        "graphListModels": _h_graph_list_models,
         "shutdown": _h_shutdown,
     }
 
@@ -446,6 +500,12 @@ class BridgeServer:
             "indexRefresh",
             # Writing the history card's summary is a model call of its own.
             "summarizeConversation",
+            # A graph run spawns sub-agents and a stop has to reach them;
+            # neither may hold the read loop, which carries the approvals
+            # those sub-agents wait on. Listing a node's models is network.
+            "graphRun",
+            "graphStop",
+            "graphListModels",
         }
     )
 

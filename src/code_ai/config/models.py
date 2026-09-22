@@ -10,6 +10,7 @@ from code_ai.config.defaults import (
     DEFAULT_BUDGETS,
     DEFAULT_FILE_IO,
     DEFAULT_GOAL,
+    DEFAULT_GRAPH,
     DEFAULT_INDEX,
     DEFAULT_MEMORY,
     DEFAULT_PLANNER,
@@ -516,6 +517,37 @@ class GoalConfig:
             raise ConfigurationError("goal.max_iterations must be 500 or lower.")
 
 
+@dataclass(slots=True)
+class GraphConfig:
+    """Limits for one orchestrator-graph run (the Blueprint-style editor)."""
+
+    max_nodes_executed: int = int(DEFAULT_GRAPH["max_nodes_executed"])
+    max_seconds: int = int(DEFAULT_GRAPH["max_seconds"])
+    max_loop_iterations: int = int(DEFAULT_GRAPH["max_loop_iterations"])
+    max_concurrent_nodes: int = int(DEFAULT_GRAPH["max_concurrent_nodes"])
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any] | None) -> GraphConfig:
+        values = dict(DEFAULT_GRAPH)
+        if data:
+            values.update(data)
+        return cls(
+            max_nodes_executed=int(values["max_nodes_executed"]),
+            max_seconds=int(values["max_seconds"]),
+            max_loop_iterations=int(values["max_loop_iterations"]),
+            max_concurrent_nodes=int(values["max_concurrent_nodes"]),
+        )
+
+    def validate(self) -> None:
+        for key, value in asdict(self).items():
+            if value <= 0:
+                raise ConfigurationError(f"Graph value {key} must be positive.")
+        if self.max_nodes_executed > 5000:
+            raise ConfigurationError("graph.max_nodes_executed must be 5000 or lower.")
+        if self.max_loop_iterations > 500:
+            raise ConfigurationError("graph.max_loop_iterations must be 500 or lower.")
+
+
 def _resolve_tool_policy(data: dict[str, Any] | None) -> str:
     """Resolve the tool policy, honoring the legacy ``strict_tool_policy`` flag."""
     if data:
@@ -727,6 +759,7 @@ class AppConfig:
     budgets: BudgetConfig = field(default_factory=BudgetConfig)
     experimental: ExperimentalConfig = field(default_factory=ExperimentalConfig)
     goal: GoalConfig = field(default_factory=GoalConfig)
+    graph: GraphConfig = field(default_factory=GraphConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     planner: PlannerConfig = field(default_factory=PlannerConfig)
     sampling: SamplingConfig = field(default_factory=SamplingConfig)
@@ -808,6 +841,9 @@ class AppConfig:
         goal = GoalConfig.from_mapping(
             data.get("goal") if isinstance(data.get("goal"), dict) else None
         )
+        graph = GraphConfig.from_mapping(
+            data.get("graph") if isinstance(data.get("graph"), dict) else None
+        )
         memory_config = MemoryConfig.from_mapping(
             data.get("memory") if isinstance(data.get("memory"), dict) else None
         )
@@ -838,6 +874,7 @@ class AppConfig:
             budgets=budgets,
             experimental=experimental,
             goal=goal,
+            graph=graph,
             memory=memory_config,
             planner=planner,
             sampling=sampling,
@@ -900,6 +937,7 @@ class AppConfig:
         self.workspace = self.workspace.resolve()
         self.budgets.validate()
         self.goal.validate()
+        self.graph.validate()
         self.memory.validate()
         self.planner.validate()
         self.sampling.validate()

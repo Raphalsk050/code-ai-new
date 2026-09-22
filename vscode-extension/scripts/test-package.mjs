@@ -156,6 +156,7 @@ test("verify rejects a package with no backend in it", () => {
     ["extension/package.json", Buffer.from("{}")],
     ["extension/dist/extension.js", Buffer.from("//")],
     ["extension/dist/webview.js", Buffer.from("//")],
+    ["extension/dist/flow.js", Buffer.from("//")],
   ]);
   const { problems } = verify(file, "linux-x64");
   assert.equal(problems.length, 1);
@@ -169,6 +170,7 @@ test("verify rejects the other platform's binary and a non-executable one", () =
     ["extension/package.json", Buffer.from("{}")],
     ["extension/dist/extension.js", Buffer.from("//")],
     ["extension/dist/webview.js", Buffer.from("//")],
+    ["extension/dist/flow.js", Buffer.from("//")],
     ["extension/bin/code-ai", big, 0o644],
     ["extension/bin/code-ai.exe", big],
   ]);
@@ -221,6 +223,7 @@ for (const [target, platform] of [
       const names = entries.map((e) => e.name);
       assert.ok(names.includes("extension/dist/extension.js"));
       assert.ok(names.includes("extension/dist/webview.js"));
+      assert.ok(names.includes("extension/dist/flow.js"));
       assert.ok(!names.some((n) => n.includes("node_modules/")));
       assert.ok(!names.some((n) => n.endsWith(".map")), "source maps should stay out of the package");
       assert.ok(!names.some((n) => n.startsWith("extension/src/")));

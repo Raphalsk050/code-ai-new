@@ -1,0 +1,847 @@
+{
+  "schema_version": 1,
+  "node_kinds": [
+    {
+      "kind": "start",
+      "title": "Start",
+      "description": "Where the main line begins. Exactly one per graph.",
+      "category": "flow",
+      "pure": false,
+      "max_instances": 1,
+      "pins": [
+        {
+          "name": "out",
+          "type": "exec",
+          "direction": "out",
+          "label": "out",
+          "required": false,
+          "dynamic": false,
+          "color": "#FFFFFF"
+        }
+      ],
+      "fields": []
+    },
+    {
+      "kind": "end",
+      "title": "End",
+      "description": "Ends the run. Whatever reaches `result` is the run's answer.",
+      "category": "flow",
+      "pure": false,
+      "max_instances": 0,
+      "pins": [
+        {
+          "name": "in",
+          "type": "exec",
+          "direction": "in",
+          "label": "in",
+          "required": false,
+          "dynamic": false,
+          "color": "#FFFFFF"
+        },
+        {
+          "name": "result",
+          "type": "any",
+          "direction": "in",
+          "label": "result",
+          "required": false,
+          "dynamic": false,
+          "color": "#A0A0A0"
+        }
+      ],
+      "fields": []
+    },
+    {
+      "kind": "model",
+      "title": "Model",
+      "description": "An endpoint plus a model name. Feed it into the agents that should run on it; agents with no model wired run on the session's own.",
+      "category": "data",
+      "pure": true,
+      "max_instances": 0,
+      "pins": [
+        {
+          "name": "model",
+          "type": "model",
+          "direction": "out",
+          "label": "model",
+          "required": false,
+          "dynamic": false,
+          "color": "#3794FF"
+        }
+      ],
+      "fields": [
+        {
+          "name": "api_mode",
+          "kind": "select",
+          "label": "API mode",
+          "default": "",
+          "options": [
+            "",
+            "responses",
+            "completions",
+            "ollama"
+          ],
+          "help": "Empty follows the session setting."
+        },
+        {
+          "name": "base_url",
+          "kind": "text",
+          "label": "Base URL",
+          "default": "",
+          "options": [],
+          "help": "Empty follows the session setting."
+        },
+        {
+          "name": "api_key_ref",
+          "kind": "text",
+          "label": "API key",
+          "default": "session",
+          "options": [],
+          "help": "session (use the session key), env:NAME, or secret:NAME. A literal key is refused - this file goes into git."
+        },
+        {
+          "name": "model",
+          "kind": "model",
+          "label": "Model",
+          "default": "",
+          "options": [],
+          "help": ""
+        },
+        {
+          "name": "temperature",
+          "kind": "number",
+          "label": "Temperature",
+          "default": null,
+          "options": [],
+          "help": ""
+        },
+        {
+          "name": "top_p",
+          "kind": "number",
+          "label": "Top P",
+          "default": null,
+          "options": [],
+          "help": ""
+        },
+        {
+          "name": "top_k",
+          "kind": "number",
+          "label": "Top K",
+          "default": null,
+          "options": [],
+          "help": ""
+        }
+      ]
+    },
+    {
+      "kind": "profession",
+      "title": "Agent",
+      "description": "One isolated agent, hired for a profession, running one task to a report. Its profession decides what tools it may touch.",
+      "category": "agent",
+      "pure": false,
+      "max_instances": 0,
+      "pins": [
+        {
+          "name": "in",
+          "type": "exec",
+          "direction": "in",
+          "label": "in",
+          "required": false,
+          "dynamic": false,
+          "color": "#FFFFFF"
+        },
+        {
+          "name": "out",
+          "type": "exec",
+          "direction": "out",
+          "label": "out",
+          "required": false,
+          "dynamic": false,
+          "color": "#FFFFFF"
+        },
+        {
+          "name": "model",
+          "type": "model",
+          "direction": "in",
+          "label": "model",
+          "required": false,
+          "dynamic": false,
+          "color": "#3794FF"
+        },
+        {
+          "name": "task",
+          "type": "string",
+          "direction": "in",
+          "label": "task",
+          "required": true,
+          "dynamic": false,
+          "color": "#E040FB"
+        },
+        {
+          "name": "report",
+          "type": "string",
+          "direction": "out",
+          "label": "report",
+          "required": false,
+          "dynamic": false,
+          "color": "#E040FB"
+        }
+      ],
+      "fields": [
+        {
+          "name": "profession",
+          "kind": "profession",
+          "label": "Profession",
+          "default": "",
+          "options": [],
+          "help": ""
+        },
+        {
+          "name": "task",
+          "kind": "textarea",
+          "label": "Task",
+          "default": "",
+          "options": [],
+          "help": ""
+        },
+        {
+          "name": "role_override",
+          "kind": "textarea",
+          "label": "Extra instructions",
+          "default": "",
+          "options": [],
+          "help": "Appended to the profession's own role prompt."
+        },
+        {
+          "name": "max_steps",
+          "kind": "number",
+          "label": "Max steps",
+          "default": 0,
+          "options": [],
+          "help": "0 keeps the profession's budget."
+        },
+        {
+          "name": "timeout_s",
+          "kind": "number",
+          "label": "Timeout (s)",
+          "default": 0,
+          "options": [],
+          "help": "0 keeps the profession's budget."
+        }
+      ]
+    },
+    {
+      "kind": "sequence",
+      "title": "Sequence",
+      "description": "Runs each output in order, waiting for one branch to finish before the next.",
+      "category": "flow",
+      "pure": false,
+      "max_instances": 0,
+      "pins": [
+        {
+          "name": "in",
+          "type": "exec",
+          "direction": "in",
+          "label": "in",
+          "required": false,
+          "dynamic": false,
+          "color": "#FFFFFF"
+        },
+        {
+          "name": "out_0",
+          "type": "exec",
+          "direction": "out",
+          "label": "0",
+          "required": false,
+          "dynamic": true,
+          "color": "#FFFFFF"
+        },
+        {
+          "name": "out_1",
+          "type": "exec",
+          "direction": "out",
+          "label": "1",
+          "required": false,
+          "dynamic": true,
+          "color": "#FFFFFF"
+        }
+      ],
+      "fields": []
+    },
+    {
+      "kind": "decision",
+      "title": "Decision",
+      "description": "Two ways forward. `bool` reads a wired condition; `judge` asks a model a yes/no question about the run so far.",
+      "category": "flow",
+      "pure": false,
+      "max_instances": 0,
+      "pins": [
+        {
+          "name": "in",
+          "type": "exec",
+          "direction": "in",
+          "label": "in",
+          "required": false,
+          "dynamic": false,
+          "color": "#FFFFFF"
+        },
+        {
+          "name": "true",
+          "type": "exec",
+          "direction": "out",
+          "label": "true",
+          "required": false,
+          "dynamic": false,
+          "color": "#FFFFFF"
+        },
+        {
+          "name": "false",
+          "type": "exec",
+          "direction": "out",
+          "label": "false",
+          "required": false,
+          "dynamic": false,
+          "color": "#FFFFFF"
+        },
+        {
+          "name": "condition",
+          "type": "bool",
+          "direction": "in",
+          "label": "condition",
+          "required": false,
+          "dynamic": false,
+          "color": "#8C1B1B"
+        },
+        {
+          "name": "prompt",
+          "type": "string",
+          "direction": "in",
+          "label": "prompt",
+          "required": false,
+          "dynamic": false,
+          "color": "#E040FB"
+        },
+        {
+          "name": "model",
+          "type": "model",
+          "direction": "in",
+          "label": "model",
+          "required": false,
+          "dynamic": false,
+          "color": "#3794FF"
+        }
+      ],
+      "fields": [
+        {
+          "name": "mode",
+          "kind": "select",
+          "label": "Mode",
+          "default": "bool",
+          "options": [
+            "bool",
+            "judge"
+          ],
+          "help": ""
+        },
+        {
+          "name": "condition",
+          "kind": "bool",
+          "label": "Condition",
+          "default": false,
+          "options": [],
+          "help": ""
+        },
+        {
+          "name": "prompt",
+          "kind": "textarea",
+          "label": "Question",
+          "default": "",
+          "options": [],
+          "help": "Answerable with yes or no."
+        }
+      ]
+    },
+    {
+      "kind": "loop",
+      "title": "Loop",
+      "description": "Repeats `body` and then continues from `completed`. Always bounded: the iteration cap applies whatever the kind.",
+      "category": "flow",
+      "pure": false,
+      "max_instances": 0,
+      "pins": [
+        {
+          "name": "in",
+          "type": "exec",
+          "direction": "in",
+          "label": "in",
+          "required": false,
+          "dynamic": false,
+          "color": "#FFFFFF"
+        },
+        {
+          "name": "body",
+          "type": "exec",
+          "direction": "out",
+          "label": "body",
+          "required": false,
+          "dynamic": false,
+          "color": "#FFFFFF"
+        },
+        {
+          "name": "completed",
+          "type": "exec",
+          "direction": "out",
+          "label": "completed",
+          "required": false,
+          "dynamic": false,
+          "color": "#FFFFFF"
+        },
+        {
+          "name": "count",
+          "type": "int",
+          "direction": "in",
+          "label": "count",
+          "required": false,
+          "dynamic": false,
+          "color": "#1F9E8C"
+        },
+        {
+          "name": "condition",
+          "type": "bool",
+          "direction": "in",
+          "label": "condition",
+          "required": false,
+          "dynamic": false,
+          "color": "#8C1B1B"
+        },
+        {
+          "name": "items",
+          "type": "string",
+          "direction": "in",
+          "label": "items",
+          "required": false,
+          "dynamic": false,
+          "color": "#E040FB"
+        },
+        {
+          "name": "index",
+          "type": "int",
+          "direction": "out",
+          "label": "index",
+          "required": false,
+          "dynamic": false,
+          "color": "#1F9E8C"
+        },
+        {
+          "name": "item",
+          "type": "string",
+          "direction": "out",
+          "label": "item",
+          "required": false,
+          "dynamic": false,
+          "color": "#E040FB"
+        }
+      ],
+      "fields": [
+        {
+          "name": "kind",
+          "kind": "select",
+          "label": "Kind",
+          "default": "count",
+          "options": [
+            "count",
+            "while",
+            "foreach"
+          ],
+          "help": "foreach walks one line of `items` per lap."
+        },
+        {
+          "name": "count",
+          "kind": "number",
+          "label": "Count",
+          "default": 3,
+          "options": [],
+          "help": ""
+        },
+        {
+          "name": "max_iterations",
+          "kind": "number",
+          "label": "Max iterations",
+          "default": 0,
+          "options": [],
+          "help": "0 uses the configured ceiling."
+        }
+      ]
+    },
+    {
+      "kind": "user_chat",
+      "title": "Ask the user",
+      "description": "Pauses the run until the user types an answer on the node.",
+      "category": "agent",
+      "pure": false,
+      "max_instances": 0,
+      "pins": [
+        {
+          "name": "in",
+          "type": "exec",
+          "direction": "in",
+          "label": "in",
+          "required": false,
+          "dynamic": false,
+          "color": "#FFFFFF"
+        },
+        {
+          "name": "out",
+          "type": "exec",
+          "direction": "out",
+          "label": "out",
+          "required": false,
+          "dynamic": false,
+          "color": "#FFFFFF"
+        },
+        {
+          "name": "prompt",
+          "type": "string",
+          "direction": "in",
+          "label": "prompt",
+          "required": false,
+          "dynamic": false,
+          "color": "#E040FB"
+        },
+        {
+          "name": "answer",
+          "type": "string",
+          "direction": "out",
+          "label": "answer",
+          "required": false,
+          "dynamic": false,
+          "color": "#E040FB"
+        }
+      ],
+      "fields": [
+        {
+          "name": "title",
+          "kind": "text",
+          "label": "Title",
+          "default": "",
+          "options": [],
+          "help": ""
+        },
+        {
+          "name": "prompt",
+          "kind": "textarea",
+          "label": "Question",
+          "default": "",
+          "options": [],
+          "help": ""
+        }
+      ]
+    },
+    {
+      "kind": "var_set",
+      "title": "Set variable",
+      "description": "Writes a graph variable.",
+      "category": "data",
+      "pure": false,
+      "max_instances": 0,
+      "pins": [
+        {
+          "name": "in",
+          "type": "exec",
+          "direction": "in",
+          "label": "in",
+          "required": false,
+          "dynamic": false,
+          "color": "#FFFFFF"
+        },
+        {
+          "name": "out",
+          "type": "exec",
+          "direction": "out",
+          "label": "out",
+          "required": false,
+          "dynamic": false,
+          "color": "#FFFFFF"
+        },
+        {
+          "name": "value",
+          "type": "any",
+          "direction": "in",
+          "label": "value",
+          "required": true,
+          "dynamic": false,
+          "color": "#A0A0A0"
+        }
+      ],
+      "fields": [
+        {
+          "name": "variable",
+          "kind": "variable",
+          "label": "Variable",
+          "default": "",
+          "options": [],
+          "help": ""
+        },
+        {
+          "name": "value",
+          "kind": "text",
+          "label": "Value",
+          "default": "",
+          "options": [],
+          "help": ""
+        }
+      ]
+    },
+    {
+      "kind": "var_get",
+      "title": "Get variable",
+      "description": "Reads a graph variable.",
+      "category": "data",
+      "pure": true,
+      "max_instances": 0,
+      "pins": [
+        {
+          "name": "value",
+          "type": "any",
+          "direction": "out",
+          "label": "value",
+          "required": false,
+          "dynamic": false,
+          "color": "#A0A0A0"
+        }
+      ],
+      "fields": [
+        {
+          "name": "variable",
+          "kind": "variable",
+          "label": "Variable",
+          "default": "",
+          "options": [],
+          "help": ""
+        }
+      ]
+    },
+    {
+      "kind": "print",
+      "title": "Print",
+      "description": "Writes a value to the run log. The debugger's best friend.",
+      "category": "debug",
+      "pure": false,
+      "max_instances": 0,
+      "pins": [
+        {
+          "name": "in",
+          "type": "exec",
+          "direction": "in",
+          "label": "in",
+          "required": false,
+          "dynamic": false,
+          "color": "#FFFFFF"
+        },
+        {
+          "name": "out",
+          "type": "exec",
+          "direction": "out",
+          "label": "out",
+          "required": false,
+          "dynamic": false,
+          "color": "#FFFFFF"
+        },
+        {
+          "name": "value",
+          "type": "any",
+          "direction": "in",
+          "label": "value",
+          "required": false,
+          "dynamic": false,
+          "color": "#A0A0A0"
+        }
+      ],
+      "fields": [
+        {
+          "name": "label",
+          "kind": "text",
+          "label": "Label",
+          "default": "",
+          "options": [],
+          "help": ""
+        },
+        {
+          "name": "value",
+          "kind": "textarea",
+          "label": "Value",
+          "default": "",
+          "options": [],
+          "help": ""
+        }
+      ]
+    }
+  ],
+  "pin_colors": {
+    "exec": "#FFFFFF",
+    "bool": "#8C1B1B",
+    "int": "#1F9E8C",
+    "float": "#A4E22E",
+    "string": "#E040FB",
+    "model": "#3794FF",
+    "any": "#A0A0A0"
+  },
+  "variable_types": [
+    "string",
+    "int",
+    "float",
+    "bool"
+  ],
+  "professions": [
+    {
+      "name": "architect",
+      "title": "Architect",
+      "description": "Software architect. Reads the codebase and designs: boundaries, data flow, trade-offs, the order the work should happen in. Never edits files - it hands back a design the writers implement.",
+      "writes": false,
+      "runs_processes": false,
+      "read_only": true,
+      "max_model_steps": 30,
+      "capabilities": [
+        "local_read",
+        "web"
+      ]
+    },
+    {
+      "name": "code_writer",
+      "title": "Code Writer",
+      "description": "Implementation worker. Carries out one focused, self-contained change: reads what it needs, edits or creates files, and runs commands to verify.",
+      "writes": true,
+      "runs_processes": true,
+      "read_only": false,
+      "max_model_steps": 60,
+      "capabilities": [
+        "local_read",
+        "local_write",
+        "process",
+        "web"
+      ]
+    },
+    {
+      "name": "documenter",
+      "title": "Documenter",
+      "description": "Documentation writer. Reads code and writes the docs that explain it - docstrings, README sections, API references. Edits files but runs nothing.",
+      "writes": true,
+      "runs_processes": false,
+      "read_only": false,
+      "max_model_steps": 40,
+      "capabilities": [
+        "local_read",
+        "local_write",
+        "web"
+      ]
+    },
+    {
+      "name": "wiki_writer",
+      "title": "Wiki Writer",
+      "description": "Long-form writer. Produces the prose that lives outside the code: guides, architecture notes, onboarding pages, changelog entries.",
+      "writes": true,
+      "runs_processes": false,
+      "read_only": false,
+      "max_model_steps": 40,
+      "capabilities": [
+        "local_read",
+        "local_write",
+        "web"
+      ]
+    },
+    {
+      "name": "ui_designer",
+      "title": "Ui Designer",
+      "description": "Interface designer. Builds and refines the user-facing surface: layout, states, spacing, contrast, responsiveness. Edits markup and styles.",
+      "writes": true,
+      "runs_processes": false,
+      "read_only": false,
+      "max_model_steps": 50,
+      "capabilities": [
+        "local_read",
+        "local_write",
+        "web"
+      ]
+    },
+    {
+      "name": "teacher",
+      "title": "Teacher",
+      "description": "Explainer. Reads the code and teaches it: what it does, why it is built that way, what to watch out for. Never edits anything.",
+      "writes": false,
+      "runs_processes": false,
+      "read_only": true,
+      "max_model_steps": 30,
+      "capabilities": [
+        "local_read",
+        "web"
+      ]
+    },
+    {
+      "name": "tester",
+      "title": "Tester",
+      "description": "Test writer. Adds the tests a change needs and runs them, reporting what passes and what it could not cover.",
+      "writes": true,
+      "runs_processes": true,
+      "read_only": false,
+      "max_model_steps": 50,
+      "capabilities": [
+        "local_read",
+        "local_write",
+        "process",
+        "review"
+      ]
+    },
+    {
+      "name": "coder",
+      "title": "Coder",
+      "description": "Implementation worker. Carries out ONE focused, self-contained change: reads what it needs, edits or creates files, and runs commands to verify. Give it a precise, bounded task with clear acceptance criteria. Not for open-ended planning or work that spans many unrelated areas.",
+      "writes": true,
+      "runs_processes": true,
+      "read_only": false,
+      "max_model_steps": 60,
+      "capabilities": [
+        "local_read",
+        "local_write",
+        "process",
+        "web"
+      ]
+    },
+    {
+      "name": "explorer",
+      "title": "Explorer",
+      "description": "Read-only investigator. Searches and reads the workspace (and the web) to answer a focused question - locating code, tracing behavior, gathering facts. Cannot modify files or run processes. Use it to fan out research in parallel before you plan or change anything.",
+      "writes": false,
+      "runs_processes": false,
+      "read_only": true,
+      "max_model_steps": 30,
+      "capabilities": [
+        "local_read",
+        "web"
+      ]
+    },
+    {
+      "name": "reviewer",
+      "title": "Reviewer",
+      "description": "Code reviewer. Reads code and diffs and runs the review/build/test tools to judge quality, correctness, and risk, then reports findings. Read-only with respect to source: it never edits files. Use it to get an independent assessment of a change or an area of the codebase.",
+      "writes": false,
+      "runs_processes": true,
+      "read_only": false,
+      "max_model_steps": 30,
+      "capabilities": [
+        "local_read",
+        "process",
+        "review",
+        "web"
+      ]
+    }
+  ],
+  "limits": {
+    "nodes": 400,
+    "edges": 1200,
+    "variables": 100,
+    "run": {
+      "max_nodes_executed": 200,
+      "max_seconds": 3600,
+      "max_loop_iterations": 50
+    }
+  }
+}

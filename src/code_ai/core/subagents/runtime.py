@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any
 
 from code_ai.config.models import AppConfig
 from code_ai.context.compression import ContextCompressor
@@ -87,14 +88,48 @@ class SubagentRuntime:
         self._browser = browser
         self._review_service_factory = review_service_factory
 
-    def build(self, profile: SubagentProfile, *, model: str = "") -> BuiltSubagent:
+    def build(
+        self,
+        profile: SubagentProfile,
+        *,
+        model: str = "",
+        provider: ModelProvider | None = None,
+        extra_instructions: str = "",
+        max_model_steps: int = 0,
+        timeout_seconds: int = 0,
+        config_overrides: Mapping[str, Any] | None = None,
+    ) -> BuiltSubagent:
+        """Assemble one isolated agent.
+
+        Everything past ``profile`` is an override a caller may need when it is
+        not the dispatch tool: a graph node brings its own endpoint (``provider``
+        plus ``config_overrides``), its own budgets, and instructions appended to
+        the profile's role prompt.
+        """
+
         event_bus = AsyncEventBus()
-        child_config = self._child_config(profile, model)
+        child_config = self._child_config(
+            profile,
+            model,
+            max_model_steps=max_model_steps,
+            timeout_seconds=timeout_seconds,
+            overrides=config_overrides,
+        )
+        child_provider = provider or self._provider
         registry = self._base_registry.select(profile.allowed_capabilities)
+        role_prompt = profile.role_prompt
+        if extra_instructions.strip():
+            role_prompt = "\n\n".join(
+                [
+                    profile.role_prompt,
+                    "Also follow these instructions for this task:",
+                    extra_instructions.strip(),
+                ]
+            )
 
         def system_prompt() -> str:
             return build_subagent_system_prompt(
-                role_prompt=profile.role_prompt,
+                role_prompt=role_prompt,
                 workspace=child_config.workspace,
                 language=child_config.language,
                 sandbox_root=str(self._sandbox.root) if self._sandbox else "",
@@ -113,7 +148,7 @@ class SubagentRuntime:
             target=child_config.context_compression_target,
             output_reserve=child_config.output_token_reserve,
             event_bus=event_bus,
-            provider=self._provider,
+            provider=child_provider,
             model=child_config.model,
         )
         review_service = (
@@ -140,7 +175,7 @@ class SubagentRuntime:
 
         orchestrator = AgentOrchestrator(
             config=child_config,
-            provider=self._provider,
+            provider=child_provider,
             tool_registry=registry,
             conversation=conversation,
             usage=usage,
@@ -156,10 +191,18 @@ class SubagentRuntime:
             orchestrator=orchestrator,
             event_bus=event_bus,
             usage=usage,
-            timeout_seconds=profile.timeout_seconds(child_config.budgets),
+            timeout_seconds=timeout_seconds or profile.timeout_seconds(child_config.budgets),
         )
 
-    def _child_config(self, profile: SubagentProfile, model: str = "") -> AppConfig:
+    def _child_config(
+        self,
+        profile: SubagentProfile,
+        model: str = "",
+        *,
+        max_model_steps: int = 0,
+        timeout_seconds: int = 0,
+        overrides: Mapping[str, Any] | None = None,
+    ) -> AppConfig:
         """Clone the config with sub-agent-scoped budgets and no approval gate.
 
         The sub-agent runs in ``bypass`` internally: approval already happened
@@ -169,10 +212,10 @@ class SubagentRuntime:
         is set to the profile timeout so the inner loop winds down gracefully
         before the coordinator's hard wall-clock cutoff trips.
         """
-        timeout = profile.timeout_seconds(self._config.budgets)
+        timeout = timeout_seconds or profile.timeout_seconds(self._config.budgets)
         budgets = dataclasses.replace(
             self._config.budgets,
-            max_model_steps=profile.max_model_steps,
+            max_model_steps=max_model_steps or profile.max_model_steps,
             max_turn_seconds=timeout,
             max_turn_wall_time_s=timeout,
         )
@@ -180,6 +223,7 @@ class SubagentRuntime:
             self._config,
             permission_mode="bypass",
             budgets=budgets,
+            **dict(overrides or {}),
             # Only the name changes: the endpoint, the key and the api mode are
             # the parent's, because a second model on the same server is what
             # this is for. A sub-agent given nothing runs on the session model.

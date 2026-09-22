@@ -3,8 +3,9 @@ import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
 
-import { BridgeClient } from "./bridge-client";
-import { DEFAULT_COMMAND, resolveCommand, spawnFailureHint } from "./resolve-command";
+import type { BridgeClient } from "./bridge-client";
+import { BridgeSession, syntheticError, syntheticNotice } from "./bridge-session";
+import { createFlowFile, FlowEditorProvider } from "./flow-editor";
 import type {
   AppMode,
   BridgeMethod,
@@ -22,17 +23,29 @@ import type {
 const AI_REQUEST_TIMEOUT_MS = 300_000;
 
 export function activate(context: vscode.ExtensionContext): void {
-  const provider = new ChatViewProvider(context.extensionUri);
+  // One backend for the window. Both the chat panel and the orchestrator-graph
+  // editor subscribe to it, so either can be the first thing the user opens.
+  const bridge = new BridgeSession(context.extensionUri.fsPath);
+  const provider = new ChatViewProvider(context.extensionUri, bridge);
+  const flowEditor = new FlowEditorProvider(context.extensionUri, bridge, context.secrets);
   context.subscriptions.push(
+    bridge,
     vscode.window.registerWebviewViewProvider("code-ai.chat", provider, {
       webviewOptions: { retainContextWhenHidden: true },
+    }),
+    vscode.window.registerCustomEditorProvider(FlowEditorProvider.viewType, flowEditor, {
+      webviewOptions: { retainContextWhenHidden: true },
+      supportsMultipleEditorsPerDocument: false,
     }),
     vscode.commands.registerCommand("code-ai.open", () =>
       vscode.commands.executeCommand("code-ai.chat.focus")
     ),
     // Respawn the bridge so edited settings/config take effect without having to
     // reload the whole extension host.
-    vscode.commands.registerCommand("code-ai.restart", () => provider.restartBridge()),
+    vscode.commands.registerCommand("code-ai.restart", () => bridge.restart()),
+    vscode.commands.registerCommand("code-ai.newFlow", () => createFlowFile()),
+    vscode.commands.registerCommand("code-ai.runFlow", () => flowEditor.runActive()),
+    vscode.commands.registerCommand("code-ai.stopFlow", () => flowEditor.stopActive()),
     vscode.commands.registerCommand("code-ai.toggleInlineHints", () => provider.toggleInlineHints()),
     vscode.commands.registerCommand("code-ai.inlineHintInfo", () => provider.showInlineHintInfo()),
     vscode.commands.registerCommand("code-ai.testInlineHint", () => provider.testInlineHint()),
@@ -58,12 +71,15 @@ export function deactivate(): void {
 }
 
 class ChatViewProvider implements vscode.WebviewViewProvider {
-  constructor(private readonly extensionUri: vscode.Uri) {}
+  constructor(
+    private readonly extensionUri: vscode.Uri,
+    private readonly bridge: BridgeSession
+  ) {}
 
-  // Shared with the hover provider and selection handlers (one bridge per view).
-  private client?: BridgeClient;
-  /** Last `code-ai.command` warning shown, so a restart does not repeat it. */
-  private warnedAbout?: string;
+  /** The window's backend, shared with the graph editor. */
+  private get client(): BridgeClient | undefined {
+    return this.bridge.client;
+  }
   private view?: vscode.WebviewView;
   private webview?: vscode.Webview;
   private mode: AppMode = "agent";
@@ -702,7 +718,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
             .catch((err) => console.error("[code-ai] listSlashCommands failed", err));
           break;
         case "restartBridge":
-          this.restartBridge();
+          this.bridge.restart();
           break;
       }
     });
@@ -725,93 +741,31 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     ];
     pushContext();
 
+    // Events reach the panel through the session, so the backend keeps running
+    // when the panel is closed and re-attaches when it is reopened.
+    const bridgeSub = this.bridge.subscribe({
+      onEvent: (event) => {
+        void this.webview?.postMessage({ type: "event", event });
+      },
+      onRestart: () => {
+        this.explainJob = null;
+        // The restart re-read the config, so the hint state may have changed.
+        this.refreshInlineSettings();
+      },
+    });
+
     view.onDidDispose(() => {
       editorSubs.forEach((d) => d.dispose());
+      bridgeSub.dispose();
       if (this.explainTimer) clearTimeout(this.explainTimer);
       if (this.refactorTimer) clearTimeout(this.refactorTimer);
       this.explainJob = null;
       this.refactorTarget = null;
-      this.client?.dispose();
-      this.client = undefined;
       this.view = undefined;
       this.webview = undefined;
     });
 
-    this.spawnBridge();
-  }
-
-  /**
-   * Spawn the bridge child process and wire its lifecycle to the webview. Reads
-   * the configuration fresh on every call, so a {@link restartBridge} picks up
-   * edited `code-ai.*` settings. Failures are surfaced inside the already-
-   * rendered UI rather than left as a blank panel.
-   */
-  private spawnBridge(): void {
-    const config = vscode.workspace.getConfiguration("code-ai");
-    const extraArgs = config.get<string[]>("args", []);
-    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    const resolved = resolveCommand(
-      config.get<string>("command", DEFAULT_COMMAND),
-      this.extensionUri.fsPath,
-      (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath),
-      { platform: process.platform, exists: fs.existsSync }
-    );
-    const command = resolved.command;
-    if (resolved.source === "bundled") ensureExecutable(command);
-    // Once per setting per session. Every restart re-reads the config, and a
-    // warning that repeats on each one trains the reader to dismiss it.
-    if (resolved.ignoredConfig && this.warnedAbout !== resolved.ignoredConfig) {
-      this.warnedAbout = resolved.ignoredConfig;
-      vscode.window.showWarningMessage(`Code-AI: ${resolved.ignoredConfig}`);
-      void this.webview?.postMessage({ type: "event", event: syntheticNotice(resolved.ignoredConfig) });
-    }
-
-    // The agent works on the folder the editor has open, not on whatever
-    // workspace the config file last recorded - which is also where the
-    // conversation archive lives, so getting this wrong loses the history too.
-    // An explicit --workspace in `code-ai.args` still wins.
-    const workspaceArgs = cwd && !extraArgs.includes("--workspace") ? ["--workspace", cwd] : [];
-
-    let client: BridgeClient;
-    try {
-      client = new BridgeClient(command, [...workspaceArgs, ...extraArgs, "bridge"], cwd);
-    } catch (err) {
-      const detail = `failed to spawn "${command}": ${String(err)}`;
-      vscode.window.showErrorMessage(`Code-AI: ${detail}`);
-      void this.webview?.postMessage({ type: "event", event: syntheticError(detail) });
-      return;
-    }
-    this.client = client;
-
-    client.on("event", (event: EventEnvelope) => {
-      void this.webview?.postMessage({ type: "event", event });
-    });
-    client.on("stderr", (chunk: string) => console.error("[code-ai bridge]", chunk));
-    client.on("error", (err: Error) => {
-      const code = (err as NodeJS.ErrnoException).code;
-      // EFTYPE is what Windows returns for a file it will not execute, such as
-      // a .py pointed at directly.
-      const hint =
-        code === "ENOENT" || code === "EACCES" || code === "EFTYPE"
-          ? ` — ${spawnFailureHint(resolved, process.platform)}`
-          : "";
-      vscode.window.showErrorMessage(`Code-AI bridge error: ${err.message}${hint}`);
-      // A spawn that never starts emits "error" and no "exit", so the exit
-      // handler below never runs. Without this the panel sits on STARTING for
-      // ever and a dismissed toast is the only trace the failure ever left.
-      void this.webview?.postMessage({ type: "event", event: syntheticStatus("DISCONNECTED") });
-      void this.webview?.postMessage({
-        type: "event",
-        event: syntheticError(`the backend did not start: ${err.message}${hint}`),
-      });
-    });
-    client.on("exit", (code: number | null) => {
-      if (this.client !== client) return; // a restart already replaced this bridge
-      // Leave the busy state so the "working" heartbeat stops, then show why.
-      void this.webview?.postMessage({ type: "event", event: syntheticStatus("DISCONNECTED") });
-      void this.webview?.postMessage({ type: "event", event: syntheticError(`bridge exited (${code})`) });
-    });
-
+    this.bridge.ensureStarted();
     // Learn whether inline hints are on so the provider and status bar are
     // correct straight away (and after a restart re-reads edited config).
     this.refreshInlineSettings();
@@ -848,24 +802,6 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       .catch(() => undefined);
   }
 
-  /**
-   * Tear down the running bridge and spawn a fresh one. This re-reads the
-   * on-disk config and `code-ai.*` settings, so edits take effect without
-   * reloading the whole extension host.
-   */
-  restartBridge(): void {
-    if (!this.webview) return;
-    const previous = this.client;
-    this.client = undefined;
-    this.explainJob = null;
-    previous?.dispose();
-    void this.webview.postMessage({ type: "event", event: syntheticStatus("RECONNECTING") });
-    void this.webview.postMessage({
-      type: "event",
-      event: syntheticNotice("Restarting Code-AI to apply your settings…"),
-    });
-    this.spawnBridge();
-  }
 }
 
 /** Build an {@link EditorContext} from the active editor, or `null` if none. */
@@ -907,43 +843,6 @@ function formatEditorContext(context: EditorContext | null): string {
     );
   }
   return `${head}\nThe user currently has this file open (no selection).`;
-}
-
-/**
- * Make a bundled binary executable. A VSIX is a zip, and the bit does not
- * always survive the round trip (it never does when the zip was produced on
- * Windows), so the first launch on Linux would fail with EACCES.
- */
-function ensureExecutable(file: string): void {
-  if (process.platform === "win32") return;
-  try {
-    const mode = fs.statSync(file).mode;
-    if (mode & 0o111) return;
-    fs.chmodSync(file, mode | 0o755);
-  } catch {
-    // Read-only install or a vanished file: let the spawn report the real error.
-  }
-}
-
-function syntheticStatus(state: string): EventEnvelope {
-  return { ...syntheticError(""), event_type: "status.changed", payload: { state } };
-}
-
-function syntheticNotice(message: string): EventEnvelope {
-  return { ...syntheticError(message), event_type: "warning" };
-}
-
-function syntheticError(message: string): EventEnvelope {
-  return {
-    event_id: `synthetic-${Date.now()}`,
-    event_type: "error",
-    event_version: 1,
-    session_id: "host",
-    sequence: 0,
-    timestamp: new Date().toISOString(),
-    source: "extension",
-    payload: { message },
-  };
 }
 
 function renderHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {

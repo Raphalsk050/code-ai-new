@@ -25,12 +25,24 @@ const webviewConfig = {
   sourcemap: true,
 };
 
+/** Orchestrator-graph editor bundle: its own webview, same shape as the chat. */
+const flowConfig = {
+  entryPoints: ["webview/flow/index.tsx"],
+  outfile: "dist/flow.js",
+  bundle: true,
+  platform: "browser",
+  format: "iife",
+  target: "es2021",
+  sourcemap: true,
+};
+
+const configs = [extensionConfig, webviewConfig, flowConfig];
+
 if (watch) {
-  const ctxA = await esbuild.context(extensionConfig);
-  const ctxB = await esbuild.context(webviewConfig);
-  await Promise.all([ctxA.watch(), ctxB.watch()]);
+  const contexts = await Promise.all(configs.map((config) => esbuild.context(config)));
+  await Promise.all(contexts.map((context) => context.watch()));
   console.log("watching...");
 } else {
-  await Promise.all([esbuild.build(extensionConfig), esbuild.build(webviewConfig)]);
+  await Promise.all(configs.map((config) => esbuild.build(config)));
   console.log("build complete");
 }

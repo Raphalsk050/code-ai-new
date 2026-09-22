@@ -2,7 +2,7 @@
   "name": "code-ai",
   "displayName": "Code-AI",
   "description": "Drive the Code-AI agent from VSCode. Ships the agent with it: no Python, no install.",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "publisher": "code-ai",
   "private": true,
   "engines": {
@@ -12,7 +12,8 @@
     "Other"
   ],
   "activationEvents": [
-    "onView:code-ai.chat"
+    "onView:code-ai.chat",
+    "onCustomEditor:code-ai.flow"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -34,6 +35,18 @@
         }
       ]
     },
+    "customEditors": [
+      {
+        "viewType": "code-ai.flow",
+        "displayName": "Code-AI Orchestrator",
+        "selector": [
+          {
+            "filenamePattern": "*.flow.json"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
     "commands": [
       {
         "command": "code-ai.open",
@@ -55,6 +68,20 @@
       {
         "command": "code-ai.testInlineHint",
         "title": "Code-AI: Test Inline Hint at Cursor"
+      },
+      {
+        "command": "code-ai.newFlow",
+        "title": "Code-AI: New Orchestrator Graph"
+      },
+      {
+        "command": "code-ai.runFlow",
+        "title": "Code-AI: Run Graph",
+        "icon": "$(play)"
+      },
+      {
+        "command": "code-ai.stopFlow",
+        "title": "Code-AI: Stop Graph",
+        "icon": "$(debug-stop)"
       }
     ],
     "menus": {
