@@ -108,30 +108,47 @@ a = Analysis(
     noarchive=False,
 )
 
-# The C++ runtime does not travel on Linux.
+# The C++ runtime has to match the C++ libraries next to it.
 #
-# PyInstaller collects libstdc++ from wherever the build interpreter's
-# dependencies live. With a conda environment active that is conda's copy,
-# which is older than the system's - while libraries collected straight from
-# the system (ICU, which the stdlib's sqlite3 pulls in through libsqlite3) are
-# built against the newer one. Inside the bundle the older copy shadows the
-# system's, and the first import of sqlite3 dies with
+# A bundle can end up holding two toolchains. With a conda environment active,
+# the stdlib's sqlite3 pulls in conda's ICU - built against a recent libstdc++ -
+# while PyInstaller resolves libstdc++ itself through the system loader and
+# collects the distro's, which on a long-term-support release is older. The
+# bundled copy shadows every other, so the first `import sqlite3` dies with
 #
 #     libstdc++.so.6: version `CXXABI_1.3.15' not found
 #         (required by .../libicui18n.so.78)
 #
-# Leaving it out makes the binary link the host's, which is by definition new
-# enough for the host's own libraries. The trade is that a binary built on a
-# newer distro than it runs on now fails at load instead of silently working -
-# and this project builds each platform on the platform, so that is not a case
-# it has.
+# Dropping the bundled copy does not help: the loader then finds the same old
+# system one. What fixes it is taking the runtime from the directory ICU itself
+# came from, which is by construction the toolchain ICU was built with.
 if sys.platform.startswith("linux"):
-    _HOST_RUNTIME = ("libstdc++.so", "libgcc_s.so")
-    a.binaries = [
-        entry
-        for entry in a.binaries
-        if not os.path.basename(entry[0]).startswith(_HOST_RUNTIME)
-    ]
+    _icu = next(
+        (
+            source
+            for dest, source, *_ in a.binaries
+            if os.path.basename(dest).startswith("libicui18n")
+        ),
+        None,
+    )
+    if _icu:
+        _beside_icu = os.path.join(
+            os.path.dirname(os.path.realpath(_icu)), "libstdc++.so.6"
+        )
+        if os.path.exists(_beside_icu):
+            a.binaries = [
+                entry
+                for entry in a.binaries
+                if not os.path.basename(entry[0]).startswith("libstdc++.so")
+            ]
+            a.binaries.append(
+                ("libstdc++.so.6", os.path.realpath(_beside_icu), "BINARY")
+            )
+            print(f"spec: bundling the C++ runtime beside ICU ({_beside_icu})")
+        else:
+            print(f"spec: no libstdc++ beside ICU ({os.path.dirname(_icu)}); leaving it alone")
+    else:
+        print("spec: ICU is not bundled, so the C++ runtime needs no help")
 
 pyz = PYZ(a.pure)
 

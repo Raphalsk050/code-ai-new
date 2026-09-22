@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 17,
-  "patch": 2,
-  "build": 25,
+  "patch": 3,
+  "build": 26,
   "updated": "2026-09-22",
-  "note": "Do not bundle the C++ runtime on Linux; smoke-test every runnable binary."
+  "note": "Bundle the C++ runtime that ICU was built with, not the distro's."
 }
