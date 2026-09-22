@@ -55,7 +55,7 @@ async def test_a_question_is_emitted_with_everything_a_card_needs(tmp_path) -> N
         {
             "question": "Qual banco?",
             "header": "Banco",
-            "options": ["Postgres :: consistência forte", "SQLite"],
+            "options": ["Postgres :: strong consistency", "SQLite"],
             "multi_select": True,
         },
         context,
@@ -66,7 +66,7 @@ async def test_a_question_is_emitted_with_everything_a_card_needs(tmp_path) -> N
     assert result["multi_select"] is True
     emitted = [e for e in events if e.event_type == "interaction.question.requested"]
     assert len(emitted) == 1
-    assert emitted[0].payload["options"] == ["Postgres :: consistência forte", "SQLite"]
+    assert emitted[0].payload["options"] == ["Postgres :: strong consistency", "SQLite"]
 
 
 async def test_an_unstated_reason_still_says_why_the_user_was_interrupted(tmp_path) -> None:

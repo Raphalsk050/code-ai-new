@@ -126,7 +126,7 @@ async def test_a_turn_going_nowhere_still_winds_down(tmp_path) -> None:
     assert provider.calls < 40, "a stalling turn must not run to the step budget"
 
 
-LANDED = "Li o config.toml e a porta padrão é 8080. Falta conferir o timeout."
+LANDED = "I read config.toml and the default port is 8080. The timeout is still to check."
 
 
 class _NeverStopsProvider:
@@ -152,7 +152,7 @@ class _NeverStopsProvider:
             yield ProviderEvent(
                 kind="completed",
                 response=ModelResponse(
-                    text="Agora vou olhar o próximo arquivo.",
+                    text="Now I will look at the next file.",
                     tool_calls=[
                         ToolCall(
                             id=f"c{self.calls}",
@@ -204,7 +204,7 @@ async def test_a_spent_budget_ends_in_the_models_answer(tmp_path) -> None:
     app = build_application(config=_step_capped_config(tmp_path, steps=3), provider=provider)
 
     await app.start()
-    result = await app.submit_user_message("me diga a porta padrão do projeto")
+    result = await app.submit_user_message("tell me the project's default port")
     await app.close()
 
     assert result.text == LANDED
@@ -219,7 +219,7 @@ async def test_the_landing_request_offers_no_tools(tmp_path) -> None:
     app = build_application(config=_step_capped_config(tmp_path, steps=3), provider=provider)
 
     await app.start()
-    await app.submit_user_message("me diga a porta padrão do projeto")
+    await app.submit_user_message("tell me the project's default port")
     await app.close()
 
     assert all(count > 0 for count in provider.tools_offered[:3])
@@ -237,7 +237,7 @@ async def test_the_reason_still_reaches_the_program(tmp_path) -> None:
     app.subscribe(lambda event: events.append(event.event_type))
 
     await app.start()
-    result = await app.submit_user_message("me diga a porta padrão do projeto")
+    result = await app.submit_user_message("tell me the project's default port")
     await app.close()
 
     assert result.wind_down_reason == WIND_DOWN_STEP_BUDGET
@@ -265,7 +265,7 @@ async def test_a_silent_landing_still_says_something_without_jargon(tmp_path) ->
     app = build_application(config=_step_capped_config(tmp_path, steps=3), provider=provider)
 
     await app.start()
-    result = await app.submit_user_message("me diga a porta padrão do projeto")
+    result = await app.submit_user_message("tell me the project's default port")
     await app.close()
 
     assert result.text.strip()

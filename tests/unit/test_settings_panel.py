@@ -148,7 +148,7 @@ async def test_an_unknown_setting_is_reported_not_swallowed(app: CodeAIApplicati
 
 async def test_one_bad_value_does_not_abort_the_batch(app: CodeAIApplication) -> None:
     result = await app.update_settings(
-        {"max_concurrent_subagents": "não é número", "language": "pt-BR"}
+        {"max_concurrent_subagents": "not a number", "language": "pt-BR"}
     )
 
     assert "language" in result["applied"]

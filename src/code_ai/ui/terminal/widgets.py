@@ -304,9 +304,9 @@ def render_plan(
         text.append(marker + " ", style=marker_style)
         text.append(title, style=title_styles.get(status, palette.subtle))
         if status == "running":
-            text.append("\n  executando", style=palette.faint)
+            text.append("\n  running", style=palette.faint)
         elif status == "paused":
-            text.append("\n  aguardando você", style=palette.faint)
+            text.append("\n  waiting for you", style=palette.faint)
         if index < len(steps) - 1:
             text.append("\n")
     return text

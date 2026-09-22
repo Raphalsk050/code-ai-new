@@ -13,7 +13,7 @@ def make_question(**overrides) -> Question:
     payload = {
         "question": "Qual banco de dados o sistema deve usar?",
         "header": "Banco de dados",
-        "options": ["Postgres :: relacional, consistência forte", "SQLite :: zero configuração"],
+        "options": ["Postgres :: relational, strong consistency", "SQLite :: zero configuration"],
     }
     payload.update(overrides)
     return Question.from_payload(payload)
@@ -23,10 +23,10 @@ def make_question(**overrides) -> Question:
 
 
 def test_an_option_carries_its_reason_when_one_is_given() -> None:
-    option = QuestionOption.parse("Postgres :: relacional, consistência forte")
+    option = QuestionOption.parse("Postgres :: relational, strong consistency")
 
     assert option.label == "Postgres"
-    assert option.description == "relacional, consistência forte"
+    assert option.description == "relational, strong consistency"
 
 
 def test_an_option_without_a_reason_is_just_a_label() -> None:
@@ -37,7 +37,7 @@ def test_an_option_without_a_reason_is_just_a_label() -> None:
 
 def test_an_empty_option_is_dropped_rather_than_shown_as_a_blank_card() -> None:
     assert QuestionOption.parse("   ") is None
-    assert QuestionOption.parse(":: só a descrição") is None
+    assert QuestionOption.parse(":: only the description") is None
 
 
 def test_a_blank_option_in_the_list_does_not_become_a_card() -> None:
@@ -62,7 +62,7 @@ def test_the_card_title_falls_back_to_the_prompt_when_no_header_is_given() -> No
 
 
 def test_only_the_first_nine_options_get_a_number_key() -> None:
-    question = make_question(options=[f"opção {n}" for n in range(1, 13)])
+    question = make_question(options=[f"option {n}" for n in range(1, 13)])
 
     assert len(question.options) == 12
     assert len(question.keyed_options) == 9
@@ -108,14 +108,14 @@ def test_a_single_question_is_not_dressed_up_as_a_list() -> None:
 
     assert "Preciso de" not in text
     assert "Pergunta 1 de 1" not in text
-    assert "[1] Postgres - relacional, consistência forte" in text
+    assert "[1] Postgres - relational, strong consistency" in text
 
 
 def test_several_questions_are_numbered_and_counted(tmp_path) -> None:
     questionnaire = Questionnaire(
         questions=(
             make_question(),
-            make_question(question="Autenticação?", header="Auth", options=["OAuth", "Senha"]),
+            make_question(question="Authentication?", header="Auth", options=["OAuth", "Password"]),
         )
     )
 
@@ -180,7 +180,7 @@ def test_free_text_on_its_own_stands_alone() -> None:
 def test_the_reply_repeats_each_question_so_the_model_cannot_mix_them_up() -> None:
     questions = (
         make_question(),
-        make_question(question="Autenticação?", header="Auth", options=["OAuth", "Senha"]),
+        make_question(question="Authentication?", header="Auth", options=["OAuth", "Password"]),
     )
     reply = render_answers(
         [
@@ -193,7 +193,7 @@ def test_the_reply_repeats_each_question_so_the_model_cannot_mix_them_up() -> No
 
 
 def test_a_question_left_blank_is_left_out_of_the_reply() -> None:
-    questions = (make_question(), make_question(question="Autenticação?", header="Auth"))
+    questions = (make_question(), make_question(question="Authentication?", header="Auth"))
     reply = render_answers(
         [Answer(question=questions[0], chosen=("Postgres",)), Answer(question=questions[1])]
     )

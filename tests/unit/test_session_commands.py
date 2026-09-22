@@ -424,7 +424,7 @@ def test_assets_list_the_user_s_own_commands(monkeypatch) -> None:
 
 def test_resolving_a_workflow_returns_the_prompt_not_a_turn() -> None:
     app = _App()
-    result = SessionCommands(app).resolve_asset("/deploy", "versão 0.2")
+    result = SessionCommands(app).resolve_asset("/deploy", "version 0.2")
 
     assert result.ok is True
     assert result.data["kind"] == "workflow"

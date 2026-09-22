@@ -77,10 +77,11 @@ def test_an_oversized_stream_is_capped_and_flagged(tmp_path) -> None:
 def test_a_capped_stream_stays_valid_utf8(tmp_path) -> None:
     recorder = make_recorder(tmp_path, max_bytes=9)
 
-    # A cut in the middle of a multi-byte character must not corrupt the log.
-    record = recorder.record(label="build", stdout="ação" * 20, stderr="", metadata={})
+    # A cut in the middle of a multi-byte character must not corrupt the log,
+    # so the payload has to carry one: "ï" is two bytes in UTF-8.
+    record = recorder.record(label="build", stdout="naïve" * 20, stderr="", metadata={})
 
-    assert record.stdout.read_text(encoding="utf-8").startswith("aç")
+    assert record.stdout.read_text(encoding="utf-8").startswith("naï")
 
 
 def test_paths_are_reported_relative_to_the_sandbox_root(tmp_path) -> None:

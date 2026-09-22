@@ -23,7 +23,7 @@ from code_ai.providers.models import (
 )
 
 FIRST_PROSE = "Ainda estou analisando o que fazer."
-FINAL_PROSE = "Preciso de mais detalhes para prosseguir com a mudança."
+FINAL_PROSE = "I need more detail before going on with the change."
 
 
 def _config(tmp_path, **overrides) -> AppConfig:
@@ -148,7 +148,7 @@ class InspectsThenAnswersProvider(_BaseProvider):
                     ToolCall(
                         id="p1",
                         name="submit_plan",
-                        arguments={"steps": ["Ler o arquivo", "Responder ao usuário"]},
+                        arguments={"steps": ["Read the file", "Answer the user"]},
                     )
                 ],
                 finish_reason=FinishReason.TOOL_CALLS,
@@ -166,7 +166,7 @@ class InspectsThenAnswersProvider(_BaseProvider):
             )
             yield ProviderEvent(kind="completed", response=response)
             return
-        text = "O arquivo define a configuração padrão do serviço."
+        text = "The file defines the service's default configuration."
         yield ProviderEvent(kind="text_delta", text_delta=text)
         yield ProviderEvent(
             kind="completed",
@@ -189,7 +189,7 @@ async def test_prose_answer_backed_by_evidence_completes_the_plan(tmp_path) -> N
     await app.close()
 
     assert result.error is None
-    assert "configuração" in result.text
+    assert "configuration" in result.text
     event_types = [e.event_type for e in events]
     assert "planning.plan.completed" in event_types
     assert "planning.plan.waiting" not in event_types

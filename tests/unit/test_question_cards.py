@@ -30,7 +30,7 @@ def question(prompt: str, **overrides) -> Question:
         "question": prompt,
         "header": overrides.pop("header", "Banco"),
         "options": overrides.pop(
-            "options", ["Postgres :: consistência forte", "SQLite :: zero configuração"]
+            "options", ["Postgres :: strong consistency", "SQLite :: zero configuration"]
         ),
     }
     payload.update(overrides)
@@ -247,8 +247,8 @@ async def ask_two_questions(fake_app) -> None:
         {
             "question": "Qual banco de dados?",
             "header": "Banco",
-            "options": ["Postgres :: consistência forte", "SQLite"],
-            "why_required": "Sem isso não dá para escolher o schema.",
+            "options": ["Postgres :: strong consistency", "SQLite"],
+            "why_required": "Without it the schema cannot be chosen.",
         },
     )
     await fake_app.emit(
@@ -276,7 +276,7 @@ async def test_the_cards_open_when_the_turn_ends_and_send_one_reply(tmp_path) ->
         modal = terminal_app.screen
         assert isinstance(modal, QuestionnaireModal)
         assert "Pergunta 1 de 2 · Banco" in text_of(modal, "#questions-title")
-        assert "Sem isso não dá" in text_of(modal, "#questions-why")
+        assert "Without it the schema" in text_of(modal, "#questions-why")
 
         await pilot.press("1")
         await pilot.pause()
@@ -335,7 +335,7 @@ async def test_a_new_user_message_drops_a_question_that_was_never_answered(tmp_p
             "interaction.question.requested", {"question": "Qual banco?", "options": ["A"]}
         )
         # The user types something else instead of answering.
-        await fake_app.emit("user.message", {"text": "deixa pra lá, faz outra coisa"})
+        await fake_app.emit("user.message", {"text": "never mind, do something else"})
         await fake_app.emit("status.changed", {"state": "READY"})
         await pilot.pause()
 

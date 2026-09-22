@@ -476,7 +476,7 @@ def test_responses_input_types_content_by_role() -> None:
             messages=[
                 Message(role="system", content="be helpful"),
                 Message(role="user", content="ola"),
-                Message(role="assistant", content="Olá!"),
+                Message(role="assistant", content="Hello!"),
             ],
         )
     )

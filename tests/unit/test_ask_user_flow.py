@@ -270,7 +270,7 @@ class AsksSeveralQuestionsProvider(_BaseProvider):
                         arguments={
                             "question": "Qual banco de dados?",
                             "header": "Banco",
-                            "options": ["Postgres :: consistência forte", "SQLite"],
+                            "options": ["Postgres :: strong consistency", "SQLite"],
                         },
                     ),
                     ToolCall(
@@ -279,7 +279,7 @@ class AsksSeveralQuestionsProvider(_BaseProvider):
                         arguments={
                             "question": "Como autenticar?",
                             "header": "Auth",
-                            "options": ["OAuth", "Usuário e senha"],
+                            "options": ["OAuth", "User and password"],
                         },
                     ),
                 ],
@@ -307,5 +307,5 @@ async def test_every_question_of_one_step_lands_in_a_single_questionnaire(tmp_pa
     asked = [e for e in events if e.event_type == "interaction.question.requested"]
     assert len(asked) == 2
     # The structured payload is what a card UI renders from.
-    assert asked[0].payload["options"] == ["Postgres :: consistência forte", "SQLite"]
+    assert asked[0].payload["options"] == ["Postgres :: strong consistency", "SQLite"]
     assert asked[1].payload["header"] == "Auth"

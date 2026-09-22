@@ -39,7 +39,7 @@ class GoalScriptedProvider:
         self.turn_calls += 1
         if self.turn_calls >= 2:
             (self.workspace / "done.txt").write_text("READY\n", encoding="utf-8")
-        text = f"iteração {self.turn_calls} concluída"
+        text = f"iteration {self.turn_calls} done"
         yield ProviderEvent(kind="text_delta", text_delta=text)
         yield ProviderEvent(
             kind="completed",
@@ -50,7 +50,7 @@ class GoalScriptedProvider:
         self.oneoff_calls += 1
         return ModelResponse(
             text=(
-                '[{"kind": "FILE", "description": "done.txt contém READY", '
+                '[{"kind": "FILE", "description": "done.txt contains READY", '
                 '"path": "done.txt", "pattern": "READY"}]'
             )
         )
@@ -115,7 +115,7 @@ async def test_goal_stop_settles_a_draft_goal(tmp_path) -> None:
     app = build_application(config=config, provider=provider)
     await app.start()
 
-    await app.define_goal("objetivo que não será iniciado")
+    await app.define_goal("an objective that will not be started")
     snapshot = await app.stop_goal()
     await app.close()
 

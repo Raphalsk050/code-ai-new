@@ -24,7 +24,7 @@ from code_ai.providers.models import (
     ToolCall,
 )
 
-PROSE = "Eu começaria pelo contrato de domínio, sem tocar em arquivos por enquanto."
+PROSE = "I would start from the domain contract, without touching files for now."
 
 
 def _config(tmp_path, **overrides) -> AppConfig:

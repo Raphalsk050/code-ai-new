@@ -170,7 +170,7 @@ async def test_live_model_creates_verifies_and_completes_file_task(tmp_path) -> 
 async def test_live_model_uses_saved_workspace_for_project_today_without_web() -> None:
     config = _saved_workspace_live_config()
 
-    greeting, greeting_events = await _run_live_task(config, "Olá")
+    greeting, greeting_events = await _run_live_task(config, "Hello")
     assert greeting.strip()
     assert _tool_names(greeting_events) == []
 

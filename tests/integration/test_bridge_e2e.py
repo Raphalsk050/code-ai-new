@@ -54,7 +54,7 @@ class ScriptedProvider:
     async def complete(self, request: ModelRequest) -> ModelResponse:
         self.oneoff_calls += 1
         self.last_request = request
-        return ModelResponse(text="Trocou o ranking do picker e deixou a suíte verde.")
+        return ModelResponse(text="Swapped the picker ranking and got the suite green.")
 
     async def close(self) -> None:
         return None

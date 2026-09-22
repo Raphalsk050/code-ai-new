@@ -49,7 +49,7 @@ def test_render_plan_includes_markers_and_titles() -> None:
     assert "✓ Discover local context" in rendered
     assert "| Implement reference file" in rendered
     assert "○ Verify and report" in rendered
-    assert "executando" in rendered
+    assert "running" in rendered
     assert "1/3" in rendered
 
 
@@ -135,7 +135,7 @@ def test_render_plan_shows_paused_step_without_spinner() -> None:
     steps = build_plan_steps(_snapshot(status="WAITING"))
     rendered = render_plan(steps, "1/3", "WAITING", "|", "#ff9f1c").plain
     assert "◌ Implement reference file" in rendered
-    assert "aguardando você" in rendered
+    assert "waiting for you" in rendered
     assert "| Implement reference file" not in rendered
     assert "executando" not in rendered
 

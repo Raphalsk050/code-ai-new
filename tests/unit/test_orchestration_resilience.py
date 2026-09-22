@@ -78,7 +78,7 @@ async def test_transient_provider_error_is_retried(tmp_path) -> None:
     app.subscribe(lambda event: events.append(event.event_type))
 
     await app.start()
-    result = await app.submit_user_message("Olá")
+    result = await app.submit_user_message("Hello")
     await app.close()
 
     assert result.text == "hello"
@@ -104,7 +104,7 @@ async def test_model_timeout_salvages_streamed_text(tmp_path) -> None:
     app = build_application(config=config, provider=provider)
 
     await app.start()
-    result = await app.submit_user_message("Olá")
+    result = await app.submit_user_message("Hello")
     await app.close()
 
     # The turn must not crash; whatever streamed is salvaged.
@@ -126,7 +126,7 @@ async def test_provider_error_degrades_gracefully(tmp_path) -> None:
 
     await app.start()
     # Must return a TurnResult carrying the error rather than raising.
-    result = await app.submit_user_message("Olá")
+    result = await app.submit_user_message("Hello")
     await app.close()
 
     assert result.error is not None
@@ -1301,7 +1301,7 @@ async def _events_for(tmp_path, delay: float) -> tuple[str, list]:
     events: list = []
     app.subscribe(events.append)
     await app.start()
-    result = await app.submit_user_message("Olá")
+    result = await app.submit_user_message("Hello")
     await app.close()
     return result.text, events
 

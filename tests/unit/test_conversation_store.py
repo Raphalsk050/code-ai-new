@@ -130,10 +130,10 @@ def test_the_summary_survives_a_later_save_but_goes_stale(tmp_path: Path) -> Non
     store = _store(tmp_path)
     messages = [Message(role="user", content="arruma o ranking")]
     store.save(conversation_id="c-sum", messages=messages)
-    assert store.set_summary("c-sum", "Trocou a ordenação do picker.") is True
+    assert store.set_summary("c-sum", "Swapped the picker ordering.") is True
 
     fresh = store.load("c-sum")
-    assert fresh["summary"] == "Trocou a ordenação do picker."
+    assert fresh["summary"] == "Swapped the picker ordering."
     assert fresh["summary_at"] == fresh["updated_at"]
 
     store.save(
@@ -141,7 +141,7 @@ def test_the_summary_survives_a_later_save_but_goes_stale(tmp_path: Path) -> Non
         messages=[*messages, Message(role="user", content="e os testes?")],
     )
     stale = store.load("c-sum")
-    assert stale["summary"] == "Trocou a ordenação do picker."
+    assert stale["summary"] == "Swapped the picker ordering."
     assert stale["summary_at"] < stale["updated_at"], "a new turn makes the summary stale"
 
 

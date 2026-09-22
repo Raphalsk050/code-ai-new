@@ -609,11 +609,11 @@ class FakeDirectGreetingProvider:
         assert not any(
             "Runtime task state" in message.content for message in request.messages
         )
-        yield ProviderEvent(kind="text_delta", text_delta="Olá! Como posso ajudar?")
+        yield ProviderEvent(kind="text_delta", text_delta="Hello! How can I help?")
         yield ProviderEvent(
             kind="completed",
             response=ModelResponse(
-                text="Olá! Como posso ajudar?",
+                text="Hello! How can I help?",
                 finish_reason=FinishReason.STOP,
             ),
         )
@@ -638,10 +638,10 @@ async def test_direct_greeting_answers_directly_without_forcing_agentic_flow(tmp
     app.subscribe(lambda event: events.append(event.event_type))
 
     await app.start()
-    result = await app.submit_user_message("Olá")
+    result = await app.submit_user_message("Hello")
     await app.close()
 
-    assert result.text == "Olá! Como posso ajudar?"
+    assert result.text == "Hello! How can I help?"
     assert provider.requests
     assert "tool.call.requested" not in events
 

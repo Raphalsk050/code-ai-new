@@ -297,7 +297,7 @@ async def _progress_for(tmp_path, arguments: str, name: str = "write_file"):
 
 
 async def test_code_deltas_reassemble_into_the_written_file(tmp_path) -> None:
-    content = "def main():\n    print('olá 🚀')\n    return 0\n" * 6
+    content = "def main():\n    print('hello 🚀')\n    return 0\n" * 6
     arguments = json.dumps({"path": "src/app.py", "content": content}, ensure_ascii=True)
 
     payloads = await _progress_for(tmp_path, arguments)
