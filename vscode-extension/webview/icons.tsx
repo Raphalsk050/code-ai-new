@@ -198,3 +198,49 @@ export const IconPanelRight = ({ size = 16, className }: IconProps) => (
     <path d="M15 4v16" />
   </svg>
 );
+
+export const IconPlay = ({ size = 14, className }: IconProps) => (
+  <svg {...base(size)} className={className}>
+    <path d="M7 4.5v15l12-7.5z" fill="currentColor" />
+  </svg>
+);
+
+export const IconUndo = ({ size = 16, className }: IconProps) => (
+  <svg {...base(size)} className={className}>
+    <path d="M9 14 4 9l5-5" />
+    <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
+  </svg>
+);
+
+export const IconRedo = ({ size = 16, className }: IconProps) => (
+  <svg {...base(size)} className={className}>
+    <path d="m15 14 5-5-5-5" />
+    <path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13" />
+  </svg>
+);
+
+export const IconFrame = ({ size = 16, className }: IconProps) => (
+  <svg {...base(size)} className={className}>
+    <path d="M4 9V5a1 1 0 0 1 1-1h4M15 4h4a1 1 0 0 1 1 1v4M20 15v4a1 1 0 0 1-1 1h-4M9 20H5a1 1 0 0 1-1-1v-4" />
+  </svg>
+);
+
+export const IconSave = ({ size = 16, className }: IconProps) => (
+  <svg {...base(size)} className={className}>
+    <path d="M5 3h11l4 4v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a1 1 0 0 1 1-1z" />
+    <path d="M8 3v5h7V3M8 21v-7h8v7" />
+  </svg>
+);
+
+export const IconMinus = ({ size = 16, className }: IconProps) => (
+  <svg {...base(size)} className={className}>
+    <path d="M5 12h14" />
+  </svg>
+);
+
+export const IconMap = ({ size = 16, className }: IconProps) => (
+  <svg {...base(size)} className={className}>
+    <rect x="3" y="5" width="18" height="14" rx="2" />
+    <rect x="12" y="11" width="6" height="5" rx="1" />
+  </svg>
+);

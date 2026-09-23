@@ -7,13 +7,13 @@ import type {
   FlowNode,
   FlowWebviewToHost,
 } from "../../src/flow-schema";
-import { Canvas, ContextTarget, frameAll } from "./canvas";
+import { Canvas, ContextTarget, frameAll, zoomAround } from "./canvas";
 import { buildClip, instantiate, lastClip, parseClip, writeClip } from "./clipboard";
 import { setLanguage, t, tf } from "../i18n";
-import { categoryColour, ContextMenu, MenuEntry } from "./context-menu";
+import { ContextMenu, MenuEntry } from "./context-menu";
 import { Inspector } from "./inspector";
 import { LogPanel } from "./log";
-import { layoutGraph, NODE_W, pinsOf, Point } from "./model";
+import { accentOf, layoutGraph, NODE_W, pinsOf, Point } from "./model";
 import { FLOW_STYLE } from "./styles";
 import {
   Action,
@@ -44,6 +44,7 @@ function App(): JSX.Element {
   // The right-click menu is pure UI: it never belongs in the document, so it
   // lives here rather than in the reducer.
   const [menu, setMenu] = React.useState<ContextTarget | null>(null);
+  const [minimap, setMinimap] = React.useState(true);
 
   // -- host traffic -----------------------------------------------------
 
@@ -155,6 +156,17 @@ function App(): JSX.Element {
     if (view) dispatch({ type: "setView", pan: view.pan, zoom: view.zoom });
   }, []);
 
+  // The toolbar's zoom keeps the middle of the canvas still, as the wheel keeps
+  // the point under the cursor.
+  const zoomTo = React.useCallback((next: (zoom: number) => number) => {
+    const current = stateRef.current;
+    const element = document.querySelector<SVGSVGElement>('[data-testid="flow-canvas"]');
+    const rect = element?.getBoundingClientRect();
+    const centre = { x: (rect?.width ?? 900) / 2, y: (rect?.height ?? 600) / 2 };
+    const view = zoomAround(current.graph.view, centre, next(current.graph.view.zoom));
+    dispatch({ type: "setView", pan: view.pan, zoom: view.zoom });
+  }, []);
+
   // -- keyboard and clipboard -------------------------------------------
 
   React.useEffect(() => {
@@ -244,6 +256,10 @@ function App(): JSX.Element {
         onStop={stopGraph}
         onSave={() => send({ type: "flowSave" })}
         onFrame={frame}
+        onZoom={(factor) => zoomTo((zoom) => zoom * factor)}
+        onZoomReset={() => zoomTo(() => 1)}
+        minimap={minimap}
+        onToggleMinimap={() => setMinimap((value) => !value)}
       />
 
       {state.notice && (
@@ -256,7 +272,7 @@ function App(): JSX.Element {
 
       <div className="flow-body">
         <div className="flow-main">
-          <Canvas state={state} dispatch={dispatch} onContext={setMenu} />
+          <Canvas state={state} dispatch={dispatch} onContext={setMenu} minimap={minimap} />
           {question && <QuestionCard question={question} runId={state.run.runId} />}
           <LogPanel state={state} dispatch={dispatch} />
         </div>
@@ -399,7 +415,8 @@ function canvasEntries(
       label: t(spec.title),
       hint: "",
       section: CATEGORY_LABELS[spec.category] ?? spec.category,
-      colour: categoryColour(spec.category),
+      colour: accentOf(spec),
+      glyph: spec.kind,
       run: () => dispatch({ type: "addNode", kind: spec.kind, at }),
     });
   }
@@ -479,7 +496,8 @@ function pinEntries(
         label: `${t(spec.title)} - ${pin.label || pin.name}`,
         hint: pin.type === "exec" ? "" : pin.type,
         section: CATEGORY_LABELS[spec.category] ?? spec.category,
-        colour: categoryColour(spec.category),
+        colour: accentOf(spec),
+        glyph: spec.kind,
         run: () =>
           dispatch({
             type: "addNode",

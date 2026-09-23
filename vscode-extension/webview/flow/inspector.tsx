@@ -10,6 +10,8 @@ import {
   ToolGroupView,
   wiredToolsets,
 } from "./access";
+import { GlyphBadge } from "./context-menu";
+import { accentOf } from "./model";
 import type { Action, EditorState } from "./store";
 import { defaultFor } from "./store";
 
@@ -23,6 +25,12 @@ export interface InspectorProps {
 export function Inspector(props: InspectorProps): JSX.Element {
   const { state, dispatch } = props;
   const tab = state.inspectorTab;
+  // Held here so a folded section stays folded from one node to the next.
+  const [collapsed, setCollapsed] = React.useState<Record<string, boolean>>({});
+  const onCollapse = React.useCallback(
+    (key: string, closed: boolean) => setCollapsed((value) => ({ ...value, [key]: closed })),
+    []
+  );
   return (
     <aside className="flow-inspector" data-testid="inspector">
       <div className="flow-tabs">
@@ -38,7 +46,7 @@ export function Inspector(props: InspectorProps): JSX.Element {
         ))}
       </div>
       <div className="flow-inspector-body">
-        {tab === "node" && <NodePanel {...props} />}
+        {tab === "node" && <NodePanel {...props} collapsed={collapsed} onCollapse={onCollapse} />}
         {tab === "variables" && <VariablesPanel state={state} dispatch={dispatch} />}
         {tab === "run" && <RunPanel state={state} />}
       </div>
@@ -48,7 +56,34 @@ export function Inspector(props: InspectorProps): JSX.Element {
 
 // -- the selected node ---------------------------------------------------
 
-function NodePanel({ state, dispatch, onListModels, onStoreSecret }: InspectorProps) {
+// Rarely touched, so they start folded; the header still says they are there.
+const CLOSED_BY_DEFAULT = new Set(["Limits", "Sampling"]);
+
+/** Consecutive fields that share a group, in catalog order. */
+function sectionsOf(fields: FieldSpec[]): { group: string; fields: FieldSpec[] }[] {
+  const sections: { group: string; fields: FieldSpec[] }[] = [];
+  for (const field of fields) {
+    const group = field.group ?? "";
+    const last = sections[sections.length - 1];
+    if (last && last.group === group) last.fields.push(field);
+    else sections.push({ group, fields: [field] });
+  }
+  return sections;
+}
+
+interface NodePanelProps extends InspectorProps {
+  collapsed: Record<string, boolean>;
+  onCollapse(key: string, closed: boolean): void;
+}
+
+function NodePanel({
+  state,
+  dispatch,
+  onListModels,
+  onStoreSecret,
+  collapsed,
+  onCollapse,
+}: NodePanelProps) {
   const selected = state.selection[0];
   const node = state.graph.nodes.find((item) => item.id === selected);
   const spec = node ? state.catalog?.kinds.get(node.kind) : undefined;
@@ -88,32 +123,56 @@ function NodePanel({ state, dispatch, onListModels, onStoreSecret }: InspectorPr
   const nodeIssues = state.issues.filter((issue) => issue.node_id === node.id);
   // The switches read as one control, so they render together where the first is.
   const firstSwitch = spec.fields.find((field) => field.kind === "permission");
+  const accent = accentOf(spec);
+
+  const renderField = (field: FieldSpec) => {
+    if (field.kind === "permission") {
+      return field === firstSwitch ? (
+        <PermissionGroup key="permissions" node={node} state={state} dispatch={dispatch} />
+      ) : null;
+    }
+    return (
+      <Field
+        key={`${node.id}-${field.name}`}
+        field={field}
+        node={node}
+        state={state}
+        dispatch={dispatch}
+        onListModels={onListModels}
+        onStoreSecret={onStoreSecret}
+      />
+    );
+  };
 
   return (
     <>
-      <div className="flow-section-title">
-        <span>{spec.title}</span>
+      {/* The title leads the markup so it reads first; the glyph is moved in front by CSS. */}
+      <div className="flow-section-title flow-node-card" style={{ borderLeftColor: accent }}>
+        <span className="title">{spec.title}</span>
+        <GlyphBadge kind={spec.kind} colour={accent} size={24} />
         <span className="line" />
-        <span>{node.id}</span>
+        <span className="id">{node.id}</span>
       </div>
       <p className="flow-hint">{t(spec.description)}</p>
 
-      {spec.fields.map((field) => {
-        if (field.kind === "permission") {
-          return field === firstSwitch ? (
-            <PermissionGroup key="permissions" node={node} state={state} dispatch={dispatch} />
-          ) : null;
-        }
+      {sectionsOf(spec.fields).map(({ group, fields }) => {
+        if (!group) return <React.Fragment key="fields">{fields.map(renderField)}</React.Fragment>;
+        const key = `${spec.kind}:${group}`;
+        const closed = collapsed[key] ?? CLOSED_BY_DEFAULT.has(group);
         return (
-          <Field
-            key={`${node.id}-${field.name}`}
-            field={field}
-            node={node}
-            state={state}
-            dispatch={dispatch}
-            onListModels={onListModels}
-            onStoreSecret={onStoreSecret}
-          />
+          <section key={group} className="flow-group" data-testid={`section-${group}`}>
+            <button
+              className="flow-group-head"
+              aria-expanded={!closed}
+              data-testid={`section-toggle-${group}`}
+              onClick={() => onCollapse(key, !closed)}
+            >
+              <span className="caret">{closed ? "▸" : "▾"}</span>
+              <span>{t(group)}</span>
+              <span className="line" />
+            </button>
+            {!closed && <div className="flow-group-body">{fields.map(renderField)}</div>}
+          </section>
         );
       })}
 
@@ -492,26 +551,13 @@ function ToolPicker({
   state,
   dispatch,
 }: AccessProps & { field: FieldSpec }): JSX.Element {
-  const [query, setQuery] = React.useState("");
-  const [open, setOpen] = React.useState<Record<string, boolean>>({});
+  // A block list is usually empty, so its long checklist waits to be asked for.
+  const compact = field.name === "blocked_tools";
+  const [listOpen, setListOpen] = React.useState(!compact);
   const picked = toolNames(node, field.name);
-  const pickedSet = new Set(picked);
   const known = new Set((state.catalog?.raw.tools ?? []).map((tool) => tool.name));
-  const groups = groupTools(state.catalog, query);
-  const searching = query.trim() !== "";
-
   const save = (names: string[]) =>
     dispatch({ type: "setNodeData", id: node.id, key: field.name, value: names });
-  const toggle = (name: string, on: boolean) =>
-    save(on ? [...picked, name] : picked.filter((item) => item !== name));
-  const setGroup = (group: ToolGroupView, on: boolean) => {
-    const names = group.tools.map((tool) => tool.name);
-    save(
-      on
-        ? [...picked, ...names.filter((name) => !pickedSet.has(name))]
-        : picked.filter((name) => !names.includes(name))
-    );
-  };
 
   return (
     <div className="flow-tool-picker" data-testid={`picker-${field.name}`}>
@@ -527,13 +573,57 @@ function ToolPicker({
             <button
               className="flow-chip-x"
               title={t("Remove")}
-              onClick={() => toggle(name, false)}
+              onClick={() => save(picked.filter((item) => item !== name))}
             >
               ×
             </button>
           </span>
         ))}
       </div>
+      {compact && (
+        <button
+          className="flow-link flow-picker-toggle"
+          data-testid={`picker-toggle-${field.name}`}
+          onClick={() => setListOpen(!listOpen)}
+        >
+          {listOpen ? t("Done") : picked.length > 0 ? t("Change…") : t("Choose tools…")}
+        </button>
+      )}
+      {listOpen && <ToolChecklist field={field} picked={picked} state={state} onSave={save} />}
+    </div>
+  );
+}
+
+function ToolChecklist({
+  field,
+  picked,
+  state,
+  onSave,
+}: {
+  field: FieldSpec;
+  picked: string[];
+  state: EditorState;
+  onSave(names: string[]): void;
+}): JSX.Element {
+  const [query, setQuery] = React.useState("");
+  const [open, setOpen] = React.useState<Record<string, boolean>>({});
+  const pickedSet = new Set(picked);
+  const groups = groupTools(state.catalog, query);
+  const searching = query.trim() !== "";
+
+  const toggle = (name: string, on: boolean) =>
+    onSave(on ? [...picked, name] : picked.filter((item) => item !== name));
+  const setGroup = (group: ToolGroupView, on: boolean) => {
+    const names = group.tools.map((tool) => tool.name);
+    onSave(
+      on
+        ? [...picked, ...names.filter((name) => !pickedSet.has(name))]
+        : picked.filter((name) => !names.includes(name))
+    );
+  };
+
+  return (
+    <>
       <input
         className="flow-tool-search"
         data-testid={`search-${field.name}`}
@@ -548,7 +638,11 @@ function ToolPicker({
           const expanded = searching || Boolean(open[group.name]);
           const all = count === group.tools.length;
           return (
-            <div key={group.name} className="flow-tool-group" data-testid={`group-${field.name}-${group.name}`}>
+            <div
+              key={group.name}
+              className="flow-tool-group"
+              data-testid={`group-${field.name}-${group.name}`}
+            >
               <div className="flow-tool-group-head">
                 <button
                   className="flow-tool-group-toggle"
@@ -590,7 +684,7 @@ function ToolPicker({
           );
         })}
       </div>
-    </div>
+    </>
   );
 }
 
@@ -801,6 +895,11 @@ function RunPanel({ state }: { state: EditorState }) {
               <div style={{ flex: "1 1 auto", minWidth: 0 }}>
                 <div>
                   {agent.name} · {agent.profession}
+                  {agent.tools !== undefined && (
+                    <span className="flow-tag" style={{ marginLeft: 6 }}>
+                      {tf("{0} tools", agent.tools)}
+                    </span>
+                  )}
                 </div>
                 {agent.detail && <div className="flow-hint">{agent.detail}</div>}
               </div>

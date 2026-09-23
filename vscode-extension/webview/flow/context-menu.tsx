@@ -1,7 +1,7 @@
 import * as React from "react";
 
 import { t } from "../i18n";
-import { CATEGORY_COLORS } from "./model";
+import { glyphFor } from "./glyphs";
 
 /** One thing the menu can do, with the section it is filed under. */
 export interface MenuEntry {
@@ -10,7 +10,30 @@ export interface MenuEntry {
   hint: string;
   section: string;
   colour: string;
+  /** A node kind whose glyph the row shows instead of a plain swatch. */
+  glyph?: string;
   run(): void;
+}
+
+/** A node kind's glyph on its tint, the way the node's own header shows it. */
+export function GlyphBadge({
+  kind,
+  colour,
+  size = 18,
+}: {
+  kind: string;
+  colour: string;
+  size?: number;
+}): JSX.Element {
+  const glyph = glyphFor(kind);
+  return (
+    <span className="flow-glyph-badge" style={{ background: colour, width: size, height: size }}>
+      <svg viewBox="0 0 16 16" width={size - 6} height={size - 6} aria-hidden="true">
+        {glyph.d && <path className="stroke" d={glyph.d} />}
+        {glyph.fill && <path className="fill" d={glyph.fill} />}
+      </svg>
+    </span>
+  );
 }
 
 export interface ContextMenuProps {
@@ -143,7 +166,11 @@ export function ContextMenu({
                   onMouseEnter={() => setCursor(ordered.indexOf(entry))}
                   onClick={() => choose(entry)}
                 >
-                  <span className="swatch" style={{ background: entry.colour }} />
+                  {entry.glyph ? (
+                    <GlyphBadge kind={entry.glyph} colour={entry.colour} />
+                  ) : (
+                    <span className="swatch" style={{ background: entry.colour }} />
+                  )}
                   <span className="label">{entry.label}</span>
                   {entry.hint && <span className="hint">{entry.hint}</span>}
                 </button>
@@ -165,8 +192,4 @@ export function filterEntries(entries: MenuEntry[], query: string): MenuEntry[] 
     const haystack = `${entry.label} ${entry.hint} ${entry.section}`.toLowerCase();
     return words.every((word) => haystack.includes(word));
   });
-}
-
-export function categoryColour(category: string): string {
-  return CATEGORY_COLORS[category] ?? CATEGORY_COLORS.flow;
 }

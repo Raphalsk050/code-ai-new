@@ -61,6 +61,8 @@ export interface AgentRun {
   steps: number;
   /** When it was hired, for the elapsed clock on the node. */
   since: number;
+  /** How many tools it was actually given, when the backend said. */
+  tools?: number;
 }
 
 export interface RunState {
@@ -799,6 +801,7 @@ function applyGraphEvent(
                 detail: "",
                 steps: 0,
                 since: Date.now(),
+                tools: typeof payload.tool_count === "number" ? payload.tool_count : undefined,
               },
             },
           },

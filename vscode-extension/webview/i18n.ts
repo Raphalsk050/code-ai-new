@@ -242,6 +242,26 @@ const PT: Record<string, string> = {
   "none picked": "nenhuma",
   "talk only": "só conversa",
 
+  // -- toolbar, inspector sections, minimap -------------------------------
+  "Unsaved changes": "Alterações não salvas",
+  "Zoom in": "Aproximar",
+  "Zoom out": "Afastar",
+  "Back to 100%": "Voltar a 100%",
+  "Minimap: shows when part of the graph is off screen":
+    "Minimapa: aparece quando parte do grafo está fora da tela",
+  "ready · {0} warning(s)": "pronto · {0} aviso(s)",
+  completed: "concluída",
+  failed: "falhou",
+  exhausted: "no limite",
+  Who: "Quem",
+  Access: "Acesso",
+  Limits: "Limites",
+  Endpoint: "Endpoint",
+  Sampling: "Amostragem",
+  Done: "Pronto",
+  "Change…": "Alterar…",
+  "Choose tools…": "Escolher ferramentas…",
+
   // -- the rest of both panels --------------------------------------------
   " — type the name with / to force it.": " — digite o nome com / para forçar.",
   "(session default)": "(padrão da sessão)",

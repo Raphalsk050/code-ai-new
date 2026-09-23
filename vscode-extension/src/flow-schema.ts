@@ -69,6 +69,8 @@ export interface FieldSpec {
   default: unknown;
   options: string[];
   help: string;
+  /** The inspector section it sits in; empty when the kind is not sectioned. */
+  group?: string;
 }
 
 export interface NodeKindSpec {

@@ -1311,4 +1311,78 @@ export const tests = {
     await ui.page.click('[data-testid="granted-toggle"]');
     await ui.shot("42-agent-with-wired-tools");
   },
+  // -------------------------------------------------------------------
+  "the toolbar zooms around the middle and resets to 100%": async (ui, assert) => {
+    await ui.page.setViewportSize({ width: 1400, height: 950 });
+    await boot(ui);
+
+    await ui.page.click('[data-testid="zoom-in"]');
+    let sent = await lastGraph(ui);
+    assert(Math.abs(sent.view.zoom - 0.96) < 0.001, `zoom in gave ${sent.view.zoom}`);
+    await ui.page.click('[data-testid="zoom-reset"]');
+    sent = await lastGraph(ui);
+    assert(sent.view.zoom === 1, `reset gave ${sent.view.zoom}`);
+    const label = await ui.page.locator('[data-testid="zoom-reset"]').textContent();
+    assert(label === "100%", `the zoom label reads ${label}`);
+    await ui.shot("43-toolbar");
+  },
+
+  "the minimap centres the view where it is clicked": async (ui, assert) => {
+    await ui.page.setViewportSize({ width: 1400, height: 950 });
+    await boot(ui);
+    // The map stays away while the whole graph fits; zoom in until it does not.
+    assert(
+      (await ui.page.locator('[data-testid="minimap"]').count()) === 0,
+      "the minimap shows although everything is on screen"
+    );
+    await ui.page.click('[data-testid="zoom-in"]');
+    await ui.page.click('[data-testid="zoom-in"]');
+    await ui.page.waitForSelector('[data-testid="minimap"]');
+    const before = (await lastGraph(ui)).view.pan;
+    const box = await ui.page.locator('[data-testid="minimap"]').boundingBox();
+    await ui.page.mouse.click(box.x + box.width - 12, box.y + box.height - 12);
+
+    const sent = await lastGraph(ui);
+    assert(
+      sent.view.pan[0] !== before[0] || sent.view.pan[1] !== before[1],
+      `the view did not move: ${JSON.stringify(sent.view.pan)}`
+    );
+    await ui.shot("45-minimap");
+    await ui.page.click('[data-testid="minimap-toggle"]');
+    assert(
+      (await ui.page.locator('[data-testid="minimap"]').count()) === 0,
+      "the minimap stayed after being switched off"
+    );
+  },
+
+  "the inspector folds an agent's limits until asked": async (ui, assert) => {
+    await ui.page.setViewportSize({ width: 1400, height: 950 });
+    await boot(ui);
+    await ui.page.click('[data-testid="node-n3"] .flow-node-box');
+
+    assert(
+      (await ui.page.locator('[data-testid="field-max_steps"]').count()) === 0,
+      "the limits are open from the start"
+    );
+    await ui.page.click('[data-testid="section-toggle-Limits"]');
+    await ui.page.fill('[data-testid="field-max_steps"]', "12");
+    const sent = await lastGraph(ui);
+    const agent = sent.nodes.find((item) => item.id === "n3");
+    assert(agent.data.max_steps === 12, `max_steps is ${agent.data.max_steps}`);
+
+    // Blocking a tool starts from a short button, not a 50-row checklist.
+    assert(
+      (await ui.page.locator('[data-testid="search-blocked_tools"]').count()) === 0,
+      "the block list opened on its own"
+    );
+    await ui.page.click('[data-testid="picker-toggle-blocked_tools"]');
+    await ui.page.fill('[data-testid="search-blocked_tools"]', "web_search");
+    await ui.page.check('[data-testid="tool-blocked_tools-web_search"]');
+    const blocked = (await lastGraph(ui)).nodes.find((item) => item.id === "n3").data.blocked_tools;
+    assert(
+      JSON.stringify(blocked) === '["web_search"]',
+      `blocked_tools is ${JSON.stringify(blocked)}`
+    );
+    await ui.shot("44-inspector-sections");
+  },
 };

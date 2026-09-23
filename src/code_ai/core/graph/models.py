@@ -18,6 +18,7 @@ Pin conventions worth knowing before reading the rest:
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -180,6 +181,8 @@ class FieldSpec:
     default: Any = None
     options: tuple[str, ...] = ()
     help: str = ""
+    # The inspector section it sits in; empty for kinds with too few to group.
+    group: str = ""
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -189,6 +192,7 @@ class FieldSpec:
             "default": self.default,
             "options": list(self.options),
             "help": self.help,
+            "group": self.group,
         }
 
 
@@ -267,6 +271,10 @@ _BLOCKED_TOOLS = FieldSpec(
 )
 
 
+def _grouped(group: str, *fields: FieldSpec) -> tuple[FieldSpec, ...]:
+    return tuple(dataclasses.replace(item, group=group) for item in fields)
+
+
 _KIND_LIST: tuple[NodeKindSpec, ...] = (
     NodeKindSpec(
         kind=NodeKind.START,
@@ -296,35 +304,41 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
         category="data",
         pins=(PinSpec(name="model", type=PinType.MODEL, direction="out"),),
         fields=(
-            FieldSpec(
-                name="api_mode",
-                kind="select",
-                label="API mode",
-                default="",
-                options=("", "responses", "completions", "ollama"),
-                help="Empty follows the session setting.",
-            ),
-            FieldSpec(
-                name="base_url",
-                kind="text",
-                label="Base URL",
-                default="",
-                help="Empty follows the session setting.",
-            ),
-            FieldSpec(
-                name="api_key_ref",
-                kind="text",
-                label="API key",
-                default="session",
-                help=(
-                    "session (use the session key), env:NAME, or secret:NAME. "
-                    "A literal key is refused - this file goes into git."
+            *_grouped(
+                "Endpoint",
+                FieldSpec(
+                    name="api_mode",
+                    kind="select",
+                    label="API mode",
+                    default="",
+                    options=("", "responses", "completions", "ollama"),
+                    help="Empty follows the session setting.",
                 ),
+                FieldSpec(
+                    name="base_url",
+                    kind="text",
+                    label="Base URL",
+                    default="",
+                    help="Empty follows the session setting.",
+                ),
+                FieldSpec(
+                    name="api_key_ref",
+                    kind="text",
+                    label="API key",
+                    default="session",
+                    help=(
+                        "session (use the session key), env:NAME, or secret:NAME. "
+                        "A literal key is refused - this file goes into git."
+                    ),
+                ),
+                FieldSpec(name="model", kind="model", label="Model", default=""),
             ),
-            FieldSpec(name="model", kind="model", label="Model", default=""),
-            FieldSpec(name="temperature", kind="number", label="Temperature", default=None),
-            FieldSpec(name="top_p", kind="number", label="Top P", default=None),
-            FieldSpec(name="top_k", kind="number", label="Top K", default=None),
+            *_grouped(
+                "Sampling",
+                FieldSpec(name="temperature", kind="number", label="Temperature", default=None),
+                FieldSpec(name="top_p", kind="number", label="Top P", default=None),
+                FieldSpec(name="top_k", kind="number", label="Top K", default=None),
+            ),
         ),
     ),
     NodeKindSpec(
@@ -346,49 +360,54 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
             PinSpec(name="report", type=PinType.STRING, direction="out"),
         ),
         fields=(
-            FieldSpec(
-                name="name",
-                kind="text",
-                label="Name",
-                default="",
-                help="What to call it on the node and in the log. Empty uses the profession.",
-            ),
-            FieldSpec(
-                name="profession",
-                kind="profession",
-                label="Profession",
-                default="",
-                help=(
-                    "A ready-made role and toolbox. Custom means you write the role "
-                    "under Instructions. Ignored while a Profession node is wired in."
+            *_grouped(
+                "Who",
+                FieldSpec(
+                    name="name",
+                    kind="text",
+                    label="Name",
+                    default="",
+                    help="What to call it on the node and in the log. Empty uses the profession.",
+                ),
+                FieldSpec(
+                    name="profession",
+                    kind="profession",
+                    label="Profession",
+                    default="",
+                    help=(
+                        "A ready-made role and toolbox. Custom means you write the role "
+                        "under Instructions. Ignored while a Profession node is wired in."
+                    ),
+                ),
+                FieldSpec(
+                    name="role_override",
+                    kind="textarea",
+                    label="Instructions",
+                    default="",
+                    help=(
+                        "Custom: who this agent is and how it works. With a profession: "
+                        "added to its role."
+                    ),
                 ),
             ),
-            FieldSpec(name="task", kind="textarea", label="Task", default=""),
-            FieldSpec(
-                name="role_override",
-                kind="textarea",
-                label="Instructions",
-                default="",
-                help=(
-                    "Custom: who this agent is and how it works. With a profession: "
-                    "added to its role."
+            *_grouped("Task", FieldSpec(name="task", kind="textarea", label="Task", default="")),
+            *_grouped("Access", *_permission_fields(inherit=True), _BLOCKED_TOOLS),
+            *_grouped(
+                "Limits",
+                FieldSpec(
+                    name="max_steps",
+                    kind="number",
+                    label="Max steps",
+                    default=0,
+                    help="0 keeps the profession's budget.",
                 ),
-            ),
-            *_permission_fields(inherit=True),
-            _BLOCKED_TOOLS,
-            FieldSpec(
-                name="max_steps",
-                kind="number",
-                label="Max steps",
-                default=0,
-                help="0 keeps the profession's budget.",
-            ),
-            FieldSpec(
-                name="timeout_s",
-                kind="number",
-                label="Timeout (s)",
-                default=0,
-                help="0 keeps the profession's budget.",
+                FieldSpec(
+                    name="timeout_s",
+                    kind="number",
+                    label="Timeout (s)",
+                    default=0,
+                    help="0 keeps the profession's budget.",
+                ),
             ),
         ),
     ),
@@ -403,49 +422,54 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
         category="agent",
         pins=(PinSpec(name="profession", type=PinType.PROFESSION, direction="out"),),
         fields=(
-            FieldSpec(
-                name="name",
-                kind="text",
-                label="Name",
-                default="",
-                help="What to call it. Shows on the node and in the run log.",
-            ),
-            FieldSpec(
-                name="role",
-                kind="textarea",
-                label="Role",
-                default="",
-                help=(
-                    "Who this agent is and how it works - the same voice as the "
-                    "built-in professions. It is the whole job description."
+            *_grouped(
+                "Who",
+                FieldSpec(
+                    name="name",
+                    kind="text",
+                    label="Name",
+                    default="",
+                    help="What to call it. Shows on the node and in the run log.",
+                ),
+                FieldSpec(
+                    name="role",
+                    kind="textarea",
+                    label="Role",
+                    default="",
+                    help=(
+                        "Who this agent is and how it works - the same voice as the "
+                        "built-in professions. It is the whole job description."
+                    ),
+                ),
+                FieldSpec(
+                    name="framing",
+                    kind="bool",
+                    label="Add workspace framing",
+                    default=False,
+                    help=(
+                        "Off, the role text is the entire system prompt. On, the usual "
+                        "sub-agent preamble is added: workspace path, rules, report-back "
+                        "instructions. Leave it off for agents that talk to each other."
+                    ),
                 ),
             ),
-            *_permission_fields(inherit=False),
-            _BLOCKED_TOOLS,
-            FieldSpec(
-                name="framing",
-                kind="bool",
-                label="Add workspace framing",
-                default=False,
-                help=(
-                    "Off, the role text is the entire system prompt. On, the usual "
-                    "sub-agent preamble is added: workspace path, rules, report-back "
-                    "instructions. Leave it off for agents that talk to each other."
+            *_grouped("Access", *_permission_fields(inherit=False), _BLOCKED_TOOLS),
+            *_grouped(
+                "Limits",
+                FieldSpec(
+                    name="max_steps",
+                    kind="number",
+                    label="Max steps",
+                    default=40,
+                    help="How many tool round-trips it gets before it must report.",
                 ),
-            ),
-            FieldSpec(
-                name="max_steps",
-                kind="number",
-                label="Max steps",
-                default=40,
-                help="How many tool round-trips it gets before it must report.",
-            ),
-            FieldSpec(
-                name="timeout_s",
-                kind="number",
-                label="Timeout (s)",
-                default=0,
-                help="0 keeps the worker budget from settings.",
+                FieldSpec(
+                    name="timeout_s",
+                    kind="number",
+                    label="Timeout (s)",
+                    default=0,
+                    help="0 keeps the worker budget from settings.",
+                ),
             ),
         ),
     ),

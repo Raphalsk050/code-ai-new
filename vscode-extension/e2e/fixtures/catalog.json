@@ -85,7 +85,8 @@
             "completions",
             "ollama"
           ],
-          "help": "Empty follows the session setting."
+          "help": "Empty follows the session setting.",
+          "group": "Endpoint"
         },
         {
           "name": "base_url",
@@ -93,7 +94,8 @@
           "label": "Base URL",
           "default": "",
           "options": [],
-          "help": "Empty follows the session setting."
+          "help": "Empty follows the session setting.",
+          "group": "Endpoint"
         },
         {
           "name": "api_key_ref",
@@ -101,7 +103,8 @@
           "label": "API key",
           "default": "session",
           "options": [],
-          "help": "session (use the session key), env:NAME, or secret:NAME. A literal key is refused - this file goes into git."
+          "help": "session (use the session key), env:NAME, or secret:NAME. A literal key is refused - this file goes into git.",
+          "group": "Endpoint"
         },
         {
           "name": "model",
@@ -109,7 +112,8 @@
           "label": "Model",
           "default": "",
           "options": [],
-          "help": ""
+          "help": "",
+          "group": "Endpoint"
         },
         {
           "name": "temperature",
@@ -117,7 +121,8 @@
           "label": "Temperature",
           "default": null,
           "options": [],
-          "help": ""
+          "help": "",
+          "group": "Sampling"
         },
         {
           "name": "top_p",
@@ -125,7 +130,8 @@
           "label": "Top P",
           "default": null,
           "options": [],
-          "help": ""
+          "help": "",
+          "group": "Sampling"
         },
         {
           "name": "top_k",
@@ -133,7 +139,8 @@
           "label": "Top K",
           "default": null,
           "options": [],
-          "help": ""
+          "help": "",
+          "group": "Sampling"
         }
       ]
     },
@@ -223,7 +230,8 @@
           "label": "Name",
           "default": "",
           "options": [],
-          "help": "What to call it on the node and in the log. Empty uses the profession."
+          "help": "What to call it on the node and in the log. Empty uses the profession.",
+          "group": "Who"
         },
         {
           "name": "profession",
@@ -231,15 +239,8 @@
           "label": "Profession",
           "default": "",
           "options": [],
-          "help": "A ready-made role and toolbox. Custom means you write the role under Instructions. Ignored while a Profession node is wired in."
-        },
-        {
-          "name": "task",
-          "kind": "textarea",
-          "label": "Task",
-          "default": "",
-          "options": [],
-          "help": ""
+          "help": "A ready-made role and toolbox. Custom means you write the role under Instructions. Ignored while a Profession node is wired in.",
+          "group": "Who"
         },
         {
           "name": "role_override",
@@ -247,7 +248,17 @@
           "label": "Instructions",
           "default": "",
           "options": [],
-          "help": "Custom: who this agent is and how it works. With a profession: added to its role."
+          "help": "Custom: who this agent is and how it works. With a profession: added to its role.",
+          "group": "Who"
+        },
+        {
+          "name": "task",
+          "kind": "textarea",
+          "label": "Task",
+          "default": "",
+          "options": [],
+          "help": "",
+          "group": "Task"
         },
         {
           "name": "can_read",
@@ -255,7 +266,8 @@
           "label": "Read files",
           "default": null,
           "options": [],
-          "help": ""
+          "help": "",
+          "group": "Access"
         },
         {
           "name": "can_write",
@@ -263,7 +275,8 @@
           "label": "Edit files",
           "default": null,
           "options": [],
-          "help": ""
+          "help": "",
+          "group": "Access"
         },
         {
           "name": "can_run",
@@ -271,7 +284,8 @@
           "label": "Run commands",
           "default": null,
           "options": [],
-          "help": ""
+          "help": "",
+          "group": "Access"
         },
         {
           "name": "can_browse",
@@ -279,7 +293,8 @@
           "label": "Use the web",
           "default": null,
           "options": [],
-          "help": ""
+          "help": "",
+          "group": "Access"
         },
         {
           "name": "can_review",
@@ -287,7 +302,8 @@
           "label": "Run reviews",
           "default": null,
           "options": [],
-          "help": ""
+          "help": "",
+          "group": "Access"
         },
         {
           "name": "blocked_tools",
@@ -295,7 +311,8 @@
           "label": "Never use",
           "default": null,
           "options": [],
-          "help": "Taken away whatever the switches or the wired Tools nodes allow."
+          "help": "Taken away whatever the switches or the wired Tools nodes allow.",
+          "group": "Access"
         },
         {
           "name": "max_steps",
@@ -303,7 +320,8 @@
           "label": "Max steps",
           "default": 0,
           "options": [],
-          "help": "0 keeps the profession's budget."
+          "help": "0 keeps the profession's budget.",
+          "group": "Limits"
         },
         {
           "name": "timeout_s",
@@ -311,7 +329,8 @@
           "label": "Timeout (s)",
           "default": 0,
           "options": [],
-          "help": "0 keeps the profession's budget."
+          "help": "0 keeps the profession's budget.",
+          "group": "Limits"
         }
       ]
     },
@@ -341,7 +360,8 @@
           "label": "Name",
           "default": "",
           "options": [],
-          "help": "What to call it. Shows on the node and in the run log."
+          "help": "What to call it. Shows on the node and in the run log.",
+          "group": "Who"
         },
         {
           "name": "role",
@@ -349,55 +369,8 @@
           "label": "Role",
           "default": "",
           "options": [],
-          "help": "Who this agent is and how it works - the same voice as the built-in professions. It is the whole job description."
-        },
-        {
-          "name": "can_read",
-          "kind": "permission",
-          "label": "Read files",
-          "default": true,
-          "options": [],
-          "help": ""
-        },
-        {
-          "name": "can_write",
-          "kind": "permission",
-          "label": "Edit files",
-          "default": false,
-          "options": [],
-          "help": ""
-        },
-        {
-          "name": "can_run",
-          "kind": "permission",
-          "label": "Run commands",
-          "default": false,
-          "options": [],
-          "help": ""
-        },
-        {
-          "name": "can_browse",
-          "kind": "permission",
-          "label": "Use the web",
-          "default": false,
-          "options": [],
-          "help": ""
-        },
-        {
-          "name": "can_review",
-          "kind": "permission",
-          "label": "Run reviews",
-          "default": false,
-          "options": [],
-          "help": ""
-        },
-        {
-          "name": "blocked_tools",
-          "kind": "tools",
-          "label": "Never use",
-          "default": null,
-          "options": [],
-          "help": "Taken away whatever the switches or the wired Tools nodes allow."
+          "help": "Who this agent is and how it works - the same voice as the built-in professions. It is the whole job description.",
+          "group": "Who"
         },
         {
           "name": "framing",
@@ -405,7 +378,62 @@
           "label": "Add workspace framing",
           "default": false,
           "options": [],
-          "help": "Off, the role text is the entire system prompt. On, the usual sub-agent preamble is added: workspace path, rules, report-back instructions. Leave it off for agents that talk to each other."
+          "help": "Off, the role text is the entire system prompt. On, the usual sub-agent preamble is added: workspace path, rules, report-back instructions. Leave it off for agents that talk to each other.",
+          "group": "Who"
+        },
+        {
+          "name": "can_read",
+          "kind": "permission",
+          "label": "Read files",
+          "default": true,
+          "options": [],
+          "help": "",
+          "group": "Access"
+        },
+        {
+          "name": "can_write",
+          "kind": "permission",
+          "label": "Edit files",
+          "default": false,
+          "options": [],
+          "help": "",
+          "group": "Access"
+        },
+        {
+          "name": "can_run",
+          "kind": "permission",
+          "label": "Run commands",
+          "default": false,
+          "options": [],
+          "help": "",
+          "group": "Access"
+        },
+        {
+          "name": "can_browse",
+          "kind": "permission",
+          "label": "Use the web",
+          "default": false,
+          "options": [],
+          "help": "",
+          "group": "Access"
+        },
+        {
+          "name": "can_review",
+          "kind": "permission",
+          "label": "Run reviews",
+          "default": false,
+          "options": [],
+          "help": "",
+          "group": "Access"
+        },
+        {
+          "name": "blocked_tools",
+          "kind": "tools",
+          "label": "Never use",
+          "default": null,
+          "options": [],
+          "help": "Taken away whatever the switches or the wired Tools nodes allow.",
+          "group": "Access"
         },
         {
           "name": "max_steps",
@@ -413,7 +441,8 @@
           "label": "Max steps",
           "default": 40,
           "options": [],
-          "help": "How many tool round-trips it gets before it must report."
+          "help": "How many tool round-trips it gets before it must report.",
+          "group": "Limits"
         },
         {
           "name": "timeout_s",
@@ -421,7 +450,8 @@
           "label": "Timeout (s)",
           "default": 0,
           "options": [],
-          "help": "0 keeps the worker budget from settings."
+          "help": "0 keeps the worker budget from settings.",
+          "group": "Limits"
         }
       ]
     },
@@ -451,7 +481,8 @@
           "label": "Name",
           "default": "",
           "options": [],
-          "help": "Shows on the node, e.g. 'read-only' or 'git'."
+          "help": "Shows on the node, e.g. 'read-only' or 'git'.",
+          "group": ""
         },
         {
           "name": "tools",
@@ -459,7 +490,8 @@
           "label": "Tools",
           "default": null,
           "options": [],
-          "help": ""
+          "help": "",
+          "group": ""
         }
       ]
     },
@@ -583,7 +615,8 @@
             "bool",
             "judge"
           ],
-          "help": ""
+          "help": "",
+          "group": ""
         },
         {
           "name": "condition",
@@ -591,7 +624,8 @@
           "label": "Condition",
           "default": false,
           "options": [],
-          "help": ""
+          "help": "",
+          "group": ""
         },
         {
           "name": "prompt",
@@ -599,7 +633,8 @@
           "label": "Question",
           "default": "",
           "options": [],
-          "help": "Answerable with yes or no."
+          "help": "Answerable with yes or no.",
+          "group": ""
         }
       ]
     },
@@ -703,7 +738,8 @@
             "while",
             "foreach"
           ],
-          "help": "foreach walks one line of `items` per lap."
+          "help": "foreach walks one line of `items` per lap.",
+          "group": ""
         },
         {
           "name": "count",
@@ -711,7 +747,8 @@
           "label": "Count",
           "default": 3,
           "options": [],
-          "help": ""
+          "help": "",
+          "group": ""
         },
         {
           "name": "max_iterations",
@@ -719,7 +756,8 @@
           "label": "Max iterations",
           "default": 0,
           "options": [],
-          "help": "0 uses the configured ceiling."
+          "help": "0 uses the configured ceiling.",
+          "group": ""
         }
       ]
     },
@@ -779,7 +817,8 @@
           "label": "Title",
           "default": "",
           "options": [],
-          "help": ""
+          "help": "",
+          "group": ""
         },
         {
           "name": "prompt",
@@ -787,7 +826,8 @@
           "label": "Question",
           "default": "",
           "options": [],
-          "help": ""
+          "help": "",
+          "group": ""
         }
       ]
     },
@@ -837,7 +877,8 @@
           "label": "Variable",
           "default": "",
           "options": [],
-          "help": ""
+          "help": "",
+          "group": ""
         },
         {
           "name": "value",
@@ -845,7 +886,8 @@
           "label": "Value",
           "default": "",
           "options": [],
-          "help": ""
+          "help": "",
+          "group": ""
         },
         {
           "name": "mode",
@@ -856,7 +898,8 @@
             "set",
             "append"
           ],
-          "help": "append joins onto what is already there, separated by a blank line - how a transcript grows across a loop."
+          "help": "append joins onto what is already there, separated by a blank line - how a transcript grows across a loop.",
+          "group": ""
         },
         {
           "name": "prefix",
@@ -864,7 +907,8 @@
           "label": "Prefix",
           "default": "",
           "options": [],
-          "help": "Put in front of the appended text, e.g. a speaker's name."
+          "help": "Put in front of the appended text, e.g. a speaker's name.",
+          "group": ""
         }
       ]
     },
@@ -894,7 +938,8 @@
           "label": "Variable",
           "default": "",
           "options": [],
-          "help": ""
+          "help": "",
+          "group": ""
         }
       ]
     },
@@ -944,7 +989,8 @@
           "label": "Label",
           "default": "",
           "options": [],
-          "help": ""
+          "help": "",
+          "group": ""
         },
         {
           "name": "value",
@@ -952,7 +998,8 @@
           "label": "Value",
           "default": "",
           "options": [],
-          "help": ""
+          "help": "",
+          "group": ""
         }
       ]
     }

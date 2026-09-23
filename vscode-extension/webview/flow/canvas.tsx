@@ -25,8 +25,25 @@ import { issuesByNode } from "./store";
 // How long an edge stays lit after the flow walked it. The dot is a hint about
 // where the run is, not a progress bar, so it fades on its own.
 const EDGE_GLOW_MS = 2600;
-const MIN_ZOOM = 0.25;
-const MAX_ZOOM = 2.5;
+export const MIN_ZOOM = 0.25;
+export const MAX_ZOOM = 2.5;
+
+/** The view after zooming to `next`, keeping `point` (screen space) where it is. */
+export function zoomAround(
+  view: { pan: [number, number]; zoom: number },
+  point: Point,
+  next: number
+): { pan: [number, number]; zoom: number } {
+  const zoom = clamp(next, MIN_ZOOM, MAX_ZOOM);
+  const { pan } = view;
+  return {
+    zoom,
+    pan: [
+      point.x - ((point.x - pan[0]) / view.zoom) * zoom,
+      point.y - ((point.y - pan[1]) / view.zoom) * zoom,
+    ],
+  };
+}
 
 interface DragState {
   kind: "node" | "pan" | "marquee" | "wire";
@@ -54,9 +71,10 @@ export interface CanvasProps {
   state: EditorState;
   dispatch(action: Action): void;
   onContext(target: ContextTarget): void;
+  minimap: boolean;
 }
 
-export function Canvas({ state, dispatch, onContext }: CanvasProps): JSX.Element {
+export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JSX.Element {
   const svgRef = React.useRef<SVGSVGElement | null>(null);
   const [drag, setDrag] = React.useState<DragState | null>(null);
   const [size, setSize] = React.useState({ width: 900, height: 600 });
@@ -95,7 +113,9 @@ export function Canvas({ state, dispatch, onContext }: CanvasProps): JSX.Element
   const problems = React.useMemo(() => issuesByNode(state.issues), [state.issues]);
   const chips = React.useMemo(() => {
     const byNode = new Map<string, ReturnType<typeof chipsFor>>();
-    for (const node of state.graph.nodes) byNode.set(node.id, chipsFor(catalog, state.graph, node));
+    for (const node of state.graph.nodes) {
+      byNode.set(node.id, chipsFor(catalog, state.graph, node));
+    }
     return byNode;
   }, [state.graph, catalog]);
   const connected = React.useMemo(() => {
@@ -272,14 +292,10 @@ export function Canvas({ state, dispatch, onContext }: CanvasProps): JSX.Element
     const px = event.clientX - (rect?.left ?? 0);
     const py = event.clientY - (rect?.top ?? 0);
     const factor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
-    const next = clamp(zoom * factor, MIN_ZOOM, MAX_ZOOM);
     // Keep the point under the cursor fixed; zooming to the corner is the
     // fastest way to lose a graph.
-    dispatch({
-      type: "setView",
-      zoom: next,
-      pan: [px - ((px - pan[0]) / zoom) * next, py - ((py - pan[1]) / zoom) * next],
-    });
+    const view = zoomAround({ pan, zoom }, { x: px, y: py }, zoom * factor);
+    dispatch({ type: "setView", zoom: view.zoom, pan: view.pan });
   };
 
   const offsetFor = (nodeId: string): { dx: number; dy: number } => {
@@ -482,7 +498,136 @@ export function Canvas({ state, dispatch, onContext }: CanvasProps): JSX.Element
           {t("Empty graph. Right-click the canvas to create the first node.")}
         </div>
       )}
+      {minimap && offScreen(layouts, state.graph.view, size) && (
+        <Minimap
+          layouts={layouts}
+          view={state.graph.view}
+          size={size}
+          selection={state.selection}
+          running={state.run.nodes}
+          onPan={(next) => dispatch({ type: "setView", pan: next })}
+        />
+      )}
     </div>
+  );
+}
+
+/** Whether any node sits outside the visible canvas, which is when a map helps. */
+function offScreen(
+  layouts: Map<string, NodeLayout>,
+  view: { pan: [number, number]; zoom: number },
+  size: { width: number; height: number }
+): boolean {
+  const bounds = graphBounds(layouts);
+  if (!bounds) return false;
+  const { pan, zoom } = view;
+  return (
+    bounds.minX * zoom + pan[0] < 0 ||
+    bounds.minY * zoom + pan[1] < 0 ||
+    bounds.maxX * zoom + pan[0] > size.width ||
+    bounds.maxY * zoom + pan[1] > size.height
+  );
+}
+
+const MAP_W = 200;
+const MAP_H = 128;
+const MAP_PAD = 8;
+// World units kept around the graph, so its edge nodes are not flush with the frame.
+const MAP_MARGIN = 160;
+
+interface MinimapProps {
+  layouts: Map<string, NodeLayout>;
+  view: { pan: [number, number]; zoom: number };
+  size: { width: number; height: number };
+  selection: string[];
+  running: Record<string, NodeRunStatus>;
+  onPan(pan: [number, number]): void;
+}
+
+/**
+ * The whole graph in a corner, with the visible part outlined. Clicking or
+ * dragging on it centres the view there. The frame follows the graph alone -
+ * including the viewport would shift the mapping under a drag.
+ */
+function Minimap({ layouts, view, size, selection, running, onPan }: MinimapProps) {
+  const ref = React.useRef<SVGSVGElement | null>(null);
+  const bounds = graphBounds(layouts);
+  if (!bounds) return null;
+  const minX = bounds.minX - MAP_MARGIN;
+  const minY = bounds.minY - MAP_MARGIN;
+  const spanX = bounds.maxX - bounds.minX + MAP_MARGIN * 2;
+  const spanY = bounds.maxY - bounds.minY + MAP_MARGIN * 2;
+  const scale = Math.min((MAP_W - MAP_PAD * 2) / spanX, (MAP_H - MAP_PAD * 2) / spanY);
+  const ox = MAP_PAD + (MAP_W - MAP_PAD * 2 - spanX * scale) / 2;
+  const oy = MAP_PAD + (MAP_H - MAP_PAD * 2 - spanY * scale) / 2;
+  const toMap = (x: number, y: number) => ({ x: ox + (x - minX) * scale, y: oy + (y - minY) * scale });
+
+  const { pan, zoom } = view;
+  const topLeft = toMap(-pan[0] / zoom, -pan[1] / zoom);
+  const viewW = (size.width / zoom) * scale;
+  const viewH = (size.height / zoom) * scale;
+
+  const centreOn = (clientX: number, clientY: number) => {
+    const rect = ref.current?.getBoundingClientRect();
+    if (!rect) return;
+    const worldX = (clientX - rect.left - ox) / scale + minX;
+    const worldY = (clientY - rect.top - oy) / scale + minY;
+    onPan([size.width / 2 - worldX * zoom, size.height / 2 - worldY * zoom]);
+  };
+
+  const onDown = (event: React.MouseEvent) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    centreOn(event.clientX, event.clientY);
+    const move = (moved: MouseEvent) => centreOn(moved.clientX, moved.clientY);
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
+
+  return (
+    <svg
+      ref={ref}
+      className="flow-minimap"
+      width={MAP_W}
+      height={MAP_H}
+      data-testid="minimap"
+      onMouseDown={onDown}
+      onContextMenu={(event) => event.preventDefault()}
+    >
+      <rect className="flow-minimap-bg" width={MAP_W} height={MAP_H} rx={8} ry={8} />
+      {Array.from(layouts.values()).map((layout) => {
+        const at = toMap(layout.node.pos[0], layout.node.pos[1]);
+        const status = running[layout.node.id];
+        const classes = ["flow-minimap-node"];
+        if (selection.includes(layout.node.id)) classes.push("selected");
+        if (status && status !== "idle") classes.push(status);
+        return (
+          <rect
+            key={layout.node.id}
+            className={classes.join(" ")}
+            x={at.x}
+            y={at.y}
+            width={Math.max(2, layout.width * scale)}
+            height={Math.max(2, layout.height * scale)}
+            rx={1.5}
+            fill={accentOf(layout.spec)}
+          />
+        );
+      })}
+      <rect
+        className="flow-minimap-view"
+        x={topLeft.x}
+        y={topLeft.y}
+        width={viewW}
+        height={viewH}
+        rx={2}
+      />
+    </svg>
   );
 }
 

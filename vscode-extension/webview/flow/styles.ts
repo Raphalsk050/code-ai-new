@@ -51,21 +51,62 @@ input[type="checkbox"] { width: auto; }
   display: flex; align-items: center; gap: 8px;
   padding: 6px 10px; border-bottom: 1px solid var(--border);
   background: var(--vscode-editor-background);
-  flex: 0 0 auto; min-height: 40px;
+  flex: 0 0 auto; min-height: 42px;
 }
-.flow-toolbar .brand { display: flex; align-items: center; gap: 6px; font-weight: 600; }
-.flow-toolbar .brand .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+.flow-toolbar .brand { display: flex; align-items: center; gap: 6px; font-weight: 600; min-width: 0; }
+.flow-toolbar .brand .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: 0 0 auto; }
 .flow-toolbar .brand .dot.running { animation: flow-pulse 1s ease-in-out infinite; }
-.flow-toolbar .name { color: var(--muted); font-weight: 400; }
-.flow-toolbar .spacer { flex: 1 1 auto; }
-.flow-play {
-  display: flex; align-items: center; gap: 6px;
-  position: absolute; left: 50%; transform: translateX(-50%);
-  top: 4px; z-index: 5;
+.flow-toolbar .name {
+  color: var(--muted); font-weight: 400;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.flow-play button { padding: 5px 16px; font-weight: 600; }
-.flow-play .run-status { color: var(--muted); font-size: 11px; }
+.flow-toolbar .dirty { color: var(--accent); font-size: 16px; line-height: 1; }
+.flow-toolbar .spacer { flex: 1 1 auto; }
+.flow-toolbar button { display: inline-flex; align-items: center; gap: 6px; }
+.flow-toolbar button.icon { padding: 5px 6px; }
+.flow-toolbar button.icon.on { color: var(--accent); }
+.flow-btn-group {
+  display: inline-flex; align-items: center; flex: 0 0 auto;
+  border: 1px solid var(--border); border-radius: 7px; overflow: hidden;
+}
+.flow-btn-group button { border: 0; border-radius: 0; background: transparent; }
+.flow-btn-group button + button { border-left: 1px solid var(--border); }
+.flow-btn-group button:hover:not(:disabled) { background: var(--surface-2); }
+.flow-zoom {
+  min-width: 52px; justify-content: center; font-variant-numeric: tabular-nums;
+  font-size: 11px; color: var(--muted);
+}
+.flow-play {
+  display: flex; align-items: center; gap: 8px;
+  position: absolute; left: 50%; transform: translateX(-50%);
+  top: 5px; z-index: 5;
+}
+.flow-play button.flow-run { padding: 5px 16px; font-weight: 600; border-radius: 7px; }
+.flow-play button.primary.flow-run { box-shadow: 0 2px 10px rgba(55,148,255,.35); }
+.flow-pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 9px; border-radius: 999px; font-size: 11px;
+  border: 1px solid var(--border); color: var(--muted); white-space: nowrap;
+}
+.flow-pill.ok { color: var(--ok); border-color: rgba(63,185,80,.45); background: rgba(63,185,80,.08); }
+.flow-pill.bad { color: var(--danger); border-color: rgba(241,76,76,.5); background: rgba(241,76,76,.08); }
+.flow-pill.warn { color: var(--warn); border-color: rgba(204,167,0,.5); background: rgba(204,167,0,.08); }
+.flow-pill.live { color: var(--accent); border-color: rgba(55,148,255,.5); background: rgba(55,148,255,.08); }
+.flow-pill .pulse {
+  width: 7px; height: 7px; border-radius: 50%; background: currentColor;
+  animation: flow-pulse 1s ease-in-out infinite;
+}
 @keyframes flow-pulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
+
+/* A node kind's glyph on its tint, as in the node header. */
+.flow-glyph-badge {
+  display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
+  border-radius: 5px; box-shadow: inset 0 0 0 1px rgba(255,255,255,.18);
+}
+.flow-glyph-badge svg .stroke {
+  fill: none; stroke: #fff; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round;
+}
+.flow-glyph-badge svg .fill { fill: #fff; }
 
 .flow-body { display: flex; flex: 1 1 auto; min-height: 0; }
 .flow-main { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; }
@@ -92,9 +133,9 @@ input[type="checkbox"] { width: auto; }
   text-transform: uppercase; color: var(--muted);
 }
 .flow-menu-row {
-  display: flex; align-items: center; gap: 7px; width: 100%;
+  display: flex; align-items: center; gap: 8px; width: 100%;
   border: 0; border-radius: 0; background: transparent;
-  padding: 5px 10px; text-align: left;
+  padding: 4px 10px; text-align: left; min-height: 28px;
 }
 .flow-menu-row.active, .flow-menu-row:hover { background: var(--surface-2); }
 .flow-menu-row .swatch { width: 8px; height: 8px; border-radius: 2px; flex: 0 0 auto; }
@@ -106,6 +147,25 @@ input[type="checkbox"] { width: auto; }
 .flow-canvas-wrap { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; }
 .flow-canvas { width: 100%; height: 100%; display: block; cursor: default; }
 .flow-canvas.panning { cursor: grabbing; }
+
+/* ---- minimap ---- */
+.flow-minimap {
+  position: absolute; right: 12px; bottom: 12px; z-index: 4;
+  border-radius: 8px; cursor: pointer;
+  box-shadow: 0 6px 20px rgba(0,0,0,.35);
+}
+.flow-minimap-bg {
+  fill: var(--vscode-editorWidget-background, #252526); fill-opacity: .92;
+  stroke: var(--border); stroke-width: 1;
+}
+.flow-minimap-node { opacity: .8; }
+.flow-minimap-node.selected { opacity: 1; stroke: var(--vscode-foreground); stroke-width: 1; }
+.flow-minimap-node.running { opacity: 1; stroke: var(--accent); stroke-width: 1.5; }
+.flow-minimap-node.failed { opacity: 1; stroke: var(--danger); stroke-width: 1.5; }
+.flow-minimap-view {
+  fill: var(--accent); fill-opacity: .1;
+  stroke: var(--accent); stroke-width: 1.2; pointer-events: none;
+}
 
 /* ---- nodes ---- */
 .flow-node { cursor: default; }
@@ -234,6 +294,28 @@ input[type="checkbox"] { width: auto; }
   color: var(--vscode-foreground); box-shadow: inset 0 -2px 0 var(--accent);
 }
 .flow-inspector-body { overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+.flow-section-title.flow-node-card {
+  text-transform: none; letter-spacing: 0; font-size: 13px; color: var(--vscode-foreground);
+  gap: 8px; padding: 8px 10px; border-radius: 8px;
+  background: var(--surface); border: 1px solid var(--border); border-left: 3px solid;
+}
+.flow-node-card .flow-glyph-badge { order: -1; }
+.flow-node-card .title { font-weight: 650; }
+.flow-node-card .id {
+  font-size: 10.5px; color: var(--muted);
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+.flow-group { display: flex; flex-direction: column; gap: 10px; }
+.flow-group-head {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  border: 0; background: transparent; padding: 2px 0; border-radius: 0;
+  text-transform: uppercase; letter-spacing: .06em; font-size: 10px; color: var(--muted);
+}
+.flow-group-head:hover:not(:disabled) { background: transparent; color: var(--vscode-foreground); }
+.flow-group-head .caret { width: 9px; }
+.flow-group-head .line { flex: 1 1 auto; height: 1px; background: var(--border); }
+.flow-group-body { display: flex; flex-direction: column; gap: 10px; }
+.flow-picker-toggle { align-self: flex-start; font-size: 11px; }
 .flow-field { display: flex; flex-direction: column; gap: 3px; }
 .flow-field > label { color: var(--muted); font-size: 11px; }
 .flow-field .help { color: var(--muted); font-size: 10.5px; }
@@ -347,9 +429,20 @@ input[type="checkbox"] { width: auto; }
   overflow-y: auto; padding: 6px 10px; font-family: var(--vscode-editor-font-family, monospace);
   font-size: 11px; display: flex; flex-direction: column; gap: 2px;
 }
-.flow-log-row { display: flex; gap: 8px; }
+.flow-log-row {
+  display: flex; gap: 8px; padding: 1px 0 1px 8px;
+  border-left: 2px solid transparent;
+}
+.flow-log-row.agent { border-left-color: var(--accent); }
+.flow-log-row.print { border-left-color: var(--flow-exec); }
+.flow-log-row.decision { border-left-color: var(--muted); }
+.flow-log-row.warn { border-left-color: var(--warn); }
+.flow-log-row.error { border-left-color: var(--danger); }
 .flow-log-row .at { color: var(--muted); flex: 0 0 auto; }
-.flow-log-row .who { color: var(--accent); flex: 0 0 auto; }
+.flow-log-row .who {
+  color: var(--accent); flex: 0 0 auto;
+  padding: 0 5px; border-radius: 4px; background: rgba(55,148,255,.1);
+}
 .flow-log-row .text { white-space: pre-wrap; word-break: break-word; }
 .flow-log-row.error .text { color: var(--danger); }
 .flow-log-row.warn .text { color: var(--warn); }
@@ -374,5 +467,6 @@ input[type="checkbox"] { width: auto; }
   }
   .flow-play { position: static; transform: none; }
   .flow-toolbar { flex-wrap: wrap; }
+  .flow-minimap { display: none; }
 }
 `;
