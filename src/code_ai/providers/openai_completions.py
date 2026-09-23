@@ -136,6 +136,9 @@ def _looks_like_tool_support_error(exc: Exception) -> bool:
     return any(hint in text for hint in _TOOL_SUPPORT_ERROR_HINTS)
 
 
+_REASONING_KEYS = ("reasoning_content", "reasoning", "thinking")
+
+
 def _reasoning_delta(value: Any) -> str:
     """Extract reasoning text from an OpenAI-compatible delta/message.
 
@@ -143,11 +146,37 @@ def _reasoning_delta(value: Any) -> str:
     OpenAI-compatible backends expose chain-of-thought in a non-standard
     ``reasoning_content``/``reasoning``/``thinking`` field alongside ``content``.
     """
-    for key in ("reasoning_content", "reasoning", "thinking"):
+    for key in _REASONING_KEYS:
         text = object_get(value, key, "")
         if text:
             return str(text)
     return ""
+
+
+def _reasoning_key(value: Any) -> str | None:
+    """Which non-standard field this server streams its reasoning under."""
+    for key in _REASONING_KEYS:
+        if object_get(value, key, ""):
+            return key
+    return None
+
+
+# How a schema-strict endpoint words "that message field is not allowed".
+_FIELD_REFUSAL_HINTS = (
+    "additional properties",
+    "extra inputs",
+    "extra_forbidden",
+    "unrecognized",
+    "unexpected",
+    "unknown field",
+)
+
+
+def _looks_like_replay_refusal(exc: Exception, field: str) -> bool:
+    if _is_transient_exception(exc):
+        return False
+    text = str(exc).lower()
+    return field in text or any(hint in text for hint in _FIELD_REFUSAL_HINTS)
 
 
 class OpenAIChatCompletionsProvider:
@@ -185,6 +214,10 @@ class OpenAIChatCompletionsProvider:
         # tools. It is a property of how the server was started, so it stays
         # cleared for the session rather than being probed again every step.
         self._tools_supported = True
+        # The field the server streams reasoning under, learned from its first
+        # reasoning delta; the turn's thinking goes back under that same name.
+        self._reasoning_field: str | None = None
+        self._reasoning_replay = True
 
     @property
     def capabilities(self) -> ProviderCapabilities:
@@ -247,9 +280,14 @@ class OpenAIChatCompletionsProvider:
                 await asyncio.sleep(min(2.0, 0.25 * (2**attempts)) + random.random() * 0.1)
 
     async def _stream_once(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        replay_field = self._reasoning_field if self._reasoning_replay else None
+        messages = messages_to_chat(
+            normalize_chat_messages(request.messages), reasoning_field=replay_field
+        )
+        replaying = replay_field is not None and any(replay_field in m for m in messages)
         kwargs: dict[str, Any] = {
             "model": request.model,
-            "messages": messages_to_chat(normalize_chat_messages(request.messages)),
+            "messages": messages,
             "stream": True,
         }
         if request.max_output_tokens:
@@ -286,6 +324,18 @@ class OpenAIChatCompletionsProvider:
                 self._tools_supported = False
                 self._capabilities.tool_calling = False
                 raise ToolCallingUnsupportedError(str(exc)) from exc
+            if replaying and _looks_like_replay_refusal(exc, replay_field):
+                # Before the sampling fallback, whose "reasoning" hint would
+                # otherwise drop the sampling knobs for a message-field refusal.
+                self._reasoning_replay = False
+                yield ProviderEvent(
+                    kind="warning",
+                    warning="Endpoint refused the replayed reasoning; continuing without it.",
+                )
+                async with aclosing(self._stream_once(request)) as events:
+                    async for event in events:
+                        yield event
+                return
             if self._stream_options_supported and "stream_options" in str(exc):
                 self._stream_options_supported = False
                 yield ProviderEvent(
@@ -334,6 +384,8 @@ class OpenAIChatCompletionsProvider:
                     delta = object_get(choice, "delta", {})
                     reasoning = _reasoning_delta(delta)
                     if reasoning:
+                        if self._reasoning_field is None:
+                            self._reasoning_field = _reasoning_key(delta)
                         reasoning_parts.append(reasoning)
                         yield ProviderEvent(kind="reasoning_delta", reasoning_delta=reasoning)
                     content = object_get(delta, "content", "")

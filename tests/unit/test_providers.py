@@ -29,7 +29,12 @@ from code_ai.providers.openai_responses import (
     _responses_input,
     normalize_responses_output_item,
 )
-from code_ai.providers.translation import parse_arguments, tools_to_chat, tools_to_responses
+from code_ai.providers.translation import (
+    messages_to_chat,
+    parse_arguments,
+    tools_to_chat,
+    tools_to_responses,
+)
 from code_ai.tools.process import ExecuteCommandTool
 from code_ai.tools.registry import ToolRegistry
 
@@ -100,6 +105,8 @@ def _chat_provider(chunks: list[dict[str, object]]) -> OpenAIChatCompletionsProv
     provider._stream_options_supported = False
     provider._sampling_supported = False
     provider._capabilities = ProviderCapabilities()
+    provider._reasoning_field = None
+    provider._reasoning_replay = True
     return provider
 
 
@@ -813,6 +820,85 @@ async def test_responses_request_effort_replaces_the_configured_one() -> None:
     [event async for event in provider.stream(_light_request())]
 
     assert sent["reasoning"] == {"effort": "low", "summary": "auto"}
+
+
+def _thought_step() -> list[Message]:
+    return [
+        Message(role="user", content="fix the bug"),
+        Message(
+            role="assistant",
+            content="",
+            tool_calls=[ToolCall(id="c1", name="read_file", arguments={"path": "a.py"})],
+            reasoning="Read a.py before touching it.",
+        ),
+        Message(role="tool", content="print(1)", tool_call_id="c1", name="read_file"),
+    ]
+
+
+def test_chat_messages_carry_reasoning_only_under_the_named_field() -> None:
+    wire = messages_to_chat(_thought_step(), reasoning_field="reasoning_content")
+
+    assert wire[1]["reasoning_content"] == "Read a.py before touching it."
+    assert "reasoning_content" not in wire[0]
+    assert all("reasoning" not in item for item in messages_to_chat(_thought_step()))
+
+
+def _reasoning_chunk(field: str) -> dict[str, object]:
+    return {"usage": None, "choices": [{"finish_reason": None, "delta": {field: "hmm"}}]}
+
+
+async def test_chat_completions_replays_reasoning_under_the_field_it_streamed() -> None:
+    provider = _chat_provider([_reasoning_chunk("reasoning")])
+    sent = _record_create(provider._client.chat.completions)
+
+    [event async for event in provider.stream(_chat_request())]
+    request = ModelRequest(model="test-model", messages=_thought_step())
+    [event async for event in provider.stream(request)]
+
+    assert sent["messages"][1]["reasoning"] == "Read a.py before touching it."
+    assert "reasoning_content" not in sent["messages"][1]
+
+
+class _FieldRefusal(Exception):
+    status_code = 400
+
+
+async def test_chat_completions_stops_replaying_reasoning_the_endpoint_refuses() -> None:
+    provider = _chat_provider([_reasoning_chunk("reasoning_content")])
+    provider._sampling_supported = True
+    [event async for event in provider.stream(_chat_request())]
+    original = provider._client.chat.completions.create
+    sent: list[dict[str, object]] = []
+
+    async def _strict(**kwargs: object):
+        sent.append(kwargs)
+        if any("reasoning_content" in message for message in kwargs["messages"]):
+            raise _FieldRefusal(
+                "Additional properties are not allowed ('reasoning_content' was unexpected)"
+            )
+        return await original(**kwargs)
+
+    provider._client.chat.completions.create = _strict
+    events = [
+        event
+        async for event in provider.stream(
+            ModelRequest(model="test-model", messages=_thought_step())
+        )
+    ]
+
+    assert provider._reasoning_replay is False
+    assert any(event.kind == "warning" for event in events)
+    assert "reasoning_content" not in sent[-1]["messages"][1]
+    # The refusal names "reasoning", which the sampling fallback also matches:
+    # only the replay may be dropped for it.
+    assert provider._sampling_supported is True
+
+
+def test_ollama_replays_assistant_reasoning_as_thinking() -> None:
+    messages = messages_to_ollama(_thought_step())
+
+    assert messages[1]["thinking"] == "Read a.py before touching it."
+    assert "thinking" not in messages[0]
 
 
 async def test_ollama_payload_never_carries_a_misplaced_system_message() -> None:

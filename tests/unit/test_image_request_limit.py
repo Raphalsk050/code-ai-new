@@ -123,6 +123,8 @@ async def test_the_chat_provider_reports_the_limit_it_was_told() -> None:
     provider._stream_options_supported = False
     provider._sampling_supported = False
     provider._capabilities = ProviderCapabilities(image_support=True)
+    provider._reasoning_field = None
+    provider._reasoning_replay = True
     request = ModelRequest(
         model="m",
         messages=[Message(role="user", content="hi", images=list(_IMAGES))],

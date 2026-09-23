@@ -99,6 +99,8 @@ def messages_to_ollama(messages: list[Message]) -> list[dict[str, Any]]:
                 {"function": {"name": call.name, "arguments": call.arguments}}
                 for call in message.tool_calls
             ]
+        if message.role == "assistant" and message.reasoning:
+            entry["thinking"] = message.reasoning
         normalized.append(entry)
     return normalized
 

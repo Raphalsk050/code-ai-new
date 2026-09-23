@@ -59,8 +59,18 @@ def normalize_chat_messages(
     return normalized
 
 
-def messages_to_chat(messages: list[Message]) -> list[dict[str, Any]]:
-    return [message.to_dict() for message in messages]
+def messages_to_chat(
+    messages: list[Message], *, reasoning_field: str | None = None
+) -> list[dict[str, Any]]:
+    """Wire messages; ``reasoning_field`` names the key the server streamed its
+    reasoning under, and assistant thinking goes back under the same one."""
+    wire: list[dict[str, Any]] = []
+    for message in messages:
+        data = message.to_dict()
+        if reasoning_field and message.reasoning and message.role == "assistant":
+            data[reasoning_field] = message.reasoning
+        wire.append(data)
+    return wire
 
 
 def tools_to_chat(

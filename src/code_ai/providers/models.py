@@ -67,6 +67,10 @@ class Message:
     name: str | None = None
     tool_calls: list[ToolCall] = field(default_factory=list)
     images: list[ImageContent] = field(default_factory=list)
+    # What the model thought before this tool-call step, sent back within the
+    # turn so it continues from it instead of re-deriving it. Each provider
+    # decides whether and how it travels; ``to_dict`` leaves it out.
+    reasoning: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {"role": self.role, "content": self.content}

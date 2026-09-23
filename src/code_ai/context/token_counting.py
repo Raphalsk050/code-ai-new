@@ -69,4 +69,6 @@ def _countable_message(message: Message) -> dict:
     record = message.to_dict()
     if message.images:
         record["content"] = message.content
+    if message.reasoning:
+        record["reasoning"] = message.reasoning
     return record

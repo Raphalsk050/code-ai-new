@@ -12,11 +12,14 @@ from code_ai.core.errors import CancellationError, ProviderError, TransientProvi
 from code_ai.core.memory import FailureMemoryStore
 from code_ai.providers.models import (
     FinishReason,
+    ImageContent,
+    Message,
     ModelRequest,
     ModelResponse,
     ProviderCapabilities,
     ProviderEvent,
     ToolCall,
+    ToolResult,
 )
 from code_ai.tools.base import ToolCapability
 from code_ai.tools.registry import ToolRegistry
@@ -254,6 +257,78 @@ async def test_an_ollama_cloud_model_is_never_warmed(tmp_path, monkeypatch) -> N
     await app.close()
 
     assert all(request.max_output_tokens != 1 for request in provider.requests)
+
+
+def test_runtime_context_rides_on_the_newest_message_when_it_can() -> None:
+    attach = orchestration._attach_runtime_context
+    tool = Message(role="tool", content="result", tool_call_id="c1", name="read_file")
+    ask = Message(role="user", content="fix it")
+    picture = Message(role="user", content="see", images=[ImageContent(data="AAAA")])
+    answer = Message(role="assistant", content="done")
+
+    assert attach([ask, tool], "STATE")[-1].content == "result\n\nSTATE"
+    assert attach([ask], "STATE")[-1].content == "fix it\n\nSTATE"
+    # Text ahead of pixels would make the next step re-read the image.
+    assert attach([picture], "STATE")[-1] == Message(role="user", content="STATE")
+    assert attach([ask, answer], "STATE")[-1] == Message(role="user", content="STATE")
+    # The history itself is never touched.
+    assert tool.content == "result"
+
+
+class ThinkingReaderProvider(_BaseProvider):
+    def __init__(self) -> None:
+        self.requests: list[ModelRequest] = []
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            response = ModelResponse(
+                reasoning="Read a.txt before answering.",
+                tool_calls=[ToolCall(id="r1", name="read_file", arguments={"path": "a.txt"})],
+                finish_reason=FinishReason.TOOL_CALLS,
+            )
+        else:
+            response = ModelResponse(text="It says hello.", finish_reason=FinishReason.STOP)
+        yield ProviderEvent(kind="completed", response=response)
+
+
+def _thinking_step(request: ModelRequest) -> Message:
+    return next(m for m in request.messages if m.role == "assistant" and m.tool_calls)
+
+
+async def test_the_turn_hands_the_model_its_own_reasoning_back(tmp_path) -> None:
+    (tmp_path / "a.txt").write_text("hello", encoding="utf-8")
+    provider = ThinkingReaderProvider()
+    app = build_application(config=_config(tmp_path), provider=provider)
+
+    await app.start()
+    await app.submit_user_message("read a.txt and tell me what it says")
+    await app.submit_user_message("thanks")
+    await app.close()
+
+    second_step, next_turn = provider.requests[1], provider.requests[2]
+    assert _thinking_step(second_step).reasoning == "Read a.txt before answering."
+    # The runtime block rides on the tool result instead of posing as a new
+    # user request, so templates see one turn, not a turn per step.
+    assert second_step.messages[-1].role == "tool"
+    assert "Runtime task state" in second_step.messages[-1].content
+    assert not any(
+        m.role == "user" and m.content.startswith("Runtime task state")
+        for m in second_step.messages
+    )
+    # A finished turn's thinking is not carried into the next one.
+    assert _thinking_step(next_turn).reasoning == ""
+
+
+async def test_a_round_note_rides_on_the_last_tool_result(tmp_path) -> None:
+    app = build_application(config=_config(tmp_path), provider=FlakyThenOkProvider())
+    conversation = app.orchestrator.conversation
+    conversation.add_tool_result(ToolResult(tool_call_id="t1", name="read_file", content="{}"))
+
+    app.orchestrator._add_round_note("[runtime] note")
+
+    assert conversation.messages[-1].role == "tool"
+    assert conversation.messages[-1].content == "{}\n\n[runtime] note"
 
 
 class SilentThenOkProvider(_BaseProvider):

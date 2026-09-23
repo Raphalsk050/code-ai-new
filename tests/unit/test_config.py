@@ -466,7 +466,7 @@ def test_followup_reasoning_effort_is_validated(tmp_path) -> None:
     ("base_url", "model", "local"),
     [
         ("http://localhost:11434/v1", "qwen3:32b", True),
-        ("http://127.0.0.1:1234/v1", "C:\models\qwen3.gguf", True),
+        ("http://127.0.0.1:1234/v1", r"C:\models\qwen3.gguf", True),
         ("http://localhost:11434/v1", "gemma4:cloud", False),
         ("http://localhost:11434/v1", "gemma4:31b-cloud", False),
         ("https://api.openai.com/v1", "gpt-5", False),

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from code_ai.providers.models import ImageContent, Message, ToolCall, ToolResult
 
@@ -14,14 +14,30 @@ class ConversationState:
     def add_user(self, text: str, images: list[ImageContent] | None = None) -> None:
         self.messages.append(Message(role="user", content=text, images=list(images or [])))
 
-    def add_assistant(self, text: str, tool_calls: list[ToolCall] | None = None) -> None:
+    def add_assistant(
+        self, text: str, tool_calls: list[ToolCall] | None = None, *, reasoning: str = ""
+    ) -> None:
         calls = list(tool_calls or [])
         if not text and not calls:
             return
         # Keep the tool calls structured on the assistant message. Flattening them
         # into ``content`` makes providers replay them as plain text, which trains
         # the model to *describe* tool calls instead of invoking them.
-        self.messages.append(Message(role="assistant", content=text, tool_calls=calls))
+        self.messages.append(
+            Message(
+                role="assistant",
+                content=text,
+                tool_calls=calls,
+                reasoning=reasoning if calls else "",
+            )
+        )
+
+    def drop_reasoning(self) -> None:
+        """Forget earlier turns' thinking: templates drop it anyway, and it is
+        only worth its tokens inside the turn that produced it."""
+        for index, message in enumerate(self.messages):
+            if message.reasoning:
+                self.messages[index] = replace(message, reasoning="")
 
     def add_tool_result(self, result: ToolResult) -> None:
         self.messages.append(result.to_message())

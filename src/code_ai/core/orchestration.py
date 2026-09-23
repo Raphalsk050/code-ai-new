@@ -283,6 +283,24 @@ def _chunked(items: list[ImageContent], size: int) -> list[list[ImageContent]]:
     return [items[start : start + size] for start in range(0, len(items), size)]
 
 
+# Cap on one step's reasoning kept for the rest of its turn. A runaway think
+# block is worth its gist, not its full length on every later request.
+_REASONING_REPLAY_CHARS = 12_000
+
+
+def _attach_runtime_context(messages: list[Message], context: str) -> list[Message]:
+    """Carry the per-step runtime block on the newest message when it can.
+
+    As its own user message it posed as a new request every step, and templates
+    that keep reasoning only after the last user message dropped the turn's.
+    Appended, the next step's prefix still matches; never ahead of an image.
+    """
+    last = messages[-1] if messages else None
+    if last is None or last.images or last.role not in {"tool", "user"}:
+        return [*messages, Message(role="user", content=context)]
+    return [*messages[:-1], replace(last, content=f"{last.content}\n\n{context}")]
+
+
 def _evict_stale_images(messages: list[Message], *, keep: int) -> list[Message]:
     """The request's view of the history: pixels only on the newest ``keep``
     image-bearing messages, a one-line note on the older ones.
@@ -846,6 +864,7 @@ class AgentOrchestrator:
         # was built, so the model benefits from them on this turn.
         self._on_demand_tools = self.config.experimental.on_demand_tools
         self._prepare_step_sync("refreshing the system prompt", self._refresh_system_prompt)
+        self.conversation.drop_reasoning()
         # Editor context (open file / selection forwarded by an embedding client)
         # is added to the conversation so the model sees it, but it is *not*
         # echoed as a `user.message` event — the transcript stays clean and only
@@ -1182,7 +1201,11 @@ class AgentOrchestrator:
                 # shape strict providers reject, and the landing request below
                 # would inherit it.
                 return await self._wind_down(state, reason=WIND_DOWN_TOOL_BUDGET)
-            self.conversation.add_assistant(response.text or "", response.tool_calls)
+            self.conversation.add_assistant(
+                response.text or "",
+                response.tool_calls,
+                reasoning=bound_text(response.reasoning or "", _REASONING_REPLAY_CHARS),
+            )
             outcome = await self._execute_tool_batch(response, state)
             if outcome is not None:
                 return outcome
@@ -1888,7 +1911,7 @@ class AgentOrchestrator:
         if state.stall_rounds >= limit // 2 and not state.stall_nudged:
             state.stall_nudged = True
             state.think_hard = True
-            self.conversation.add_user(build_runtime_note(self._stall_nudge_text()))
+            self._add_round_note(build_runtime_note(self._stall_nudge_text()))
             await self.event_bus.emit(
                 "agent.stall.nudged",
                 {"stall_rounds": state.stall_rounds},
@@ -1948,11 +1971,24 @@ class AgentOrchestrator:
         # A clean round is routine follow-up work; an error or a note is not.
         state.think_hard = errored or bool(note)
         if note:
-            self.conversation.add_user(build_runtime_note(note))
+            self._add_round_note(build_runtime_note(note))
             await self.event_bus.emit(
                 "agent.reminder", {"rounds": state.reminders.activity.rounds},
                 source="core.orchestrator",
             )
+
+    def _add_round_note(self, note: str) -> None:
+        """A note about the round just run travels on its last tool result.
+
+        As a user message of its own it opened a new turn for templates that
+        keep reasoning only after the last user message.
+        """
+        messages = self.conversation.messages
+        last = messages[-1] if messages else None
+        if last is not None and last.role == "tool":
+            messages[-1] = replace(last, content=f"{last.content}\n\n{note}")
+            return
+        self.conversation.add_user(note)
 
     @staticmethod
     def _recalled_memory(response: ModelResponse, state: _TurnState) -> str | None:
@@ -3133,7 +3169,7 @@ class AgentOrchestrator:
             if block
         )
         if runtime_context:
-            messages = [*messages, Message(role="user", content=runtime_context)]
+            messages = _attach_runtime_context(messages, runtime_context)
         return ModelRequest(
             model=self.config.model,
             messages=messages,

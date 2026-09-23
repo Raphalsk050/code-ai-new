@@ -46,6 +46,33 @@ def test_add_assistant_keeps_tool_calls_structured_not_text() -> None:
     assert "new_text" not in message.content
 
 
+def test_reasoning_is_kept_on_tool_steps_and_dropped_between_turns() -> None:
+    conversation = ConversationState()
+    call = ToolCall(id="c1", name="read_file", arguments={"path": "a.py"})
+    conversation.add_assistant("", [call], reasoning="read it first")
+    conversation.add_assistant("the answer", [], reasoning="ignored on prose")
+
+    assert conversation.messages[0].reasoning == "read it first"
+    assert conversation.messages[1].reasoning == ""
+
+    conversation.drop_reasoning()
+
+    assert all(not message.reasoning for message in conversation.messages)
+    assert conversation.messages[0].tool_calls == [call]
+
+
+def test_reasoning_counts_against_the_context_budget() -> None:
+    counter = TokenCounter(model="unknown-local-model")
+    call = ToolCall(id="c1", name="read_file", arguments={"path": "a.py"})
+    bare = Message(role="assistant", content="", tool_calls=[call])
+    thought = Message(role="assistant", content="", tool_calls=[call], reasoning="x " * 2000)
+
+    assert (
+        counter.count_request([thought], []).tokens
+        > counter.count_request([bare], []).tokens + 500
+    )
+
+
 def test_add_assistant_ignores_empty_turn() -> None:
     conversation = ConversationState()
     conversation.add_assistant("", None)
