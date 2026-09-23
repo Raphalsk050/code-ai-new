@@ -1,7 +1,7 @@
 // Geometry and catalog lookups: everything the canvas needs to know *where*
 // something is. Kept apart from React so it can be unit-tested without a DOM.
 
-import { t } from "../i18n";
+import { t, tf } from "../i18n";
 import type {
   FlowEdge,
   FlowGraph,
@@ -101,8 +101,15 @@ export function summaryOf(node: FlowNode, spec: NodeKindSpec): string {
       return model || (url ? shortUrl(url) : t("session model"));
     }
     case "profession": {
+      const name = String(data.name ?? "").trim();
+      if (name) return name;
       const profession = String(data.profession ?? "").trim();
-      return profession ? profession.replace(/_/g, " ") : t("choose a profession");
+      return profession ? profession.replace(/_/g, " ") : t("custom agent");
+    }
+    case "tools": {
+      const name = String(data.name ?? "").trim();
+      const count = Array.isArray(data.tools) ? data.tools.length : 0;
+      return name ? `${name} · ${count}` : tf("{0} tools", count);
     }
     case "custom_profession": {
       const name = String(data.name ?? "").trim();

@@ -17,6 +17,7 @@
           "label": "out",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#FFFFFF"
         }
       ],
@@ -37,6 +38,7 @@
           "label": "in",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#FFFFFF"
         },
         {
@@ -46,6 +48,7 @@
           "label": "result",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#A0A0A0"
         }
       ],
@@ -66,6 +69,7 @@
           "label": "model",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#3794FF"
         }
       ],
@@ -136,7 +140,7 @@
     {
       "kind": "profession",
       "title": "Agent",
-      "description": "One isolated agent, hired for a profession, running one task to a report. Its profession decides what tools it may touch.",
+      "description": "One isolated agent running one task to a report. You decide who it is (a profession, or your own instructions) and what it may touch (the switches, or Tools nodes wired into `tools`).",
       "category": "agent",
       "pure": false,
       "max_instances": 0,
@@ -148,6 +152,7 @@
           "label": "in",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#FFFFFF"
         },
         {
@@ -157,6 +162,7 @@
           "label": "out",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#FFFFFF"
         },
         {
@@ -166,6 +172,7 @@
           "label": "model",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#3794FF"
         },
         {
@@ -175,7 +182,18 @@
           "label": "profession",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#F5A623"
+        },
+        {
+          "name": "tools",
+          "type": "tools",
+          "direction": "in",
+          "label": "tools",
+          "required": false,
+          "dynamic": false,
+          "multi": true,
+          "color": "#9D7BFF"
         },
         {
           "name": "task",
@@ -184,6 +202,7 @@
           "label": "task",
           "required": true,
           "dynamic": false,
+          "multi": false,
           "color": "#E040FB"
         },
         {
@@ -193,17 +212,26 @@
           "label": "report",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#E040FB"
         }
       ],
       "fields": [
+        {
+          "name": "name",
+          "kind": "text",
+          "label": "Name",
+          "default": "",
+          "options": [],
+          "help": "What to call it on the node and in the log. Empty uses the profession."
+        },
         {
           "name": "profession",
           "kind": "profession",
           "label": "Profession",
           "default": "",
           "options": [],
-          "help": "Ignored while a Profession node is wired to the profession pin."
+          "help": "A ready-made role and toolbox. Custom means you write the role under Instructions. Ignored while a Profession node is wired in."
         },
         {
           "name": "task",
@@ -216,10 +244,58 @@
         {
           "name": "role_override",
           "kind": "textarea",
-          "label": "Extra instructions",
+          "label": "Instructions",
           "default": "",
           "options": [],
-          "help": "Appended to the profession's own role prompt."
+          "help": "Custom: who this agent is and how it works. With a profession: added to its role."
+        },
+        {
+          "name": "can_read",
+          "kind": "permission",
+          "label": "Read files",
+          "default": null,
+          "options": [],
+          "help": ""
+        },
+        {
+          "name": "can_write",
+          "kind": "permission",
+          "label": "Edit files",
+          "default": null,
+          "options": [],
+          "help": ""
+        },
+        {
+          "name": "can_run",
+          "kind": "permission",
+          "label": "Run commands",
+          "default": null,
+          "options": [],
+          "help": ""
+        },
+        {
+          "name": "can_browse",
+          "kind": "permission",
+          "label": "Use the web",
+          "default": null,
+          "options": [],
+          "help": ""
+        },
+        {
+          "name": "can_review",
+          "kind": "permission",
+          "label": "Run reviews",
+          "default": null,
+          "options": [],
+          "help": ""
+        },
+        {
+          "name": "blocked_tools",
+          "kind": "tools",
+          "label": "Never use",
+          "default": null,
+          "options": [],
+          "help": "Taken away whatever the switches or the wired Tools nodes allow."
         },
         {
           "name": "max_steps",
@@ -242,7 +318,7 @@
     {
       "kind": "custom_profession",
       "title": "Profession",
-      "description": "A profession you write yourself: the role prompt is the job, the switches are what it may touch. Wire it into an Agent's profession pin.",
+      "description": "A job description you write once: the role prompt is the job, the switches are what it may touch. Wire it into the profession pin of every Agent that shares the job.",
       "category": "agent",
       "pure": true,
       "max_instances": 0,
@@ -254,6 +330,7 @@
           "label": "profession",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#F5A623"
         }
       ],
@@ -276,7 +353,7 @@
         },
         {
           "name": "can_read",
-          "kind": "bool",
+          "kind": "permission",
           "label": "Read files",
           "default": true,
           "options": [],
@@ -284,7 +361,7 @@
         },
         {
           "name": "can_write",
-          "kind": "bool",
+          "kind": "permission",
           "label": "Edit files",
           "default": false,
           "options": [],
@@ -292,7 +369,7 @@
         },
         {
           "name": "can_run",
-          "kind": "bool",
+          "kind": "permission",
           "label": "Run commands",
           "default": false,
           "options": [],
@@ -300,11 +377,27 @@
         },
         {
           "name": "can_browse",
-          "kind": "bool",
-          "label": "Search the web",
+          "kind": "permission",
+          "label": "Use the web",
           "default": false,
           "options": [],
           "help": ""
+        },
+        {
+          "name": "can_review",
+          "kind": "permission",
+          "label": "Run reviews",
+          "default": false,
+          "options": [],
+          "help": ""
+        },
+        {
+          "name": "blocked_tools",
+          "kind": "tools",
+          "label": "Never use",
+          "default": null,
+          "options": [],
+          "help": "Taken away whatever the switches or the wired Tools nodes allow."
         },
         {
           "name": "framing",
@@ -333,6 +426,44 @@
       ]
     },
     {
+      "kind": "tools",
+      "title": "Tools",
+      "description": "A hand-picked set of tools. Wire it into an Agent's tools pin and the agent gets exactly these; wire several and they add up.",
+      "category": "agent",
+      "pure": true,
+      "max_instances": 0,
+      "pins": [
+        {
+          "name": "tools",
+          "type": "tools",
+          "direction": "out",
+          "label": "tools",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#9D7BFF"
+        }
+      ],
+      "fields": [
+        {
+          "name": "name",
+          "kind": "text",
+          "label": "Name",
+          "default": "",
+          "options": [],
+          "help": "Shows on the node, e.g. 'read-only' or 'git'."
+        },
+        {
+          "name": "tools",
+          "kind": "tools",
+          "label": "Tools",
+          "default": null,
+          "options": [],
+          "help": ""
+        }
+      ]
+    },
+    {
       "kind": "sequence",
       "title": "Sequence",
       "description": "Runs each output in order, waiting for one branch to finish before the next.",
@@ -347,6 +478,7 @@
           "label": "in",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#FFFFFF"
         },
         {
@@ -356,6 +488,7 @@
           "label": "0",
           "required": false,
           "dynamic": true,
+          "multi": false,
           "color": "#FFFFFF"
         },
         {
@@ -365,6 +498,7 @@
           "label": "1",
           "required": false,
           "dynamic": true,
+          "multi": false,
           "color": "#FFFFFF"
         }
       ],
@@ -385,6 +519,7 @@
           "label": "in",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#FFFFFF"
         },
         {
@@ -394,6 +529,7 @@
           "label": "true",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#FFFFFF"
         },
         {
@@ -403,6 +539,7 @@
           "label": "false",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#FFFFFF"
         },
         {
@@ -412,6 +549,7 @@
           "label": "condition",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#8C1B1B"
         },
         {
@@ -421,6 +559,7 @@
           "label": "prompt",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#E040FB"
         },
         {
@@ -430,6 +569,7 @@
           "label": "model",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#3794FF"
         }
       ],
@@ -478,6 +618,7 @@
           "label": "in",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#FFFFFF"
         },
         {
@@ -487,6 +628,7 @@
           "label": "body",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#FFFFFF"
         },
         {
@@ -496,6 +638,7 @@
           "label": "completed",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#FFFFFF"
         },
         {
@@ -505,6 +648,7 @@
           "label": "count",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#1F9E8C"
         },
         {
@@ -514,6 +658,7 @@
           "label": "condition",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#8C1B1B"
         },
         {
@@ -523,6 +668,7 @@
           "label": "items",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#E040FB"
         },
         {
@@ -532,6 +678,7 @@
           "label": "index",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#1F9E8C"
         },
         {
@@ -541,6 +688,7 @@
           "label": "item",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#E040FB"
         }
       ],
@@ -590,6 +738,7 @@
           "label": "in",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#FFFFFF"
         },
         {
@@ -599,6 +748,7 @@
           "label": "out",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#FFFFFF"
         },
         {
@@ -608,6 +758,7 @@
           "label": "prompt",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#E040FB"
         },
         {
@@ -617,6 +768,7 @@
           "label": "answer",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#E040FB"
         }
       ],
@@ -654,6 +806,7 @@
           "label": "in",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#FFFFFF"
         },
         {
@@ -663,6 +816,7 @@
           "label": "out",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#FFFFFF"
         },
         {
@@ -672,6 +826,7 @@
           "label": "value",
           "required": true,
           "dynamic": false,
+          "multi": false,
           "color": "#A0A0A0"
         }
       ],
@@ -728,6 +883,7 @@
           "label": "value",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#A0A0A0"
         }
       ],
@@ -757,6 +913,7 @@
           "label": "in",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#FFFFFF"
         },
         {
@@ -766,6 +923,7 @@
           "label": "out",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#FFFFFF"
         },
         {
@@ -775,6 +933,7 @@
           "label": "value",
           "required": false,
           "dynamic": false,
+          "multi": false,
           "color": "#A0A0A0"
         }
       ],
@@ -806,6 +965,7 @@
     "string": "#E040FB",
     "model": "#3794FF",
     "profession": "#F5A623",
+    "tools": "#9D7BFF",
     "any": "#A0A0A0"
   },
   "variable_types": [
@@ -828,7 +988,8 @@
         "local_write",
         "process",
         "web"
-      ]
+      ],
+      "plain": true
     },
     {
       "name": "architect",
@@ -841,7 +1002,8 @@
       "capabilities": [
         "local_read",
         "web"
-      ]
+      ],
+      "plain": false
     },
     {
       "name": "code_writer",
@@ -856,7 +1018,8 @@
         "local_write",
         "process",
         "web"
-      ]
+      ],
+      "plain": false
     },
     {
       "name": "documenter",
@@ -870,7 +1033,8 @@
         "local_read",
         "local_write",
         "web"
-      ]
+      ],
+      "plain": false
     },
     {
       "name": "wiki_writer",
@@ -884,7 +1048,8 @@
         "local_read",
         "local_write",
         "web"
-      ]
+      ],
+      "plain": false
     },
     {
       "name": "ui_designer",
@@ -898,7 +1063,8 @@
         "local_read",
         "local_write",
         "web"
-      ]
+      ],
+      "plain": false
     },
     {
       "name": "teacher",
@@ -911,7 +1077,8 @@
       "capabilities": [
         "local_read",
         "web"
-      ]
+      ],
+      "plain": false
     },
     {
       "name": "tester",
@@ -926,7 +1093,8 @@
         "local_write",
         "process",
         "review"
-      ]
+      ],
+      "plain": false
     },
     {
       "name": "coder",
@@ -941,7 +1109,8 @@
         "local_write",
         "process",
         "web"
-      ]
+      ],
+      "plain": false
     },
     {
       "name": "explorer",
@@ -954,7 +1123,8 @@
       "capabilities": [
         "local_read",
         "web"
-      ]
+      ],
+      "plain": false
     },
     {
       "name": "reviewer",
@@ -969,7 +1139,587 @@
         "process",
         "review",
         "web"
-      ]
+      ],
+      "plain": false
+    }
+  ],
+  "permissions": [
+    {
+      "field": "can_read",
+      "capability": "local_read",
+      "label": "Read files"
+    },
+    {
+      "field": "can_write",
+      "capability": "local_write",
+      "label": "Edit files"
+    },
+    {
+      "field": "can_run",
+      "capability": "process",
+      "label": "Run commands"
+    },
+    {
+      "field": "can_browse",
+      "capability": "web",
+      "label": "Use the web"
+    },
+    {
+      "field": "can_review",
+      "capability": "review",
+      "label": "Run reviews"
+    }
+  ],
+  "tools": [
+    {
+      "name": "analyze_apk",
+      "description": "Analyse an already-built Android APK and return a structured report instead of raw bytes",
+      "capabilities": [
+        "local_read"
+      ],
+      "group": "android",
+      "enabled": true
+    },
+    {
+      "name": "analyze_logcat",
+      "description": "Analyse Android logcat for crashes and bugs and return a compact, structured report instead of raw log text",
+      "capabilities": [
+        "local_read",
+        "process"
+      ],
+      "group": "android",
+      "enabled": true
+    },
+    {
+      "name": "architecture_review",
+      "description": "Review how well-structured and organized just-implemented code is",
+      "capabilities": [
+        "review"
+      ],
+      "group": "review",
+      "enabled": true
+    },
+    {
+      "name": "browser_act",
+      "description": "Act on the page in a way clicking and typing cannot",
+      "capabilities": [
+        "web"
+      ],
+      "group": "browser",
+      "enabled": true
+    },
+    {
+      "name": "browser_click",
+      "description": "Click an element",
+      "capabilities": [
+        "web"
+      ],
+      "group": "browser",
+      "enabled": true
+    },
+    {
+      "name": "browser_evaluate",
+      "description": "Run JavaScript in the current page, as if typed into the developer tools console, and get back its value and anything it logged",
+      "capabilities": [
+        "web"
+      ],
+      "group": "browser",
+      "enabled": true
+    },
+    {
+      "name": "browser_inspect",
+      "description": "Look at the current page the way the browser's developer tools do, one panel per call",
+      "capabilities": [
+        "web"
+      ],
+      "group": "browser",
+      "enabled": true
+    },
+    {
+      "name": "browser_open",
+      "description": "Open a URL in the agent's own browser and read the page",
+      "capabilities": [
+        "web"
+      ],
+      "group": "browser",
+      "enabled": true
+    },
+    {
+      "name": "browser_page",
+      "description": "Move around the browser itself rather than the page: 'back', 'forward' and 'reload' for history, and 'tabs', 'switch', 'new_tab', 'close_tab' for windows",
+      "capabilities": [
+        "web"
+      ],
+      "group": "browser",
+      "enabled": true
+    },
+    {
+      "name": "browser_read",
+      "description": "Read the page the browser is on right now, without touching it",
+      "capabilities": [
+        "web"
+      ],
+      "group": "browser",
+      "enabled": true
+    },
+    {
+      "name": "browser_screenshot",
+      "description": "Take a picture, of the whole page or of one element",
+      "capabilities": [
+        "web"
+      ],
+      "group": "browser",
+      "enabled": true
+    },
+    {
+      "name": "browser_type",
+      "description": "Type into a field, or into a rich editor - a document, a slide, a comment box - by naming the element the text should go into",
+      "capabilities": [
+        "web"
+      ],
+      "group": "browser",
+      "enabled": true
+    },
+    {
+      "name": "browser_wait",
+      "description": "Wait for the page to get somewhere before reading it again: text to appear, an element to exist, the address to change, loading to finish",
+      "capabilities": [
+        "web"
+      ],
+      "group": "browser",
+      "enabled": true
+    },
+    {
+      "name": "build_review",
+      "description": "Run a one-shot build-output review with tools disabled",
+      "capabilities": [
+        "process",
+        "review"
+      ],
+      "group": "review",
+      "enabled": true
+    },
+    {
+      "name": "code_review",
+      "description": "Run a one-shot code review with tools disabled",
+      "capabilities": [
+        "review"
+      ],
+      "group": "review",
+      "enabled": true
+    },
+    {
+      "name": "create_rule",
+      "description": "Author a mandatory rule the agent must always follow",
+      "capabilities": [
+        "local_write"
+      ],
+      "group": "edit",
+      "enabled": true
+    },
+    {
+      "name": "create_skill",
+      "description": "Author a reusable '.md' skill under ~/.code-ai/skills so it can be loaded later with use_skill",
+      "capabilities": [
+        "local_write"
+      ],
+      "group": "edit",
+      "enabled": true
+    },
+    {
+      "name": "design_system",
+      "description": "Generate accessible design tokens and colour palettes, check contrast, simulate colour blindness",
+      "capabilities": [
+        "local_write",
+        "process"
+      ],
+      "group": "design",
+      "enabled": true
+    },
+    {
+      "name": "document_convert",
+      "description": "Convert documents; formats come from the file extensions",
+      "capabilities": [
+        "local_read",
+        "local_write",
+        "process",
+        "web"
+      ],
+      "group": "documents",
+      "enabled": true
+    },
+    {
+      "name": "document_create",
+      "description": "Create a polished Word document (.docx) from Markdown",
+      "capabilities": [
+        "local_read",
+        "local_write",
+        "process"
+      ],
+      "group": "documents",
+      "enabled": true
+    },
+    {
+      "name": "document_edit",
+      "description": "Edit an existing Word document (.docx) with a list of operations",
+      "capabilities": [
+        "local_read",
+        "local_write",
+        "process"
+      ],
+      "group": "documents",
+      "enabled": true
+    },
+    {
+      "name": "document_format",
+      "description": "Reformat a Word document (.docx) consistently onto a style preset such as ABNT",
+      "capabilities": [
+        "local_read",
+        "local_write",
+        "process"
+      ],
+      "group": "documents",
+      "enabled": true
+    },
+    {
+      "name": "document_inspect",
+      "description": "Read a Word document's structure and report its formatting problems",
+      "capabilities": [
+        "local_read",
+        "process"
+      ],
+      "group": "documents",
+      "enabled": true
+    },
+    {
+      "name": "edit_code",
+      "description": "Apply an all-or-nothing literal text replacement and return a unified diff",
+      "capabilities": [
+        "local_write"
+      ],
+      "group": "edit",
+      "enabled": true
+    },
+    {
+      "name": "execute_command",
+      "description": "Run a bounded non-interactive command",
+      "capabilities": [
+        "process"
+      ],
+      "group": "commands",
+      "enabled": true
+    },
+    {
+      "name": "generate_documentation",
+      "description": "Generate clear, accurate, structured documentation (Markdown) for the supplied code or design context",
+      "capabilities": [
+        "review"
+      ],
+      "group": "review",
+      "enabled": true
+    },
+    {
+      "name": "git_review",
+      "description": "Inspect the git repository to understand what is going on: branch and working state, recent commit history, and pending changes",
+      "capabilities": [
+        "local_read",
+        "process"
+      ],
+      "group": "commands",
+      "enabled": true
+    },
+    {
+      "name": "index_workspace",
+      "description": "Build or refresh the code index that search_index reads",
+      "capabilities": [
+        "local_read"
+      ],
+      "group": "read",
+      "enabled": true
+    },
+    {
+      "name": "latex_article",
+      "description": "Create a LaTeX article project (IEEE, ACM, Springer, Elsevier, ABNT...) from Markdown",
+      "capabilities": [
+        "local_read",
+        "local_write",
+        "process",
+        "web"
+      ],
+      "group": "latex",
+      "enabled": true
+    },
+    {
+      "name": "latex_compile",
+      "description": "Compile a .tex file to PDF and explain what went wrong",
+      "capabilities": [
+        "local_read",
+        "local_write",
+        "process",
+        "web"
+      ],
+      "group": "latex",
+      "enabled": true
+    },
+    {
+      "name": "latex_setup",
+      "description": "Check or install the TeX distribution LaTeX tools use",
+      "capabilities": [
+        "local_write",
+        "process",
+        "web"
+      ],
+      "group": "latex",
+      "enabled": true
+    },
+    {
+      "name": "list_files",
+      "description": "List bounded files and directories with deterministic ordering",
+      "capabilities": [
+        "local_read"
+      ],
+      "group": "read",
+      "enabled": true
+    },
+    {
+      "name": "pdf_convert",
+      "description": "Create PDFs and turn PDFs into other things; the direction comes from the source and output extensions",
+      "capabilities": [
+        "local_read",
+        "local_write",
+        "process",
+        "web"
+      ],
+      "group": "pdf",
+      "enabled": true
+    },
+    {
+      "name": "pdf_edit",
+      "description": "Edit a PDF with a list of operations (merge, split, watermark, forms, redact, encrypt)",
+      "capabilities": [
+        "local_read",
+        "local_write"
+      ],
+      "group": "pdf",
+      "enabled": true
+    },
+    {
+      "name": "pdf_inspect",
+      "description": "Inspect a PDF: structure, form fields, text, search and page images",
+      "capabilities": [
+        "local_read"
+      ],
+      "group": "pdf",
+      "enabled": true
+    },
+    {
+      "name": "read_file",
+      "description": "Read a UTF-8 text file, optionally bounded to a line range",
+      "capabilities": [
+        "local_read"
+      ],
+      "group": "read",
+      "enabled": true
+    },
+    {
+      "name": "search_code",
+      "description": "Search bounded text or regex matches in workspace source files",
+      "capabilities": [
+        "local_read"
+      ],
+      "group": "read",
+      "enabled": true
+    },
+    {
+      "name": "search_index",
+      "description": "Fast ranked retrieval over the indexed workspace: finds the functions, classes and blocks most relevant to a natural-language question or a set of identifier...",
+      "capabilities": [
+        "local_read"
+      ],
+      "group": "read",
+      "enabled": true
+    },
+    {
+      "name": "slides_create",
+      "description": "Create a professionally designed PowerPoint deck (.pptx) from Markdown or JSON",
+      "capabilities": [
+        "local_read",
+        "local_write",
+        "process"
+      ],
+      "group": "slides",
+      "enabled": true
+    },
+    {
+      "name": "slides_edit",
+      "description": "Edit an existing PowerPoint deck (.pptx) with a list of operations",
+      "capabilities": [
+        "local_read",
+        "local_write",
+        "process"
+      ],
+      "group": "slides",
+      "enabled": true
+    },
+    {
+      "name": "slides_format",
+      "description": "Reformat a PowerPoint deck (.pptx) into a consistent, readable design",
+      "capabilities": [
+        "local_read",
+        "local_write",
+        "process"
+      ],
+      "group": "slides",
+      "enabled": true
+    },
+    {
+      "name": "slides_inspect",
+      "description": "Read a PowerPoint deck's slides and shapes and report its design problems",
+      "capabilities": [
+        "local_read",
+        "process"
+      ],
+      "group": "slides",
+      "enabled": true
+    },
+    {
+      "name": "slides_render",
+      "description": "Render PowerPoint slides as images to look at them, or export the deck to PDF",
+      "capabilities": [
+        "local_read",
+        "local_write",
+        "process",
+        "web"
+      ],
+      "group": "slides",
+      "enabled": true
+    },
+    {
+      "name": "system_information",
+      "description": "Return non-sensitive system information useful for development tasks",
+      "capabilities": [
+        "local_read"
+      ],
+      "group": "read",
+      "enabled": true
+    },
+    {
+      "name": "test_review",
+      "description": "Review test cases for whether they are well constructed: single intent, no unnecessary steps, deterministic and isolated, meaningful assertions, and good cov...",
+      "capabilities": [
+        "review"
+      ],
+      "group": "review",
+      "enabled": true
+    },
+    {
+      "name": "ui_audit",
+      "description": "Audit a web page's UX and accessibility like a reviewer would, at one or more viewports",
+      "capabilities": [
+        "local_read",
+        "process",
+        "web"
+      ],
+      "group": "design",
+      "enabled": true
+    },
+    {
+      "name": "ui_preview",
+      "description": "Screenshot a web page, HTML file or HTML string at several viewports and colour schemes",
+      "capabilities": [
+        "local_read",
+        "local_write",
+        "process",
+        "web"
+      ],
+      "group": "design",
+      "enabled": true
+    },
+    {
+      "name": "use_skill",
+      "description": "Discover and load reusable '.md' skills",
+      "capabilities": [
+        "local_read"
+      ],
+      "group": "read",
+      "enabled": true
+    },
+    {
+      "name": "use_workflow",
+      "description": "Load a saved workflow: a named, step-by-step procedure stored as markdown",
+      "capabilities": [
+        "local_read"
+      ],
+      "group": "read",
+      "enabled": true
+    },
+    {
+      "name": "web_search",
+      "description": "Search the public web for external current or unknown facts",
+      "capabilities": [
+        "web"
+      ],
+      "group": "web",
+      "enabled": true
+    },
+    {
+      "name": "write_file",
+      "description": "Atomically write a UTF-8 text file with optional hash guards",
+      "capabilities": [
+        "local_write"
+      ],
+      "group": "edit",
+      "enabled": true
+    }
+  ],
+  "tool_groups": [
+    {
+      "name": "read",
+      "title": "Read"
+    },
+    {
+      "name": "edit",
+      "title": "Edit"
+    },
+    {
+      "name": "commands",
+      "title": "Commands"
+    },
+    {
+      "name": "web",
+      "title": "Web"
+    },
+    {
+      "name": "review",
+      "title": "Review"
+    },
+    {
+      "name": "browser",
+      "title": "Browser"
+    },
+    {
+      "name": "documents",
+      "title": "Documents"
+    },
+    {
+      "name": "pdf",
+      "title": "PDF"
+    },
+    {
+      "name": "slides",
+      "title": "Slides"
+    },
+    {
+      "name": "design",
+      "title": "Design"
+    },
+    {
+      "name": "latex",
+      "title": "LaTeX"
+    },
+    {
+      "name": "android",
+      "title": "Android"
     }
   ],
   "limits": {

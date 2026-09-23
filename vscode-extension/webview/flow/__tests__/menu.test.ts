@@ -276,8 +276,8 @@ test("a node grows with the number of pin rows", () => {
   );
 
   assert.ok(big.height > small.height);
-  // exec in, model, profession, task.
-  assert.equal(big.inputs.length, 4);
+  // exec in, model, profession, tools, task.
+  assert.equal(big.inputs.length, 5);
   assert.equal(big.outputs.length, 2);
   // Exec pins lead, so the flow reads across the top of the node.
   assert.equal(big.inputs[0].pin.type, "exec");

@@ -42,6 +42,10 @@ class SubagentProfile:
     role_prompt: str
     # Which budget field bounds this profile's wall-clock time.
     timeout_field: str
+    # Exactly these tools, when set; the capabilities still have to allow them.
+    allowed_tools: frozenset[str] | None = None
+    # Taken away whatever the capabilities allow.
+    blocked_tools: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         leaked = self.allowed_capabilities & FORBIDDEN_SUBAGENT_CAPABILITIES

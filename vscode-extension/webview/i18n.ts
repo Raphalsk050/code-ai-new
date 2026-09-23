@@ -106,8 +106,6 @@ const PT: Record<string, string> = {
     "Encerra a execução. O que chegar em `result` é a resposta dela.",
   "An endpoint plus a model name. Feed it into the agents that should run on it; agents with no model wired run on the session's own.":
     "Um endpoint e um nome de modelo. Ligue nos agentes que devem rodar nele; agente sem modelo ligado usa o da sessão.",
-  "One isolated agent, hired for a profession, running one task to a report. Its profession decides what tools it may touch.":
-    "Um agente isolado, contratado para uma profissão, que faz uma tarefa e devolve um relatório. A profissão decide em que ferramentas ele pode mexer.",
   "Runs each output in order, waiting for one branch to finish before the next.":
     "Dispara cada saída em ordem, esperando um ramo terminar antes de começar o próximo.",
   "Two ways forward. `bool` reads a wired condition; `judge` asks a model a yes/no question about the run so far.":
@@ -133,8 +131,6 @@ const PT: Record<string, string> = {
   Temperature: "Temperatura",
   Profession: "Profissão",
   Task: "Tarefa",
-  "Extra instructions": "Instruções extras",
-  "Appended to the profession's own role prompt.": "Entram junto com o papel da profissão.",
   "Max steps": "Passos no máximo",
   "0 keeps the profession's budget.": "0 mantém o orçamento da profissão.",
   "Timeout (s)": "Tempo limite (s)",
@@ -171,12 +167,9 @@ const PT: Record<string, string> = {
   "Read files": "Ler arquivos",
   "Edit files": "Editar arquivos",
   "Run commands": "Rodar comandos",
-  "Search the web": "Buscar na web",
   "Add workspace framing": "Somar o enquadramento do workspace",
   "name this profession": "dê um nome a esta profissão",
   "wired profession": "profissão por fio",
-  "A profession you write yourself: the role prompt is the job, the switches are what it may touch. Wire it into an Agent's profession pin.":
-    "Uma profissão escrita por você: o papel é o trabalho, as chaves dizem no que ela pode mexer. Ligue no pino de profissão de um Agente.",
   "What to call it. Shows on the node and in the run log.":
     "Como chamá-la. Aparece no nó e no log da execução.",
   "Who this agent is and how it works - the same voice as the built-in professions. It is the whole job description.":
@@ -193,6 +186,53 @@ const PT: Record<string, string> = {
     "append emenda no que já está lá, separado por uma linha em branco - é assim que uma transcrição cresce ao longo de um laço.",
   "Put in front of the appended text, e.g. a speaker's name.":
     "Vai na frente do texto emendado, por exemplo o nome de quem fala.",
+
+  // -- generic agents and wired tools -------------------------------------
+  "One isolated agent running one task to a report. You decide who it is (a profession, or your own instructions) and what it may touch (the switches, or Tools nodes wired into `tools`).":
+    "Um agente isolado que faz uma tarefa e devolve um relatório. Você decide quem ele é (uma profissão ou suas próprias instruções) e no que pode mexer (as chaves, ou nós Tools ligados em `tools`).",
+  "A job description you write once: the role prompt is the job, the switches are what it may touch. Wire it into the profession pin of every Agent that shares the job.":
+    "Uma descrição de cargo escrita uma vez: o papel é o trabalho, as chaves dizem no que pode mexer. Ligue no pino de profissão de cada Agente que divide o cargo.",
+  "A hand-picked set of tools. Wire it into an Agent's tools pin and the agent gets exactly these; wire several and they add up.":
+    "Um conjunto de ferramentas escolhido a dedo. Ligue no pino tools de um Agente e ele recebe exatamente estas; ligue vários e elas se somam.",
+  "What to call it on the node and in the log. Empty uses the profession.":
+    "Como chamá-lo no nó e no log. Vazio usa a profissão.",
+  "A ready-made role and toolbox. Custom means you write the role under Instructions. Ignored while a Profession node is wired in.":
+    "Um papel e um conjunto de ferramentas prontos. Personalizado quer dizer que você escreve o papel em Instruções. Ignorado enquanto um nó Profissão estiver ligado.",
+  Instructions: "Instruções",
+  "Custom: who this agent is and how it works. With a profession: added to its role.":
+    "Personalizado: quem é este agente e como ele trabalha. Com profissão: entra junto com o papel dela.",
+  "Custom: the role is what you write under Instructions.":
+    "Personalizado: o papel é o que você escrever em Instruções.",
+  "Never use": "Nunca usar",
+  "Taken away whatever the switches or the wired Tools nodes allow.":
+    "Tiradas do agente, não importa o que as chaves ou os nós Tools liberem.",
+  "Shows on the node, e.g. 'read-only' or 'git'.": "Aparece no nó, ex.: 'leitura' ou 'git'.",
+  Permissions: "Permissões",
+  "Use the web": "Usar a web",
+  "Run reviews": "Rodar revisões",
+  Custom: "Personalizado",
+  "custom agent": "agente personalizado",
+  profession: "profissão",
+  "Back to the profession's": "Voltar ao da profissão",
+  "Tools are wired in: this agent gets exactly those, and the switches do not apply.":
+    "Há ferramentas ligadas: este agente recebe exatamente essas, e as chaves não valem.",
+  "No tools: it can only talk.": "Sem ferramentas: só conversa.",
+  "Gets {0} tools": "Recebe {0} ferramentas",
+  "{0} tools": "{0} ferramentas",
+  "None picked.": "Nenhuma escolhida.",
+  "Search tools": "Buscar ferramentas",
+  "off in settings": "desligada nas configurações",
+  Remove: "Remover",
+  All: "Todas",
+  None: "Nenhuma",
+  Read: "Ler",
+  Edit: "Editar",
+  Commands: "Comandos",
+  Web: "Web",
+  Review: "Revisão",
+  Browser: "Navegador",
+  Documents: "Documentos",
+  Other: "Outras",
 
   // -- the rest of both panels --------------------------------------------
   " — type the name with / to force it.": " — digite o nome com / para forçar.",
@@ -296,7 +336,6 @@ const PT: Record<string, string> = {
   "are saved now but only take effect after restarting Code-AI, which reloads the config without reloading the window.":
     "são salvos agora mas só valem depois de reiniciar o Code-AI, o que recarrega a config sem recarregar a janela.",
   "ask the user": "pergunta ao usuário",
-  "choose a profession": "escolha uma profissão",
   "choose a variable": "escolha uma variável",
   "e.g. do not delete that file — update the config instead":
     "ex.: não apague esse arquivo — atualize o config",

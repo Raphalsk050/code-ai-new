@@ -41,6 +41,7 @@ class NodeKind(StrEnum):
     MODEL = "model"
     PROFESSION = "profession"
     CUSTOM_PROFESSION = "custom_profession"
+    TOOLS = "tools"
     SEQUENCE = "sequence"
     DECISION = "decision"
     LOOP = "loop"
@@ -58,6 +59,7 @@ class PinType(StrEnum):
     BOOL = "bool"
     MODEL = "model"
     PROFESSION = "profession"
+    TOOLS = "tools"
     ANY = "any"
 
 
@@ -71,12 +73,42 @@ PIN_COLORS: dict[str, str] = {
     PinType.STRING: "#E040FB",
     PinType.MODEL: "#3794FF",
     PinType.PROFESSION: "#F5A623",
+    PinType.TOOLS: "#9D7BFF",
     PinType.ANY: "#A0A0A0",
 }
 
 # The types a user-declared variable may have. Deliberately scalar: a graph
 # variable is a knob, not a data structure.
 VARIABLE_TYPES: tuple[str, ...] = (PinType.STRING, PinType.INT, PinType.FLOAT, PinType.BOOL)
+
+# The switches that say what an agent may touch: node field, the capability it
+# grants, and its label. The interpreter only sees field names; the executor
+# turns them into capabilities.
+PERMISSIONS: tuple[tuple[str, str, str], ...] = (
+    ("can_read", "local_read", "Read files"),
+    ("can_write", "local_write", "Edit files"),
+    ("can_run", "process", "Run commands"),
+    ("can_browse", "web", "Use the web"),
+    ("can_review", "review", "Run reviews"),
+)
+PERMISSION_FIELDS: tuple[str, ...] = tuple(field for field, _, _ in PERMISSIONS)
+
+# How the editor groups the tool list, in display order. The first five follow
+# the capability a tool needs; the rest are the on-demand groups by name.
+TOOL_GROUPS: tuple[tuple[str, str], ...] = (
+    ("read", "Read"),
+    ("edit", "Edit"),
+    ("commands", "Commands"),
+    ("web", "Web"),
+    ("review", "Review"),
+    ("browser", "Browser"),
+    ("documents", "Documents"),
+    ("pdf", "PDF"),
+    ("slides", "Slides"),
+    ("design", "Design"),
+    ("latex", "LaTeX"),
+    ("android", "Android"),
+)
 
 
 def can_connect(source: str, target: str) -> bool:
@@ -115,6 +147,8 @@ class PinSpec:
     required: bool = False
     # Sequence's "+ Add pin": the editor may add/remove numbered copies.
     dynamic: bool = False
+    # A data input that takes any number of wires and reads them as a list.
+    multi: bool = False
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -124,6 +158,7 @@ class PinSpec:
             "label": self.label or self.name,
             "required": self.required,
             "dynamic": self.dynamic,
+            "multi": self.multi,
             "color": PIN_COLORS.get(self.type, PIN_COLORS[PinType.ANY]),
         }
 
@@ -138,7 +173,9 @@ class FieldSpec:
     """
 
     name: str
-    kind: str  # text | textarea | number | select | bool | variable | profession | model
+    # text | textarea | number | select | bool | variable | profession | model
+    # | permission (a switch that may be left unset) | tools (a list of tool names)
+    kind: str
     label: str
     default: Any = None
     options: tuple[str, ...] = ()
@@ -207,6 +244,29 @@ def _exec_out(name: str = "out", label: str = "", dynamic: bool = False) -> PinS
     return PinSpec(name=name, type=PinType.EXEC, direction="out", label=label, dynamic=dynamic)
 
 
+def _permission_fields(*, inherit: bool) -> tuple[FieldSpec, ...]:
+    """The five switches. On an Agent they start unset and follow its profession."""
+
+    return tuple(
+        FieldSpec(
+            name=field,
+            kind="permission",
+            label=label,
+            default=None if inherit else field == "can_read",
+        )
+        for field, _, label in PERMISSIONS
+    )
+
+
+_BLOCKED_TOOLS = FieldSpec(
+    name="blocked_tools",
+    kind="tools",
+    label="Never use",
+    default=None,
+    help="Taken away whatever the switches or the wired Tools nodes allow.",
+)
+
+
 _KIND_LIST: tuple[NodeKindSpec, ...] = (
     NodeKindSpec(
         kind=NodeKind.START,
@@ -271,8 +331,9 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
         kind=NodeKind.PROFESSION,
         title="Agent",
         description=(
-            "One isolated agent, hired for a profession, running one task to a "
-            "report. Its profession decides what tools it may touch."
+            "One isolated agent running one task to a report. You decide who it is "
+            "(a profession, or your own instructions) and what it may touch (the "
+            "switches, or Tools nodes wired into `tools`)."
         ),
         category="agent",
         pins=(
@@ -280,25 +341,41 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
             _exec_out(),
             PinSpec(name="model", type=PinType.MODEL, direction="in"),
             PinSpec(name="profession", type=PinType.PROFESSION, direction="in"),
+            PinSpec(name="tools", type=PinType.TOOLS, direction="in", multi=True),
             PinSpec(name="task", type=PinType.STRING, direction="in", required=True),
             PinSpec(name="report", type=PinType.STRING, direction="out"),
         ),
         fields=(
             FieldSpec(
+                name="name",
+                kind="text",
+                label="Name",
+                default="",
+                help="What to call it on the node and in the log. Empty uses the profession.",
+            ),
+            FieldSpec(
                 name="profession",
                 kind="profession",
                 label="Profession",
                 default="",
-                help="Ignored while a Profession node is wired to the profession pin.",
+                help=(
+                    "A ready-made role and toolbox. Custom means you write the role "
+                    "under Instructions. Ignored while a Profession node is wired in."
+                ),
             ),
             FieldSpec(name="task", kind="textarea", label="Task", default=""),
             FieldSpec(
                 name="role_override",
                 kind="textarea",
-                label="Extra instructions",
+                label="Instructions",
                 default="",
-                help="Appended to the profession's own role prompt.",
+                help=(
+                    "Custom: who this agent is and how it works. With a profession: "
+                    "added to its role."
+                ),
             ),
+            *_permission_fields(inherit=True),
+            _BLOCKED_TOOLS,
             FieldSpec(
                 name="max_steps",
                 kind="number",
@@ -319,8 +396,9 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
         kind=NodeKind.CUSTOM_PROFESSION,
         title="Profession",
         description=(
-            "A profession you write yourself: the role prompt is the job, the "
-            "switches are what it may touch. Wire it into an Agent's profession pin."
+            "A job description you write once: the role prompt is the job, the "
+            "switches are what it may touch. Wire it into the profession pin of "
+            "every Agent that shares the job."
         ),
         category="agent",
         pins=(PinSpec(name="profession", type=PinType.PROFESSION, direction="out"),),
@@ -342,10 +420,8 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
                     "built-in professions. It is the whole job description."
                 ),
             ),
-            FieldSpec(name="can_read", kind="bool", label="Read files", default=True),
-            FieldSpec(name="can_write", kind="bool", label="Edit files", default=False),
-            FieldSpec(name="can_run", kind="bool", label="Run commands", default=False),
-            FieldSpec(name="can_browse", kind="bool", label="Search the web", default=False),
+            *_permission_fields(inherit=False),
+            _BLOCKED_TOOLS,
             FieldSpec(
                 name="framing",
                 kind="bool",
@@ -371,6 +447,26 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
                 default=0,
                 help="0 keeps the worker budget from settings.",
             ),
+        ),
+    ),
+    NodeKindSpec(
+        kind=NodeKind.TOOLS,
+        title="Tools",
+        description=(
+            "A hand-picked set of tools. Wire it into an Agent's tools pin and the "
+            "agent gets exactly these; wire several and they add up."
+        ),
+        category="agent",
+        pins=(PinSpec(name="tools", type=PinType.TOOLS, direction="out"),),
+        fields=(
+            FieldSpec(
+                name="name",
+                kind="text",
+                label="Name",
+                default="",
+                help="Shows on the node, e.g. 'read-only' or 'git'.",
+            ),
+            FieldSpec(name="tools", kind="tools", label="Tools", default=None),
         ),
     ),
     NodeKindSpec(
@@ -533,7 +629,10 @@ NODE_KINDS: dict[str, NodeKindSpec] = {str(spec.kind): spec for spec in _KIND_LI
 
 
 def catalog_payload(
-    professions: list[dict[str, Any]] | None = None, *, language: str = "en"
+    professions: list[dict[str, Any]] | None = None,
+    *,
+    tools: list[dict[str, Any]] | None = None,
+    language: str = "en",
 ) -> dict[str, Any]:
     """What ``graphCatalog`` serves: everything the editor needs to draw a graph.
 
@@ -549,6 +648,12 @@ def catalog_payload(
         "pin_colors": {str(key): value for key, value in PIN_COLORS.items()},
         "variable_types": [str(item) for item in VARIABLE_TYPES],
         "professions": professions or [],
+        "permissions": [
+            {"field": field, "capability": capability, "label": label}
+            for field, capability, label in PERMISSIONS
+        ],
+        "tools": tools or [],
+        "tool_groups": [{"name": name, "title": title} for name, title in TOOL_GROUPS],
         "limits": {"nodes": MAX_NODES, "edges": MAX_EDGES, "variables": MAX_VARIABLES},
     }
 

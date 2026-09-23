@@ -198,6 +198,10 @@ GRAPH_PROFESSIONS: tuple[SubagentProfile, ...] = (
     _TESTER,
 )
 
+# What an Agent with no profession starts from: its toolbox, and its role when
+# the node's own instructions are empty.
+PLAIN_PROFESSION = _GENERALIST
+
 
 def graph_profile_registry() -> SubagentProfileRegistry:
     """Graph professions plus the three profiles the chat agent delegates to."""
@@ -224,6 +228,7 @@ def professions_payload() -> list[dict[str, Any]]:
                 "read_only": profile.read_only,
                 "max_model_steps": profile.max_model_steps,
                 "capabilities": sorted(str(item) for item in profile.allowed_capabilities),
+                "plain": profile is PLAIN_PROFESSION,
             }
         )
     return rows

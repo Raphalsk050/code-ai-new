@@ -109,7 +109,7 @@ async function lastGraph(ui) {
 }
 
 /** Right-click somewhere on the canvas and wait for the menu. */
-async function openCanvasMenu(ui, at = { x: 600, y: 300 }) {
+async function openCanvasMenu(ui, at = { x: 600, y: 460 }) {
   await ui.page.mouse.click(at.x, at.y, { button: "right" });
   await ui.page.waitForSelector('[data-testid="context-menu"]');
 }
@@ -275,7 +275,7 @@ export const tests = {
   // 2 -----------------------------------------------------------------
   "the right-click menu adds a node where it was opened": async (ui, assert) => {
     await boot(ui);
-    await openCanvasMenu(ui, { x: 600, y: 300 });
+    await openCanvasMenu(ui, { x: 600, y: 460 });
     await ui.shot("02-context-menu");
 
     await ui.page.click('[data-testid="menu-kind-loop"]');
@@ -1236,5 +1236,79 @@ export const tests = {
       "an idle node is showing activity"
     );
 
+  },
+  // -------------------------------------------------------------------
+  // Generic agents: the switches follow the profession until set, and a
+  // Tools node wired into `tools` is the whole grant.
+  "an agent's switches follow its profession until one is set": async (ui, assert) => {
+    await ui.page.setViewportSize({ width: 1400, height: 950 });
+    await boot(ui);
+    await ui.page.click('[data-testid="node-n3"] .flow-node-box');
+    await ui.page.waitForSelector('[data-testid="permissions"]');
+
+    // The architect reads and browses, and nothing on the node says otherwise.
+    assert(await ui.page.isChecked('[data-testid="field-can_read"]'), "read is off");
+    assert(!(await ui.page.isChecked('[data-testid="field-can_write"]')), "write is on");
+
+    await ui.page.click('[data-testid="permissions"] .flow-switch-row:nth-child(2) .flow-switch');
+    let sent = await lastGraph(ui);
+    let agent = sent.nodes.find((item) => item.id === "n3");
+    assert(agent.data.can_write === true, `can_write is ${agent.data.can_write}`);
+    await ui.page.waitForSelector('[data-testid="reset-can_write"]');
+    await ui.shot("40-agent-permissions");
+
+    await ui.page.click('[data-testid="reset-can_write"]');
+    sent = await lastGraph(ui);
+    agent = sent.nodes.find((item) => item.id === "n3");
+    assert(!("can_write" in agent.data), `can_write stayed: ${JSON.stringify(agent.data)}`);
+  },
+
+  "tools nodes wire into an agent and stack": async (ui, assert) => {
+    await ui.page.setViewportSize({ width: 1400, height: 950 });
+    const doc = graph(
+      [
+        node("n1", "start", [0, 0]),
+        node("n2", "profession", [300, 0], { profession: "code_writer", task: "t" }),
+        node("n3", "tools", [0, 220], { name: "read-only", tools: ["read_file"] }),
+        node("n4", "tools", [0, 380], { tools: [] }),
+        node("n5", "end", [600, 0]),
+      ],
+      [wire("e1", ["n1", "out"], ["n2", "in"]), wire("e2", ["n2", "out"], ["n5", "in"])]
+    );
+    await boot(ui, doc);
+
+    // Pick tools in the second node through its picker.
+    await ui.page.click('[data-testid="node-n4"] .flow-node-box');
+    await ui.page.fill('[data-testid="search-tools"]', "web_search");
+    await ui.page.check('[data-testid="tool-tools-web_search"]');
+    await ui.page.fill('[data-testid="search-tools"]', "");
+    await ui.page.click('[data-testid="group-all-tools-edit"]');
+    let sent = await lastGraph(ui);
+    const picked = sent.nodes.find((item) => item.id === "n4").data.tools;
+    assert(picked.includes("web_search"), `web_search not picked: ${JSON.stringify(picked)}`);
+    assert(picked.includes("write_file"), `the edit group was not added: ${JSON.stringify(picked)}`);
+    await ui.shot("41-tools-picker");
+
+    for (const source of ["n3", "n4"]) {
+      await dragPins(
+        ui,
+        `[data-testid="node-${source}"] [data-testid="pin-out-tools"]`,
+        '[data-testid="node-n2"] [data-testid="pin-in-tools"]'
+      );
+    }
+    sent = await lastGraph(ui);
+    const wires = sent.edges.filter((edge) => edge.to[0] === "n2" && edge.to[1] === "tools");
+    assert(wires.length === 2, `the tools pin holds ${wires.length} wires`);
+
+    await ui.page.click('[data-testid="node-n2"] .flow-node-box');
+    await ui.page.waitForSelector('[data-testid="permissions-locked"]');
+    assert(
+      await ui.page.isDisabled('[data-testid="field-can_run"]'),
+      "the switches still work while tools are wired"
+    );
+    const granted = await ui.page.locator('[data-testid="granted-toggle"]').textContent();
+    assert(granted.includes(String(picked.length + 1)), `granted says ${granted}`);
+    await ui.page.click('[data-testid="granted-toggle"]');
+    await ui.shot("42-agent-with-wired-tools");
   },
 };

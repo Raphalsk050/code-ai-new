@@ -12,6 +12,8 @@ from code_ai.core.graph.runtime import (
     ModelBinding,
     ProfessionBinding,
     RunStatus,
+    ToolAccess,
+    ToolsetBinding,
 )
 
 PROFESSIONS = tuple(row["name"] for row in professions_payload())
@@ -53,6 +55,8 @@ class FakeExecutor:
         timeout_s: int,
         cancel: asyncio.Event,
         custom: ProfessionBinding | None = None,
+        access: ToolAccess | None = None,
+        name: str = "",
     ) -> AgentOutcome:
         self.agent_calls.append(
             {
@@ -64,6 +68,8 @@ class FakeExecutor:
                 "model": model,
                 "max_steps": max_steps,
                 "timeout_s": timeout_s,
+                "access": access,
+                "name": name,
             }
         )
         scripted = self.reports.get(node_id, self.reports.get(profession))
@@ -1009,3 +1015,92 @@ async def test_a_profession_written_in_the_editor_reaches_the_executor_verbatim(
     assert (hired.can_read, hired.can_write, hired.can_run) == (True, True, False)
     assert hired.max_steps == 7
     assert hired.framing is False
+
+
+# -- what an agent may touch ------------------------------------------------
+
+
+async def test_an_agent_hands_over_only_the_switches_it_set() -> None:
+    graph = doc(
+        [
+            node("start", "start"),
+            node(
+                "agent",
+                "profession",
+                profession="architect",
+                task="t",
+                can_write=True,
+                can_run=False,
+                can_read=None,
+                blocked_tools=["web_search", "web_search", " "],
+                name="Planner",
+            ),
+            node("end", "end"),
+        ],
+        [
+            wire("e1", ("start", "out"), ("agent", "in")),
+            wire("e2", ("agent", "out"), ("end", "in")),
+        ],
+    )
+    executor = FakeExecutor()
+
+    await run(graph, executor)
+
+    access = executor.agent_calls[0]["access"]
+    assert access.switches == {"can_write": True, "can_run": False}
+    assert access.toolsets == ()
+    assert access.blocked == ("web_search",)
+    assert executor.agent_calls[0]["name"] == "Planner"
+
+
+async def test_wired_tools_nodes_reach_the_agent_in_order_and_light_their_wires() -> None:
+    graph = doc(
+        [
+            node("start", "start"),
+            node("git", "tools", name="git", tools=["git_review", "read_file"]),
+            node("web", "tools", tools=["web_search", "read_file"]),
+            node("agent", "profession", task="t"),
+            node("end", "end"),
+        ],
+        [
+            wire("e1", ("start", "out"), ("agent", "in")),
+            wire("e2", ("git", "tools"), ("agent", "tools"), "data"),
+            wire("e3", ("web", "tools"), ("agent", "tools"), "data"),
+            wire("e4", ("agent", "out"), ("end", "in")),
+        ],
+    )
+    executor = FakeExecutor()
+
+    outcome, recorder, _ = await run(graph, executor)
+
+    assert outcome.status is RunStatus.COMPLETED
+    access = executor.agent_calls[0]["access"]
+    assert access.toolsets == (
+        ToolsetBinding(name="git", tools=("git_review", "read_file")),
+        ToolsetBinding(name="", tools=("web_search", "read_file")),
+    )
+    assert access.tool_names() == ("git_review", "read_file", "web_search")
+    lit = {payload["edge_id"] for payload in recorder.of("graph.edge.active")}
+    assert {"e2", "e3"} <= lit
+
+
+async def test_an_agent_with_no_profession_passes_its_instructions_through() -> None:
+    graph = doc(
+        [
+            node("start", "start"),
+            node("agent", "profession", task="t", role_override="You are an auditor."),
+            node("end", "end"),
+        ],
+        [
+            wire("e1", ("start", "out"), ("agent", "in")),
+            wire("e2", ("agent", "out"), ("end", "in")),
+        ],
+    )
+    executor = FakeExecutor()
+
+    outcome, _, _ = await run(graph, executor)
+
+    assert outcome.status is RunStatus.COMPLETED
+    call = executor.agent_calls[0]
+    assert call["profession"] == ""
+    assert call["extra"] == "You are an auditor."

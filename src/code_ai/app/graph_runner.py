@@ -21,7 +21,7 @@ from uuid import uuid4
 
 from code_ai.config.models import AppConfig, GraphConfig
 from code_ai.core.graph.compile import ValidationIssue, compile_graph
-from code_ai.core.graph.professions import graph_profile_registry
+from code_ai.core.graph.professions import PLAIN_PROFESSION, REPORT_RULE, graph_profile_registry
 from code_ai.core.graph.program import GraphProgram
 from code_ai.core.graph.runtime import (
     AgentOutcome,
@@ -31,7 +31,9 @@ from code_ai.core.graph.runtime import (
     ModelBinding,
     ProfessionBinding,
     RunStatus,
+    ToolAccess,
 )
+from code_ai.core.graph.toolbox import apply_access, capabilities_of, grantable_names
 from code_ai.core.orchestration import WIND_DOWN_TIME_BUDGET
 from code_ai.core.subagents.naming import generate_agent_name
 from code_ai.core.subagents.profiles import SubagentProfile, SubagentProfileRegistry
@@ -39,7 +41,6 @@ from code_ai.core.subagents.runtime import SubagentRuntime
 from code_ai.events.bus import AsyncEventBus
 from code_ai.events.models import EventEnvelope
 from code_ai.providers.base import ModelProvider
-from code_ai.tools.base import ToolCapability
 from code_ai.tools.output import bound_text
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,9 @@ _FORWARDED = frozenset(
 
 # Grace over a node's own timeout before the run stops waiting for it.
 _HARD_GRACE_SECONDS = 30.0
+
+# Enough to show what an agent was given; the count says if there was more.
+_MAX_TOOLS_REPORTED = 80
 
 # A judge answers with one word; anything longer is the model ignoring the ask.
 _JUDGE_SYSTEM = (
@@ -153,14 +157,19 @@ class GraphNodeExecutor:
         max_steps: int,
         timeout_s: int,
         cancel: asyncio.Event,
+        access: ToolAccess | None = None,
+        name: str = "",
     ) -> AgentOutcome:
         if custom is not None:
             try:
                 profile = _profile_from(custom)
             except ValueError as exc:
                 return AgentOutcome(status="rejected", error=str(exc))
-        else:
+        elif profession.strip():
             profile = self._profiles.get(profession)
+        else:
+            profile = _custom_agent(extra_instructions)
+            extra_instructions = ""
         # Only a profession written in the editor may go unframed; a built-in
         # one is written expecting the framing and breaks without it.
         raw_prompt = custom is not None and not custom.framing
@@ -172,11 +181,13 @@ class GraphNodeExecutor:
                     f"{', '.join(self._profiles.names())}."
                 ),
             )
-        name = generate_agent_name()
+        profile = apply_access(profile, access, self._runtime.base_registry)
+        label = name.strip() or profile.name
+        agent_name = generate_agent_name()
         try:
             provider, overrides = self._endpoint_for(model)
         except ValueError as exc:
-            return AgentOutcome(status="rejected", error=str(exc), agent_name=name)
+            return AgentOutcome(status="rejected", error=str(exc), agent_name=agent_name)
 
         built = self._runtime.build(
             profile,
@@ -188,17 +199,20 @@ class GraphNodeExecutor:
             config_overrides=overrides,
             raw_prompt=raw_prompt,
         )
-        forwarder = self._forwarder(node_id, name, profile.name)
+        tools = built.orchestrator.tool_registry.names()
+        forwarder = self._forwarder(node_id, agent_name, label)
         built.event_bus.subscribe(forwarder)
         await self._bus.emit(
             "graph.agent.started",
             {
                 "run_id": self._run_id,
                 "node_id": node_id,
-                "agent_name": name,
-                "profession": profile.name,
+                "agent_name": agent_name,
+                "profession": label,
                 "model": model.label() if model else self._config.model,
                 "writes": profile.writes,
+                "tools": tools[:_MAX_TOOLS_REPORTED],
+                "tool_count": len(tools),
                 "task": bound_text(task, 500),
             },
             source="graph",
@@ -218,7 +232,7 @@ class GraphNodeExecutor:
                 status="timeout",
                 error=f"The agent exceeded its {built.timeout_seconds}s budget.",
                 usage=built.usage.to_dict(),
-                agent_name=name,
+                agent_name=agent_name,
             )
         except asyncio.CancelledError:
             child_cancel.set()
@@ -229,7 +243,7 @@ class GraphNodeExecutor:
                 status="failed",
                 error=str(exc) or type(exc).__name__,
                 usage=built.usage.to_dict(),
-                agent_name=name,
+                agent_name=agent_name,
             )
         finally:
             mirror.cancel()
@@ -239,14 +253,14 @@ class GraphNodeExecutor:
 
         usage = built.usage.to_dict()
         if result.cancelled:
-            return AgentOutcome(status="cancelled", usage=usage, agent_name=name)
+            return AgentOutcome(status="cancelled", usage=usage, agent_name=agent_name)
         if result.error is not None:
             return AgentOutcome(
                 status="failed",
                 summary=result.text or "",
                 error=result.error,
                 usage=usage,
-                agent_name=name,
+                agent_name=agent_name,
             )
         if result.wind_down_reason == WIND_DOWN_TIME_BUDGET:
             return AgentOutcome(
@@ -254,7 +268,7 @@ class GraphNodeExecutor:
                 summary=result.text or "",
                 error=f"The agent exceeded its {built.timeout_seconds}s budget.",
                 usage=usage,
-                agent_name=name,
+                agent_name=agent_name,
             )
         if result.wind_down_reason is not None:
             return AgentOutcome(
@@ -262,10 +276,10 @@ class GraphNodeExecutor:
                 summary=result.text or "",
                 error=f"The agent stopped early: {result.wind_down_reason.replace('_', ' ')}.",
                 usage=usage,
-                agent_name=name,
+                agent_name=agent_name,
             )
         return AgentOutcome(
-            status="completed", summary=result.text or "", usage=usage, agent_name=name
+            status="completed", summary=result.text or "", usage=usage, agent_name=agent_name
         )
 
     async def judge(
@@ -438,6 +452,7 @@ class GraphRunner:
     ) -> None:
         self.run_id = run_id or uuid4().hex[:12]
         self._raw = raw_graph
+        self._runtime = runtime
         self._config = config
         self._graph_config: GraphConfig = config.graph
         self._profiles = profiles or graph_profile_registry()
@@ -462,9 +477,11 @@ class GraphRunner:
     # -- validation -------------------------------------------------------
 
     def validate(self) -> list[ValidationIssue]:
+        runtime = self._runtime
         program, issues = compile_graph(
             self._raw,
             professions=tuple(self._profiles.names()),
+            tools=grantable_names(runtime.base_registry) if runtime is not None else (),
             max_loop_iterations=self._graph_config.max_loop_iterations,
         )
         self._program = program
@@ -551,23 +568,30 @@ def _profile_from(binding: ProfessionBinding) -> SubagentProfile:
     role = binding.role.strip()
     if not role:
         raise ValueError("This profession has no role written for it.")
-    capabilities = {ToolCapability.LOCAL_READ} if binding.can_read else set()
-    if binding.can_write:
-        capabilities.add(ToolCapability.LOCAL_WRITE)
-    if binding.can_run:
-        capabilities.add(ToolCapability.PROCESS)
-    if binding.can_browse:
-        capabilities.add(ToolCapability.WEB)
-    if not capabilities:
-        raise ValueError("This profession may not use any tool; turn at least one switch on.")
     name = binding.name.strip() or "custom"
     return SubagentProfile(
         name=name,
         description=f"Custom profession defined in the graph: {name}.",
-        allowed_capabilities=frozenset(capabilities),
+        # No switch on is a talking-only agent, which is what a conversation wants.
+        allowed_capabilities=capabilities_of(binding.switches()),
         max_model_steps=binding.max_steps if binding.max_steps > 0 else 40,
         timeout_field="subagent_worker_timeout_s",
         role_prompt=role,
+        blocked_tools=frozenset(binding.blocked),
+    )
+
+
+def _custom_agent(instructions: str) -> SubagentProfile:
+    """An Agent with no profession: the plain toolbox, its instructions as the role."""
+
+    text = instructions.strip()
+    if not text:
+        return PLAIN_PROFESSION
+    return dataclasses.replace(
+        PLAIN_PROFESSION,
+        name="custom",
+        description="Agent defined by its own instructions in the graph.",
+        role_prompt=text + REPORT_RULE,
     )
 
 

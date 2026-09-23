@@ -201,6 +201,83 @@ input[type="checkbox"] { width: auto; }
 .flow-issue.error .marker { background: var(--danger); }
 .flow-issue.warning .marker { background: var(--warn); }
 
+/* ---- permissions and tools ---- */
+.flow-link {
+  border: 0; background: transparent; padding: 0 4px; color: var(--accent);
+}
+.flow-link:hover:not(:disabled) { background: transparent; text-decoration: underline; }
+.flow-tag {
+  font-size: 10px; color: var(--muted); white-space: nowrap;
+  border: 1px solid var(--border); border-radius: 999px; padding: 0 6px;
+}
+.flow-switches { display: flex; flex-direction: column; gap: 5px; }
+.flow-switches.locked { opacity: .45; }
+.flow-switch-row { display: flex; align-items: center; gap: 6px; min-height: 20px; }
+.flow-switch {
+  position: relative; display: flex; align-items: center; gap: 8px; flex: 1 1 auto;
+  color: var(--vscode-foreground); font-size: 12px; cursor: pointer;
+}
+.flow-switch input {
+  position: absolute; inset: 0; width: 100%; height: 100%; margin: 0;
+  opacity: 0; cursor: pointer;
+}
+.flow-switch input:disabled { cursor: default; }
+.flow-switch .track {
+  position: relative; flex: 0 0 auto; width: 28px; height: 16px; border-radius: 999px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  transition: background .15s ease, border-color .15s ease;
+}
+.flow-switch .thumb {
+  position: absolute; top: 1px; left: 1px; width: 12px; height: 12px; border-radius: 50%;
+  background: var(--muted); transition: transform .15s ease, background .15s ease;
+}
+.flow-switch input:checked + .track { background: var(--accent); border-color: var(--accent); }
+.flow-switch input:checked + .track .thumb { transform: translateX(12px); background: #fff; }
+.flow-switch input:focus-visible + .track {
+  outline: 1px solid var(--vscode-focusBorder, var(--accent)); outline-offset: 2px;
+}
+.flow-switch-row.explicit .text { font-weight: 600; }
+.flow-granted-head {
+  border: 0; background: transparent; padding: 2px 0; color: var(--muted);
+  font-size: 11px; text-align: left;
+}
+.flow-granted-head:hover:not(:disabled) { background: transparent; color: var(--vscode-foreground); }
+.flow-granted-head:disabled { opacity: 1; }
+.flow-granted { display: flex; flex-direction: column; gap: 4px; }
+.flow-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.flow-chip {
+  display: inline-flex; align-items: center; gap: 2px; padding: 1px 7px;
+  font-size: 10.5px; font-family: var(--vscode-editor-font-family, monospace);
+  border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border);
+}
+.flow-chip.unknown { border-color: var(--warn); color: var(--warn); }
+.flow-chip-x {
+  border: 0; background: transparent; padding: 0 0 0 3px; line-height: 1; color: var(--muted);
+}
+.flow-chip-x:hover:not(:disabled) { background: transparent; color: var(--danger); }
+.flow-tool-picker { display: flex; flex-direction: column; gap: 6px; }
+.flow-tool-groups {
+  display: flex; flex-direction: column; max-height: 340px; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: 6px;
+}
+.flow-tool-group + .flow-tool-group { border-top: 1px solid var(--border); }
+.flow-tool-group-head { display: flex; align-items: center; padding-right: 4px; }
+.flow-tool-group-toggle {
+  flex: 1 1 auto; display: flex; align-items: center; gap: 6px; text-align: left;
+  border: 0; border-radius: 0; background: transparent; padding: 5px 8px;
+}
+.flow-tool-group-toggle .caret { color: var(--muted); width: 8px; }
+.flow-tool-group-toggle .title { flex: 1 1 auto; }
+.flow-tool-group-toggle .count { font-size: 10.5px; color: var(--muted); }
+.flow-tool-group-toggle .count.some { color: var(--accent); font-weight: 600; }
+.flow-tool-row {
+  display: flex; align-items: center; gap: 6px; padding: 3px 8px 3px 22px; cursor: pointer;
+  font-family: var(--vscode-editor-font-family, monospace); font-size: 11px;
+}
+.flow-tool-row:hover { background: var(--surface-2); }
+.flow-tool-row .name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
+.flow-tool-row.off .name { opacity: .55; text-decoration: line-through; }
+
 /* ---- log ---- */
 .flow-log {
   flex: 0 0 auto; max-height: 34vh; display: flex; flex-direction: column;

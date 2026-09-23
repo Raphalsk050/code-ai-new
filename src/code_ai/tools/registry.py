@@ -74,7 +74,13 @@ class ToolRegistry:
     def get(self, name: str) -> BaseTool | None:
         return self._tools.get(name) if name not in self._disabled else None
 
-    def select(self, allowed_capabilities: frozenset[ToolCapability]) -> ToolRegistry:
+    def select(
+        self,
+        allowed_capabilities: frozenset[ToolCapability],
+        *,
+        names: frozenset[str] | None = None,
+        exclude: frozenset[str] = frozenset(),
+    ) -> ToolRegistry:
         """Return a new registry holding only tools this capability set permits.
 
         A tool is included when it declares at least one capability and *all* of
@@ -83,9 +89,14 @@ class ToolRegistry:
         the interactive-terminal tools, an explorer never sees the writers. Tool
         instances are shared by reference - they are stateless, so no isolation is
         lost, and nothing that carries per-session state is ever handed over.
+
+        ``names`` narrows it further to exactly those tools, and ``exclude``
+        takes tools out whatever else allows them.
         """
         subset = ToolRegistry(_disabled=self._disabled)
         for name in self.registered_names():
+            if name in exclude or (names is not None and name not in names):
+                continue
             tool = self._tools[name]
             caps = frozenset(getattr(tool, "capabilities", frozenset()))
             if caps and caps <= allowed_capabilities:

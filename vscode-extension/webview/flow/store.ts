@@ -269,11 +269,12 @@ export function reduce(state: EditorState, action: Action): EditorState {
       let graph: FlowGraph = { ...state.graph, nodes: [...state.graph.nodes, node] };
       if (action.wire) {
         const { newPin, kind: wireKind, other, otherIsSource } = action.wire;
-        graph = insertEdge(graph, {
-          kind: wireKind,
-          from: otherIsSource ? other : [id, newPin],
-          to: otherIsSource ? [id, newPin] : other,
-        });
+        const to: [string, string] = otherIsSource ? [id, newPin] : other;
+        graph = insertEdge(
+          graph,
+          { kind: wireKind, from: otherIsSource ? other : [id, newPin], to },
+          acceptsMany(graph, state.catalog, to[0], to[1])
+        );
       }
       return { ...withHistory(state, graph), selection: [id], selectedEdge: null };
     }
@@ -299,11 +300,13 @@ export function reduce(state: EditorState, action: Action): EditorState {
     }
 
     case "setNodeData": {
-      const nodes = state.graph.nodes.map((node) =>
-        node.id === action.id
-          ? { ...node, data: { ...node.data, [action.key]: action.value } }
-          : node
-      );
+      // `undefined` removes the key: an agent's switch goes back to inheriting.
+      const nodes = state.graph.nodes.map((node) => {
+        if (node.id !== action.id) return node;
+        const data = { ...node.data, [action.key]: action.value };
+        if (action.value === undefined) delete data[action.key];
+        return { ...node, data };
+      });
       let graph: FlowGraph = { ...state.graph, nodes };
       // Shrinking a Sequence drops the wires that hung off the pins it no
       // longer has, rather than leaving edges pointing at nothing.
@@ -336,7 +339,11 @@ export function reduce(state: EditorState, action: Action): EditorState {
     case "connect": {
       const rejection = connectionProblem(state, action.edge);
       if (rejection) return { ...state, notice: { level: "warn", text: rejection } };
-      return withHistory(state, insertEdge(state.graph, action.edge));
+      const [toId, toPin] = action.edge.to;
+      return withHistory(
+        state,
+        insertEdge(state.graph, action.edge, acceptsMany(state.graph, state.catalog, toId, toPin))
+      );
     }
 
     case "deleteEdge": {
@@ -531,17 +538,38 @@ export function reduce(state: EditorState, action: Action): EditorState {
  *
  * An exec output drives exactly one wire and a data input takes exactly one
  * value, so connecting to an occupied pin replaces rather than stacks - the
- * alternative is a graph that looks connected twice and runs once.
+ * alternative is a graph that looks connected twice and runs once. A `multi`
+ * input (an agent's tools) is the exception: it stacks.
  */
-export function insertEdge(graph: FlowGraph, edge: Omit<FlowEdge, "id">): FlowGraph {
+export function insertEdge(
+  graph: FlowGraph,
+  edge: Omit<FlowEdge, "id">,
+  multi = false
+): FlowGraph {
   const id = nextId("e", graph.edges.map((item) => item.id));
   const edges = graph.edges.filter((item) => {
     if (edge.kind === "exec") {
       return !(item.from[0] === edge.from[0] && item.from[1] === edge.from[1]);
     }
+    if (multi) return true;
     return !(item.to[0] === edge.to[0] && item.to[1] === edge.to[1]);
   });
   return { ...graph, edges: [...edges, { ...edge, id }] };
+}
+
+/** Whether an input stacks wires instead of replacing the one it has. */
+export function acceptsMany(
+  graph: FlowGraph,
+  catalog: Catalog | null,
+  nodeId: string,
+  pinName: string
+): boolean {
+  const node = graph.nodes.find((item) => item.id === nodeId);
+  const spec = node ? catalog?.kinds.get(node.kind) : undefined;
+  if (!node || !spec) return false;
+  return pinsOf(spec, node).some(
+    (pin) => pin.name === pinName && pin.direction === "in" && Boolean(pin.multi)
+  );
 }
 
 /** The type a pin really carries, after a variable node's own type is resolved. */

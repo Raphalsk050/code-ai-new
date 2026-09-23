@@ -386,3 +386,171 @@ def test_read_only_professions_never_hold_write_capabilities() -> None:
         if row["read_only"]:
             assert "local_write" not in row["capabilities"], row["name"]
             assert "process" not in row["capabilities"], row["name"]
+
+
+# -- generic agents and wired tools -----------------------------------------
+
+
+def with_tools(*toolsets: dict[str, Any]) -> dict[str, Any]:
+    """The base graph plus one Tools node per mapping, each wired into the agent."""
+
+    doc = graph()
+    for index, data in enumerate(toolsets):
+        node_id = f"t{index}"
+        doc["nodes"].append({"id": node_id, "kind": "tools", "pos": [0, 400], "data": data})
+        doc["edges"].append(
+            {
+                "id": f"et{index}",
+                "kind": "data",
+                "from": [node_id, "tools"],
+                "to": ["n3", "tools"],
+            }
+        )
+    return doc
+
+
+def warnings(issues: list[Any]) -> list[str]:
+    return [item.message for item in issues if item.severity == "warning"]
+
+
+def test_the_tools_pin_takes_several_wires_in_file_order() -> None:
+    doc = with_tools({"tools": ["read_file"]}, {"tools": ["web_search"]})
+    program, issues = compile_ok(doc)
+
+    assert errors(issues) == []
+    assert program.nodes["n3"].multi_in["tools"] == (
+        ("t0", "tools", "et0"),
+        ("t1", "tools", "et1"),
+    )
+    assert "tools" not in program.nodes["n3"].data_in
+
+
+def test_a_single_data_input_still_takes_one_wire() -> None:
+    doc = graph()
+    doc["nodes"].append(
+        {"id": "n6", "kind": "model", "pos": [0, 300], "data": {"model": "other"}}
+    )
+    doc["edges"].append(
+        {"id": "e6", "kind": "data", "from": ["n6", "model"], "to": ["n3", "model"]}
+    )
+    program, issues = compile_graph(doc, professions=PROFESSIONS)
+
+    assert program is None
+    assert "A data input takes one value." in errors(issues)
+
+
+def test_the_same_wire_twice_into_a_multi_pin_is_refused() -> None:
+    doc = with_tools({"tools": ["read_file"]})
+    doc["edges"].append(
+        {"id": "dup", "kind": "data", "from": ["t0", "tools"], "to": ["n3", "tools"]}
+    )
+    program, issues = compile_graph(doc, professions=PROFESSIONS)
+
+    assert program is None
+    assert "That connection is drawn twice." in errors(issues)
+
+
+def test_an_agent_without_a_profession_is_a_custom_agent() -> None:
+    doc = graph()
+    doc["nodes"][2]["data"] = {"task": "audit it", "role_override": "You are an auditor."}
+    _, issues = compile_ok(doc)
+
+    assert errors(issues) == []
+
+
+def test_an_unknown_profession_is_still_refused() -> None:
+    doc = graph()
+    doc["nodes"][2]["data"]["profession"] = "astronaut"
+    program, issues = compile_graph(doc, professions=PROFESSIONS)
+
+    assert program is None
+    assert any("Unknown profession" in message for message in errors(issues))
+
+
+def test_tool_names_this_build_does_not_have_are_a_warning() -> None:
+    doc = with_tools({"tools": ["read_file", "teleport"]})
+    doc["nodes"][2]["data"]["blocked_tools"] = ["warp_drive"]
+    _, issues = compile_graph(
+        doc, professions=PROFESSIONS, tools=("read_file", "write_file")
+    )
+
+    assert errors(issues) == []
+    found = warnings(issues)
+    assert any("teleport" in message for message in found)
+    assert any("warp_drive" in message for message in found)
+
+
+def test_a_tool_list_that_is_not_a_list_is_refused() -> None:
+    doc = with_tools({"tools": "read_file"})
+    program, issues = compile_graph(doc, professions=PROFESSIONS)
+
+    assert program is None
+    assert "This must be a list of tool names." in errors(issues)
+
+
+def test_an_empty_tools_node_is_a_warning() -> None:
+    _, issues = compile_ok(with_tools({"name": "nothing", "tools": []}))
+
+    assert any("No tools picked" in message for message in warnings(issues))
+
+
+def test_a_permission_switch_must_be_on_or_off() -> None:
+    doc = graph()
+    doc["nodes"][2]["data"]["can_write"] = "sometimes"
+    program, issues = compile_graph(doc, professions=PROFESSIONS)
+
+    assert program is None
+    assert "can_write must be on or off." in errors(issues)
+
+
+def test_a_profession_with_every_switch_off_only_warns() -> None:
+    doc = graph()
+    doc["nodes"].append(
+        {
+            "id": "p1",
+            "kind": "custom_profession",
+            "pos": [0, 500],
+            "data": {
+                "name": "Ana",
+                "role": "You talk.",
+                "can_read": False,
+                "can_write": False,
+                "can_run": False,
+                "can_browse": False,
+                "can_review": False,
+            },
+        }
+    )
+    doc["edges"].append(
+        {"id": "ep", "kind": "data", "from": ["p1", "profession"], "to": ["n3", "profession"]}
+    )
+    _, issues = compile_ok(doc)
+
+    assert any("can only talk" in message for message in warnings(issues))
+
+
+def test_a_named_node_is_labelled_by_its_name() -> None:
+    doc = with_tools({"name": "git kit", "tools": ["git_review"]})
+    doc["nodes"][2]["data"]["name"] = "Auditor"
+    program, _ = compile_ok(doc)
+
+    assert program.nodes["n3"].label == "Auditor"
+    assert program.nodes["t0"].label == "git kit"
+
+
+def test_the_catalog_serves_the_permissions_and_the_tool_groups() -> None:
+    payload = catalog_payload(professions_payload(), tools=[{"name": "read_file"}])
+
+    assert [row["field"] for row in payload["permissions"]] == [
+        "can_read",
+        "can_write",
+        "can_run",
+        "can_browse",
+        "can_review",
+    ]
+    assert payload["tools"] == [{"name": "read_file"}]
+    assert payload["tool_groups"][0]["name"] == "read"
+    agent = next(row for row in payload["node_kinds"] if row["kind"] == "profession")
+    tools_pin = next(pin for pin in agent["pins"] if pin["name"] == "tools")
+    assert tools_pin["multi"] is True
+    assert sum(1 for row in payload["professions"] if row["plain"]) == 1

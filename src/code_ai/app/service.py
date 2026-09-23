@@ -1133,9 +1133,13 @@ class CodeAIApplication:
 
         from code_ai.core.graph.models import catalog_payload
         from code_ai.core.graph.professions import professions_payload
+        from code_ai.core.graph.toolbox import tools_payload
 
+        runtime = self.subagent_runtime
         payload = catalog_payload(
-            professions_payload(), language=self.session.config.language
+            professions_payload(),
+            tools=tools_payload(runtime.base_registry) if runtime is not None else [],
+            language=self.session.config.language,
         )
         payload["limits"]["run"] = {
             "max_nodes_executed": self.session.config.graph.max_nodes_executed,

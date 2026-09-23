@@ -33,6 +33,8 @@ class NodeProgram:
     exec_out: dict[str, tuple[str, str]] = field(default_factory=dict)
     # data in pin -> (source node id, source pin, edge id)
     data_in: dict[str, tuple[str, str, str]] = field(default_factory=dict)
+    # A multi input's wires, in file order. Such a pin never appears in data_in.
+    multi_in: dict[str, tuple[tuple[str, str, str], ...]] = field(default_factory=dict)
     # Ordered exec out pins, for the kinds where order is semantic (sequence).
     ordered_exec: tuple[str, ...] = ()
 
@@ -40,6 +42,14 @@ class NodeProgram:
         """The inline default for a data pin, as the inspector stored it."""
 
         return self.data.get(pin)
+
+    def sources(self) -> list[tuple[str, str, str]]:
+        """Every wire feeding this node, single and multi inputs alike."""
+
+        wires = list(self.data_in.values())
+        for many in self.multi_in.values():
+            wires.extend(many)
+        return wires
 
     def target(self, pin: str) -> str | None:
         wired = self.exec_out.get(pin)

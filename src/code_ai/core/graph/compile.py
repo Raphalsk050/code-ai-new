@@ -23,6 +23,7 @@ from code_ai.core.graph.models import (
     MAX_NODES,
     MAX_VARIABLES,
     NODE_KINDS,
+    PERMISSION_FIELDS,
     SCHEMA_VERSION,
     EdgeSpec,
     GraphDoc,
@@ -79,9 +80,13 @@ def compile_graph(
     raw: dict[str, Any],
     *,
     professions: tuple[str, ...] = (),
+    tools: tuple[str, ...] = (),
     max_loop_iterations: int = 50,
 ) -> tuple[GraphProgram | None, list[ValidationIssue]]:
-    """Validate ``raw`` and, if it holds up, return the program to run."""
+    """Validate ``raw`` and, if it holds up, return the program to run.
+
+    ``tools`` names what this build can hand an agent; empty skips the check.
+    """
 
     collector = _Collector()
     doc = _parse(raw, collector)
@@ -97,7 +102,9 @@ def compile_graph(
     pin_types = _resolve_pin_types(nodes, variables)
     wired = {(edge.target[0], edge.target[1]) for edge in edges if edge.kind == "data"}
     _check_edge_types(edges, nodes, pin_types, collector)
-    _check_node_data(nodes, variables, professions, max_loop_iterations, wired, collector)
+    _check_node_data(
+        nodes, variables, professions, tools, max_loop_iterations, wired, collector
+    )
     _check_required_inputs(nodes, wired, collector)
     _check_data_cycles(edges, collector)
 
@@ -201,6 +208,7 @@ def _check_edges(
     seen_ids: set[str] = set()
     exec_sources: dict[tuple[str, str], str] = {}
     data_targets: dict[tuple[str, str], str] = {}
+    data_pairs: set[tuple[str, str, str, str]] = set()
 
     for edge in doc.edges:
         if edge.id in seen_ids:
@@ -265,13 +273,20 @@ def _check_edges(
             exec_sources[key] = edge.id
         else:
             key = (target_node, target_pin)
-            if key in data_targets:
+            if key in data_targets and not in_pin.multi:
                 collector.error(
                     "A data input takes one value.",
                     node_id=target_node,
                     pin=target_pin,
                 )
                 continue
+            pair = (source_node, source_pin, target_node, target_pin)
+            if pair in data_pairs:
+                collector.error(
+                    "That connection is drawn twice.", node_id=target_node, pin=target_pin
+                )
+                continue
+            data_pairs.add(pair)
             data_targets[key] = edge.id
             if source_node == target_node:
                 collector.error(
@@ -385,6 +400,7 @@ def _check_node_data(
     nodes: dict[str, NodeSpec],
     variables: dict[str, Any],
     professions: tuple[str, ...],
+    tools: tuple[str, ...],
     max_loop_iterations: int,
     wired: set[tuple[str, str]],
     collector: _Collector,
@@ -410,9 +426,11 @@ def _check_node_data(
             case NodeKind.MODEL:
                 _check_model_node(node_id, node, collector)
             case NodeKind.PROFESSION:
-                _check_profession_node(node_id, node, professions, wired, collector)
+                _check_profession_node(node_id, node, professions, tools, wired, collector)
             case NodeKind.CUSTOM_PROFESSION:
-                _check_custom_profession_node(node_id, node, collector)
+                _check_custom_profession_node(node_id, node, tools, collector)
+            case NodeKind.TOOLS:
+                _check_tools_node(node_id, node, tools, collector)
             case NodeKind.DECISION:
                 _check_decision_node(node_id, node, wired, collector)
             case NodeKind.LOOP:
@@ -467,43 +485,27 @@ def _check_profession_node(
     node_id: str,
     node: NodeSpec,
     professions: tuple[str, ...],
+    tools: tuple[str, ...],
     wired: set[tuple[str, str]],
     collector: _Collector,
 ) -> None:
     profession = str(node.data.get("profession") or "").strip()
-    # A Profession node on the pin answers the question the dropdown asks, so
-    # neither the empty dropdown nor an unknown name matters once it is wired.
-    if (node_id, "profession") in wired:
-        return
-    if not profession:
-        collector.error(
-            "Choose a profession for this agent, or wire a Profession node into its "
-            "profession pin.",
-            node_id=node_id,
-            field="profession",
-        )
-        return
-    if professions and profession not in professions:
-        collector.error(
-            f"Unknown profession {profession!r}. Available: {', '.join(professions)}.",
-            node_id=node_id,
-            field="profession",
-        )
-    for name in ("max_steps", "timeout_s"):
-        value = node.data.get(name)
-        if value in (None, ""):
-            continue
-        try:
-            number = int(value)
-        except (TypeError, ValueError):
-            collector.error(f"{name} must be a whole number.", node_id=node_id, field=name)
-            continue
-        if number < 0:
-            collector.error(f"{name} cannot be negative.", node_id=node_id, field=name)
+    # A wired Profession node answers the dropdown, and an empty one hires a
+    # custom agent, so only a name nobody knows is wrong.
+    if (node_id, "profession") not in wired and profession:
+        if professions and profession not in professions:
+            collector.error(
+                f"Unknown profession {profession!r}. Available: {', '.join(professions)}.",
+                node_id=node_id,
+                field="profession",
+            )
+    _check_permissions(node_id, node, collector)
+    _check_tool_list(node_id, node, "blocked_tools", tools, collector)
+    _check_budgets(node_id, node, collector)
 
 
 def _check_custom_profession_node(
-    node_id: str, node: NodeSpec, collector: _Collector
+    node_id: str, node: NodeSpec, tools: tuple[str, ...], collector: _Collector
 ) -> None:
     if not str(node.data.get("role") or "").strip():
         collector.error(
@@ -518,14 +520,69 @@ def _check_custom_profession_node(
             node_id=node_id,
             field="name",
         )
-    switches = ("can_read", "can_write", "can_run", "can_browse")
-    if not any(_as_flag(node.data.get(name), default=(name == "can_read")) for name in switches):
-        collector.error(
-            "This profession may not use any tool, so its agent can only talk. Turn "
-            "at least one switch on.",
+    _check_permissions(node_id, node, collector)
+    if not any(
+        _as_flag(node.data.get(name), default=(name == "can_read")) for name in PERMISSION_FIELDS
+    ):
+        collector.warn(
+            "Every switch is off, so its agents can only talk - fine for a "
+            "conversation, not for work on the files.",
             node_id=node_id,
             field="can_read",
         )
+    _check_tool_list(node_id, node, "blocked_tools", tools, collector)
+    _check_budgets(node_id, node, collector)
+
+
+def _check_tools_node(
+    node_id: str, node: NodeSpec, tools: tuple[str, ...], collector: _Collector
+) -> None:
+    picked = _check_tool_list(node_id, node, "tools", tools, collector)
+    if picked is not None and not picked:
+        collector.warn(
+            "No tools picked: an agent wired to this gets none from it.",
+            node_id=node_id,
+            field="tools",
+        )
+
+
+def _check_permissions(node_id: str, node: NodeSpec, collector: _Collector) -> None:
+    for name in PERMISSION_FIELDS:
+        value = node.data.get(name)
+        if value is None or isinstance(value, bool):
+            continue
+        if isinstance(value, str) and value.strip().lower() in ("true", "false", ""):
+            continue
+        collector.error(f"{name} must be on or off.", node_id=node_id, field=name)
+
+
+def _check_tool_list(
+    node_id: str,
+    node: NodeSpec,
+    field: str,
+    tools: tuple[str, ...],
+    collector: _Collector,
+) -> list[str] | None:
+    """The tool names in ``field``, or ``None`` when it is malformed."""
+
+    value = node.data.get(field)
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        collector.error("This must be a list of tool names.", node_id=node_id, field=field)
+        return None
+    names = [item.strip() for item in value if item.strip()]
+    unknown = [name for name in names if tools and name not in tools]
+    if unknown:
+        collector.warn(
+            f"Not a tool this build can hand an agent, so it is ignored: {', '.join(unknown)}.",
+            node_id=node_id,
+            field=field,
+        )
+    return names
+
+
+def _check_budgets(node_id: str, node: NodeSpec, collector: _Collector) -> None:
     for name in ("max_steps", "timeout_s"):
         value = node.data.get(name)
         if value in (None, ""):
@@ -656,13 +713,19 @@ def _build_program(
 ) -> GraphProgram:
     exec_out: dict[str, dict[str, tuple[str, str]]] = {node_id: {} for node_id in nodes}
     data_in: dict[str, dict[str, tuple[str, str, str]]] = {node_id: {} for node_id in nodes}
+    multi_in: dict[str, dict[str, list[tuple[str, str, str]]]] = {node_id: {} for node_id in nodes}
     for edge in edges:
         source_node, source_pin = edge.source
         target_node, target_pin = edge.target
         if edge.kind == "exec":
             exec_out[source_node][source_pin] = (target_node, edge.id)
+            continue
+        wire = (source_node, source_pin, edge.id)
+        in_pin = NODE_KINDS[nodes[target_node].kind].pin(target_pin, "in")
+        if in_pin is not None and in_pin.multi:
+            multi_in[target_node].setdefault(target_pin, []).append(wire)
         else:
-            data_in[target_node][target_pin] = (source_node, source_pin, edge.id)
+            data_in[target_node][target_pin] = wire
 
     built: dict[str, NodeProgram] = {}
     for node_id, node in nodes.items():
@@ -680,6 +743,7 @@ def _build_program(
             label=_label_for(node, spec.title),
             exec_out=exec_out[node_id],
             data_in=data_in[node_id],
+            multi_in={pin: tuple(wires) for pin, wires in multi_in[node_id].items()},
             ordered_exec=ordered,
         )
 
@@ -695,7 +759,7 @@ def _build_program(
 def _label_for(node: NodeSpec, fallback: str) -> str:
     """A short human label for logs and node headers."""
 
-    for key in ("label", "title", "profession", "variable", "model", "kind"):
+    for key in ("label", "title", "name", "profession", "variable", "model", "kind"):
         value = node.data.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()[:60]
@@ -716,7 +780,7 @@ def _warn_unreachable(program: GraphProgram, collector: _Collector) -> None:
     # something different for it: nobody reads it.
     consumed: set[str] = set()
     for node in program.nodes.values():
-        for source, _, _ in node.data_in.values():
+        for source, _, _ in node.sources():
             consumed.add(source)
 
     for node_id, node in program.nodes.items():

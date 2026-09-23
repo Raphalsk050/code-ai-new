@@ -618,3 +618,112 @@ async def test_the_graph_run_is_stopped_when_the_app_closes(tmp_path) -> None:
     await app.close()
 
     assert app.graph_run_active() is False
+
+
+# -- what an agent may touch -----------------------------------------------
+
+
+def _offered(provider: ScriptedProvider) -> set[str]:
+    """The tool names the last request put in front of the model."""
+
+    return {tool.name for tool in provider.requests[-1].tools or []}
+
+
+async def _hire(tmp_path, agent: dict[str, Any], extra_nodes=(), extra_edges=()):
+    provider = ScriptedProvider()
+    app = app_for(tmp_path, provider)
+    collector = Collector()
+    app.subscribe(collector)
+    await app.start()
+    doc = graph(
+        [node("start", "start"), agent, node("end", "end"), *extra_nodes],
+        [
+            wire("e1", ("start", "out"), ("agent", "in")),
+            wire("e2", ("agent", "out"), ("end", "in")),
+            *extra_edges,
+        ],
+    )
+    await run_graph(app, doc)
+    await app.close()
+    assert collector.of("graph.run.completed")[0]["status"] == "completed"
+    return provider, collector.of("graph.agent.started")[0]
+
+
+async def test_the_catalog_lists_only_tools_an_agent_can_be_given(tmp_path) -> None:
+    app = app_for(tmp_path, ScriptedProvider())
+    names = {row["name"] for row in app.graph_catalog()["tools"]}
+
+    assert {"read_file", "write_file", "execute_command", "web_search"} <= names
+    assert not names & {"start_terminal", "ask_user", "remember", "complete_task", "load_tools"}
+
+
+async def test_wired_tools_are_exactly_what_the_agent_gets(tmp_path) -> None:
+    provider, started = await _hire(
+        tmp_path,
+        node("agent", "profession", profession="code_writer", task="t", name="Scout"),
+        extra_nodes=[
+            node("kit", "tools", tools=["read_file", "list_files"]),
+            node("web", "tools", tools=["web_search", "start_terminal"]),
+        ],
+        extra_edges=[
+            wire("e3", ("kit", "tools"), ("agent", "tools"), "data"),
+            wire("e4", ("web", "tools"), ("agent", "tools"), "data"),
+        ],
+    )
+
+    assert _offered(provider) == {"read_file", "list_files", "web_search"}
+    assert set(started["tools"]) == {"read_file", "list_files", "web_search"}
+    assert started["profession"] == "Scout"
+
+
+async def test_switches_override_the_profession_and_blocked_tools_go(tmp_path) -> None:
+    provider, started = await _hire(
+        tmp_path,
+        node(
+            "agent",
+            "profession",
+            profession="architect",
+            task="t",
+            can_write=True,
+            can_browse=False,
+            blocked_tools=["edit_code"],
+        ),
+    )
+
+    offered = _offered(provider)
+    assert "write_file" in offered
+    assert "edit_code" not in offered
+    assert "web_search" not in offered
+    assert started["writes"] is True
+
+
+async def test_an_agent_with_no_profession_runs_on_its_own_instructions(tmp_path) -> None:
+    provider, started = await _hire(
+        tmp_path,
+        node("agent", "profession", task="t", role_override="You are a strict auditor."),
+    )
+
+    system = provider.requests[0].messages[0].content
+    assert system.startswith("You are a strict auditor.")
+    assert started["profession"] == "custom"
+    assert "write_file" in _offered(provider)
+
+
+async def test_a_profession_with_no_switch_on_can_only_talk(tmp_path) -> None:
+    provider, started = await _hire(
+        tmp_path,
+        node("agent", "profession", task="t"),
+        extra_nodes=[
+            node(
+                "ana",
+                "custom_profession",
+                name="Ana",
+                role="You chat.",
+                can_read=False,
+            )
+        ],
+        extra_edges=[wire("e3", ("ana", "profession"), ("agent", "profession"), "data")],
+    )
+
+    assert _offered(provider) == set()
+    assert started["tool_count"] == 0

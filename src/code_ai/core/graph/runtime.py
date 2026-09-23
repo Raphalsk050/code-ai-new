@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Protocol
 
-from code_ai.core.graph.models import NodeKind, PinType
+from code_ai.core.graph.models import PERMISSION_FIELDS, NodeKind, PinType
 from code_ai.core.graph.program import GraphProgram, NodeProgram
 
 # How the interpreter talks to the outside world: one async callable per event.
@@ -82,6 +82,8 @@ class ProfessionBinding:
     can_write: bool = False
     can_run: bool = False
     can_browse: bool = False
+    can_review: bool = False
+    blocked: tuple[str, ...] = ()
     max_steps: int = 0
     timeout_s: int = 0
     # False hands the role text through untouched as the whole system prompt.
@@ -90,6 +92,45 @@ class ProfessionBinding:
 
     def label(self) -> str:
         return self.name or "custom profession"
+
+    def switches(self) -> dict[str, bool]:
+        return {field: bool(getattr(self, field)) for field in PERMISSION_FIELDS}
+
+
+@dataclass(frozen=True, slots=True)
+class ToolsetBinding:
+    """A Tools node: the tool names it hands whichever agent it is wired into."""
+
+    name: str = ""
+    tools: tuple[str, ...] = ()
+
+    def label(self) -> str:
+        return self.name or f"{len(self.tools)} tools"
+
+
+@dataclass(frozen=True, slots=True)
+class ToolAccess:
+    """What an Agent node itself says its agent may touch.
+
+    ``switches`` carries only the permissions the node set; the others follow the
+    profession. Wired ``toolsets`` are the whole grant when there is any, and
+    ``blocked`` comes off whatever is left.
+    """
+
+    switches: dict[str, bool] = field(default_factory=dict)
+    toolsets: tuple[ToolsetBinding, ...] = ()
+    blocked: tuple[str, ...] = ()
+
+    @property
+    def wired(self) -> bool:
+        return bool(self.toolsets)
+
+    def tool_names(self) -> tuple[str, ...]:
+        seen: dict[str, None] = {}
+        for toolset in self.toolsets:
+            for name in toolset.tools:
+                seen.setdefault(name, None)
+        return tuple(seen)
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +163,8 @@ class NodeExecutor(Protocol):
         max_steps: int,
         timeout_s: int,
         cancel: asyncio.Event,
+        access: ToolAccess | None = None,
+        name: str = "",
     ) -> AgentOutcome: ...
 
     async def judge(
@@ -446,6 +489,17 @@ class GraphInterpreter:
         # the dropdown rather than being merged with it.
         hired = await self._pull(node, "profession")
         custom = hired if isinstance(hired, ProfessionBinding) else None
+        wired = await self._pull_many(node, "tools")
+        toolsets = [item for item in wired if isinstance(item, ToolsetBinding)]
+        access = ToolAccess(
+            switches={
+                name: _as_bool(node.data[name])
+                for name in PERMISSION_FIELDS
+                if node.data.get(name) is not None
+            },
+            toolsets=tuple(toolsets),
+            blocked=_names(node.data.get("blocked_tools")),
+        )
         outcome = await self._race(
             self._executor.run_agent(
                 node_id=node.id,
@@ -457,6 +511,8 @@ class GraphInterpreter:
                 max_steps=_as_int(node.data.get("max_steps"), 0),
                 timeout_s=_as_int(node.data.get("timeout_s"), 0),
                 cancel=self._cancel,
+                access=access,
+                name=str(node.data.get("name") or "").strip(),
             )
         )
         for key, value in (outcome.usage or {}).items():
@@ -607,6 +663,25 @@ class GraphInterpreter:
         value = await self._value_of(source_id, source_pin)
         return self._coerce_pin(node, pin, value)
 
+    async def _pull_many(self, node: NodeProgram, pin: str) -> list[Any]:
+        """Every value on a multi input, in the order its wires were drawn."""
+
+        values: list[Any] = []
+        for source_id, source_pin, edge_id in node.multi_in.get(pin, ()):
+            await self._emit(
+                "graph.edge.active",
+                {
+                    "run_id": self._run_id,
+                    "edge_id": edge_id,
+                    "kind": "data",
+                    "from_node": source_id,
+                    "from_pin": source_pin,
+                    "to_node": node.id,
+                },
+            )
+            values.append(await self._value_of(source_id, source_pin))
+        return values
+
     async def _value_of(self, node_id: str, pin: str) -> Any:
         cached = self._outputs.get((node_id, pin))
         if cached is not None:
@@ -622,6 +697,13 @@ class GraphInterpreter:
             hired = _profession_from(node)
             self._outputs[(node_id, pin)] = hired
             return hired
+        if node.kind == NodeKind.TOOLS:
+            toolset = ToolsetBinding(
+                name=str(node.data.get("name") or "").strip(),
+                tools=_names(node.data.get("tools")),
+            )
+            self._outputs[(node_id, pin)] = toolset
+            return toolset
         if node.kind == NodeKind.VAR_GET:
             name = str(node.data.get("variable") or "").strip()
             return self._vars.get(name)
@@ -737,6 +819,8 @@ def _profession_from(node: NodeProgram) -> ProfessionBinding:
         can_write=_as_bool(node.data.get("can_write")),
         can_run=_as_bool(node.data.get("can_run")),
         can_browse=_as_bool(node.data.get("can_browse")),
+        can_review=_as_bool(node.data.get("can_review")),
+        blocked=_names(node.data.get("blocked_tools")),
         max_steps=_as_int(node.data.get("max_steps"), 0),
         timeout_s=_as_int(node.data.get("timeout_s"), 0),
         framing=_as_bool(node.data.get("framing")),
@@ -764,7 +848,7 @@ def _as_text(value: Any) -> str:
         return ""
     if isinstance(value, bool):
         return "true" if value else "false"
-    if isinstance(value, (ModelBinding, ProfessionBinding)):
+    if isinstance(value, (ModelBinding, ProfessionBinding, ToolsetBinding)):
         return value.label()
     if isinstance(value, str):
         return value
@@ -809,6 +893,18 @@ def _as_opt_int(value: Any) -> int | None:
 
 def _lines(text: str) -> list[str]:
     return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def _names(value: Any) -> tuple[str, ...]:
+    """A stored tool list, deduplicated, tolerating whatever a hand edit left."""
+
+    if not isinstance(value, list):
+        return ()
+    seen: dict[str, None] = {}
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            seen.setdefault(item.strip(), None)
+    return tuple(seen)
 
 
 def _bound(text: str, limit: int) -> str:

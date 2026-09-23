@@ -57,6 +57,8 @@ export interface PinSpec {
   label: string;
   required: boolean;
   dynamic: boolean;
+  /** A data input that takes any number of wires. */
+  multi?: boolean;
   color: string;
 }
 
@@ -89,6 +91,30 @@ export interface ProfessionSpec {
   read_only: boolean;
   max_model_steps: number;
   capabilities: string[];
+  /** What an Agent with no profession starts from. */
+  plain?: boolean;
+}
+
+/** One switch on an agent: the node field and the capability it grants. */
+export interface PermissionSpec {
+  field: string;
+  capability: string;
+  label: string;
+}
+
+/** A tool a graph may hand an agent. */
+export interface ToolSpec {
+  name: string;
+  description: string;
+  capabilities: string[];
+  group: string;
+  /** Off in the settings: listed, but no agent will get it. */
+  enabled: boolean;
+}
+
+export interface ToolGroupSpec {
+  name: string;
+  title: string;
 }
 
 export interface GraphCatalog {
@@ -99,6 +125,9 @@ export interface GraphCatalog {
   pin_colors: Record<string, string>;
   variable_types: string[];
   professions: ProfessionSpec[];
+  permissions?: PermissionSpec[];
+  tools?: ToolSpec[];
+  tool_groups?: ToolGroupSpec[];
   limits: {
     nodes: number;
     edges: number;

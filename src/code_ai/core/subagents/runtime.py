@@ -88,6 +88,12 @@ class SubagentRuntime:
         self._browser = browser
         self._review_service_factory = review_service_factory
 
+    @property
+    def base_registry(self) -> ToolRegistry:
+        """Every tool the session has; a profile picks its agent's share of it."""
+
+        return self._base_registry
+
     def build(
         self,
         profile: SubagentProfile,
@@ -122,7 +128,11 @@ class SubagentRuntime:
             overrides=config_overrides,
         )
         child_provider = provider or self._provider
-        registry = self._base_registry.select(profile.allowed_capabilities)
+        registry = self._base_registry.select(
+            profile.allowed_capabilities,
+            names=profile.allowed_tools,
+            exclude=profile.blocked_tools,
+        )
         role_prompt = profile.role_prompt
         if extra_instructions.strip():
             role_prompt = "\n\n".join(

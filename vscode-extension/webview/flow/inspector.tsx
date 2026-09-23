@@ -2,6 +2,14 @@ import * as React from "react";
 
 import type { FieldSpec, FlowNode } from "../../src/flow-schema";
 import { t, tf } from "../i18n";
+import {
+  grantedTools,
+  groupTools,
+  permissionsOf,
+  toolNames,
+  ToolGroupView,
+  wiredToolsets,
+} from "./access";
 import type { Action, EditorState } from "./store";
 import { defaultFor } from "./store";
 
@@ -78,6 +86,8 @@ function NodePanel({ state, dispatch, onListModels, onStoreSecret }: InspectorPr
   }
 
   const nodeIssues = state.issues.filter((issue) => issue.node_id === node.id);
+  // The switches read as one control, so they render together where the first is.
+  const firstSwitch = spec.fields.find((field) => field.kind === "permission");
 
   return (
     <>
@@ -88,17 +98,24 @@ function NodePanel({ state, dispatch, onListModels, onStoreSecret }: InspectorPr
       </div>
       <p className="flow-hint">{t(spec.description)}</p>
 
-      {spec.fields.map((field) => (
-        <Field
-          key={field.name}
-          field={field}
-          node={node}
-          state={state}
-          dispatch={dispatch}
-          onListModels={onListModels}
-          onStoreSecret={onStoreSecret}
-        />
-      ))}
+      {spec.fields.map((field) => {
+        if (field.kind === "permission") {
+          return field === firstSwitch ? (
+            <PermissionGroup key="permissions" node={node} state={state} dispatch={dispatch} />
+          ) : null;
+        }
+        return (
+          <Field
+            key={`${node.id}-${field.name}`}
+            field={field}
+            node={node}
+            state={state}
+            dispatch={dispatch}
+            onListModels={onListModels}
+            onStoreSecret={onStoreSecret}
+          />
+        );
+      })}
 
       {node.kind === "sequence" && (
         <div className="flow-field">
@@ -275,7 +292,7 @@ function Field({ field, node, state, dispatch, onListModels, onStoreSecret }: Fi
       case "profession":
         return (
           <select id={id} data-testid={testId} value={String(value ?? "")} onChange={(e) => set(e.target.value)}>
-            <option value="">{t("(choose)")}</option>
+            <option value="">{t("Custom")}</option>
             {(state.catalog?.raw.professions ?? []).map((profession) => (
               <option key={profession.name} value={profession.name}>
                 {profession.title}
@@ -283,6 +300,18 @@ function Field({ field, node, state, dispatch, onListModels, onStoreSecret }: Fi
               </option>
             ))}
           </select>
+        );
+      case "tools":
+        return <ToolPicker key={node.id} field={field} node={node} state={state} dispatch={dispatch} />;
+      case "permission":
+        return (
+          <input
+            id={id}
+            data-testid={testId}
+            type="checkbox"
+            checked={Boolean(value)}
+            onChange={(e) => set(e.target.checked)}
+          />
         );
       case "model": {
         const list = state.models[node.id];
@@ -351,6 +380,9 @@ function Field({ field, node, state, dispatch, onListModels, onStoreSecret }: Fi
 }
 
 function ProfessionHint({ state, name }: { state: EditorState; name: string }) {
+  if (!name) {
+    return <span className="help">{t("Custom: the role is what you write under Instructions.")}</span>;
+  }
   const profession = (state.catalog?.raw.professions ?? []).find((item) => item.name === name);
   if (!profession) return null;
   return (
@@ -358,6 +390,207 @@ function ProfessionHint({ state, name }: { state: EditorState; name: string }) {
       {t(profession.description)} —{" "}
       {profession.read_only ? t("read-only") : t("can edit files")}
     </span>
+  );
+}
+
+// -- what an agent may touch ----------------------------------------------
+
+interface AccessProps {
+  node: FlowNode;
+  state: EditorState;
+  dispatch(action: Action): void;
+}
+
+/**
+ * The five switches. On an Agent an unset switch follows the profession, and
+ * wired Tools nodes replace them outright, so both states are drawn as such.
+ */
+function PermissionGroup({ node, state, dispatch }: AccessProps): JSX.Element {
+  const isAgent = node.kind === "profession";
+  const permissions = permissionsOf(state.catalog, state.graph, node);
+  const locked = isAgent && wiredToolsets(state.graph, node.id).length > 0;
+  const set = (field: string, value: unknown) =>
+    dispatch({ type: "setNodeData", id: node.id, key: field, value });
+
+  return (
+    <div className="flow-field flow-permissions" data-testid="permissions">
+      <label>{t("Permissions")}</label>
+      {locked && (
+        <span className="help" data-testid="permissions-locked">
+          {t("Tools are wired in: this agent gets exactly those, and the switches do not apply.")}
+        </span>
+      )}
+      <div className={`flow-switches${locked ? " locked" : ""}`}>
+        {permissions.map(({ spec, on, explicit }) => (
+          <div key={spec.field} className={`flow-switch-row${explicit ? " explicit" : ""}`}>
+            <label className="flow-switch">
+              <input
+                type="checkbox"
+                role="switch"
+                data-testid={`field-${spec.field}`}
+                checked={on}
+                disabled={locked}
+                onChange={(event) => set(spec.field, event.target.checked)}
+              />
+              <span className="track" aria-hidden="true">
+                <span className="thumb" />
+              </span>
+              <span className="text">{t(spec.label)}</span>
+            </label>
+            {isAgent && !locked && explicit && (
+              <button
+                className="flow-link"
+                title={t("Back to the profession's")}
+                data-testid={`reset-${spec.field}`}
+                onClick={() => set(spec.field, undefined)}
+              >
+                ↺
+              </button>
+            )}
+            {isAgent && !locked && !explicit && (
+              <span className="flow-tag">{t("profession")}</span>
+            )}
+          </div>
+        ))}
+      </div>
+      {isAgent && <GrantedTools names={grantedTools(state.catalog, state.graph, node)} />}
+    </div>
+  );
+}
+
+/** What the agent ends up with, so the switches have a visible consequence. */
+function GrantedTools({ names }: { names: string[] }): JSX.Element {
+  const [open, setOpen] = React.useState(false);
+  return (
+    <div className="flow-granted" data-testid="granted-tools">
+      <button
+        className="flow-granted-head"
+        data-testid="granted-toggle"
+        disabled={names.length === 0}
+        onClick={() => setOpen(!open)}
+      >
+        {names.length > 0 && (open ? "▾ " : "▸ ")}
+        {names.length === 0 ? t("No tools: it can only talk.") : tf("Gets {0} tools", names.length)}
+      </button>
+      {open && names.length > 0 && (
+        <div className="flow-chips">
+          {names.map((name) => (
+            <span key={name} className="flow-chip">
+              {name}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** A searchable, grouped checklist of tools, stored as a list of names. */
+function ToolPicker({
+  field,
+  node,
+  state,
+  dispatch,
+}: AccessProps & { field: FieldSpec }): JSX.Element {
+  const [query, setQuery] = React.useState("");
+  const [open, setOpen] = React.useState<Record<string, boolean>>({});
+  const picked = toolNames(node, field.name);
+  const pickedSet = new Set(picked);
+  const known = new Set((state.catalog?.raw.tools ?? []).map((tool) => tool.name));
+  const groups = groupTools(state.catalog, query);
+  const searching = query.trim() !== "";
+
+  const save = (names: string[]) =>
+    dispatch({ type: "setNodeData", id: node.id, key: field.name, value: names });
+  const toggle = (name: string, on: boolean) =>
+    save(on ? [...picked, name] : picked.filter((item) => item !== name));
+  const setGroup = (group: ToolGroupView, on: boolean) => {
+    const names = group.tools.map((tool) => tool.name);
+    save(
+      on
+        ? [...picked, ...names.filter((name) => !pickedSet.has(name))]
+        : picked.filter((name) => !names.includes(name))
+    );
+  };
+
+  return (
+    <div className="flow-tool-picker" data-testid={`picker-${field.name}`}>
+      <div className="flow-chips">
+        {picked.length === 0 && <span className="help">{t("None picked.")}</span>}
+        {picked.map((name) => (
+          <span
+            key={name}
+            className={`flow-chip${known.has(name) ? "" : " unknown"}`}
+            data-testid={`chip-${field.name}-${name}`}
+          >
+            {name}
+            <button
+              className="flow-chip-x"
+              title={t("Remove")}
+              onClick={() => toggle(name, false)}
+            >
+              ×
+            </button>
+          </span>
+        ))}
+      </div>
+      <input
+        className="flow-tool-search"
+        data-testid={`search-${field.name}`}
+        placeholder={`${t("Search tools")}…`}
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+      />
+      <div className="flow-tool-groups">
+        {groups.length === 0 && <span className="help">{t("Nothing with that name.")}</span>}
+        {groups.map((group) => {
+          const count = group.tools.filter((tool) => pickedSet.has(tool.name)).length;
+          const expanded = searching || Boolean(open[group.name]);
+          const all = count === group.tools.length;
+          return (
+            <div key={group.name} className="flow-tool-group" data-testid={`group-${field.name}-${group.name}`}>
+              <div className="flow-tool-group-head">
+                <button
+                  className="flow-tool-group-toggle"
+                  data-testid={`group-toggle-${field.name}-${group.name}`}
+                  onClick={() => setOpen({ ...open, [group.name]: !open[group.name] })}
+                >
+                  <span className="caret">{expanded ? "▾" : "▸"}</span>
+                  <span className="title">{t(group.title)}</span>
+                  <span className={`count${count > 0 ? " some" : ""}`}>
+                    {count}/{group.tools.length}
+                  </span>
+                </button>
+                <button
+                  className="flow-link"
+                  data-testid={`group-all-${field.name}-${group.name}`}
+                  onClick={() => setGroup(group, !all)}
+                >
+                  {all ? t("None") : t("All")}
+                </button>
+              </div>
+              {expanded &&
+                group.tools.map((tool) => (
+                  <label
+                    key={tool.name}
+                    className={`flow-tool-row${tool.enabled ? "" : " off"}`}
+                    title={tool.description}
+                  >
+                    <input
+                      type="checkbox"
+                      data-testid={`tool-${field.name}-${tool.name}`}
+                      checked={pickedSet.has(tool.name)}
+                      onChange={(event) => toggle(tool.name, event.target.checked)}
+                    />
+                    <span className="name">{tool.name}</span>
+                    {!tool.enabled && <span className="flow-tag">{t("off in settings")}</span>}
+                  </label>
+                ))}
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
