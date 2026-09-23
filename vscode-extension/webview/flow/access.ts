@@ -10,7 +10,24 @@ import type {
   ProfessionSpec,
   ToolSpec,
 } from "../../src/flow-schema";
+import { t, tf } from "../i18n";
 import type { Catalog } from "./model";
+
+/** One pill on a node's footer. */
+export interface Chip {
+  label: string;
+  tone: "cap" | "tools" | "muted";
+  title?: string;
+}
+
+// What a switch reads as on a chip, where a full label does not fit.
+const SHORT: Record<string, string> = {
+  can_read: "read",
+  can_write: "edit",
+  can_run: "run",
+  can_browse: "web",
+  can_review: "review",
+};
 
 export interface PermissionState {
   spec: PermissionSpec;
@@ -119,6 +136,27 @@ export function grantedTools(catalog: Catalog | null, graph: FlowGraph, node: Fl
         !blocked.has(tool.name)
     )
     .map((tool) => tool.name);
+}
+
+/** What a node's footer says about access: the switches that are on, or the tools. */
+export function chipsFor(catalog: Catalog | null, graph: FlowGraph, node: FlowNode): Chip[] {
+  if (node.kind === "tools") {
+    const names = toolNames(node);
+    if (names.length === 0) return [{ label: t("none picked"), tone: "muted" }];
+    return names.map((name) => ({ label: name, tone: "tools" }));
+  }
+  if (node.kind !== "profession" && node.kind !== "custom_profession") return [];
+  if (node.kind === "profession" && wiredToolsets(graph, node.id).length > 0) {
+    const granted = grantedTools(catalog, graph, node);
+    return [{ label: tf("{0} tools", granted.length), tone: "tools", title: granted.join(", ") }];
+  }
+  const on = permissionsOf(catalog, graph, node).filter((item) => item.on);
+  if (on.length === 0) return [{ label: t("talk only"), tone: "muted" }];
+  return on.map((item) => ({
+    label: t(SHORT[item.spec.field] ?? item.spec.field),
+    tone: "cap",
+    title: t(item.spec.label),
+  }));
 }
 
 /** The catalog's tools in their display groups, filtered by a search. */

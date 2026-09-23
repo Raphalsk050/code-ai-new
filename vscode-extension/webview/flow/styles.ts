@@ -106,24 +106,67 @@ input[type="checkbox"] { width: auto; }
 .flow-canvas-wrap { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; }
 .flow-canvas { width: 100%; height: 100%; display: block; cursor: default; }
 .flow-canvas.panning { cursor: grabbing; }
+
+/* ---- nodes ---- */
+.flow-node { cursor: default; }
+/* Paint only: the box underneath takes the clicks, so a drag starts anywhere. */
+.flow-node-header, .flow-node-sheen, .flow-node-divider, .flow-node-glyph,
+.flow-node-summary, .flow-node-footer, .flow-badge-pill, .flow-badge, .flow-mark,
+.flow-spinner, .flow-node-problem, .flow-node-activity { pointer-events: none; }
 .flow-node-box {
   fill: var(--vscode-editorWidget-background, #252526);
   stroke: var(--border); stroke-width: 1;
+  filter: url(#flow-shadow);
 }
-.flow-node.selected .flow-node-box { stroke: var(--accent); stroke-width: 2; }
-.flow-node.error .flow-node-box { stroke: var(--danger); stroke-width: 2; }
-.flow-node.running .flow-node-box { stroke: var(--accent); stroke-width: 2.5; }
-.flow-node.done .flow-node-box { stroke: var(--ok); }
-.flow-node.failed .flow-node-box { stroke: var(--danger); stroke-width: 2.5; }
-.flow-node-title { font-size: 11.5px; font-weight: 600; fill: #fff; }
-.flow-node-summary { font-size: 10.5px; fill: var(--muted); }
+.flow-node-halo {
+  fill: none; stroke: var(--accent); stroke-width: 2; opacity: 0;
+  pointer-events: none; transition: opacity .12s ease;
+}
+.flow-node.selected .flow-node-halo { opacity: .95; }
+.flow-node.running .flow-node-halo {
+  opacity: 1; stroke-dasharray: 7 5; animation: flow-march 700ms linear infinite;
+}
+.flow-node.failed .flow-node-halo { opacity: .9; stroke: var(--danger); }
+.flow-node.error .flow-node-box { stroke: var(--danger); stroke-width: 1.6; }
+.flow-node.done .flow-node-box { stroke: var(--ok); stroke-opacity: .75; }
+.flow-node.failed .flow-node-box { stroke: var(--danger); stroke-width: 1.6; }
+.flow-node-header { opacity: .96; }
+.flow-node-divider { stroke: rgba(0,0,0,.28); stroke-width: 1; }
+.flow-node-glyph rect { fill: rgba(255,255,255,.17); stroke: rgba(255,255,255,.28); stroke-width: 1; }
+.flow-node-glyph .stroke {
+  fill: none; stroke: #fff; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round;
+}
+.flow-node-glyph .fill { fill: #fff; }
+.flow-node-title { font-size: 12px; font-weight: 650; fill: #fff; letter-spacing: .01em; }
+.flow-node-summary { font-size: 10.5px; fill: rgba(255,255,255,.8); }
+.flow-badge-pill { fill: rgba(0,0,0,.3); }
+.flow-badge { font-size: 9.5px; fill: #fff; font-weight: 700; }
+.flow-mark circle { stroke: rgba(255,255,255,.85); stroke-width: 1.2; }
+.flow-mark.done circle { fill: var(--ok); }
+.flow-mark.failed circle { fill: var(--danger); }
+.flow-mark path {
+  fill: none; stroke: #fff; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
+}
+.flow-node-footer { fill: rgba(127,127,127,.09); }
+.flow-node-chip { stroke-width: 1; }
+.flow-node-chip.cap { fill: rgba(55,148,255,.14); stroke: rgba(55,148,255,.45); }
+.flow-node-chip.tools { fill: rgba(157,123,255,.16); stroke: rgba(157,123,255,.5); }
+.flow-node-chip.muted { fill: none; stroke: var(--border); }
+.flow-node-chip-text { font-size: 9.5px; fill: var(--vscode-foreground); }
+.flow-node-chip-text.tools { font-family: var(--vscode-editor-font-family, monospace); }
+.flow-node-chip-text.muted { fill: var(--muted); }
+.flow-node-problem circle { stroke: var(--vscode-editor-background, #1e1e1e); stroke-width: 2; }
+.flow-node-problem.error circle { fill: var(--danger); }
+.flow-node-problem.warning circle { fill: var(--warn); }
+.flow-node-problem text { font-size: 10px; font-weight: 800; fill: #fff; }
+@keyframes flow-march { to { stroke-dashoffset: -24; } }
 
 /* ---- a node with an agent working inside it ---- */
-/* The running border already says "this node"; these say "and it is moving". */
+/* The running halo already says "this node"; these say "and it is moving". */
 .flow-node-activity { font-size: 10.5px; fill: var(--accent); }
-.flow-spinner-track { fill: none; stroke: #fff; stroke-opacity: .3; stroke-width: 1.6; }
+.flow-spinner-track { fill: none; stroke: #fff; stroke-opacity: .3; stroke-width: 1.7; }
 .flow-spinner-arc {
-  fill: none; stroke: #fff; stroke-width: 1.8; stroke-linecap: round;
+  fill: none; stroke: #fff; stroke-width: 1.9; stroke-linecap: round;
   transform-box: fill-box; transform-origin: 50% 50%;
   animation: flow-spin 900ms linear infinite;
 }
@@ -131,21 +174,33 @@ input[type="checkbox"] { width: auto; }
 @media (prefers-reduced-motion: reduce) {
   /* Still alive, without the movement: the arc pulses in place instead. */
   .flow-spinner-arc { animation: flow-pulse 1.4s ease-in-out infinite; }
+  .flow-node.running .flow-node-halo { animation: none; }
 }
-.flow-pin-label { font-size: 10px; fill: var(--vscode-foreground); opacity: .85; }
+
+/* ---- pins and wires ---- */
+.flow-pin-label { font-size: 10.5px; fill: var(--vscode-foreground); opacity: .82; }
 .flow-pin { cursor: crosshair; }
-.flow-pin:hover .flow-pin-hit { opacity: .25; }
-.flow-wire { fill: none; stroke-width: 2; pointer-events: none; }
-.flow-wire.exec { stroke: var(--flow-exec); }
+.flow-pin:hover .flow-pin-hit { opacity: .28; }
+.flow-pin:hover .flow-pin-shape { stroke-width: 2.4; }
 .flow-pin-shape.exec { fill: none; stroke: var(--flow-exec); }
 .flow-pin-shape.exec.filled { fill: var(--flow-exec); }
+.flow-wire {
+  fill: none; stroke-width: 2.2; stroke-linecap: round; pointer-events: none;
+  transition: stroke-opacity .2s ease;
+}
+.flow-wire.exec { stroke: var(--flow-exec); stroke-width: 2.6; }
+.flow-wire.traveled { stroke-width: 2.8; }
+.flow-wire.lit { stroke-width: 3; }
+.flow-wire.selected { stroke-dasharray: 7 4; stroke-width: 2.8; }
+.flow-wire-glow {
+  fill: none; stroke-width: 9; stroke-linecap: round; opacity: .22; pointer-events: none;
+}
+.flow-wire-glow.exec { stroke: var(--flow-exec); }
 .flow-dot.exec { fill: var(--flow-exec); }
 .flow-wire-hit { fill: none; stroke: transparent; stroke-width: 12; cursor: pointer; }
-.flow-wire.selected { stroke-dasharray: 5 3; }
-.flow-wire.traveled { stroke-width: 3; }
-.flow-grid-dot { fill: var(--border); }
+.flow-grid-dot { fill: var(--border); opacity: .75; }
+.flow-grid-dot.major { opacity: 1; }
 .flow-marquee { fill: var(--accent); fill-opacity: .12; stroke: var(--accent); stroke-dasharray: 4 3; }
-.flow-badge { font-size: 9.5px; fill: #fff; font-weight: 700; }
 
 .flow-empty {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;

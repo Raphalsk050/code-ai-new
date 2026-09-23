@@ -1,12 +1,14 @@
 import * as React from "react";
 
 import type { FlowEdge } from "../../src/flow-schema";
+import { chipsFor } from "./access";
 import {
   Bounds,
   GRID,
   NodeLayout,
   PinLayout,
   Point,
+  accentOf,
   edgeType,
   graphBounds,
   layoutGraph,
@@ -91,6 +93,11 @@ export function Canvas({ state, dispatch, onContext }: CanvasProps): JSX.Element
     [state.graph, catalog]
   );
   const problems = React.useMemo(() => issuesByNode(state.issues), [state.issues]);
+  const chips = React.useMemo(() => {
+    const byNode = new Map<string, ReturnType<typeof chipsFor>>();
+    for (const node of state.graph.nodes) byNode.set(node.id, chipsFor(catalog, state.graph, node));
+    return byNode;
+  }, [state.graph, catalog]);
   const connected = React.useMemo(() => {
     const set = new Set<string>();
     for (const edge of state.graph.edges) {
@@ -323,10 +330,29 @@ export function Canvas({ state, dispatch, onContext }: CanvasProps): JSX.Element
             x={pan[0]}
             y={pan[1]}
           >
-            <circle className="flow-grid-dot" cx={1} cy={1} r={1} />
+            <circle className="flow-grid-dot" cx={1} cy={1} r={zoom < 0.5 ? 0.6 : 0.9} />
           </pattern>
+          <pattern
+            id="flow-grid-major"
+            width={GRID * 5 * zoom}
+            height={GRID * 5 * zoom}
+            patternUnits="userSpaceOnUse"
+            x={pan[0]}
+            y={pan[1]}
+          >
+            <circle className="flow-grid-dot major" cx={1.2} cy={1.2} r={1.4} />
+          </pattern>
+          <linearGradient id="flow-sheen" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stopColor="#ffffff" stopOpacity="0.22" />
+            <stop offset="0.55" stopColor="#ffffff" stopOpacity="0.04" />
+            <stop offset="1" stopColor="#000000" stopOpacity="0.18" />
+          </linearGradient>
+          <filter id="flow-shadow" x="-10%" y="-10%" width="120%" height="130%">
+            <feDropShadow dx="0" dy="3" stdDeviation="4" floodColor="#000" floodOpacity="0.32" />
+          </filter>
         </defs>
         <rect width="100%" height="100%" fill="url(#flow-grid)" />
+        <rect width="100%" height="100%" fill="url(#flow-grid-major)" />
 
         <g transform={`translate(${pan[0]}, ${pan[1]}) scale(${zoom})`}>
           {wires.map(({ edge, a, b, type }) => {
@@ -338,14 +364,17 @@ export function Canvas({ state, dispatch, onContext }: CanvasProps): JSX.Element
             const classes = ["flow-wire", edge.kind];
             if (state.selectedEdge === edge.id) classes.push("selected");
             if (traveled) classes.push("traveled");
+            if (isLit) classes.push("lit");
             return (
               <g key={edge.id} data-testid={`edge-${edge.id}`} data-lit={isLit ? "1" : "0"}>
+                {(isLit || state.selectedEdge === edge.id) && (
+                  <path className={`flow-wire-glow ${edge.kind}`} d={path} stroke={color} />
+                )}
                 <path
                   className={classes.join(" ")}
                   d={path}
                   stroke={color}
-                  strokeOpacity={isLit ? 1 : traveled ? 0.85 : 0.55}
-                  strokeDasharray={edge.kind === "data" ? "6 3" : undefined}
+                  strokeOpacity={isLit ? 1 : traveled ? 0.9 : 0.62}
                 />
                 <path
                   className="flow-wire-hit"
@@ -409,6 +438,8 @@ export function Canvas({ state, dispatch, onContext }: CanvasProps): JSX.Element
                 hasError={nodeIssues.some((issue) => issue.severity === "error")}
                 hasWarning={nodeIssues.some((issue) => issue.severity === "warning")}
                 badge={badgeFor(state, layout.node.id)}
+                accent={accentOf(layout.spec)}
+                chips={chips.get(layout.node.id) ?? []}
                 activity={state.run.agents[layout.node.id]}
                 color={(type) => catalog?.color(type) ?? "#888"}
                 connected={(pin, direction) =>

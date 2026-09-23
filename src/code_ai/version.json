@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 19,
-  "patch": 0,
-  "build": 31,
+  "patch": 1,
+  "build": 32,
   "updated": "2026-09-23",
-  "note": "Generic graph agents: permission switches, blocked tools and wireable Tools nodes."
+  "note": "Graph nodes redrawn: kind glyphs, tinted headers, status marks and access chips."
 }

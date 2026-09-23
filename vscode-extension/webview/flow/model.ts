@@ -12,18 +12,38 @@ import type {
 } from "../../src/flow-schema";
 
 export const NODE_W = 216;
-export const HEADER_H = 30;
+export const HEADER_H = 40;
 export const ROW_H = 20;
 export const BODY_PAD = 8;
+/** The strip under an agent's pins: what it may touch, or what it is doing. */
+export const FOOTER_H = 24;
 export const GRID = 20;
 
 /** Category -> header tint. Reads as "what kind of work is this node". */
 export const CATEGORY_COLORS: Record<string, string> = {
-  flow: "#5a6472",
-  agent: "#1f6feb",
-  data: "#6f42c1",
-  debug: "#8a6d1f",
+  flow: "#475569",
+  agent: "#2563eb",
+  data: "#7e22ce",
+  debug: "#a16207",
 };
+
+/** Kinds recognisable on sight get their own tint; the rest take the category's. */
+export const KIND_COLORS: Record<string, string> = {
+  start: "#15803d",
+  end: "#b91c1c",
+  model: "#0369a1",
+  profession: "#2563eb",
+  custom_profession: "#c2410c",
+  tools: "#4338ca",
+  user_chat: "#0f766e",
+  print: "#a16207",
+};
+
+const FOOTER_KINDS = new Set(["profession", "custom_profession", "tools"]);
+
+export function accentOf(spec: NodeKindSpec): string {
+  return KIND_COLORS[spec.kind] ?? CATEGORY_COLORS[spec.category] ?? CATEGORY_COLORS.flow;
+}
 
 export interface PinLayout {
   pin: PinSpec;
@@ -40,6 +60,8 @@ export interface NodeLayout {
   inputs: PinLayout[];
   outputs: PinLayout[];
   summary: string;
+  /** Height of the strip under the pins; 0 when the kind has none. */
+  footer: number;
 }
 
 /** The pins a node actually shows, after dynamic pins are expanded. */
@@ -72,7 +94,8 @@ export function layoutNode(node: FlowNode, spec: NodeKindSpec): NodeLayout {
   const outputs = execFirst(pins.filter((pin) => pin.direction === "out"));
   const summary = summaryOf(node, spec);
   const rows = Math.max(inputs.length, outputs.length);
-  const height = HEADER_H + BODY_PAD + rows * ROW_H + (summary ? 18 : 0) + BODY_PAD;
+  const footer = FOOTER_KINDS.has(node.kind) ? FOOTER_H : 0;
+  const height = HEADER_H + BODY_PAD + rows * ROW_H + BODY_PAD + footer;
   const place = (list: PinSpec[], x: number): PinLayout[] =>
     list.map((pin, index) => ({
       pin,
@@ -87,6 +110,7 @@ export function layoutNode(node: FlowNode, spec: NodeKindSpec): NodeLayout {
     inputs: place(inputs, 0),
     outputs: place(outputs, NODE_W),
     summary,
+    footer,
   };
 }
 

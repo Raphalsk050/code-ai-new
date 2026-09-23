@@ -233,6 +233,14 @@ const PT: Record<string, string> = {
   Browser: "Navegador",
   Documents: "Documentos",
   Other: "Outras",
+  // The switches as the node's footer chips say them.
+  read: "ler",
+  edit: "editar",
+  run: "rodar",
+  web: "web",
+  review: "revisar",
+  "none picked": "nenhuma",
+  "talk only": "só conversa",
 
   // -- the rest of both panels --------------------------------------------
   " — type the name with / to force it.": " — digite o nome com / para forçar.",

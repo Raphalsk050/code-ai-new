@@ -3,7 +3,8 @@ import test from "node:test";
 
 import catalogFixture from "../../../e2e/fixtures/catalog.json";
 import type { FlowEdge, FlowGraph, GraphCatalog } from "../../../src/flow-schema";
-import { grantedTools, groupTools, permissionsOf, wiredToolsets } from "../access";
+import { chipsFor, grantedTools, groupTools, permissionsOf, wiredToolsets } from "../access";
+import { fitChips } from "../node-view";
 import { indexCatalog } from "../model";
 import { Action, EditorState, initialState, reduce } from "../store";
 
@@ -166,4 +167,52 @@ test("the picker groups tools in the catalog's order and filters by every word",
     found.flatMap((group) => group.tools.map((tool) => tool.name)),
     ["browser_open"]
   );
+});
+
+// -- the node's footer ---------------------------------------------------------
+
+test("an agent's footer names the switches that are on", () => {
+  const doc = graph([node("a", "profession", { profession: "architect" })]);
+
+  assert.deepEqual(
+    chipsFor(CATALOG, doc, doc.nodes[0]).map((chip) => chip.label),
+    ["read", "web"]
+  );
+});
+
+test("an agent with tools wired says how many it gets instead", () => {
+  const doc = graph(
+    [node("a", "profession"), node("t", "tools", { tools: ["read_file", "web_search"] })],
+    [data("e1", ["t", "tools"], ["a", "tools"])]
+  );
+
+  const chips = chipsFor(CATALOG, doc, doc.nodes[0]);
+  assert.equal(chips.length, 1);
+  assert.equal(chips[0].label, "2 tools");
+  assert.equal(chips[0].tone, "tools");
+});
+
+test("an agent with every switch off says it can only talk", () => {
+  const doc = graph([
+    node("a", "custom_profession", {
+      can_read: false,
+      can_write: false,
+      can_run: false,
+      can_browse: false,
+      can_review: false,
+    }),
+  ]);
+
+  assert.deepEqual(chipsFor(CATALOG, doc, doc.nodes[0]), [{ label: "talk only", tone: "muted" }]);
+});
+
+test("chips that do not fit collapse into one +N", () => {
+  const chips = ["document_convert", "document_create", "document_edit", "read_file"].map(
+    (label) => ({ label, tone: "tools" as const })
+  );
+
+  const shown = fitChips(chips, 200);
+  assert.ok(shown.length < chips.length);
+  assert.equal(shown[shown.length - 1].label, `+${chips.length - shown.length + 1}`);
+  assert.deepEqual(fitChips(chips.slice(0, 1), 200), chips.slice(0, 1));
 });
