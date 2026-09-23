@@ -1017,6 +1017,7 @@ class AgentOrchestrator:
                 # Transcribing dense screenshots takes room, and reasoning models
                 # spend output budget on hidden thinking first.
                 max_output_tokens=8192,
+                reasoning_effort=self.config.sampling.light_reasoning_effort(),
             )
             try:
                 response = await self.provider.complete(request)
@@ -1933,11 +1934,12 @@ class AgentOrchestrator:
         while True:
             streamed: list[str] = []
             try:
-                return await asyncio.wait_for(
-                    self._collect_model_response(
-                        request, state, streamed, waiting_since=waiting_since
-                    ),
-                    timeout=model_timeout,
+                return await self._collect_model_response(
+                    request,
+                    state,
+                    streamed,
+                    waiting_since=waiting_since,
+                    idle_timeout=model_timeout,
                 )
             except CancellationError:
                 raise
@@ -2078,6 +2080,7 @@ class AgentOrchestrator:
         streamed_sink: list[str],
         *,
         waiting_since: float | None = None,
+        idle_timeout: float | None = None,
     ) -> ModelResponse:
         cancel_event = state.cancel_event
         reasoning_parts: list[str] = []
@@ -2112,11 +2115,17 @@ class AgentOrchestrator:
             since=time.monotonic() if waiting_since is None else waiting_since,
             every=float(self.config.budgets.model_queue_notice_s),
         )
+        loop = asyncio.get_running_loop()
         async with (
+            # The budget bounds silence, not work. As a wall clock it killed
+            # thinking models mid-thought, and the retry thought from zero again.
+            asyncio.timeout(idle_timeout) as watchdog,
             contextlib.aclosing(self.provider.stream(request)) as provider_stream,
             notice,
         ):
             async for event in provider_stream:
+                if idle_timeout is not None:
+                    watchdog.reschedule(loop.time() + idle_timeout)
                 self._raise_if_cancelled(cancel_event)
                 if notice.pending and event.kind in _MODEL_OUTPUT_KINDS:
                     await notice.answered()

@@ -243,6 +243,9 @@ class OpenAIResponsesProvider:
             kwargs["previous_response_id"] = request.previous_response_id
         if self._sampling_supported:
             kwargs.update(self._config.sampling.responses_kwargs())
+            reasoning = kwargs.get("reasoning")
+            if request.reasoning_effort and reasoning and "effort" in reasoning:
+                reasoning["effort"] = request.reasoning_effort
 
         debug = ModelDebugLogger.for_request(self._config, provider="openai_responses")
         if debug:

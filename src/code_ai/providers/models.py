@@ -177,6 +177,9 @@ class ModelRequest:
     previous_response_id: str | None = None
     use_remote_conversation_state: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Replaces sampling.reasoning_effort for this request only, and only where
+    # the config already sends one (see SamplingConfig.light_reasoning_effort).
+    reasoning_effort: str | None = None
 
 
 @dataclass(slots=True)

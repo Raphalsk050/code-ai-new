@@ -420,6 +420,8 @@ class CodeAIApplication:
             # tight cap makes them return empty text. Give them ample room to
             # finish reasoning and still emit the completion.
             max_output_tokens=32768,
+            # Ghost text is stale by the time an xhigh think block finishes.
+            reasoning_effort=config.sampling.light_reasoning_effort(),
         )
         response = await self.provider.complete(request)
         return _clean_inline_completion(response.text or "")
@@ -588,6 +590,7 @@ class CodeAIApplication:
                 Message(role="user", content=digest),
             ],
             max_output_tokens=2048,
+            reasoning_effort=self.session.config.sampling.light_reasoning_effort(),
         )
         response = await self.provider.complete(request)
         summary = (response.text or "").strip()

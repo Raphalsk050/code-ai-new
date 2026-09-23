@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from code_ai.context.conversation import ConversationState
@@ -73,7 +74,11 @@ class ContextCompressor:
         event_bus: AsyncEventBus,
         provider: ModelProvider | None = None,
         model: str = "",
-        summary_max_tokens: int = 1024,
+        # Room for the thinking a reasoning model does first: at 1024 the
+        # summary never arrived and the heuristic fallback ran instead.
+        summary_max_tokens: int = 4096,
+        # Read per summary, so a /config change reaches it.
+        summary_effort: Callable[[], str | None] | None = None,
     ) -> None:
         self.counter = counter
         self.max_context_tokens = max_context_tokens
@@ -84,6 +89,7 @@ class ContextCompressor:
         self.provider = provider
         self.model = model
         self.summary_max_tokens = summary_max_tokens
+        self.summary_effort = summary_effort
 
     @property
     def budget(self) -> int:
@@ -231,6 +237,7 @@ class ContextCompressor:
             tools=[],
             max_output_tokens=self.summary_max_tokens,
             use_remote_conversation_state=False,
+            reasoning_effort=self.summary_effort() if self.summary_effort else None,
         )
         response = await self.provider.complete(request)
         text = (response.text or "").strip()

@@ -158,6 +158,7 @@ class SubagentRuntime:
             event_bus=event_bus,
             provider=child_provider,
             model=child_config.model,
+            summary_effort=child_config.sampling.light_reasoning_effort,
         )
         review_service = (
             self._review_service_factory(event_bus)

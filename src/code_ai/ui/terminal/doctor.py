@@ -1320,6 +1320,7 @@ class DoctorModal(ModalScreen[None]):
                     ],
                     max_output_tokens=32,
                     use_remote_conversation_state=False,
+                    reasoning_effort=candidate.sampling.light_reasoning_effort(),
                 )
                 response = await asyncio.wait_for(
                     provider.complete(request),

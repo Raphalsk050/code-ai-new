@@ -754,9 +754,14 @@ class PlannerService:
                 else ""
             )
             + f"Latest verification passed: {self.ledger.latest_verification_passed}\n"
-            f"Approved external gaps: {[gap.to_dict() for gap in self.approved_external_gaps]}\n"
-            f"Recent evidence: {self.ledger.compact_recent(limit=8)}\n"
-            f"Recommended tools now: {sorted(recommended_tool_names)}\n"
+            + (
+                "Approved external gaps: "
+                f"{[gap.to_dict() for gap in self.approved_external_gaps]}\n"
+                if self.approved_external_gaps
+                else ""
+            )
+            + self._recent_evidence_lines()
+            + f"Recommended tools now: {sorted(recommended_tool_names)}\n"
             + self._verification_context_line()
             + plan_lines
         )
@@ -954,6 +959,14 @@ class PlannerService:
             await self._move_to_step_kind(PlanStepKind.COMPLETE, PlanningPhase.COMPLETE)
         else:
             await self._move_to_step_kind(PlanStepKind.VERIFY, PlanningPhase.VERIFY)
+
+    def _recent_evidence_lines(self) -> str:
+        # One line per record: the block is re-sent every step, and the tool
+        # results in the history already hold the detail.
+        lines = self.ledger.brief_recent(limit=8)
+        if not lines:
+            return "Recent evidence: none\n"
+        return "Recent evidence:\n" + "".join(f"- {line}\n" for line in lines)
 
     def _known_paths_preview(self, *, limit: int = 15) -> str:
         paths = sorted(self._known_content_paths)

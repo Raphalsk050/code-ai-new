@@ -261,6 +261,8 @@ class OpenAIChatCompletionsProvider:
             kwargs["stream_options"] = {"include_usage": True}
         if self._sampling_supported:
             kwargs.update(self._config.sampling.chat_completion_kwargs())
+            if request.reasoning_effort and "reasoning_effort" in kwargs:
+                kwargs["reasoning_effort"] = request.reasoning_effort
 
         debug = ModelDebugLogger.for_request(self._config, provider="openai_chat_completions")
         if debug:

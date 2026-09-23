@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 17,
-  "patch": 3,
-  "build": 26,
+  "patch": 4,
+  "build": 27,
   "updated": "2026-09-22",
-  "note": "Bundle the C++ runtime that ICU was built with, not the distro's."
+  "note": "Thinking models are no longer cut off mid-thought; bookkeeping calls think less."
 }

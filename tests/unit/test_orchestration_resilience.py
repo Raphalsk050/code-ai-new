@@ -112,6 +112,66 @@ async def test_model_timeout_salvages_streamed_text(tmp_path) -> None:
     assert "partial answer" in result.text
 
 
+class LongThinkerProvider(_BaseProvider):
+    """Thinks for longer than the step budget, but never goes quiet."""
+
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.attempts += 1
+        for _ in range(15):
+            await asyncio.sleep(0.1)
+            yield ProviderEvent(kind="reasoning_delta", reasoning_delta="hmm ")
+        yield ProviderEvent(kind="text_delta", text_delta="done thinking")
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text="done thinking", finish_reason=FinishReason.STOP),
+        )
+
+
+async def test_model_budget_bounds_silence_not_thinking(tmp_path) -> None:
+    config = _config(tmp_path, budgets={"max_model_call_s": 1, "max_model_step_seconds": 1})
+    provider = LongThinkerProvider()
+    app = build_application(config=config, provider=provider)
+
+    await app.start()
+    result = await app.submit_user_message("Hello")
+    await app.close()
+
+    # 1.5s of steady reasoning against a 1s budget: one attempt, not a restart.
+    assert result.text == "done thinking"
+    assert provider.attempts == 1
+
+
+class SilentThenOkProvider(_BaseProvider):
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.attempts += 1
+        if self.attempts == 1:
+            await asyncio.sleep(30)
+        yield ProviderEvent(kind="text_delta", text_delta="hello")
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text="hello", finish_reason=FinishReason.STOP),
+        )
+
+
+async def test_a_silent_model_step_is_retried(tmp_path) -> None:
+    config = _config(tmp_path, budgets={"max_model_call_s": 1, "max_model_step_seconds": 1})
+    provider = SilentThenOkProvider()
+    app = build_application(config=config, provider=provider)
+
+    await app.start()
+    result = await app.submit_user_message("Hello")
+    await app.close()
+
+    assert result.text == "hello"
+    assert provider.attempts == 2
+
+
 class AlwaysFailsProvider(_BaseProvider):
     async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
         raise ProviderError("backend is down")

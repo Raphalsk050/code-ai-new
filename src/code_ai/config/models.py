@@ -40,7 +40,11 @@ def _unique_names(raw: Any) -> list[str]:
         if name and name not in seen:
             seen.append(name)
     return seen
-SUPPORTED_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
+# Weakest to strongest.
+_REASONING_EFFORT_ORDER = ("none", "minimal", "low", "medium", "high", "xhigh")
+SUPPORTED_REASONING_EFFORTS = set(_REASONING_EFFORT_ORDER)
+# What bookkeeping calls (summaries, lessons, reflection) think at.
+_LIGHT_REASONING_EFFORT = "low"
 SUPPORTED_REASONING_SUMMARIES = {"auto", "concise", "detailed"}
 
 
@@ -673,6 +677,18 @@ class SamplingConfig:
                 "sampling.reasoning_summary must be one of "
                 f"{sorted(SUPPORTED_REASONING_SUMMARIES)}."
             )
+
+    def light_reasoning_effort(self) -> str | None:
+        """Effort for bookkeeping calls: capped at "low", never switched on.
+
+        An unset effort stays unset - an endpoint that never saw the field may
+        refuse it, and that refusal drops every sampling knob for the session.
+        """
+        effort = self.reasoning_effort
+        if effort is None or effort not in _REASONING_EFFORT_ORDER:
+            return effort
+        light = _REASONING_EFFORT_ORDER.index(_LIGHT_REASONING_EFFORT)
+        return _REASONING_EFFORT_ORDER[min(_REASONING_EFFORT_ORDER.index(effort), light)]
 
     def _extra_body_with_passthrough(self) -> dict[str, Any]:
         extra_body = dict(self.extra_body)

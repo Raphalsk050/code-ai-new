@@ -15,6 +15,7 @@ from code_ai.config.loader import (
     persist_config_updates,
     redacted_config_json,
 )
+from code_ai.config.models import SamplingConfig
 from code_ai.core.errors import ConfigurationError
 from code_ai.util import fileio
 from code_ai.util.fileio import FileOperationError
@@ -422,3 +423,19 @@ def test_the_defaults_think_at_xhigh_with_a_cool_sampler() -> None:
     assert sampling.frequency_penalty == 0.0
     assert sampling.repeat_penalty == 1.05
     assert sampling.ollama_options()["repeat_penalty"] == 1.05
+
+
+@pytest.mark.parametrize(
+    ("configured", "light"),
+    [
+        (None, None),
+        ("xhigh", "low"),
+        ("high", "low"),
+        ("medium", "low"),
+        ("low", "low"),
+        ("minimal", "minimal"),
+        ("none", "none"),
+    ],
+)
+def test_light_reasoning_effort_only_ever_lowers(configured, light) -> None:
+    assert SamplingConfig(reasoning_effort=configured).light_reasoning_effort() == light

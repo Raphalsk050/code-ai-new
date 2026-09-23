@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from code_ai.config.models import AppConfig
+from code_ai.config.models import AppConfig, SamplingConfig
 from code_ai.providers.models import (
     ImageContent,
     Message,
@@ -759,6 +759,60 @@ async def test_chat_completions_payload_never_carries_a_misplaced_system_message
     assert roles.count("system") == 1
     assert roles[0] == "system"
     assert "user" in roles
+
+
+def _record_create(resource) -> dict[str, object]:
+    sent: dict[str, object] = {}
+    original = resource.create
+
+    async def _record(**kwargs: object):
+        sent.update(kwargs)
+        return await original(**kwargs)
+
+    resource.create = _record
+    return sent
+
+
+def _light_request() -> ModelRequest:
+    return ModelRequest(
+        model="test-model",
+        messages=[Message(role="user", content="hi")],
+        reasoning_effort="low",
+    )
+
+
+async def test_chat_completions_request_effort_replaces_the_configured_one() -> None:
+    provider = _chat_provider([])
+    provider._sampling_supported = True
+    provider._config = AppConfig(sampling=SamplingConfig(reasoning_effort="xhigh"))
+    sent = _record_create(provider._client.chat.completions)
+
+    [event async for event in provider.stream(_light_request())]
+
+    assert sent["reasoning_effort"] == "low"
+
+
+async def test_chat_completions_request_effort_never_switches_reasoning_on() -> None:
+    provider = _chat_provider([])
+    provider._sampling_supported = True
+    sent = _record_create(provider._client.chat.completions)
+
+    [event async for event in provider.stream(_light_request())]
+
+    assert "reasoning_effort" not in sent
+
+
+async def test_responses_request_effort_replaces_the_configured_one() -> None:
+    provider = _responses_provider([])
+    provider._sampling_supported = True
+    provider._config = AppConfig(
+        sampling=SamplingConfig(reasoning_effort="xhigh", reasoning_summary="auto")
+    )
+    sent = _record_create(provider._client.responses)
+
+    [event async for event in provider.stream(_light_request())]
+
+    assert sent["reasoning"] == {"effort": "low", "summary": "auto"}
 
 
 async def test_ollama_payload_never_carries_a_misplaced_system_message() -> None:

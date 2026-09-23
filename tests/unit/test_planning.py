@@ -901,6 +901,40 @@ async def test_task_context_shows_model_plan_step_as_current() -> None:
     assert "Inspect the local workspace" not in block
 
 
+async def test_task_context_lists_recent_evidence_one_short_line_each() -> None:
+    # Re-sent every step: the command output is already in the tool result, so
+    # the list carries only what each record proved.
+    service = PlannerService(
+        config=PlannerConfig(),
+        event_bus=AsyncEventBus(session_id="session"),
+        session_id="session",
+    )
+    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+    await service.record_tool_result(
+        tool_call_id="c1",
+        tool_name="execute_command",
+        payload={"argv": ["python", "build.py"], "exit_code": 1, "stderr": "boom\n" * 400},
+        success=True,
+    )
+    await service.record_tool_result(
+        tool_call_id="r1",
+        tool_name="read_file",
+        payload={"path": "src/example.py", "sha256": "abc"},
+        success=True,
+    )
+
+    block = service.task_context_block(recommended_tool_names={"read_file"})
+    evidence = block.split("Recent evidence:\n", 1)[1].split("Recommended tools now:", 1)[0]
+    lines = evidence.strip().splitlines()
+
+    assert len(lines) == 2
+    assert all(len(line) <= 260 for line in lines)
+    assert "build.py" in lines[0]
+    assert lines[1] == "- FILE_READ (read_file): Read src/example.py."
+    assert "evidence_id" not in block
+    assert "Approved external gaps" not in block
+
+
 async def test_completion_reconciles_against_model_plan_not_skeleton() -> None:
     # When the model submitted a plan, completion lists *its* untouched steps so it
     # is guided back to its own checklist, instead of the generic skeleton wording.

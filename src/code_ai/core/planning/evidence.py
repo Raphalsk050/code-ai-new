@@ -142,6 +142,13 @@ class EvidenceRecord(BaseModel):
             "command_exit_code": self.command_exit_code,
         }
 
+    def brief(self, *, max_chars: int = 200) -> str:
+        """One line for the per-step prompt; the tool result holds the detail."""
+        summary = " ".join(self.summary.split())
+        if len(summary) > max_chars:
+            summary = summary[: max_chars - 1].rstrip() + "…"
+        return f"{self.evidence_type.value} ({self.tool_name}): {summary}"
+
 
 class EvidenceLedger:
     """Records evidence derived from executed tool results for one session."""
@@ -300,6 +307,9 @@ class EvidenceLedger:
 
     def compact_recent(self, *, limit: int = 12) -> list[dict[str, Any]]:
         return [record.compact() for record in self.records[-limit:]]
+
+    def brief_recent(self, *, limit: int = 8) -> list[str]:
+        return [record.brief() for record in self.records[-limit:]]
 
     def progress_fingerprint(self) -> tuple[object, ...]:
         """Snapshot of distinct knowledge and workspace state gathered so far.

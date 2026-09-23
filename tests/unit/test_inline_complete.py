@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from code_ai.app.service import CodeAIApplication
+from code_ai.config.models import SamplingConfig
 
 
 class _FakeProvider:
@@ -19,7 +20,13 @@ def _app(
     provider: _FakeProvider, *, model: str = "main", inline_model: str = ""
 ) -> CodeAIApplication:
     return CodeAIApplication(
-        session=SimpleNamespace(config=SimpleNamespace(model=model, inline_model=inline_model)),
+        session=SimpleNamespace(
+            config=SimpleNamespace(
+                model=model,
+                inline_model=inline_model,
+                sampling=SamplingConfig(reasoning_effort="xhigh"),
+            )
+        ),
         event_bus=None,
         orchestrator=None,
         provider=provider,
@@ -46,6 +53,13 @@ async def test_inline_complete_falls_back_to_main_model() -> None:
     app = _app(provider, model="big", inline_model="   ")
     await app.inline_complete(prefix="foo")
     assert provider.request.model == "big"
+
+
+async def test_inline_complete_thinks_at_low_effort() -> None:
+    provider = _FakeProvider("x")
+    app = _app(provider)
+    await app.inline_complete(prefix="foo")
+    assert provider.request.reasoning_effort == "low"
 
 
 async def test_inline_complete_skips_empty_prefix() -> None:

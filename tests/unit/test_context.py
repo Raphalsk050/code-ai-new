@@ -214,6 +214,37 @@ async def test_compression_uses_model_summary_when_provider_available() -> None:
     assert conversation.messages[-1].content == "current request"
 
 
+async def test_compression_summary_thinks_at_the_light_effort_read_per_call() -> None:
+    bus = AsyncEventBus(session_id="session")
+    conversation = ConversationState()
+    for index in range(20):
+        conversation.messages.append(
+            Message(role="user", content=f"old message {index} " + ("x" * 200))
+        )
+    conversation.messages.append(Message(role="user", content="current request"))
+    effort = {"value": "low"}
+    provider = _StubProvider(text="summary")
+    compressor = ContextCompressor(
+        counter=TokenCounter(model="unknown-local-model"),
+        max_context_tokens=4096,
+        threshold=0.1,
+        target=0.8,
+        output_reserve=512,
+        event_bus=bus,
+        provider=provider,
+        model="unknown-local-model",
+        summary_effort=lambda: effort["value"],
+    )
+
+    await compressor.ensure_capacity(conversation, [], force=True)
+    effort["value"] = "minimal"
+    await compressor.ensure_capacity(conversation, [], force=True)
+
+    assert [request.reasoning_effort for request in provider.requests] == ["low", "minimal"]
+    # Room for the thinking that comes before the summary itself.
+    assert provider.requests[0].max_output_tokens == 4096
+
+
 async def test_compression_falls_back_to_heuristic_when_summary_call_fails() -> None:
     bus = AsyncEventBus(session_id="session")
     conversation = ConversationState()

@@ -377,7 +377,7 @@ class TerminalViewModel:
             line = f"error> model request failed: {message}"
             if "timeout" in message.lower() or "timed out" in message.lower():
                 line += (
-                    " — the model needed longer than max_model_call_s /"
+                    " — the model went silent for longer than max_model_call_s /"
                     " max_model_step_seconds allow"
                 )
             self.conversation.append(line)

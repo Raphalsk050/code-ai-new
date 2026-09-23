@@ -298,6 +298,7 @@ def build_application(
             model=config.model,
             messages=[Message(role="user", content=build_failure_lesson_prompt(context))],
             max_output_tokens=config.memory.reflection_max_output_tokens,
+            reasoning_effort=config.sampling.light_reasoning_effort(),
         )
         response = await provider.complete(request)
         return response.text
@@ -336,6 +337,7 @@ def build_application(
             model=config.model,
             messages=[Message(role="user", content=prompt)],
             max_output_tokens=config.memory.reflection_max_output_tokens,
+            reasoning_effort=config.sampling.light_reasoning_effort(),
         )
         response = await provider.complete(request)
         return response.text
@@ -426,6 +428,7 @@ def build_application(
         event_bus=event_bus,
         provider=provider,
         model=config.model,
+        summary_effort=lambda: config.sampling.light_reasoning_effort(),
     )
     terminal_manager = PersistentTerminalManager()
     desktop_controller = DesktopController()
