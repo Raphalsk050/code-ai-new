@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 
 from code_ai.bootstrap import build_application
 from code_ai.config.models import AppConfig
+from code_ai.core import orchestration
 from code_ai.core.errors import CancellationError, ProviderError, TransientProviderError
 from code_ai.core.memory import FailureMemoryStore
 from code_ai.providers.models import (
@@ -184,6 +185,75 @@ async def test_routine_steps_think_at_the_followup_effort(tmp_path) -> None:
     # First step: full effort. After a clean read: the follow-up one. After a
     # failed read: full effort again (None means "the configured one").
     assert provider.efforts == [None, "low", None]
+
+
+class MissOnceProvider(_BaseProvider):
+    """A failed read on the first step (so a lesson is pending), answers after."""
+
+    def __init__(self) -> None:
+        self.requests: list[ModelRequest] = []
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            calls = [ToolCall(id="m1", name="read_file", arguments={"path": "missing.txt"})]
+            yield ProviderEvent(
+                kind="completed",
+                response=ModelResponse(tool_calls=calls, finish_reason=FinishReason.TOOL_CALLS),
+            )
+            return
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text="done", finish_reason=FinishReason.STOP),
+        )
+
+
+def _same_message(left, right) -> bool:
+    return (left.role, left.content, left.tool_calls, left.tool_call_id) == (
+        right.role,
+        right.content,
+        right.tool_calls,
+        right.tool_call_id,
+    )
+
+
+async def test_a_local_model_gets_its_prompt_cache_back_after_learning(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(orchestration, "_WARM_DELAY_S", 0)
+    provider = MissOnceProvider()
+    app = build_application(config=_config(tmp_path), provider=provider)
+
+    await app.start()
+    await app.submit_user_message("what does missing.txt say?")
+    await asyncio.wait_for(app.orchestrator._learning_task, timeout=10)
+    warm = provider.requests[-1]
+    await app.submit_user_message("and now?")
+    await app.close()
+
+    next_step = provider.requests[-1]
+    assert warm.max_output_tokens == 1
+    assert warm.messages[-1].role != "assistant"
+    # The warm request is exactly the prefix the next turn sends.
+    assert [tool.name for tool in warm.tools] == [tool.name for tool in next_step.tools]
+    assert len(warm.messages) < len(next_step.messages)
+    assert all(
+        _same_message(ours, theirs)
+        for ours, theirs in zip(warm.messages, next_step.messages, strict=False)
+    )
+
+
+async def test_an_ollama_cloud_model_is_never_warmed(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(orchestration, "_WARM_DELAY_S", 0)
+    provider = MissOnceProvider()
+    app = build_application(config=_config(tmp_path, model="gemma4:cloud"), provider=provider)
+
+    await app.start()
+    await app.submit_user_message("what does missing.txt say?")
+    await asyncio.wait_for(app.orchestrator._learning_task, timeout=10)
+    await app.close()
+
+    assert all(request.max_output_tokens != 1 for request in provider.requests)
 
 
 class SilentThenOkProvider(_BaseProvider):

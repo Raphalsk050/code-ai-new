@@ -111,6 +111,9 @@ _NO_TOOLS_ANSWER = (
 # Long enough for an ordinary provider call to unwind, short enough that the
 # user never reads it as the agent ignoring them.
 _LEARNING_CANCEL_TIMEOUT_S = 2.0
+# Pause before warming a local server's cache after learning, so a shutdown or
+# the user's next message gets the model first.
+_WARM_DELAY_S = 2.0
 
 _TOOL_GUARD_POLL_SECONDS = 2.0
 _TOOL_GUARD_GRACE_SECONDS = 10.0
@@ -567,6 +570,9 @@ class AgentOrchestrator:
         # The meta-call runs after the turn, in the learning lane, instead of
         # holding the model mid-work.
         self._pending_lessons: list[tuple[str, str, str]] = []
+        # Shutdown: no turn follows, so there is no cache worth warming.
+        self._draining = False
+        self._warming = False
         self.state = AgentState.STARTING
 
     @property
@@ -1617,20 +1623,67 @@ class AgentOrchestrator:
 
     async def _run_learning(self, digest: TurnDigest | None) -> None:
         try:
+            reflecting = digest is not None and self.reflection is not None
+            prompted = reflecting or (
+                bool(self._pending_lessons) and self.failure_memory is not None
+            )
             await self.distill_pending_lessons()
-            if digest is None or self.reflection is None:
-                return
-            report = await self.reflection.reflect_on_turn(digest)
-            # Same background lane, strictly after reflection: curate any store
-            # that grew past its threshold, so cost stays one pass at a time.
-            consolidated = await self.reflection.maybe_consolidate()
-            if report.changed or consolidated:
-                # Make what was just learned visible on the very next turn.
-                self._refresh_system_prompt()
+            if reflecting:
+                report = await self.reflection.reflect_on_turn(digest)
+                # Same background lane, strictly after reflection: curate any store
+                # that grew past its threshold, so cost stays one pass at a time.
+                consolidated = await self.reflection.maybe_consolidate()
+                if report.changed or consolidated:
+                    # Make what was just learned visible on the very next turn.
+                    self._refresh_system_prompt()
+            if prompted and self._warms_prefix_cache():
+                self._warming = True
+                try:
+                    await asyncio.sleep(_WARM_DELAY_S)
+                    if not self._draining:
+                        await self._warm_prefix_cache()
+                finally:
+                    self._warming = False
         except asyncio.CancelledError:  # shutdown drained us; nothing to salvage
             raise
         except Exception:  # noqa: BLE001 - learning must never surface as an error
             logger.debug("Post-turn learning pass failed.", exc_info=True)
+
+    def _warms_prefix_cache(self) -> bool:
+        # Only where the request is the rendered prompt itself; a Responses
+        # server may rebuild it from stored state, and a cloud one bills it.
+        return self.config.api_mode in {"completions", "ollama"} and (
+            self.config.serves_model_locally()
+        )
+
+    async def _warm_prefix_cache(self) -> None:
+        """Put the conversation back in a local server's prompt cache.
+
+        A one-slot server keeps one prompt and the learning calls just replaced
+        ours, so the next turn re-read the whole conversation before its first
+        token. Same system prompt, tools and effort as a real step, or nothing
+        would match.
+        """
+        self._refresh_system_prompt()
+        messages = _evict_stale_images(
+            self.conversation.snapshot(), keep=self.config.image_history_limit
+        )
+        # End on the user's side: a trailing answer reads as a prefill, which
+        # llama.cpp refuses with thinking on. The answer is cheap to re-read.
+        while messages and messages[-1].role == "assistant" and not messages[-1].tool_calls:
+            messages.pop()
+        if not any(message.role != "system" for message in messages):
+            return
+        tools = self.tool_registry.definitions(self._allowed_tool_names())
+        request = ModelRequest(
+            model=self.config.model,
+            messages=messages,
+            tools=[] if tools and self._text_tool_mode() else tools,
+            max_output_tokens=1,
+        )
+        started = time.monotonic()
+        await self.provider.complete(request)
+        logger.debug("Prefix cache warmed in %.1fs.", time.monotonic() - started)
 
     async def drain_learning(self, *, timeout: float = 30.0) -> None:
         """Give a pending background learning pass a bounded chance to finish.
@@ -1640,9 +1693,13 @@ class AgentOrchestrator:
         pass is cancelled — learning is best-effort, shutdown is not.
         """
 
+        self._draining = True
         task = self._learning_task
         if task is None or task.done():
             return
+        if self._warming:
+            # Everything worth keeping is learned by then, and no turn follows.
+            task.cancel()
         done, _pending = await asyncio.wait({task}, timeout=timeout)
         if task not in done:
             task.cancel()

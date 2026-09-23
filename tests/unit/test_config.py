@@ -460,3 +460,17 @@ def test_followup_reasoning_effort_is_validated(tmp_path) -> None:
         AppConfig.from_mapping(
             {"workspace": str(tmp_path), "sampling": {"followup_reasoning_effort": "turbo"}}
         )
+
+
+@pytest.mark.parametrize(
+    ("base_url", "model", "local"),
+    [
+        ("http://localhost:11434/v1", "qwen3:32b", True),
+        ("http://127.0.0.1:1234/v1", "C:\models\qwen3.gguf", True),
+        ("http://localhost:11434/v1", "gemma4:cloud", False),
+        ("http://localhost:11434/v1", "gemma4:31b-cloud", False),
+        ("https://api.openai.com/v1", "gpt-5", False),
+    ],
+)
+def test_serves_model_locally_excludes_ollama_cloud_models(base_url, model, local) -> None:
+    assert AppConfig(base_url=base_url, model=model).serves_model_locally() is local

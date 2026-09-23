@@ -67,6 +67,12 @@ def _is_local_base_url(base_url: str) -> bool:
     return host in {"localhost", "127.0.0.1", "::1"} or host.endswith(".local")
 
 
+def _is_cloud_model(model: str) -> bool:
+    # Ollama forwards "name:cloud" and "name:tag-cloud" to ollama.com.
+    tag = model.strip().lower().rpartition(":")[2]
+    return tag == "cloud" or tag.endswith("-cloud")
+
+
 @dataclass(slots=True)
 class BudgetConfig:
     build_tool_timeout_s: int = DEFAULT_BUDGETS["build_tool_timeout_s"]
@@ -1011,6 +1017,11 @@ class AppConfig:
             raise ConfigurationError(
                 "api_key is required for non-local OpenAI-compatible endpoints."
             )
+
+    def serves_model_locally(self) -> bool:
+        """A loopback endpoint running the model itself - not an Ollama cloud
+        model, which the local daemon only forwards."""
+        return _is_local_base_url(self.base_url) and not _is_cloud_model(self.model)
 
     def endpoint_requires_placeholder_key(self) -> bool:
         return (
