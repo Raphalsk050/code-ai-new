@@ -173,8 +173,11 @@ _FIELD_REFUSAL_HINTS = (
 
 
 def _looks_like_replay_refusal(exc: Exception, field: str) -> bool:
-    if _is_transient_exception(exc):
-        return False
+    # A strict schema says 400/422; a template that cannot render the field says
+    # 500 (gpt-oss raises on content and thinking together). One retry without
+    # the reasoning settles it either way.
+    if getattr(exc, "status_code", None) in {400, 422, 500}:
+        return True
     text = str(exc).lower()
     return field in text or any(hint in text for hint in _FIELD_REFUSAL_HINTS)
 

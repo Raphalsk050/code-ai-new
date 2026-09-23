@@ -894,6 +894,32 @@ async def test_chat_completions_stops_replaying_reasoning_the_endpoint_refuses()
     assert provider._sampling_supported is True
 
 
+class _TemplateCrash(Exception):
+    status_code = 500
+
+
+async def test_a_template_that_cannot_render_the_reasoning_does_not_fail_the_turn() -> None:
+    provider = _chat_provider([_reasoning_chunk("reasoning")])
+    [event async for event in provider.stream(_chat_request())]
+    original = provider._client.chat.completions.create
+
+    async def _crashing(**kwargs: object):
+        if any("reasoning" in message for message in kwargs["messages"]):
+            raise _TemplateCrash("Cannot pass both content and thinking")
+        return await original(**kwargs)
+
+    provider._client.chat.completions.create = _crashing
+    events = [
+        event
+        async for event in provider.stream(
+            ModelRequest(model="test-model", messages=_thought_step())
+        )
+    ]
+
+    assert provider._reasoning_replay is False
+    assert events[-1].kind == "completed"
+
+
 def test_ollama_replays_assistant_reasoning_as_thinking() -> None:
     messages = messages_to_ollama(_thought_step())
 
