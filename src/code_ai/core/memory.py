@@ -25,7 +25,7 @@ import hashlib
 import json
 import math
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -164,22 +164,15 @@ class FailureMemoryStore:
         prompt by a burst of newer one-off lessons.
         """
 
+        return render_lessons(self.prompt_lessons(limit=limit))
+
+    def prompt_lessons(self, *, limit: int = 8) -> list[str]:
+        """The lesson texts ``render_for_prompt`` shows, in its order."""
+
         entries = self.lessons()
-        if not entries:
-            return ""
         selected = entries[:limit]
         pinned = [e for e in entries[limit:] if e.count >= self._pin_count]
-        lines = [
-            f"- {entry.lesson.strip()}"
-            for entry in [*selected, *pinned]
-            if entry.lesson.strip()
-        ]
-        if not lines:
-            return ""
-        return (
-            "Lessons learned from past failures (do not repeat these mistakes):\n"
-            + "\n".join(lines)
-        )
+        return [entry.lesson.strip() for entry in [*selected, *pinned] if entry.lesson.strip()]
 
     # -- writes --------------------------------------------------------------
 
@@ -612,26 +605,55 @@ class MemoryService:
         ``_ALWAYS_FULL_KINDS`` are always rendered in full.
         """
 
-        entries = [*self._global.all(), *self._project.all()]
-        if not entries:
-            return ""
-        entries.sort(key=lambda e: e.updated, reverse=True)
+        return render_memories(self.prompt_entries(limit_per_kind=limit_per_kind))
 
-        lines_by_kind: dict[str, list[str]] = {}
+    def prompt_entries(self, *, limit_per_kind: int | None = None) -> list[tuple[str, str]]:
+        """``(kind, content)`` as ``render_for_prompt`` shows them, in its order."""
+
+        entries = [*self._global.all(), *self._project.all()]
+        entries.sort(key=lambda e: e.updated, reverse=True)
+        by_kind: dict[str, list[str]] = {}
         for entry in entries:
             content = entry.content.strip()
             if content:
-                lines_by_kind.setdefault(entry.kind, []).append(f"- {content}")
-
-        sections: list[str] = []
-        for kind, title in _SECTION_TITLES:
-            lines = lines_by_kind.get(kind)
-            if not lines:
-                continue
+                by_kind.setdefault(entry.kind, []).append(content)
+        selected: list[tuple[str, str]] = []
+        for kind, _title in _SECTION_TITLES:
+            contents = by_kind.get(kind, [])
             if limit_per_kind is not None and kind not in _ALWAYS_FULL_KINDS:
-                lines = lines[:limit_per_kind]
+                contents = contents[:limit_per_kind]
+            selected.extend((kind, content) for content in contents)
+        return selected
+
+    def contents(self) -> set[tuple[str, str]]:
+        """Every stored ``(kind, content)``, past any render cap."""
+
+        return {
+            (entry.kind, entry.content.strip())
+            for entry in (*self._global.all(), *self._project.all())
+            if entry.content.strip()
+        }
+
+
+def render_memories(entries: Sequence[tuple[str, str]]) -> str:
+    """The prompt's memory sections for ``(kind, content)`` entries."""
+
+    sections: list[str] = []
+    for kind, title in _SECTION_TITLES:
+        lines = [f"- {content}" for entry_kind, content in entries if entry_kind == kind]
+        if lines:
             sections.append(title + "\n" + "\n".join(lines))
-        return "\n\n".join(sections)
+    return "\n\n".join(sections)
+
+
+def render_lessons(lessons: Sequence[str]) -> str:
+    """The prompt's lessons section, or ``""`` for none."""
+
+    if not lessons:
+        return ""
+    return "Lessons learned from past failures (do not repeat these mistakes):\n" + "\n".join(
+        f"- {lesson}" for lesson in lessons
+    )
 
 
 def _clip_memory(text: str) -> str:

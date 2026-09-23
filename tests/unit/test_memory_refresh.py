@@ -6,6 +6,7 @@ from code_ai.bootstrap import build_application
 from code_ai.config.models import AppConfig
 from code_ai.providers.models import (
     FinishReason,
+    Message,
     ModelRequest,
     ModelResponse,
     ProviderCapabilities,
@@ -91,6 +92,78 @@ async def test_saved_memory_is_injected_on_refresh(tmp_path) -> None:
     system_prompt = orchestrator.conversation.messages[0].content
     assert "How the user wants you to work" in system_prompt
     assert "Always run pytest -q." in system_prompt
+
+
+def _baked(tmp_path):
+    """An orchestrator past its first turn-start rebuild, with a request in it."""
+    app = build_application(config=_config(tmp_path), provider=_StaticProvider())
+    orchestrator = app.orchestrator
+    orchestrator.conversation.add_user("first request")
+    orchestrator._refresh_system_prompt()
+    return orchestrator
+
+
+async def test_learning_mid_session_leaves_the_system_prompt_alone(tmp_path) -> None:
+    orchestrator = _baked(tmp_path)
+    before = orchestrator.conversation.messages[0].content
+
+    orchestrator.memory.add(kind="feedback", content="Always run pytest -q.")
+    orchestrator._refresh_system_prompt()
+
+    assert orchestrator.conversation.messages[0].content == before
+    assert "Always run pytest -q." in orchestrator._learned_delta
+
+
+async def test_a_retired_memory_is_disowned_without_rewriting_the_prompt(tmp_path) -> None:
+    orchestrator = _baked(tmp_path)
+    orchestrator.memory.add(kind="project", content="The API lives in src/api.")
+    orchestrator.conversation.messages[1:] = [Message(role="user", content="compacted")]
+    orchestrator._refresh_system_prompt()
+    before = orchestrator.conversation.messages[0].content
+    assert "src/api" in before
+
+    orchestrator.memory.remove_by_content("The API lives in src/api.")
+    orchestrator._refresh_system_prompt()
+
+    assert orchestrator.conversation.messages[0].content == before
+    assert "No longer holds" in orchestrator._learned_delta
+    assert "src/api" in orchestrator._learned_delta
+
+
+async def test_learned_notes_fold_in_once_the_history_is_rewritten(tmp_path) -> None:
+    orchestrator = _baked(tmp_path)
+    orchestrator.memory.add(kind="feedback", content="Always run pytest -q.")
+    orchestrator._refresh_system_prompt()
+    assert "Always run pytest -q." not in orchestrator.conversation.messages[0].content
+
+    # Compaction replaced what follows the prompt: that cache is gone anyway.
+    orchestrator.conversation.messages[1:] = [Message(role="user", content="summary")]
+    orchestrator._refresh_system_prompt()
+
+    assert "Always run pytest -q." in orchestrator.conversation.messages[0].content
+    assert orchestrator._learned_delta == ""
+
+
+async def test_a_changed_instruction_folds_the_notes_in(tmp_path) -> None:
+    orchestrator = _baked(tmp_path)
+    orchestrator.memory.add(kind="feedback", content="Always run pytest -q.")
+
+    orchestrator.config.language = "pt-BR"
+    orchestrator._refresh_system_prompt()
+
+    assert "Always run pytest -q." in orchestrator.conversation.messages[0].content
+    assert orchestrator._learned_delta == ""
+
+
+async def test_too_many_notes_fold_into_the_prompt(tmp_path) -> None:
+    orchestrator = _baked(tmp_path)
+    for index in range(13):
+        orchestrator.memory.add(kind="project", content=f"Fact number {index}.")
+
+    orchestrator._refresh_system_prompt()
+
+    assert "Fact number 12." in orchestrator.conversation.messages[0].content
+    assert orchestrator._learned_delta == ""
 
 
 async def test_configured_render_caps_bound_the_prompt(tmp_path) -> None:

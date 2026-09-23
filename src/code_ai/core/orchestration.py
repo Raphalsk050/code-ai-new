@@ -37,7 +37,13 @@ from code_ai.core.errors import (
 )
 from code_ai.core.git_baseline import GitBaseline
 from code_ai.core.interaction import Questionnaire
-from code_ai.core.memory import FailureMemory, FailureMemoryStore, MemoryService
+from code_ai.core.memory import (
+    FailureMemory,
+    FailureMemoryStore,
+    MemoryService,
+    render_lessons,
+    render_memories,
+)
 from code_ai.core.memory_recall import MemoryRecall
 from code_ai.core.planning import PlannerService
 from code_ai.core.planning.policy import PolicyDecision
@@ -48,6 +54,7 @@ from code_ai.core.state import AgentState
 from code_ai.events.bus import AsyncEventBus
 from code_ai.prompts import (
     VISION_ANALYSIS_PROMPT,
+    build_learned_delta,
     build_runtime_note,
     build_system_prompt,
     build_text_tool_protocol,
@@ -286,6 +293,10 @@ def _chunked(items: list[ImageContent], size: int) -> list[list[ImageContent]]:
 # Cap on one step's reasoning kept for the rest of its turn. A runaway think
 # block is worth its gist, not its full length on every later request.
 _REASONING_REPLAY_CHARS = 12_000
+
+# Learned notes riding each step before they are folded into the system prompt.
+# Past this, one prompt rewrite costs less than re-sending them every step.
+_MAX_LEARNED_NOTES = 12
 
 
 def _attach_runtime_context(messages: list[Message], context: str) -> list[Message]:
@@ -589,8 +600,13 @@ class AgentOrchestrator:
         # holding the model mid-work.
         self._pending_lessons: list[tuple[str, str, str]] = []
         # Shutdown: no turn follows, so there is no cache worth warming.
-        self._draining = False
+        self._draining = asyncio.Event()
         self._warming = False
+        # The memories and lessons written into the system prompt, the history it
+        # was written for, and what was learned since (see _refresh_system_prompt).
+        self._baked_learning: tuple[tuple[tuple[str, str], ...], tuple[str, ...]] | None = None
+        self._baked_head: str | None = None
+        self._learned_delta = ""
         self.state = AgentState.STARTING
 
     @property
@@ -638,18 +654,13 @@ class AgentOrchestrator:
             await self.event_bus.emit("phase.changed", {"phase": phase}, source="core.orchestrator")
 
     def _refresh_system_prompt(self) -> None:
-        """Rebuild the system message so freshly-learned lessons and memories are
-        actually seen by the model.
+        """Rebuild the system message, keeping it byte-stable between turns.
 
-        The system prompt is otherwise built once at startup and frozen for the
-        session, which means a lesson recorded mid-session (or a fact just saved
-        via ``remember``) would never reach the model until a restart — the
-        original cause of the agent repeating known mistakes. Rebuilt at turn
-        start only, never mid-turn: message 0 is the head of the engine's
-        prompt cache, and changing it inside a turn re-prefills the entire
-        history on every following step. Anything learned mid-turn is shown
-        to the model on the spot instead (tool results, lesson warnings) and
-        lands in the prompt at the next turn.
+        Message 0 heads the engine's prompt cache, so rewriting it makes the next
+        request re-read the whole conversation. What was learned since it was
+        written travels in the step's runtime block instead, and is folded in
+        only when that prefix is lost anyway (instructions or date changed, the
+        history was compacted or replaced) or the notes grew too long.
         """
 
         if not self.conversation.messages:
@@ -657,44 +668,71 @@ class AgentOrchestrator:
         if self._system_prompt_builder is not None:
             self._install_system_prompt(self._system_prompt_builder())
             return
-        lessons = (
-            self.failure_memory.render_for_prompt(
-                limit=self.config.memory.lessons_render_limit
-            )
-            if self.failure_memory
-            else ""
-        )
         memories = (
-            self.memory.render_for_prompt(
-                limit_per_kind=self.config.memory.render_limit_per_kind
-            )
+            self.memory.prompt_entries(limit_per_kind=self.config.memory.render_limit_per_kind)
             if self.memory
-            else ""
+            else []
         )
-        rules = self.rules.render_for_prompt() if self.rules else ""
-        skills = self._skills_catalog() if self._skills_catalog else ""
-        workflows = self._workflows_catalog() if self._workflows_catalog else ""
-        self._install_system_prompt(
-            build_system_prompt(
-                workspace=self.config.workspace,
-                language=self.config.language,
-                sandbox_root=self._sandbox_root(),
-                lessons=lessons,
-                memories=memories,
-                rules=rules,
-                skills=skills,
-                workflows=workflows,
-                code_index=self._code_index_summary(),
-                tool_enabled=self.tool_registry.has,
-                on_demand_catalog=(
-                    on_demand.render_catalog(self.tool_registry) if self._on_demand() else ""
-                ),
-                # With every tool switched off, the whole prompt - "call
-                # write_file", "complete_task only after evidence" - describes a
-                # session that does not exist. Ask for the one that does.
-                tools_available=bool(self.tool_registry.names()),
+        lessons = (
+            self.failure_memory.prompt_lessons(limit=self.config.memory.lessons_render_limit)
+            if self.failure_memory
+            else []
+        )
+        head = self._history_head()
+        baked = self._baked_learning
+        fold = baked is None or (self._baked_head is not None and head != self._baked_head)
+        if not fold:
+            new_memories = [entry for entry in memories if entry not in baked[0]]
+            new_lessons = [lesson for lesson in lessons if lesson not in baked[1]]
+            present = self.memory.contents() if self.memory else set()
+            retired = [entry for entry in baked[0] if entry not in present]
+            prompt = self._system_prompt(*baked)
+            current = self.conversation.messages[0]
+            fold = (
+                current.role != "system"
+                or current.content != prompt
+                or len(new_memories) + len(new_lessons) + len(retired) > _MAX_LEARNED_NOTES
             )
+        if fold:
+            baked = (tuple(memories), tuple(lessons))
+            new_memories, new_lessons, retired = [], [], []
+            prompt = self._system_prompt(*baked)
+            self._baked_learning = baked
+        self._baked_head = head
+        self._install_system_prompt(prompt)
+        self._learned_delta = build_learned_delta(new_memories, new_lessons, retired)
+
+    def _system_prompt(
+        self, memories: tuple[tuple[str, str], ...], lessons: tuple[str, ...]
+    ) -> str:
+        return build_system_prompt(
+            workspace=self.config.workspace,
+            language=self.config.language,
+            sandbox_root=self._sandbox_root(),
+            lessons=render_lessons(lessons),
+            memories=render_memories(memories),
+            rules=self.rules.render_for_prompt() if self.rules else "",
+            skills=self._skills_catalog() if self._skills_catalog else "",
+            workflows=self._workflows_catalog() if self._workflows_catalog else "",
+            code_index=self._code_index_summary(),
+            tool_enabled=self.tool_registry.has,
+            on_demand_catalog=(
+                on_demand.render_catalog(self.tool_registry) if self._on_demand() else ""
+            ),
+            # With every tool switched off, the whole prompt - "call
+            # write_file", "complete_task only after evidence" - describes a
+            # session that does not exist. Ask for the one that does.
+            tools_available=bool(self.tool_registry.names()),
         )
+
+    def _history_head(self) -> str | None:
+        """Fingerprint of the first message after the prompt. It changes when the
+        history is compacted or replaced - when the cached prefix is gone anyway."""
+
+        first = next((m for m in self.conversation.messages if m.role != "system"), None)
+        if first is None:
+            return None
+        return hashlib.sha256(f"{first.role}\0{first.content}".encode()).hexdigest()
 
     def _code_index_summary(self) -> str:
         """One line saying whether the index is worth asking, refreshed per turn.
@@ -1662,8 +1700,9 @@ class AgentOrchestrator:
             if prompted and self._warms_prefix_cache():
                 self._warming = True
                 try:
-                    await asyncio.sleep(_WARM_DELAY_S)
-                    if not self._draining:
+                    with contextlib.suppress(TimeoutError):
+                        await asyncio.wait_for(self._draining.wait(), _WARM_DELAY_S)
+                    if not self._draining.is_set():
                         await self._warm_prefix_cache()
                 finally:
                     self._warming = False
@@ -1716,7 +1755,7 @@ class AgentOrchestrator:
         pass is cancelled — learning is best-effort, shutdown is not.
         """
 
-        self._draining = True
+        self._draining.set()
         task = self._learning_task
         if task is None or task.done():
             return
@@ -3163,6 +3202,7 @@ class AgentOrchestrator:
                 # it is identical from step to step, so it sits ahead of the
                 # blocks that change and costs the prefix cache nothing.
                 build_text_tool_protocol(tool_definitions) if text_tools else "",
+                self._learned_delta,
                 self._planner_context(),
                 self._git_context(state),
             )

@@ -153,6 +153,7 @@ class _ScriptedProvider:
 
     def __init__(self) -> None:
         self.reflection_prompts: list[str] = []
+        self.requests: list[ModelRequest] = []
 
     @property
     def capabilities(self) -> ProviderCapabilities:
@@ -161,6 +162,7 @@ class _ScriptedProvider:
         )
 
     async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.requests.append(request)
         yield ProviderEvent(
             kind="completed",
             response=ModelResponse(
@@ -217,8 +219,13 @@ async def test_turn_end_reflection_reaches_next_prompt(tmp_path) -> None:
 
     assert len(provider.reflection_prompts) == 1
     assert "Fix the build again." in provider.reflection_prompts[0]
-    # The distilled fact reaches the system prompt for the next turn.
-    assert "Build with make release." in orchestrator.conversation.messages[0].content
+
+    # The distilled fact reaches the model on the next turn, without rewriting
+    # the system prompt that heads the engine's prompt cache.
+    await orchestrator.run_turn("And the docs?")
+    before, after = provider.requests[-2], provider.requests[-1]
+    assert after.messages[0].content == before.messages[0].content
+    assert "Build with make release." in after.messages[-1].content
 
 
 async def test_cancelled_or_failed_turns_do_not_reflect(tmp_path) -> None:

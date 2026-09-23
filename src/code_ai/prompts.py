@@ -491,6 +491,33 @@ in the catalog above fits this task, load it with use_skill and follow it.
 """
 
 
+def build_learned_delta(
+    memories: list[tuple[str, str]],
+    lessons: list[str],
+    retired: list[tuple[str, str]],
+) -> str:
+    """What was learned after the system prompt was written, for the step's tail.
+
+    The system prompt stays as it was so the engine's prompt cache survives;
+    this says what changed since, and wins where the two disagree.
+    """
+
+    parts: list[str] = []
+    if memories or lessons:
+        lines = [f"- ({kind}) {content}" for kind, content in memories]
+        lines += [f"- (lesson) {lesson}" for lesson in lessons]
+        parts.append(
+            "Learned since your instructions were written - newer than their memory "
+            "and lesson sections, and this wins where they disagree:\n" + "\n".join(lines)
+        )
+    if retired:
+        parts.append(
+            "No longer holds - disregard it where your instructions still say it:\n"
+            + "\n".join(f"- ({kind}) {content}" for kind, content in retired)
+        )
+    return "\n\n".join(parts)
+
+
 def build_runtime_note(body: str, *, supplementary: bool = True) -> str:
     """Frame a message the runtime injects into the conversation.
 
