@@ -15,6 +15,7 @@ export function draftFromSettings(settings: Settings): Draft {
     language: settings.language,
     permission_mode: settings.permission_mode,
     reasoning_effort: settings.reasoning_effort,
+    followup_reasoning_effort: settings.followup_reasoning_effort ?? "none",
     learn: settings.learn,
     inline_hints_enabled: settings.inline_hints_enabled,
     inline_model: settings.inline_model,

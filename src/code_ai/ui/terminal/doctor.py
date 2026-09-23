@@ -153,6 +153,13 @@ _CHOICE_KNOBS: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
         "is also the switch that turns thinking on.",
     ),
     (
+        "followup_reasoning_effort",
+        "Follow-up effort",
+        _EFFORT_CHOICES,
+        "Tool steps after a clean result think at this level; none keeps the "
+        "reasoning effort. gpt-oss re-reads its prompt on every change.",
+    ),
+    (
         "reasoning_summary",
         "Reasoning summary",
         _SUMMARY_CHOICES,

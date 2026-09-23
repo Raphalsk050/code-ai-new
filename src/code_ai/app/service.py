@@ -780,6 +780,7 @@ class CodeAIApplication:
             "language": config.language,
             "permission_mode": config.permission_mode,
             "reasoning_effort": config.sampling.reasoning_effort or "none",
+            "followup_reasoning_effort": config.sampling.followup_reasoning_effort or "none",
             "learn": config.learn,
             "inline_hints_enabled": config.inline_hints_enabled,
             "inline_model": config.inline_model,
@@ -912,9 +913,9 @@ class CodeAIApplication:
                         continue
                     setattr(config, key, getattr(validated, key))
                     applied.append(key)
-                elif key == "reasoning_effort":
+                elif key in {"reasoning_effort", "followup_reasoning_effort"}:
                     sampling = asdict(config.sampling)
-                    sampling["reasoning_effort"] = None if value == "none" else value
+                    sampling[key] = None if value in (None, "", "none") else value
                     validated = persist_config_updates(config, {"sampling": sampling})
                     config.sampling = validated.sampling
                     applied.append(key)

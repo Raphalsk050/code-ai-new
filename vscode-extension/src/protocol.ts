@@ -90,6 +90,7 @@ export interface Settings {
   language: string;
   permission_mode: string;
   reasoning_effort: string;
+  followup_reasoning_effort: string;
   learn: boolean;
   inline_hints_enabled: boolean;
   inline_model: string;

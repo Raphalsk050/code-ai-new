@@ -115,6 +115,14 @@ _LEARNING_CANCEL_TIMEOUT_S = 2.0
 _TOOL_GUARD_POLL_SECONDS = 2.0
 _TOOL_GUARD_GRACE_SECONDS = 10.0
 
+# Checklist calls that do no work. A response holding only these is a whole
+# model round trip spent on bookkeeping - the costliest kind on a thinking model.
+_BOOKKEEPING_TOOLS = frozenset({"submit_plan", "complete_plan_step"})
+_SOLO_BOOKKEEPING_NOTE = (
+    "Recorded. Next time send checklist calls in the same response as your next "
+    "action: a response holding only them costs a whole round trip."
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -401,6 +409,12 @@ class _TurnState:
     # Paths git says this turn changed, refreshed after any round that mutated
     # the workspace. Empty when no baseline could be captured.
     git_changed_paths: tuple[str, ...] = ()
+    # Whether this turn already told the model a checklist-only response wastes
+    # a round trip. Once is advice; every time is noise.
+    bookkeeping_noted: bool = False
+    # Whether the next request thinks at the full reasoning_effort. Cleared by a
+    # clean tool round, set again by an error, a correction or a new message.
+    think_hard: bool = True
 
 
 @dataclass(slots=True)
@@ -582,9 +596,10 @@ class AgentOrchestrator:
         queued, self._queued_user_messages = self._queued_user_messages, []
         return queued
 
-    async def _deliver_queued_user_messages(self) -> None:
+    async def _deliver_queued_user_messages(self, state: _TurnState) -> None:
         """Move queued messages into the conversation, in the order they came."""
         for message in self.take_queued_messages():
+            state.think_hard = True
             self.conversation.add_user(message)
             await self.event_bus.emit(
                 "user.message.delivered", {"text": message}, source="core.orchestrator"
@@ -1093,7 +1108,7 @@ class AgentOrchestrator:
             # already in flight finishes first - a call cannot be edited halfway
             # through - which is why this sits at the top of the loop rather than
             # inside the step.
-            await self._deliver_queued_user_messages()
+            await self._deliver_queued_user_messages(state)
 
             allowed = self._allowed_tool_names()
             tool_definitions = self.tool_registry.definitions(allowed)
@@ -1112,6 +1127,7 @@ class AgentOrchestrator:
                     "step": step,
                     "tools": len(tool_definitions),
                     "allowed_tools": sorted(allowed) if allowed is not None else None,
+                    "reasoning_effort": request.reasoning_effort,
                 },
                 source="core.orchestrator",
             )
@@ -1202,6 +1218,7 @@ class AgentOrchestrator:
             debt = await self.planner.note_final_answer_verification_debt()
             if debt:
                 state.no_tool_nudged = True
+                state.think_hard = True
                 if response.text:
                     self.conversation.add_assistant(
                         bound_text(response.text, self.config.budgets.max_tool_output_chars),
@@ -1215,6 +1232,7 @@ class AgentOrchestrator:
 
         if self._requires_tool_for_progress() and not state.no_tool_nudged:
             state.no_tool_nudged = True
+            state.think_hard = True
             if response.text:
                 self.conversation.add_assistant(
                     bound_text(response.text, self.config.budgets.max_tool_output_chars), []
@@ -1510,6 +1528,8 @@ class AgentOrchestrator:
         if state.budget_overflow_retries >= _MAX_BUDGET_RETRIES:
             return False
         state.budget_overflow_retries += 1
+        # It thought too much: the retry is the one step that must not think harder.
+        state.think_hard = False
         self.conversation.add_user(
             build_runtime_note(
                 self._budget_overflow_text(response.reasoning, request.max_output_tokens),
@@ -1810,6 +1830,7 @@ class AgentOrchestrator:
             return await self._wind_down(state, reason=WIND_DOWN_STALLED)
         if state.stall_rounds >= limit // 2 and not state.stall_nudged:
             state.stall_nudged = True
+            state.think_hard = True
             self.conversation.add_user(build_runtime_note(self._stall_nudge_text()))
             await self.event_bus.emit(
                 "agent.stall.nudged",
@@ -1867,6 +1888,8 @@ class AgentOrchestrator:
             or self._recalled_memory(response, state)
             or state.reminders.due(frozenset(self.tool_registry.names()))
         )
+        # A clean round is routine follow-up work; an error or a note is not.
+        state.think_hard = errored or bool(note)
         if note:
             self.conversation.add_user(build_runtime_note(note))
             await self.event_bus.emit(
@@ -2229,6 +2252,17 @@ class AgentOrchestrator:
                 continue
             self._raise_if_cancelled(state.cancel_event)
             outcomes[call.id] = await self._execute_call(call, decisions[call.id], state)
+
+        last = outcomes[calls[-1].id]
+        if (
+            not state.bookkeeping_noted
+            and all(call.name in _BOOKKEEPING_TOOLS for call in calls)
+            and not last.result.is_error
+        ):
+            state.bookkeeping_noted = True
+            last.result = replace(
+                last.result, content=f"{last.result.content}\n\n{_SOLO_BOOKKEEPING_NOTE}"
+            )
 
         # Record results and advance the planner sequentially, in model order, to keep
         # the evidence ledger deterministic even when reads ran concurrently.
@@ -2722,6 +2756,7 @@ class AgentOrchestrator:
         thing that breaks it. Returns the model's text, or ``""`` to fall back.
         """
         self.conversation.add_user(build_runtime_note(_LANDING_NOTE))
+        state.think_hard = True
         request = self._build_request(_LANDING_STEP, [], state)
         await self.set_state(AgentState.CALLING_MODEL, phase="landing_turn")
         # The landing answer is this turn's answer: judge announce_final on
@@ -3062,6 +3097,7 @@ class AgentOrchestrator:
                 if self.planner and self.planner.enabled
                 else None,
             },
+            reasoning_effort=None if state.think_hard else self.config.sampling.followup_effort(),
         )
 
     def _policy_decision_for(self, name: str) -> PolicyDecision:

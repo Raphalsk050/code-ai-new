@@ -10,11 +10,10 @@ class CompletePlanStepTool:
     name = "complete_plan_step"
     description = (
         "Mark the current step of your submitted checklist as done and move the live "
-        "task checklist to the next step. Call this the moment you actually finish a "
-        "checklist step - include it in the same tool batch as the step's final "
-        "action, so the user sees progress immediately. Never postpone marking or "
-        "save several calls for the end of the task, and do not call it to skip "
-        "work you have not done."
+        "task checklist to the next step. Call it as soon as a result shows the step "
+        "is finished, in the same response as your next action (or your "
+        "complete_task) - never in a response of its own. Do not save the marking "
+        "for the end of the task, and do not call it to skip work you have not done."
     )
     capabilities = frozenset({ToolCapability.INTERNAL_TRANSITION})
     input_schema = tool_schema(

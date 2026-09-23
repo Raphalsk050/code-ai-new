@@ -703,8 +703,9 @@ class PlannerService:
             plan_lines = (
                 "Task checklist: none yet. If this task takes more than two or "
                 "three actions, call submit_plan with the concrete ordered steps "
-                "in the same tool batch as your first real action (it runs "
-                "first); a small task needs no checklist, just do the work. When "
+                "in the same response as your first real action (it runs first; "
+                "alone, it costs a round trip); a small task needs no checklist, "
+                "just do the work. When "
                 "you do submit, set changes_workspace to say whether the task "
                 "changes files (true) or ends in an answer (false) - that "
                 "decision is yours, not the runtime's. The steps are shown to "
@@ -718,11 +719,11 @@ class PlannerService:
                 f"Task checklist: {self.agent_plan.snapshot()['progress']} "
                 f"(current: {current_label}).\n"
                 "This checklist position reflects only the steps you have reported "
-                "finishing. The moment you finish the current step, call "
-                "complete_plan_step with its title - in the same tool batch as the "
-                "step's final action - so progress is marked immediately. Never "
-                "save the marking calls for the end of the task. Call submit_plan "
-                "again only if your approach genuinely changes.\n"
+                "finishing. As soon as a result shows the current step is done, "
+                "call complete_plan_step with its title in the same response as "
+                "your next action - never in a response of its own, and never "
+                "saved for the end of the task. Call submit_plan again only if "
+                "your approach genuinely changes.\n"
             )
         header = (
             "Runtime task state. Treat this as authoritative host state, not a user request.\n"

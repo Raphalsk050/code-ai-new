@@ -11,8 +11,11 @@ class SubmitPlanTool:
     name = "submit_plan"
     description = (
         "Declare the concrete ordered steps you will follow for this task, and "
-        "whether carrying them out changes the workspace. Call this once you know "
-        "the real plan, before acting, and call it again only to revise the plan. "
+        "whether carrying them out changes the workspace. Call it once you know "
+        "the real plan, in the same response as your first action (calls in one "
+        "response run in order, so the checklist is in place before the action "
+        "runs), and again only to revise the plan. A response holding only this "
+        "call costs a whole round trip. "
         "The steps you submit are shown to the user as the task checklist. You "
         "decide what kind of task this is: set changes_workspace to true when the "
         "plan creates or edits files (or runs commands that do), and to false when "

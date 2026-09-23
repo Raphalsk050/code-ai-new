@@ -239,10 +239,11 @@ end in prose. If you change your mind mid-task, call submit_plan again with the
 new value.
 
 As you finish each checklist step, call complete_plan_step to advance the live
-checklist to the next step. The checklist only moves when you report a step done,
-so it always reflects your real progress - never call complete_plan_step to skip
-work you have not actually completed, and do not rely on the runtime to advance it
-for you.
+checklist to the next step, in the same response as your next action - a response
+that only marks progress costs a whole round trip. The checklist only moves when
+you report a step done, so it always reflects your real progress - never call
+complete_plan_step to skip work you have not actually completed, and do not rely
+on the runtime to advance it for you.
 
 Work only on the current runtime task state when it is provided. Use only the
 allowed tools, gather the required evidence for the current step, and let the

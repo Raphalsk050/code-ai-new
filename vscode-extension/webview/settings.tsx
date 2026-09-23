@@ -266,6 +266,19 @@ export function SettingsScreen({
                 ))}
               </select>
             </Field>
+            <Field label={t("Follow-up effort")}>
+              <select
+                value={String(draft.followup_reasoning_effort ?? "none")}
+                onChange={(e) => set("followup_reasoning_effort", e.target.value)}
+              >
+                {settings.supported.reasoning_effort.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+              <span className="settings-hint">
+                {t("Tool steps after a clean result think at this level; none keeps the reasoning effort.")}
+              </span>
+            </Field>
             <Field label={t("Language")}>
               <select
                 className="language-select"

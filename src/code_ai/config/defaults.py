@@ -286,6 +286,11 @@ DEFAULT_SAMPLING: dict[str, object] = {
     # servers this is the switch that turns thinking on as well as how much.
     "reasoning_effort": "xhigh",
     "reasoning_summary": None,
+    # Effort for a tool-loop step that follows a clean round; the first step, and
+    # any step after an error or a runtime correction, keep reasoning_effort.
+    # None keeps one effort throughout. Templates that print the effort into the
+    # system prompt (gpt-oss) re-read the whole prompt each time it changes.
+    "followup_reasoning_effort": None,
     # Free-form passthrough merged into the request ``extra_body``.
     "extra_body": {},
 }

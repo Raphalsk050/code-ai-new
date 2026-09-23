@@ -227,6 +227,7 @@ const PT: Record<string, string> = {
   "Fields tagged": "Campos marcados com",
   "Fields tagged restart take effect when the panel reopens.":
     "Campos marcados com restart valem ao reabrir o painel.",
+  "Follow-up effort": "Esforço nos passos seguintes",
   "Ghost text in the editor, from the same provider.":
     "Ghost text no editor, pelo mesmo provedor.",
   "History": "Histórico",
@@ -278,6 +279,8 @@ const PT: Record<string, string> = {
     "O painel e as respostas do agente seguem isto.",
   "The provider returned no models.": "O provedor não devolveu nenhum modelo.",
   "This session exposed no tool list.": "Esta sessão não expôs a lista de ferramentas.",
+  "Tool steps after a clean result think at this level; none keeps the reasoning effort.":
+    "Passos de ferramenta após um resultado limpo pensam neste nível; none mantém o esforço de raciocínio.",
   "Tools": "Ferramentas",
   "Travels with the next message": "Vai junto com a próxima mensagem",
   "Try again": "Tentar de novo",

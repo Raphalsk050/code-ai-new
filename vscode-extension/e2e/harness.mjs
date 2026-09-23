@@ -174,6 +174,7 @@ export function settingsSnapshot(overrides = {}) {
     language: "en",
     permission_mode: "ask",
     reasoning_effort: "medium",
+    followup_reasoning_effort: "none",
     learn: false,
     inline_hints_enabled: false,
     inline_model: "",

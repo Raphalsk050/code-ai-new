@@ -144,6 +144,48 @@ async def test_model_budget_bounds_silence_not_thinking(tmp_path) -> None:
     assert provider.attempts == 1
 
 
+class ReadThenMissThenAnswerProvider(_BaseProvider):
+    def __init__(self) -> None:
+        self.efforts: list[str | None] = []
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        if request.tools:  # the turn's own steps, not the lesson distilled after it
+            self.efforts.append(request.reasoning_effort)
+        step = len(self.efforts)
+        if step == 1:
+            calls = [ToolCall(id="r1", name="read_file", arguments={"path": "a.txt"})]
+        elif step == 2:
+            calls = [ToolCall(id="r2", name="read_file", arguments={"path": "missing.txt"})]
+        else:
+            yield ProviderEvent(
+                kind="completed",
+                response=ModelResponse(text="done", finish_reason=FinishReason.STOP),
+            )
+            return
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(tool_calls=calls, finish_reason=FinishReason.TOOL_CALLS),
+        )
+
+
+async def test_routine_steps_think_at_the_followup_effort(tmp_path) -> None:
+    (tmp_path / "a.txt").write_text("hello", encoding="utf-8")
+    config = _config(
+        tmp_path, sampling={"reasoning_effort": "xhigh", "followup_reasoning_effort": "low"}
+    )
+    provider = ReadThenMissThenAnswerProvider()
+    app = build_application(config=config, provider=provider)
+
+    await app.start()
+    result = await app.submit_user_message("what does a.txt say?")
+    await app.close()
+
+    assert result.text == "done"
+    # First step: full effort. After a clean read: the follow-up one. After a
+    # failed read: full effort again (None means "the configured one").
+    assert provider.efforts == [None, "low", None]
+
+
 class SilentThenOkProvider(_BaseProvider):
     def __init__(self) -> None:
         self.attempts = 0
@@ -880,6 +922,26 @@ class ChecklistThenProseProvider(_BaseProvider):
                 tool_calls=calls, finish_reason=FinishReason.TOOL_CALLS
             ),
         )
+
+
+async def test_a_checklist_only_response_is_pointed_out_once(tmp_path) -> None:
+    # On a thinking model a response holding only submit_plan/complete_plan_step
+    # is a full round trip of thinking spent on bookkeeping.
+    provider = ChecklistThenProseProvider()
+    app = build_application(config=_config(tmp_path), provider=provider)
+
+    await app.start()
+    await app.submit_user_message("analyze the repository architecture and present a summary")
+    await app.close()
+
+    results = {
+        message.tool_call_id: message.content
+        for message in app.orchestrator.conversation.messages
+        if message.role == "tool"
+    }
+    assert "costs a whole round trip" in results["c1"]
+    assert "costs a whole round trip" not in results["c2"]
+    assert "costs a whole round trip" not in results["c3"]
 
 
 async def test_prose_finish_settles_fully_declared_checklist(tmp_path) -> None:

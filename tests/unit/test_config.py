@@ -15,7 +15,7 @@ from code_ai.config.loader import (
     persist_config_updates,
     redacted_config_json,
 )
-from code_ai.config.models import SamplingConfig
+from code_ai.config.models import AppConfig, SamplingConfig
 from code_ai.core.errors import ConfigurationError
 from code_ai.util import fileio
 from code_ai.util.fileio import FileOperationError
@@ -439,3 +439,24 @@ def test_the_defaults_think_at_xhigh_with_a_cool_sampler() -> None:
 )
 def test_light_reasoning_effort_only_ever_lowers(configured, light) -> None:
     assert SamplingConfig(reasoning_effort=configured).light_reasoning_effort() == light
+
+
+@pytest.mark.parametrize(
+    ("main", "followup", "expected"),
+    [
+        ("xhigh", "low", "low"),
+        ("low", "high", "low"),
+        ("xhigh", None, None),
+        (None, "low", None),
+    ],
+)
+def test_followup_effort_never_exceeds_the_main_one(main, followup, expected) -> None:
+    sampling = SamplingConfig(reasoning_effort=main, followup_reasoning_effort=followup)
+    assert sampling.followup_effort() == expected
+
+
+def test_followup_reasoning_effort_is_validated(tmp_path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig.from_mapping(
+            {"workspace": str(tmp_path), "sampling": {"followup_reasoning_effort": "turbo"}}
+        )

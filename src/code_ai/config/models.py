@@ -616,6 +616,7 @@ class SamplingConfig:
     repeat_penalty: float | None = None
     reasoning_effort: str | None = None
     reasoning_summary: str | None = None
+    followup_reasoning_effort: str | None = None
     extra_body: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -642,6 +643,7 @@ class SamplingConfig:
             repeat_penalty=_opt_float(values.get("repeat_penalty")),
             reasoning_effort=_opt_str(values.get("reasoning_effort")),
             reasoning_summary=_opt_str(values.get("reasoning_summary")),
+            followup_reasoning_effort=_opt_str(values.get("followup_reasoning_effort")),
             extra_body=extra,
         )
 
@@ -662,13 +664,14 @@ class SamplingConfig:
         ):
             if value is not None and not -2.0 <= value <= 2.0:
                 raise ConfigurationError(f"sampling.{name} must be between -2.0 and 2.0.")
-        if (
-            self.reasoning_effort is not None
-            and self.reasoning_effort not in SUPPORTED_REASONING_EFFORTS
+        for name, effort in (
+            ("reasoning_effort", self.reasoning_effort),
+            ("followup_reasoning_effort", self.followup_reasoning_effort),
         ):
-            raise ConfigurationError(
-                f"sampling.reasoning_effort must be one of {sorted(SUPPORTED_REASONING_EFFORTS)}."
-            )
+            if effort is not None and effort not in SUPPORTED_REASONING_EFFORTS:
+                raise ConfigurationError(
+                    f"sampling.{name} must be one of {sorted(SUPPORTED_REASONING_EFFORTS)}."
+                )
         if (
             self.reasoning_summary is not None
             and self.reasoning_summary not in SUPPORTED_REASONING_SUMMARIES
@@ -689,6 +692,15 @@ class SamplingConfig:
             return effort
         light = _REASONING_EFFORT_ORDER.index(_LIGHT_REASONING_EFFORT)
         return _REASONING_EFFORT_ORDER[min(_REASONING_EFFORT_ORDER.index(effort), light)]
+
+    def followup_effort(self) -> str | None:
+        """Effort for a routine tool-loop step: the follow-up knob, never above
+        reasoning_effort, and nothing when either is unset."""
+        followup, main = self.followup_reasoning_effort, self.reasoning_effort
+        order = _REASONING_EFFORT_ORDER
+        if followup not in order or main not in order:
+            return None
+        return order[min(order.index(followup), order.index(main))]
 
     def _extra_body_with_passthrough(self) -> dict[str, Any]:
         extra_body = dict(self.extra_body)
