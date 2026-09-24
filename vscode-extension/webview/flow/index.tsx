@@ -8,7 +8,14 @@ import type {
   FlowWebviewToHost,
 } from "../../src/flow-schema";
 import { Canvas, ContextTarget, frameAll, zoomAround } from "./canvas";
-import { buildClip, instantiate, lastClip, parseClip, writeClip } from "./clipboard";
+import {
+  buildClip,
+  fallbackClip,
+  instantiate,
+  isEditable,
+  parseClip,
+  writeClip,
+} from "./clipboard";
 import { setLanguage, t, tf } from "../i18n";
 import { ContextMenu, MenuEntry } from "./context-menu";
 import { Inspector } from "./inspector";
@@ -171,9 +178,8 @@ function App(): JSX.Element {
 
   React.useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
       // Never steal keys from a field the user is typing in.
-      if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+      if (isEditable(event.target)) return;
       const mod = event.ctrlKey || event.metaKey;
       const current = stateRef.current;
 
@@ -227,8 +233,10 @@ function App(): JSX.Element {
     };
 
     const onPaste = (event: ClipboardEvent) => {
+      // Text pasted into a field is the field's, never a subgraph.
+      if (isEditable(event.target)) return;
       const text = event.clipboardData?.getData("text/plain") ?? "";
-      const clip = parseClip(text) ?? lastClip();
+      const clip = parseClip(text) ?? fallbackClip(text);
       if (!clip) return;
       event.preventDefault();
       const { nodes, edges } = instantiate(clip, stateRef.current.graph);

@@ -143,6 +143,7 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
   // -- mouse ------------------------------------------------------------
 
   const onBackgroundDown = (event: React.MouseEvent) => {
+    holdSelection(event);
     if (event.button === 1 || event.altKey || event.ctrlKey || event.metaKey) {
       setDrag({
         kind: "pan",
@@ -170,6 +171,7 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
   const onNodeDown = (nodeId: string, event: React.MouseEvent) => {
     if (event.button !== 0) return;
     event.stopPropagation();
+    holdSelection(event);
     const alreadySelected = state.selection.includes(nodeId);
     const ids = event.shiftKey
       ? Array.from(new Set([...state.selection, nodeId]))
@@ -194,6 +196,7 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
     event: React.MouseEvent
   ) => {
     if (event.button !== 0) return;
+    holdSelection(event);
     const world = toWorld(event.clientX, event.clientY);
     setDrag({
       kind: "wire",
@@ -629,6 +632,18 @@ function Minimap({ layouts, view, size, selection, running, onPan }: MinimapProp
       />
     </svg>
   );
+}
+
+/**
+ * A drag on the canvas must not start a text selection: it would sweep node
+ * titles and inspector text along with it. The field that had focus lets go
+ * too, so Delete and the other shortcuts reach the graph again.
+ */
+function holdSelection(event: React.MouseEvent): void {
+  event.preventDefault();
+  const active = document.activeElement as HTMLElement | null;
+  if (active && active !== document.body) active.blur();
+  window.getSelection()?.removeAllRanges();
 }
 
 function badgeFor(state: EditorState, nodeId: string): string {

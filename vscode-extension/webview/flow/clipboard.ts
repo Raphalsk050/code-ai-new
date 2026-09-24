@@ -20,6 +20,9 @@ export interface Clip {
 }
 
 let memory: Clip | null = null;
+// Whether the system clipboard refused the last copy, in which case a paste
+// can only ever find the subgraph in memory.
+let refused = false;
 
 /** Serialize the selection: the nodes, plus only the edges inside it. */
 export function buildClip(graph: FlowGraph, selection: string[]): Clip | null {
@@ -36,6 +39,22 @@ export function rememberClip(clip: Clip | null): void {
 
 export function lastClip(): Clip | null {
   return memory;
+}
+
+/**
+ * The remembered clip, when the clipboard cannot be the source: the copy was
+ * refused, or the paste arrived with no text at all. Other text on the
+ * clipboard means the user copied something since, and that wins.
+ */
+export function fallbackClip(pastedText: string): Clip | null {
+  return refused || !pastedText.trim() ? memory : null;
+}
+
+/** A field the user types in, whose keys and pastes are its own. */
+export function isEditable(target: EventTarget | null): boolean {
+  const element = target as HTMLElement | null;
+  if (!element || typeof element.tagName !== "string") return false;
+  return /^(INPUT|TEXTAREA|SELECT)$/.test(element.tagName) || Boolean(element.isContentEditable);
 }
 
 export function parseClip(text: string): Clip | null {
@@ -104,11 +123,19 @@ export function instantiate(
 export function writeClip(clip: Clip): void {
   rememberClip(clip);
   const text = JSON.stringify(clip);
+  refused = false;
   try {
-    navigator.clipboard?.writeText(text).catch(() => {
+    const pending = navigator.clipboard?.writeText(text);
+    if (!pending) {
+      refused = true;
+      return;
+    }
+    pending.catch(() => {
       // Denied or unavailable: the in-memory copy is what paste will use.
+      refused = true;
     });
   } catch {
     // No clipboard API at all (an old webview): same fallback.
+    refused = true;
   }
 }

@@ -146,6 +146,10 @@ input[type="checkbox"] { width: auto; }
 /* ---- canvas ---- */
 .flow-canvas-wrap { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; }
 .flow-canvas { width: 100%; height: 100%; display: block; cursor: default; }
+/* Dragging across the canvas moves nodes and draws marquees, never selects text. */
+.flow-canvas, .flow-canvas *, .flow-minimap, .flow-minimap * {
+  -webkit-user-select: none; user-select: none;
+}
 .flow-canvas.panning { cursor: grabbing; }
 
 /* ---- minimap ---- */

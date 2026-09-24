@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 19,
-  "patch": 2,
-  "build": 33,
+  "patch": 3,
+  "build": 34,
   "updated": "2026-09-23",
-  "note": "Graph editor chrome: icon toolbar with zoom, status pill, minimap, sectioned inspector."
+  "note": "Graph editor: paste into text fields works, canvas drags stop selecting text."
 }

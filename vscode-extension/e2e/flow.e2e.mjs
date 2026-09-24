@@ -1385,4 +1385,54 @@ export const tests = {
     );
     await ui.shot("44-inspector-sections");
   },
+  // -------------------------------------------------------------------
+  "pasting text into a field never pastes nodes": async (ui, assert) => {
+    await boot(ui);
+    // Something is on the node clipboard, so a stray paste would show.
+    await ui.page.click('[data-testid="node-n3"] .flow-node-box');
+    await ui.page.keyboard.down("Control");
+    await ui.page.keyboard.press("KeyC");
+    await ui.page.keyboard.up("Control");
+    await ui.clearToHost();
+
+    await ui.page.click('[data-testid="field-role_override"]');
+    const pasted = await ui.page.evaluate(() => {
+      const field = document.querySelector('[data-testid="field-role_override"]');
+      const data = new DataTransfer();
+      data.setData("text/plain", "Voce responde perguntas de uma ia");
+      const event = new ClipboardEvent("paste", {
+        clipboardData: data,
+        bubbles: true,
+        cancelable: true,
+      });
+      field.dispatchEvent(event);
+      return !event.defaultPrevented;
+    });
+    assert(pasted, "the graph swallowed a paste meant for the text field");
+    const edits = await ui.toHost("flowEdit");
+    const grew = edits.some((edit) => edit.graph.nodes.length !== 6);
+    assert(!grew, "pasting into the field added nodes to the graph");
+  },
+
+  "dragging on the canvas selects no text": async (ui, assert) => {
+    await boot(ui);
+    await ui.page.click('[data-testid="frame"]');
+    const canvas = await ui.page.locator('[data-testid="flow-canvas"]').boundingBox();
+    await ui.page.mouse.move(canvas.x + 8, canvas.y + 8);
+    await ui.page.mouse.down();
+    await ui.page.mouse.move(canvas.x + canvas.width - 8, canvas.y + canvas.height - 8, {
+      steps: 8,
+    });
+    await ui.page.mouse.up();
+
+    // A node dragged by its title must not select the title either.
+    const title = await centre(ui, '[data-testid="node-n3"] .flow-node-title');
+    await ui.page.mouse.move(title.x, title.y);
+    await ui.page.mouse.down();
+    await ui.page.mouse.move(title.x + 60, title.y + 40, { steps: 6 });
+    await ui.page.mouse.up();
+
+    const selected = await ui.page.evaluate(() => String(window.getSelection() ?? ""));
+    assert(selected === "", `the drag selected text: ${JSON.stringify(selected.slice(0, 80))}`);
+  },
 };
