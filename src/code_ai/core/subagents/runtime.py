@@ -57,6 +57,7 @@ class SubagentRuntime:
         sandbox: SessionSandbox | None = None,
         rules_text: str = "",
         skills_text: str = "",
+        environment_text: str = "",
         skill_sources: Sequence[object] = (),
         workflows: object | None = None,
         code_index: object | None = None,
@@ -73,6 +74,8 @@ class SubagentRuntime:
         self._sandbox = sandbox
         self._rules_text = rules_text
         self._skills_text = skills_text
+        # The machine they run commands on, as the parent's prompt describes it.
+        self.environment_text = environment_text
         # The same skill directories the parent searches, so a sub-agent that acts
         # on the injected catalog can actually load what it lists.
         self._skill_sources = tuple(skill_sources)
@@ -159,6 +162,7 @@ class SubagentRuntime:
                 sandbox_root=str(self._sandbox.root) if self._sandbox else "",
                 rules=self._rules_text,
                 skills=self._skills_text,
+                environment=self.environment_text,
             )
 
         conversation = ConversationState(

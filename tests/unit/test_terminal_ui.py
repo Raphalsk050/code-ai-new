@@ -1935,7 +1935,7 @@ class FakeUiTerminalManager:
         self.screen_text = "C:\\workspace> _"
         self._session_id = "sess-1234abcd"
 
-    def create(self, *, cwd, command=None, rows: int = 24, cols: int = 80) -> str:
+    def create(self, *, cwd, command=None, rows: int = 24, cols: int = 80, env=None) -> str:
         return self._session_id
 
     def latest_session_id(self) -> str | None:

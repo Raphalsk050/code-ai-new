@@ -16,6 +16,7 @@ from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.locations import LOCATION_SCHEMA, ResolvedLocation, for_context
 from code_ai.tools.process.command_runner import CommandResult, CommandRunner
 from code_ai.tools.schema import tool_schema
+from code_ai.util.environment import command_environment
 from code_ai.util.fileio import RetryPolicy, describe_os_error
 
 
@@ -106,11 +107,20 @@ class ExecuteCommandTool:
                 event_bus=context.event_bus,
                 cancel_event=context.cancel_event,
                 extra_env=_sandboxed_env(context, arguments.get("env")),
+                base_env=command_environment(
+                    pass_secrets=context.config.commands_see_secrets
+                ).variables,
                 max_output_chars=context.config.budgets.max_tool_output_chars,
                 spawn_policy=RetryPolicy.from_config(context.config.file_io),
             )
         except CommandTimeoutError as exc:
-            raise ToolExecutionError(f"Command timed out after {timeout:g}s.") from exc
+            # The usual cause is not a hang: a game, a window or a server keeps
+            # running by design, and waiting for it to return never ends.
+            raise ToolExecutionError(
+                f"Command timed out after {timeout:g}s and was stopped. If it is a "
+                "program that keeps running (a game, a window, a server), start it "
+                "with start_terminal instead and read its screen."
+            ) from exc
         except CancellationError:
             raise
         except OSError as exc:
@@ -301,7 +311,8 @@ def _coerce_argv(arguments: dict[str, Any]) -> list[str]:
     if (
         not isinstance(argv, list)
         or not argv
-        or not all(isinstance(item, str) and item for item in argv)
+        or not all(isinstance(item, str) for item in argv)
+        or not argv[0]
     ):
         raise ToolArgumentError("command must be a non-empty string.")
     return argv

@@ -301,14 +301,20 @@ async def test_a_project_terminal_still_inherits_the_redirection(tmp_path) -> No
     assert "PATH" in env
 
 
-async def test_a_terminal_without_a_sandbox_inherits_the_parent_environment(tmp_path) -> None:
+async def test_a_terminal_without_a_sandbox_gets_the_users_environment(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("CODE_AI_PROBE_HOME", "/opt/probe")
+    monkeypatch.setenv("CODE_AI_PROBE_TOKEN", "s3cret")
     context = make_context(tmp_path, with_sandbox=False)
     manager = RecordingTerminalManager()
     context.terminal_manager = manager
 
     await StartTerminalTool().execute({}, context)
 
-    assert manager.created["env"] is None
+    env = manager.created["env"]
+    assert env["CODE_AI_PROBE_HOME"] == "/opt/probe"
+    assert "CODE_AI_PROBE_TOKEN" not in env
 
 
 async def test_an_artifact_is_named_after_the_command_not_its_interpreter_path(tmp_path) -> None:

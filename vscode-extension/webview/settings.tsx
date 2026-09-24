@@ -306,6 +306,14 @@ export function SettingsScreen({
               checked={Boolean(draft.learn)}
               onChange={(v) => set("learn", v)}
             />
+            <Toggle
+              label={t("Commands see secret variables")}
+              hint={t(
+                "Commands get your environment variables. Keys and tokens (GITHUB_TOKEN, OPENAI_API_KEY) stay out unless this is on."
+              )}
+              checked={Boolean(draft.commands_see_secrets)}
+              onChange={(v) => set("commands_see_secrets", v)}
+            />
           </Section>
 
           <Section title={t("Context and workspace")}>

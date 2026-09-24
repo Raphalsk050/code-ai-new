@@ -7,6 +7,7 @@ from code_ai.core.errors import ToolArgumentError
 from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.locations import LOCATION_SCHEMA, for_context
 from code_ai.tools.schema import tool_schema
+from code_ai.util.environment import command_environment
 
 
 class StartTerminalTool:
@@ -165,16 +166,14 @@ def _session_id(arguments: dict[str, Any]) -> str:
     return session_id
 
 
-def _terminal_env(context: ToolContext) -> dict[str, str] | None:
-    """Full environment for an interactive shell, with the sandbox redirection on top.
+def _terminal_env(context: ToolContext) -> dict[str, str]:
+    """The user's environment for an interactive shell, sandbox redirection on top.
 
-    The whole inherited environment is passed rather than a filtered one: an
-    interactive shell without PATH, HOME or TERM is unusable, and the point
-    here is to redirect where a toolchain scribbles, not to strip the session
-    down. ``None`` when there is no sandbox, which leaves the child inheriting
-    the parent environment as before.
+    The same one execute_command gets (see code_ai.util.environment), so a
+    tool found by one is found by the other.
     """
 
-    if context.sandbox is None:
-        return None
-    return {**os.environ, **context.sandbox.environment(os.environ)}
+    env = command_environment(pass_secrets=context.config.commands_see_secrets).variables
+    if context.sandbox is not None:
+        env.update(context.sandbox.environment(os.environ))
+    return env

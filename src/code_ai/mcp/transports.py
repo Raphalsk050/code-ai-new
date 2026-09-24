@@ -24,6 +24,7 @@ import httpx
 from code_ai.mcp import jsonrpc
 from code_ai.mcp.jsonrpc import McpAuthRequired, McpConnectionError
 from code_ai.mcp.sse import SseParser
+from code_ai.util.environment import command_environment
 
 OnMessage = Callable[[Any], Awaitable[None]]
 OnClose = Callable[[str], Awaitable[None]]
@@ -34,54 +35,6 @@ AuthHeader = Callable[[], Awaitable[str]]
 # would end the connection on the first large one.
 _STDIO_LINE_LIMIT = 32 * 1024 * 1024
 _STDERR_TAIL = 40
-
-# What a server process inherits from ours, as the reference SDK does: enough
-# to find its interpreter, its home and the network, nothing of our secrets.
-_INHERITED_POSIX = ("HOME", "LOGNAME", "PATH", "SHELL", "TERM", "USER", "LANG", "TMPDIR")
-_INHERITED_WINDOWS = (
-    "APPDATA",
-    "COMSPEC",
-    "HOMEDRIVE",
-    "HOMEPATH",
-    "LOCALAPPDATA",
-    "PATH",
-    "PATHEXT",
-    "PROCESSOR_ARCHITECTURE",
-    "PROGRAMDATA",
-    "PROGRAMFILES",
-    "PROGRAMFILES(X86)",
-    "SYSTEMDRIVE",
-    "SYSTEMROOT",
-    "TEMP",
-    "TMP",
-    "USERNAME",
-    "USERPROFILE",
-    "WINDIR",
-)
-_INHERITED_ANYWHERE = (
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "NO_PROXY",
-    "ALL_PROXY",
-    "http_proxy",
-    "https_proxy",
-    "no_proxy",
-    "SSL_CERT_FILE",
-    "SSL_CERT_DIR",
-    "REQUESTS_CA_BUNDLE",
-    "NODE_EXTRA_CA_CERTS",
-    "LC_ALL",
-    "LC_CTYPE",
-    "XDG_CACHE_HOME",
-    "XDG_CONFIG_HOME",
-    "XDG_DATA_HOME",
-    "NVM_DIR",
-    "NPM_CONFIG_REGISTRY",
-    "npm_config_registry",
-    "PIP_INDEX_URL",
-    "UV_INDEX_URL",
-)
-
 
 class Transport(Protocol):
     async def start(self, on_message: OnMessage, on_close: OnClose) -> None: ...
@@ -98,15 +51,19 @@ class Transport(Protocol):
 
 
 def child_environment(extra: dict[str, str], *, ssl_verification: bool) -> dict[str, str]:
-    """The environment a stdio server starts with."""
+    """The environment a stdio server starts with.
 
-    names = _INHERITED_WINDOWS if os.name == "nt" else _INHERITED_POSIX
-    env: dict[str, str] = {}
-    for key in (*names, *_INHERITED_ANYWHERE):
-        value = os.environ.get(key)
+    The user's, as a command gets it (see code_ai.util.environment): npx wants
+    APPDATA, a Java server wants JAVA_HOME. Credentials stay out unless the
+    server's own declaration names them.
+    """
+
+    env = {
+        key: value
+        for key, value in command_environment().variables.items()
         # A bash function export ("() { ...") is not a value a server can use.
-        if value is not None and not value.startswith("()"):
-            env[key] = value
+        if not value.startswith("()")
+    }
     if not ssl_verification:
         # The network re-signs TLS, and the package managers a server starts
         # with (npx, uvx, pip) have to accept that the way this process does.

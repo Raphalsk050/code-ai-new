@@ -45,26 +45,3 @@ def redact_mapping(value: Any) -> Any:
     if isinstance(value, Sequence) and not isinstance(value, bytes | bytearray):
         return [redact_mapping(item) for item in value]
     return value
-
-
-def sanitized_environment(env: Mapping[str, str]) -> dict[str, str]:
-    allowed_prefixes = ("LC_",)
-    allowed_names = {
-        "PATH",
-        "HOME",
-        "LANG",
-        "TERM",
-        "SHELL",
-        "TMPDIR",
-        "USER",
-        "LOGNAME",
-        "SYSTEMROOT",
-        "WINDIR",
-    }
-    result: dict[str, str] = {}
-    for key, value in env.items():
-        if is_secret_key(key):
-            continue
-        if key in allowed_names or key.startswith(allowed_prefixes):
-            result[key] = value
-    return result

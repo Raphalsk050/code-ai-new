@@ -29,6 +29,7 @@ from code_ai.mcp.manager import system_browser
 from code_ai.mcp.tools import render_prompt
 from code_ai.prompts import build_runtime_note
 from code_ai.tools.skills.common import discover_skills_from, render_skill_invocation
+from code_ai.util.environment import command_environment
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,9 +168,14 @@ class SessionCommands:
         if manager is None:
             return _failed("No terminal backend in this session.")
         try:
-            session_id = manager.create(
-                cwd=self._app.session.config.workspace, command=command or None
-            )
+            config = self._app.session.config
+            # The user's environment, as the agent's own terminals get it.
+            secrets = bool(getattr(config, "commands_see_secrets", False))
+            env = command_environment(pass_secrets=secrets).variables
+            sandbox = getattr(self._app, "sandbox", None)
+            if sandbox is not None:
+                env.update(sandbox.environment(env))
+            session_id = manager.create(cwd=config.workspace, command=command or None, env=env)
         except TerminalSessionError as exc:
             return _failed(str(exc))
         screen = await self._emit_screen(manager, session_id)

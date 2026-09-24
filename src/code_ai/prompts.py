@@ -118,6 +118,7 @@ def build_system_prompt(
     on_demand_catalog: str = "",
     tools_available: bool = True,
     mcp: str = "",
+    environment: str = "",
 ) -> str:
     if not tools_available:
         return build_toolless_system_prompt(
@@ -137,6 +138,9 @@ def build_system_prompt(
     # Same reasoning for workflows: the user invokes them by name, so the model
     # must know the names exist to load the real procedure instead of inventing one.
     workflows_section = f"{workflows.strip()}\n\n" if workflows.strip() else ""
+    # Where commands run: the machine, the shell, the tools on PATH. Without it
+    # the model guessed - "there is no display", "dir does not exist".
+    environment_section = f"\n{environment.strip()}\n" if environment.strip() else ""
     # What a server returns is somebody else's text, so it is named as data here
     # as well as fenced where it arrives.
     mcp_section = (
@@ -192,7 +196,7 @@ elsewhere in this prompt are loaded the same way.
 Configured workspace: {workspace}
 Configured response language: {language}
 Current local date: {current_date}
-{rules_section}
+{environment_section}{rules_section}
 Follow the user's instructions, use tools when they are needed, keep all file and
 command operations inside the configured workspace or this session's sandbox.
 {sandbox_section}
@@ -468,6 +472,7 @@ def build_subagent_system_prompt(
     sandbox_root: str = "",
     rules: str = "",
     skills: str = "",
+    environment: str = "",
 ) -> str:
     """System prompt for an isolated sub-agent.
 
@@ -482,6 +487,7 @@ def build_subagent_system_prompt(
     sandbox_section = build_sandbox_section(sandbox_root)
     rules_section = f"\n{rules.strip()}\n" if rules.strip() else ""
     skills_section = f"\n{skills.strip()}\n" if skills.strip() else ""
+    environment_section = f"\n{environment.strip()}\n" if environment.strip() else ""
     return f"""{role_prompt.strip()}
 
 You are a sub-agent dispatched by the main Code-AI agent to handle one delegated
@@ -492,7 +498,7 @@ back to the agent that dispatched you, so make it self-contained.
 Configured workspace: {workspace}
 Configured response language: {language}
 Current local date: {current_date}
-{rules_section}{skills_section}{sandbox_section}
+{environment_section}{rules_section}{skills_section}{sandbox_section}
 Keep all file and command operations inside the configured workspace or this
 session's sandbox. Local files are the source of truth: inspect before you act
 and follow existing project conventions. Work each question out once and act on

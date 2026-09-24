@@ -860,6 +860,9 @@ class AppConfig:
     # (.code-ai/mcp.json, .mcp.json, ...); those start once their fingerprint
     # is in mcp_approved.
     mcp_enabled: bool = True
+    # Commands get the user's environment minus what looks like a credential
+    # (OPENAI_API_KEY, GITHUB_TOKEN); on, those reach them too.
+    commands_see_secrets: bool = False
     mcp_servers: dict[str, Any] = field(default_factory=dict)
     mcp_approved: list[str] = field(default_factory=list)
     # How tool calls reach the model. "auto" asks for native function calling
@@ -954,6 +957,7 @@ class AppConfig:
             # sub-agent gets by default.
             subagent_models=_unique_names(data.get("subagent_models")),
             mcp_enabled=bool(data.get("mcp_enabled", True)),
+            commands_see_secrets=bool(data.get("commands_see_secrets", False)),
             mcp_servers=(
                 dict(data["mcp_servers"]) if isinstance(data.get("mcp_servers"), dict) else {}
             ),

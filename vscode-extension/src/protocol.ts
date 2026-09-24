@@ -115,6 +115,8 @@ export interface Settings {
   presence_penalty?: number | null;
   /** MCP servers on at all; each server has its own switch in the panel. */
   mcp_enabled?: boolean;
+  /** Keys and tokens from the user's environment reach the agent's commands. */
+  commands_see_secrets?: boolean;
   supported: {
     api_mode: string[];
     permission_mode: string[];

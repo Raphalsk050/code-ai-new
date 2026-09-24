@@ -521,6 +521,7 @@ class AgentOrchestrator:
         skills_catalog: Callable[[], str] | None = None,
         workflows_catalog: Callable[[], str] | None = None,
         mcp_catalog: Callable[[], str] | None = None,
+        environment_note: str = "",
         system_prompt_builder: Callable[[], str] | None = None,
         reflection: ReflectionService | None = None,
         git_baseline: GitBaseline | None = None,
@@ -563,6 +564,9 @@ class AgentOrchestrator:
         self._workflows_catalog = workflows_catalog
         # The connected MCP servers, which come and go while the session runs.
         self._mcp_catalog = mcp_catalog
+        # The machine commands run on (code_ai.util.environment). Set once per
+        # session; the settings rewrite it when what commands may see changes.
+        self.environment_note = environment_note
         # Interactive approver. Defaults to deny-all so non-interactive runs keep
         # the prior behaviour; the terminal UI swaps in a modal-backed gateway.
         self.approval_gateway: ApprovalGateway = approval_gateway or DenyAllGateway()
@@ -720,6 +724,7 @@ class AgentOrchestrator:
             skills=self._skills_catalog() if self._skills_catalog else "",
             workflows=self._workflows_catalog() if self._workflows_catalog else "",
             mcp=self._mcp_catalog() if self._mcp_catalog else "",
+            environment=self.environment_note,
             code_index=self._code_index_summary(),
             tool_enabled=self.tool_registry.has,
             on_demand_catalog=(

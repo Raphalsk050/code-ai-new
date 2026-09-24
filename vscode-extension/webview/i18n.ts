@@ -588,6 +588,9 @@ const PT: Record<string, string> = {
   "No server found: each one needs a command or a url.":
     "Nenhum servidor encontrado: cada um precisa de um command ou de uma url.",
   "{0} asks": "{0} pergunta",
+  "Commands see secret variables": "Comandos veem variáveis secretas",
+  "Commands get your environment variables. Keys and tokens (GITHUB_TOKEN, OPENAI_API_KEY) stay out unless this is on.":
+    "Os comandos recebem suas variáveis de ambiente. Chaves e tokens (GITHUB_TOKEN, OPENAI_API_KEY) ficam de fora, a menos que isto esteja ligado.",
   "Sign in": "Entrar",
   "Sign out": "Sair",
   "Open the sign-in page again": "Abrir a página de login de novo",

@@ -35,7 +35,7 @@ class _Manager:
         self.created: dict | None = None
         self.fail_with: Exception | None = None
 
-    def create(self, *, cwd, command=None) -> str:
+    def create(self, *, cwd, command=None, env=None) -> str:
         if self.fail_with is not None:
             raise self.fail_with
         self.created = {"cwd": cwd, "command": command}

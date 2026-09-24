@@ -669,6 +669,17 @@ class DoctorModal(ModalScreen[None]):
                 Static(self._tools_count(), id="doctor-tools-count"),
                 classes="doctor-tools-actions",
             ),
+            Checkbox(
+                "Commands see secret variables",
+                bool(self._config.commands_see_secrets),
+                id="doctor-commands-secrets",
+                compact=True,
+            ),
+            Static(
+                "Commands get your environment variables. Keys and tokens "
+                "(GITHUB_TOKEN, OPENAI_API_KEY) stay out unless this is on.",
+                classes="doctor-experiment-hint",
+            ),
         ]
         # A server's tools are switched on the MCP tab, next to its status.
         names = [name for name in registry.registered_names() if not name.startswith("mcp__")]
@@ -969,6 +980,9 @@ class DoctorModal(ModalScreen[None]):
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         checkbox_id = event.checkbox.id or ""
+        if checkbox_id == "doctor-commands-secrets":
+            self._status(self._apply_commands_secrets(event.value))
+            return
         if checkbox_id.startswith("doctor-experiment-"):
             message = self._apply_experiment(
                 checkbox_id[len("doctor-experiment-") :], event.value
@@ -987,6 +1001,25 @@ class DoctorModal(ModalScreen[None]):
         # sets off arrive afterwards and find nothing left to save.
         if disabled != self._tool_registry.disabled_names():
             self._status(self._apply_disabled_tools(disabled))
+
+    def _apply_commands_secrets(self, value: bool) -> str:
+        config = self._config
+        if config.commands_see_secrets == value:
+            return ""
+        try:
+            validated = persist_config_updates(
+                config, {"commands_see_secrets": value}, explicit_path=self._config_path
+            )
+        except Exception as exc:  # noqa: BLE001
+            return f"✗ Not saved: {exc}"
+        config.commands_see_secrets = validated.commands_see_secrets
+        # Read per command, so the next one already follows it; the prompt says it too.
+        refresh = getattr(self._application, "refresh_environment_note", None)
+        if callable(refresh):
+            refresh()
+        if self._on_change is not None:
+            self._on_change()
+        return f"✓ Secret variables {'reach' if value else 'stay out of'} commands (applied now)"
 
     def _set_all_tools(self, enabled: bool) -> None:
         boxes = list(self.query(".doctor-tool").results(Checkbox))

@@ -142,6 +142,7 @@ from code_ai.tools.terminal import (
 )
 from code_ai.tools.web import WebSearchTool
 from code_ai.tools.workflows import UseWorkflowTool
+from code_ai.util.environment import command_environment, describe_environment
 from code_ai.util.paths import WorkspacePolicy
 from code_ai.version import __version__
 
@@ -364,6 +365,11 @@ def build_application(
     # already carries rules, skills, or workflows written for one of them works
     # here untouched. Every foreign location is optional: absent ones are skipped.
     session_skill_sources = skill_sources(config.workspace)
+    # Where commands run, said once in the prompt: the machine, the shell, what is
+    # on PATH. Fixed for the session so the prompt prefix stays cacheable.
+    environment_note = describe_environment(
+        command_environment(pass_secrets=config.commands_see_secrets)
+    )
     session_workflow_sources = workflow_sources(config.workspace)
 
     # Mandatory rules, always injected: global (install-wide) + project (committed
@@ -418,6 +424,7 @@ def build_application(
                     ),
                     skills=_skills_catalog(),
                     workflows=workflows.render_for_prompt(),
+                    environment=environment_note,
                 ),
             )
         ]
@@ -481,6 +488,7 @@ def build_application(
         base_registry=registry,
         rules_text=rules.render_for_prompt(),
         skills_text=_skills_catalog(),
+        environment_text=environment_note,
         skill_sources=session_skill_sources,
         workflows=workflows,
         code_index=code_index,
@@ -554,6 +562,7 @@ def build_application(
         skills_catalog=_skills_catalog,
         workflows_catalog=workflows.render_for_prompt,
         mcp_catalog=mcp.prompt_catalog,
+        environment_note=environment_note,
         reflection=reflection,
         git_baseline=GitBaseline(workspace),
     )

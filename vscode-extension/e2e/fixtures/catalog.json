@@ -2818,7 +2818,7 @@
     },
     {
       "name": "system_information",
-      "description": "Return non-sensitive system information useful for development tasks",
+      "description": "Describe the machine commands run on: OS, the interactive terminal's shell, where given programs are on PATH, and the environment variables commands see (sec...",
       "capabilities": [
         "local_read"
       ],

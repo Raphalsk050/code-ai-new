@@ -19,7 +19,7 @@ class _Manager:
     def __init__(self) -> None:
         self.created: list[tuple] = []
 
-    def create(self, *, cwd, command=None):
+    def create(self, *, cwd, command=None, env=None):
         self.created.append((cwd, command))
         return "sess-1234abcd"
 

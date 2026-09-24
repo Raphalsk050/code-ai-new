@@ -44,7 +44,7 @@ from code_ai.providers.swappable import SwappableProvider
 from code_ai.sandbox.session import SessionSandbox
 from code_ai.tools.skills.common import SkillSource
 from code_ai.tools.terminal.manager import PersistentTerminalManager
-from code_ai.util.redaction import sanitized_environment
+from code_ai.util.environment import command_environment, describe_environment
 
 logger = logging.getLogger(__name__)
 
@@ -803,6 +803,7 @@ class CodeAIApplication:
             "top_k": config.sampling.top_k,
             "presence_penalty": config.sampling.presence_penalty,
             "mcp_enabled": config.mcp_enabled,
+            "commands_see_secrets": config.commands_see_secrets,
             "supported": {
                 "api_mode": sorted(SUPPORTED_API_MODES),
                 "permission_mode": sorted(SUPPORTED_PERMISSION_MODES),
@@ -937,6 +938,13 @@ class CodeAIApplication:
                         # so a tool switched off here never reaches the schema.
                         registry.set_disabled(config.disabled_tools)
                     applied.append(key)
+                elif key == "commands_see_secrets":
+                    validated = persist_config_updates(config, {key: bool(value)})
+                    changed = validated.commands_see_secrets != config.commands_see_secrets
+                    config.commands_see_secrets = validated.commands_see_secrets
+                    if changed:
+                        self.refresh_environment_note()
+                    applied.append(key)
                 elif key == "mcp_enabled":
                     enabled = bool(value)
                     # The panel posts every field on save; only a real change
@@ -1002,6 +1010,17 @@ class CodeAIApplication:
             "errors": errors,
             "settings": self.get_settings(),
         }
+
+    def refresh_environment_note(self) -> None:
+        """Say again, in the prompt, what commands see - after a setting changed it."""
+
+        note = describe_environment(
+            command_environment(pass_secrets=self.session.config.commands_see_secrets)
+        )
+        self.orchestrator.environment_note = note
+        runtime = self.subagent_runtime
+        if runtime is not None and hasattr(runtime, "environment_text"):
+            runtime.environment_text = note
 
     async def reload_provider(self) -> None:
         """Rebuild the model client from the configuration in force.
@@ -1475,7 +1494,9 @@ class CodeAIApplication:
         cannot freeze the goal loop.
         """
         timeout = float(self.session.config.budgets.build_tool_timeout_s)
-        env = sanitized_environment(os.environ)
+        env = command_environment(
+            pass_secrets=self.session.config.commands_see_secrets
+        ).variables
         if self.sandbox is not None:
             # A criterion is normally the project's own test or build command,
             # so it runs from the workspace - but its caches and temp files
@@ -1484,6 +1505,7 @@ class CodeAIApplication:
         process = await asyncio.create_subprocess_shell(
             command,
             cwd=str(self.session.config.workspace),
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             env=env,
