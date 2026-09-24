@@ -12,10 +12,15 @@ import type {
   EditorContext,
   EventEnvelope,
   ExplainTarget,
+  McpAction,
+  McpList,
   RefactorImprovement,
   SlashCommandSpec,
   WebviewToHost,
 } from "./protocol";
+
+// Stopping a stdio server waits on its process; approving one starts it.
+const MCP_REQUEST_TIMEOUT_MS = 60_000;
 
 // AI calls (explain/refactor) go through the model, which the bridge bounds at
 // `budgets.model_timeout()` (180s by default). The client must wait at least
@@ -523,6 +528,44 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       );
   }
 
+  /** Run one MCP action, then hand the panel the list as it stands afterwards. */
+  private async runMcp(action: McpAction, client: BridgeClient | null | undefined): Promise<void> {
+    if (!client) {
+      this.webview?.postMessage({ type: "mcpError", message: "Code-AI: the bridge is not running." });
+      return;
+    }
+    try {
+      if (action.action === "reconnect") {
+        await client.request("mcpReconnect", { name: action.name }, MCP_REQUEST_TIMEOUT_MS);
+      } else if (action.action === "approve") {
+        await client.request("mcpApprove", { name: action.name }, MCP_REQUEST_TIMEOUT_MS);
+      } else if (action.action === "setEnabled") {
+        await client.request(
+          "mcpSetEnabled",
+          { name: action.name, enabled: action.enabled },
+          MCP_REQUEST_TIMEOUT_MS
+        );
+      } else if (action.action === "save") {
+        await client.request(
+          "mcpSave",
+          { server: action.server, previous: action.previous ?? "" },
+          MCP_REQUEST_TIMEOUT_MS
+        );
+      } else if (action.action === "remove") {
+        await client.request("mcpRemove", { name: action.name }, MCP_REQUEST_TIMEOUT_MS);
+      }
+    } catch (err) {
+      this.webview?.postMessage({ type: "mcpError", message: String(err).replace(/^Error: /, "") });
+    }
+    // The list either way: a refused edit still leaves the panel showing what is true.
+    try {
+      const list = await client.request<McpList>("mcpList");
+      this.webview?.postMessage({ type: "mcpServers", list });
+    } catch (err) {
+      this.webview?.postMessage({ type: "mcpError", message: String(err).replace(/^Error: /, "") });
+    }
+  }
+
   resolveWebviewView(view: vscode.WebviewView): void {
     view.webview.options = {
       enableScripts: true,
@@ -616,6 +659,9 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
             ?.request<{ models: string[] }>("listModels", {}, AI_REQUEST_TIMEOUT_MS)
             .then((r) => this.webview?.postMessage({ type: "modelsListed", models: r.models ?? [] }))
             .catch((err) => this.webview?.postMessage({ type: "modelsError", message: String(err) }));
+          break;
+        case "mcp":
+          void this.runMcp(message, client);
           break;
         case "cancel":
           client?.send("cancel");

@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 22,
-  "patch": 0,
-  "build": 39,
+  "patch": 1,
+  "build": 40,
   "updated": "2026-09-24",
-  "note": "MCP client: stdio, HTTP and SSE servers; their tools, resources and prompts in the session"
+  "note": "MCP servers in the settings panel, /mcp in the terminal, MCP prompts as slash commands"
 }

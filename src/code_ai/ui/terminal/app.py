@@ -10,6 +10,7 @@ from typing import Any
 
 from rich.text import Text
 
+from code_ai.app.commands import SessionCommands
 from code_ai.bootstrap import build_application
 from code_ai.config.loader import persist_config_updates
 from code_ai.core.workflows import render_workflow_invocation
@@ -208,6 +209,11 @@ def create_terminal_app(application, *, config_path: Path | None = None):
         return [
             *workflow_commands(workflow_records(refresh=refresh)),
             *skill_commands(skill_records(refresh=refresh)),
+            # Prompts of the connected MCP servers: live, so never cached.
+            *(
+                SlashCommand(entry["command"], entry["description"][:80], entry["command"] + " ")
+                for entry in SessionCommands(application).mcp_prompts()
+            ),
         ]
 
     class MultilineInput(TextArea):
@@ -1487,6 +1493,28 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 return
             if text.strip() == "/index" or text.strip().startswith("/index "):
                 await self._handle_index_command(text.strip())
+                return
+            if text.strip() == "/mcp" or text.strip().startswith("/mcp "):
+                argument = text.strip()[len("/mcp") :].strip()
+
+                async def _mcp() -> None:
+                    self._append_conversation_line(await self.controller.mcp(argument))
+
+                # Starting or stopping a server waits on its process.
+                self._spawn(_mcp(), "the MCP command")
+                return
+            if text.strip().startswith("/mcp:"):
+                token, _, argument = text.strip().partition(" ")
+
+                async def _mcp_prompt() -> None:
+                    ok, prompt = await self.controller.mcp_prompt(token, argument)
+                    if not ok:
+                        self._append_conversation_line(prompt)
+                        return
+                    self._append_conversation_line(f"mcp> Running {token}")
+                    await self.controller.submit(prompt, images=event.images)
+
+                self._spawn(_mcp_prompt(), f"MCP prompt {token}")
                 return
             if text.strip() == "/debug" or text.strip().startswith("/debug "):
                 self._append_conversation_line(

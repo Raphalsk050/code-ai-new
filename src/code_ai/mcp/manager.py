@@ -136,18 +136,27 @@ class McpManager:
     async def start(self) -> None:
         """Read every declaration and start the servers that may run, in the background."""
 
+        self._closed = False
         if not self._config.mcp_enabled:
             return
         for spec in load_servers(self._config.mcp_servers, self.workspace):
+            previous = self._servers.get(spec.name)
+            if previous is not None:
+                await self._stop(previous)
             state = ServerState(config=spec)
             self._servers[spec.name] = state
             await self._schedule(state)
 
-    async def close(self) -> None:
+    async def close(self, *, reason: str = "") -> None:
+        """Stop every server. With a ``reason`` (MCP switched off) they stay listed as off."""
+
         self._closed = True
         await asyncio.gather(
             *(self._stop(state) for state in self._servers.values()), return_exceptions=True
         )
+        if reason:
+            for state in self._servers.values():
+                await self._set(state, STATUS_DISABLED, reason)
 
     async def wait_ready(self, timeout: float) -> None:
         """Wait until every server has settled one way or the other (tests, CLI)."""
@@ -162,6 +171,8 @@ class McpManager:
         spec = state.config
         if spec.problem:
             await self._set(state, STATUS_INVALID, spec.problem)
+        elif self._closed or not self._config.mcp_enabled:
+            await self._set(state, STATUS_DISABLED, "MCP servers are switched off.")
         elif not spec.enabled:
             await self._set(state, STATUS_DISABLED)
         elif spec.from_workspace and not self._approved(spec):

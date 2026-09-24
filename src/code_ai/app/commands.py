@@ -12,12 +12,19 @@ the same result in a panel.
 
 from __future__ import annotations
 
+import shlex
 from dataclasses import dataclass, field
 from typing import Any
 
 from code_ai.app.service import CodeAIApplication
-from code_ai.core.errors import ConfigurationError, GoalStateError, TerminalSessionError
+from code_ai.core.errors import (
+    CodeAIError,
+    ConfigurationError,
+    GoalStateError,
+    TerminalSessionError,
+)
 from code_ai.core.workflows import render_workflow_invocation
+from code_ai.mcp.tools import render_prompt
 from code_ai.prompts import build_runtime_note
 from code_ai.tools.skills.common import discover_skills_from, render_skill_invocation
 
@@ -36,6 +43,51 @@ class CommandResult:
 
 def _failed(message: str) -> CommandResult:
     return CommandResult(ok=False, message=message)
+
+
+_MCP_STATUS = {
+    "connected": "connected",
+    "connecting": "connecting",
+    "failed": "failed",
+    "disabled": "off",
+    "needs_approval": "waiting for approval (/mcp approve <name>)",
+    "needs_auth": "needs sign-in",
+    "invalid": "invalid declaration",
+}
+
+
+def prompt_arguments(declared: list[Any], text: str) -> dict[str, str]:
+    """An MCP prompt's arguments out of what the user typed after its command.
+
+    ``key=value`` pairs name them; otherwise the words fill them in order, and a
+    prompt with a single argument takes the whole text.
+    """
+
+    names = [str(item.get("name") or "") for item in declared if isinstance(item, dict)]
+    required = [
+        str(item.get("name") or "")
+        for item in declared
+        if isinstance(item, dict) and item.get("required")
+    ]
+    text = text.strip()
+    values: dict[str, str] = {}
+    try:
+        words = shlex.split(text)
+    except ValueError:
+        words = text.split()
+    if words and all("=" in word for word in words):
+        for word in words:
+            key, _, value = word.partition("=")
+            values[key.strip()] = value
+    elif len(names) == 1 and text:
+        values[names[0]] = text
+    else:
+        for name, word in zip(names, words, strict=False):
+            values[name] = word
+    missing = [name for name in required if not values.get(name)]
+    if missing:
+        raise ValueError(f"The prompt needs {', '.join(missing)}.")
+    return values
 
 
 class SessionCommands:
@@ -310,6 +362,118 @@ class SessionCommands:
                 },
             )
         return _failed(f"No workflow or skill named {name!r}.")
+
+    # -- MCP servers -------------------------------------------------------
+
+    def mcp_status(self) -> CommandResult:
+        mcp = getattr(self._app, "mcp", None)
+        if mcp is None:
+            return _failed("MCP is not available in this session.")
+        servers = mcp.snapshot()
+        if not self._app.session.config.mcp_enabled:
+            return CommandResult(
+                ok=True,
+                message="MCP servers are switched off (mcp_enabled in the config).",
+                data={"servers": servers},
+            )
+        if not servers:
+            return CommandResult(
+                ok=True,
+                message=(
+                    "No MCP server is configured. Add one in the settings panel, under "
+                    "mcp_servers in config.json, or in the project's .mcp.json."
+                ),
+                data={"servers": servers},
+            )
+        lines = []
+        for server in servers:
+            status = _MCP_STATUS.get(server["status"], server["status"])
+            line = f"{server['name']}: {status} ({server['transport']}"
+            if server["tools"]:
+                line += f", {len(server['tools'])} tools"
+            line += ")"
+            if server["error"]:
+                line += f" - {server['error'].splitlines()[0]}"
+            lines.append(line)
+        return CommandResult(ok=True, message="\n".join(lines), data={"servers": servers})
+
+    async def mcp_action(self, action: str, name: str) -> CommandResult:
+        """``reconnect``, ``approve``, ``on`` or ``off`` one server by name."""
+
+        mcp = getattr(self._app, "mcp", None)
+        if mcp is None:
+            return _failed("MCP is not available in this session.")
+        name = name.strip()
+        if not name:
+            return _failed(f"Say which server: /mcp {action} <name>.")
+        try:
+            if action == "reconnect":
+                described = await mcp.reconnect(name)
+            elif action == "approve":
+                described = await mcp.approve(name)
+            elif action in ("on", "off"):
+                described = await mcp.set_enabled(name, action == "on")
+            else:
+                return _failed(
+                    f"Unknown /mcp action {action!r}: use reconnect, approve, on or off."
+                )
+        except ValueError as exc:
+            return _failed(str(exc))
+        status = _MCP_STATUS.get(described["status"], described["status"])
+        return CommandResult(ok=True, message=f"{name}: {status}.", data={"server": described})
+
+    def mcp_prompts(self) -> list[dict[str, Any]]:
+        """Every prompt a connected server offers, as ``/mcp:<server>:<prompt>``."""
+
+        mcp = getattr(self._app, "mcp", None)
+        if mcp is None:
+            return []
+        entries: list[dict[str, Any]] = []
+        for state in mcp.servers.values():
+            for prompt in state.prompts:
+                name = str(prompt.get("name") or "")
+                if not name or state.client is None:
+                    continue
+                arguments = [
+                    str(argument.get("name") or "")
+                    for argument in prompt.get("arguments") or []
+                    if isinstance(argument, dict)
+                ]
+                usage = " ".join(f"<{argument}>" for argument in arguments if argument)
+                description = " ".join(str(prompt.get("description") or "").split())
+                entries.append(
+                    {
+                        "name": f"mcp:{state.config.name}:{name}",
+                        "command": f"/mcp:{state.config.name}:{name}",
+                        "description": f"{description} {usage}".strip()
+                        or f"MCP prompt from {state.config.name}.",
+                    }
+                )
+        return entries
+
+    async def resolve_mcp_prompt(self, token: str, argument: str = "") -> CommandResult:
+        """The text ``/mcp:<server>:<prompt> [arguments]`` should submit, or why not."""
+
+        mcp = getattr(self._app, "mcp", None)
+        if mcp is None:
+            return _failed("MCP is not available in this session.")
+        server, _, name = token.strip().lstrip("/").removeprefix("mcp:").partition(":")
+        state = mcp.servers.get(server)
+        spec = next(
+            (p for p in (state.prompts if state else []) if str(p.get("name")) == name), None
+        )
+        if spec is None:
+            return _failed(f"No MCP prompt {name!r} on server {server!r}.")
+        try:
+            values = prompt_arguments(spec.get("arguments") or [], argument)
+            prompt = await mcp.get_prompt(server, name, values)
+        except (ValueError, CodeAIError) as exc:
+            return _failed(str(exc))
+        return CommandResult(
+            ok=True,
+            message=f"Running MCP prompt {server}/{name}.",
+            data={"kind": "mcp", "name": f"{server}/{name}", "prompt": render_prompt(prompt)},
+        )
 
     def _workflow_records(self) -> list[Any]:
         service = getattr(self._app, "workflows", None)

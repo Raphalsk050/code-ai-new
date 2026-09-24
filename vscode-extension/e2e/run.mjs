@@ -11,6 +11,7 @@
 
 import { buildFlowWebview, buildWebview, launchBrowser, openWebview, shotsDir } from "./harness.mjs";
 import { tests as settings } from "./settings.e2e.mjs";
+import { tests as mcp } from "./mcp.e2e.mjs";
 import { tests as flow } from "./flow.e2e.mjs";
 
 const GROUPS = [
@@ -20,7 +21,7 @@ const GROUPS = [
     ready: "#root .app",
     // The chat panel is a sidebar: its specs assume the width one has.
     viewport: { width: 900, height: 900 },
-    specs: { settings },
+    specs: { settings, mcp },
   },
   {
     name: "flow",

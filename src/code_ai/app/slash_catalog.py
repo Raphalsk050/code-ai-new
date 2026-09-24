@@ -87,6 +87,17 @@ SLASH_COMMANDS = [
     ),
     SlashCommand("/workflows", "List the saved workflows you can run by name."),
     SlashCommand("/skills", "List the skills you can force by name."),
+    SlashCommand("/mcp", "Show the MCP servers, their state and their tools."),
+    SlashCommand(
+        "/mcp reconnect <name>", "Restart one MCP server.", "/mcp reconnect "
+    ),
+    SlashCommand(
+        "/mcp approve <name>",
+        "Let a server the project declares start, now and next time.",
+        "/mcp approve ",
+    ),
+    SlashCommand("/mcp on <name>", "Switch an MCP server on.", "/mcp on "),
+    SlashCommand("/mcp off <name>", "Switch an MCP server off.", "/mcp off "),
     SlashCommand("/clear", "Clear the conversation view."),
     SlashCommand("/quit", "Close Code-AI."),
     SlashCommand("/config help", "Browse and pick a /config command to run."),
@@ -205,6 +216,7 @@ def catalog_payload(
     *,
     workflows: Sequence[Mapping[str, object]] = (),
     skills: Sequence[Mapping[str, object]] = (),
+    mcp_prompts: Sequence[Mapping[str, object]] = (),
 ) -> list[dict[str, object]]:
     """The catalog as the wire carries it, one entry per command.
 
@@ -225,7 +237,7 @@ def catalog_payload(
         }
         for entry in SLASH_COMMANDS
     ]
-    for kind, records in (("workflow", workflows), ("skill", skills)):
+    for kind, records in (("workflow", workflows), ("skill", skills), ("mcp", mcp_prompts)):
         for record in records:
             command = str(record.get("command") or f"/{record.get('name') or ''}").strip()
             if not command or command == "/":

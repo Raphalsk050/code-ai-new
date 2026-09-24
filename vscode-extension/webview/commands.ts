@@ -62,6 +62,8 @@ const ROUTES: { prefix: string; action: CommandAction }[] = [
   { prefix: "/term ctrl", action: { kind: "terminal", action: "ctrl" } },
   { prefix: "/term", action: { kind: "terminal", action: "write" } },
   { prefix: "/skills", action: { kind: "assets", which: "skills" } },
+  // The servers live in the settings panel, with their switches and status.
+  { prefix: "/mcp", action: { kind: "settings" } },
   { prefix: "/workflows", action: { kind: "assets", which: "workflows" } },
   { prefix: "/doctor", action: { kind: "settings" } },
   { prefix: "/status", action: { kind: "settings" } },
@@ -107,9 +109,9 @@ export function buildCatalog(specs: SlashCommandSpec[]): SlashCommand[] {
   const remote: SlashCommand[] = specs
     .filter((spec) => !taken.has(spec.command))
     .map((spec) => {
-      // A workflow or a skill is not in the route table: it is whatever the
-      // user put on disk, and the bridge resolves it by name.
-      if (spec.kind === "workflow" || spec.kind === "skill") {
+      // A workflow, a skill or an MCP prompt is not in the route table: it is
+      // whatever the user put on disk or a server offers, resolved by name.
+      if (spec.kind === "workflow" || spec.kind === "skill" || spec.kind === "mcp") {
         return { ...spec, action: { kind: "asset" } as CommandAction, available: true };
       }
       const action = routeFor(spec.command);

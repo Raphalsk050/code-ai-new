@@ -69,6 +69,12 @@ export type BridgeMethod =
   | "setPermissionMode"
   | "resolveApproval"
   | "answerQuestion"
+  | "mcpList"
+  | "mcpReconnect"
+  | "mcpApprove"
+  | "mcpSetEnabled"
+  | "mcpSave"
+  | "mcpRemove"
   | "shutdown";
 
 /** The three operating modes; only `agent` shows the chat composer. */
@@ -104,6 +110,8 @@ export interface Settings {
   top_p: number | null;
   top_k: number | null;
   presence_penalty?: number | null;
+  /** MCP servers on at all; each server has its own switch in the panel. */
+  mcp_enabled?: boolean;
   supported: {
     api_mode: string[];
     permission_mode: string[];
@@ -111,6 +119,85 @@ export interface Settings {
     tools: ToolSpec[];
   };
 }
+
+/** An MCP server's declaration, as the editor edits it. */
+export interface McpServerSpec {
+  name: string;
+  transport: string;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  cwd: string;
+  url: string;
+  headers: Record<string, string>;
+  enabled: boolean;
+  trust: boolean;
+  defer: string;
+  timeout_s: number;
+  tool_timeout_s: number;
+  /** "config" for the user's own; otherwise the agent whose file declared it. */
+  source: string;
+  source_path: string;
+  problem: string;
+}
+
+export interface McpToolInfo {
+  /** The name the model sees: mcp__<server>__<tool>. */
+  name: string;
+  remote: string;
+  title: string;
+  description: string;
+  read_only: boolean;
+  enabled: boolean;
+}
+
+export interface McpPromptInfo {
+  name: string;
+  description: string;
+  arguments: { name: string; required: boolean }[];
+}
+
+export type McpStatus =
+  | "connected"
+  | "connecting"
+  | "failed"
+  | "disabled"
+  | "needs_approval"
+  | "needs_auth"
+  | "invalid";
+
+/** One MCP server of the session, as `mcpList` and `mcp.server.status` describe it. */
+export interface McpServerInfo {
+  name: string;
+  status: McpStatus;
+  error: string;
+  transport: string;
+  source: string;
+  source_path: string;
+  deferred: boolean;
+  group: string;
+  server: { name: string; title: string; version: string; protocol: string; instructions: string } | null;
+  tools: McpToolInfo[];
+  prompts: McpPromptInfo[];
+  resources: boolean;
+  missing_env: string[];
+  logs: string[];
+  diagnostics: string;
+  spec: McpServerSpec;
+}
+
+export interface McpList {
+  enabled: boolean;
+  servers: McpServerInfo[];
+}
+
+export type McpAction =
+  | { action: "list" }
+  | { action: "reconnect"; name: string }
+  | { action: "approve"; name: string }
+  | { action: "setEnabled"; name: string; enabled: boolean }
+  | { action: "save"; server: Record<string, unknown>; previous?: string }
+  | { action: "remove"; name: string };
 
 /** One architectural improvement suggested in refactor mode. */
 export interface RefactorImprovement {
@@ -187,8 +274,8 @@ export interface SlashCommandSpec {
   completion: string;
   /** False when this session's bridge has no method behind it yet. */
   available: boolean;
-  /** A built-in command, or one of the user's own workflows/skills. */
-  kind?: "command" | "workflow" | "skill";
+  /** A built-in command, one of the user's own workflows/skills, or an MCP server's prompt. */
+  kind?: "command" | "workflow" | "skill" | "mcp";
 }
 
 export type HostToWebview =
@@ -201,6 +288,8 @@ export type HostToWebview =
   | { type: "settingsUpdated"; result: UpdateSettingsResult }
   | { type: "modelsListed"; models: string[] }
   | { type: "modelsError"; message: string }
+  | { type: "mcpServers"; list: McpList }
+  | { type: "mcpError"; message: string }
   | { type: "conversationsList"; conversations: ServerConversation[] }
   | { type: "conversationLoaded"; id: string; messages: StoredMessage[] }
   | { type: "refactorStatus"; status: "analyzing" | "idle" }
@@ -248,6 +337,7 @@ export type WebviewToHost =
   | { type: "getSettings" }
   | { type: "updateSettings"; updates: Record<string, unknown> }
   | { type: "listModels" }
+  | ({ type: "mcp" } & McpAction)
   | { type: "setMode"; mode: AppMode; autoRunRefactor: boolean }
   | { type: "analyzeRefactor" }
   | { type: "planRefactor"; id: string; improvements: RefactorImprovement[] }

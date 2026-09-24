@@ -802,6 +802,7 @@ class CodeAIApplication:
             "top_p": config.sampling.top_p,
             "top_k": config.sampling.top_k,
             "presence_penalty": config.sampling.presence_penalty,
+            "mcp_enabled": config.mcp_enabled,
             "supported": {
                 "api_mode": sorted(SUPPORTED_API_MODES),
                 "permission_mode": sorted(SUPPORTED_PERMISSION_MODES),
@@ -935,6 +936,19 @@ class CodeAIApplication:
                         # Live: the next model request is built from the registry,
                         # so a tool switched off here never reaches the schema.
                         registry.set_disabled(config.disabled_tools)
+                    applied.append(key)
+                elif key == "mcp_enabled":
+                    enabled = bool(value)
+                    # The panel posts every field on save; only a real change
+                    # starts or stops the servers.
+                    changed = enabled != config.mcp_enabled
+                    validated = persist_config_updates(config, {"mcp_enabled": enabled})
+                    config.mcp_enabled = validated.mcp_enabled
+                    if changed and self.mcp is not None:
+                        if enabled:
+                            await self.mcp.start()
+                        else:
+                            await self.mcp.close(reason="MCP servers are switched off.")
                     applied.append(key)
                 elif key == "subagent_models":
                     models = [str(name).strip() for name in value or () if str(name).strip()]

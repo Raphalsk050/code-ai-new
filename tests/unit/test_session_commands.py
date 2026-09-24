@@ -478,6 +478,7 @@ async def test_bridge_run_asset_reports_a_miss() -> None:
         json.dumps({"jsonrpc": "2.0", "id": 10, "method": "runAsset",
                     "params": {"token": "/nada"}})
     )
+    await asyncio.gather(*server._turn_tasks)
 
     (response,) = _messages(out)
     assert response["result"]["ok"] is False

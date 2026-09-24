@@ -124,10 +124,12 @@ export async function openWebview(browser, dir, options = {}) {
     },
     /** Deliver a host -> webview message, as the extension's postMessage does. */
     async fromHost(message) {
-      await page.evaluate(
-        (data) => window.dispatchEvent(new MessageEvent("message", { data })),
-        message
-      );
+      await page.evaluate((data) => {
+        window.dispatchEvent(new MessageEvent("message", { data }));
+        // React renders a message's state change on its own schedule; a spec
+        // that reads the form right after must see what it rendered.
+        return new Promise((done) => requestAnimationFrame(() => setTimeout(done, 0)));
+      }, message);
     },
     /** Deliver a bus event the way the extension forwards one. */
     async event(event_type, payload = {}) {

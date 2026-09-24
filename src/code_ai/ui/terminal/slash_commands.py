@@ -168,6 +168,7 @@ _HELP_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Terminal", ("/term",)),
     ("Code index", ("/index",)),
     ("Workflows and skills", ("/workflows", "/skills")),
+    ("MCP servers", ("/mcp",)),
     ("Diagnostics", ("/debug",)),
     ("Configuration", ("/config",)),
 )

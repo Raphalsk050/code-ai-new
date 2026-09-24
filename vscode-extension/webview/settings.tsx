@@ -2,9 +2,10 @@ import * as React from "react";
 
 import { t, tf } from "./i18n";
 
-import type { AppMode, Settings, ToolSpec } from "../src/protocol";
+import type { AppMode, McpAction, Settings, ToolSpec } from "../src/protocol";
 import { ExtPrefs } from "./history";
 import { IconBack, IconRefresh } from "./icons";
+import { McpSection, McpViewState } from "./mcp-settings";
 import { Draft, draftFromSettings, keepRefusedEdits } from "./settings-draft";
 
 /** State of the on-demand "list models" query for the model field. */
@@ -41,6 +42,8 @@ export function SettingsScreen({
   onPrefsChange,
   onRestart,
   onListModels,
+  mcp,
+  onMcpAction,
 }: {
   settings: Settings | null;
   sessionStatus: string;
@@ -52,6 +55,8 @@ export function SettingsScreen({
   onPrefsChange: (next: Partial<ExtPrefs>) => void;
   onRestart: () => void;
   onListModels: () => void;
+  mcp: McpViewState;
+  onMcpAction: (action: McpAction) => void;
 }): JSX.Element {
   const [draft, setDraft] = React.useState<Draft>({});
   const [apiKey, setApiKey] = React.useState("");
@@ -316,12 +321,22 @@ export function SettingsScreen({
             </Field>
           </Section>
 
+          <McpSection
+            mcp={mcp}
+            enabled={draft.mcp_enabled !== false}
+            disabledTools={(draft.disabled_tools as string[]) ?? []}
+            onEnabledChange={(value) => set("mcp_enabled", value)}
+            onDisabledToolsChange={(next) => set("disabled_tools", next)}
+            onAction={onMcpAction}
+          />
+
           <Section
             title="Doctor"
             hint={t("What the TUI edits in /doctor: tools, sub-agents and sampling.")}
           >
             <ToolSwitches
-              tools={settings.supported?.tools ?? []}
+              // A server's tools are switched on its card, next to its status.
+              tools={(settings.supported?.tools ?? []).filter((tool) => !tool.name.startsWith("mcp__"))}
               disabled={(draft.disabled_tools as string[]) ?? []}
               onChange={(next) => set("disabled_tools", next)}
             />
@@ -494,12 +509,16 @@ function ToolSwitches({
   if (tools.length === 0) {
     return <div className="settings-note">{t("This session exposed no tool list.")}</div>;
   }
-  const off = new Set(disabled);
+  // Names this list does not show (an MCP server's tools, a server that is
+  // down) keep their switch position whatever happens here.
+  const listed = new Set(tools.map((tool) => tool.name));
+  const others = disabled.filter((name) => !listed.has(name));
+  const off = new Set(disabled.filter((name) => listed.has(name)));
   const toggle = (name: string) => {
     const next = new Set(off);
     if (next.has(name)) next.delete(name);
     else next.add(name);
-    onChange([...next].sort());
+    onChange([...others, ...next].sort());
   };
   return (
     <div className="tool-switches">
@@ -507,7 +526,9 @@ function ToolSwitches({
         {t("Tools")} · {tf("{0} of {1} on", tools.length - off.size, tools.length)}
         <button
           className="btn-ghost tool-switch-all"
-          onClick={() => onChange(off.size ? [] : tools.map((t) => t.name).sort())}
+          onClick={() =>
+            onChange(off.size ? [...others].sort() : [...others, ...tools.map((t) => t.name)].sort())
+          }
         >
           {off.size ? t("Turn all on") : t("Turn all off")}
         </button>

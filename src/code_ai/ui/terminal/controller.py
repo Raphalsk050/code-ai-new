@@ -57,6 +57,26 @@ class TerminalController:
         result = await self.commands.index_refresh(full=full, subtree=subtree)
         return f"index> {result.message}"
 
+    # -- MCP servers (/mcp) --------------------------------------------------
+
+    async def mcp(self, argument: str) -> str:
+        """``/mcp`` lists the servers; ``/mcp <reconnect|approve|on|off> <name>`` acts on one."""
+
+        action, _, name = argument.strip().partition(" ")
+        if not action or action == "status":
+            result = self.commands.mcp_status()
+            return "\n".join(f"mcp> {line}" for line in result.message.splitlines())
+        result = await self.commands.mcp_action(action, name)
+        return f"mcp> {result.message}"
+
+    async def mcp_prompt(self, token: str, argument: str) -> tuple[bool, str]:
+        """The text an MCP prompt command submits, or the reason it cannot run."""
+
+        result = await self.commands.resolve_mcp_prompt(token, argument)
+        if not result.ok:
+            return False, f"mcp> {result.message}"
+        return True, str(result.data.get("prompt") or "")
+
     def index_status(self) -> str:
         status = self.app.code_index_status()
         if status is None:

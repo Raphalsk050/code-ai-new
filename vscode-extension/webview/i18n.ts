@@ -520,6 +520,72 @@ const PT: Record<string, string> = {
   "Run {0}: {1}": "Execução {0}: {1}",
   "The loop stopped at its cap of {0} laps.": "O laço parou no limite de {0} voltas.",
   "decision ({0}): {1}": "decisão ({0}): {1}",
+
+  // -- settings: MCP servers ----------------------------------------------
+  "MCP servers": "Servidores MCP",
+  "Tools from other programs: GitHub, databases, a browser. Servers a project declares (.mcp.json, .vscode/mcp.json, .cursor/mcp.json) start only after you approve them.":
+    "Ferramentas de outros programas: GitHub, bancos de dados, um navegador. Servidores que um projeto declara (.mcp.json, .vscode/mcp.json, .cursor/mcp.json) só sobem depois que você aprova.",
+  "Use MCP servers": "Usar servidores MCP",
+  "Off stops every server and takes their tools away.":
+    "Desligado, para todos os servidores e tira as ferramentas deles.",
+  "Loading MCP servers…": "Carregando servidores MCP…",
+  "No MCP server yet. Add one, or paste the JSON a server's README gives you.":
+    "Nenhum servidor MCP ainda. Adicione um, ou cole o JSON que o README do servidor traz.",
+  "Add server": "Adicionar servidor",
+  "Paste JSON": "Colar JSON",
+  connected: "conectado",
+  "connecting…": "conectando…",
+  off: "desligado",
+  "waiting for approval": "esperando aprovação",
+  "needs sign-in": "precisa de login",
+  invalid: "inválido",
+  "1 tool": "1 ferramenta",
+  "MCP servers are switched off.": "Os servidores MCP estão desligados.",
+  Approve: "Aprovar",
+  Reconnect: "Reconectar",
+  "Turn on": "Ligar",
+  "Turn off": "Desligar",
+  "Declared by the project in {0}": "Declarado pelo projeto em {0}",
+  "Not set in the environment: {0}": "Não definidas no ambiente: {0}",
+  Details: "Detalhes",
+  "Hide details": "Esconder detalhes",
+  "{0} of {1} tools on": "{0} de {1} ferramentas ligadas",
+  "loaded when the agent asks for them": "carregadas quando o agente pede",
+  Prompts: "Prompts",
+  "Remove this server?": "Remover este servidor?",
+  Keep: "Manter",
+  Transport: "Transporte",
+  "stdio - a program on this machine": "stdio - um programa nesta máquina",
+  "http - a server at a URL": "http - um servidor numa URL",
+  "sse - older servers at a URL": "sse - servidores antigos numa URL",
+  Command: "Comando",
+  "Arguments, one per line": "Argumentos, um por linha",
+  "Environment, KEY=value per line": "Ambiente, CHAVE=valor por linha",
+  "${NAME} reads a variable from your environment, so the secret stays out of the file.":
+    "${NAME} lê uma variável do seu ambiente, e o segredo fica fora do arquivo.",
+  "Working directory": "Pasta de trabalho",
+  "the workspace": "o workspace",
+  "Headers, Name: value per line": "Cabeçalhos, Nome: valor por linha",
+  "Its tools in the agent's list": "As ferramentas dele na lista do agente",
+  "all of them, or on demand past 12": "todas, ou sob demanda acima de 12",
+  "on demand: the agent loads them when it needs them":
+    "sob demanda: o agente carrega quando precisa",
+  "always all of them": "sempre todas",
+  "Run the tools it marks read-only without asking":
+    "Rodar sem perguntar as ferramentas que ele marca como somente leitura",
+  "Save server": "Salvar servidor",
+  "Paste the server's JSON": "Cole o JSON do servidor",
+  "The block from Claude, Cursor or VS Code works as it is; every server in it is added.":
+    "O bloco do Claude, Cursor ou VS Code funciona do jeito que está; todo servidor nele é adicionado.",
+  Add: "Adicionar",
+  "Give the server a name.": "Dê um nome ao servidor.",
+  "Use letters, digits, - and _ in the name.": "Use letras, números, - e _ no nome.",
+  "There is already a server with this name.": "Já existe um servidor com esse nome.",
+  "Say which command starts it.": "Diga qual comando inicia o servidor.",
+  "The URL must start with http:// or https://.": "A URL precisa começar com http:// ou https://.",
+  "Paste a JSON object.": "Cole um objeto JSON.",
+  "No server found: each one needs a command or a url.":
+    "Nenhum servidor encontrado: cada um precisa de um command ou de uma url.",
 };
 
 const TABLES: Record<Lang, Record<string, string>> = { en: {}, pt: PT };

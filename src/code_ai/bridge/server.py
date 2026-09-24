@@ -358,7 +358,9 @@ class BridgeServer:
         assets = self._commands.list_assets().data
         return {
             "commands": catalog_payload(
-                workflows=assets.get("workflows", []), skills=assets.get("skills", [])
+                workflows=assets.get("workflows", []),
+                skills=assets.get("skills", []),
+                mcp_prompts=self._commands.mcp_prompts(),
             )
         }
 
@@ -366,9 +368,13 @@ class BridgeServer:
         return self._commands.list_assets().to_payload()
 
     async def _h_run_asset(self, params: dict[str, Any]) -> dict[str, Any]:
-        result = self._commands.resolve_asset(
-            str(params.get("token") or ""), str(params.get("argument") or "")
-        )
+        token = str(params.get("token") or "")
+        argument = str(params.get("argument") or "")
+        if token.lstrip("/").startswith("mcp:"):
+            # Asks the server for the prompt's text, so it is a request of its own.
+            result = await self._commands.resolve_mcp_prompt(token, argument)
+        else:
+            result = self._commands.resolve_asset(token, argument)
         if not result.ok:
             return result.to_payload()
         prompt = str(result.data.get("prompt") or "")
@@ -548,6 +554,8 @@ class BridgeServer:
             "graphRun",
             "graphStop",
             "graphListModels",
+            # An MCP prompt is fetched from its server before the turn starts.
+            "runAsset",
             # Stopping a server can wait on its process for a few seconds.
             "mcpReconnect",
             "mcpApprove",

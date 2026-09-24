@@ -7,6 +7,8 @@ import type {
   EditorContext,
   EventEnvelope,
   HostToWebview,
+  McpAction,
+  McpServerInfo,
   PastedImage,
   PermissionMode,
   ServerConversation,
@@ -43,6 +45,8 @@ import {
   IconStop,
 } from "./icons";
 import { LiveCodePanel } from "./live-code";
+import { mergeStatus } from "./mcp-form";
+import { INITIAL_MCP, McpViewState } from "./mcp-settings";
 import { MentionMenu } from "./mention-menu";
 import { applyMention, mentionPrefix, rankPaths } from "./mentions";
 import { formatElapsed, ItemView, TypingIndicator } from "./messages";
@@ -92,6 +96,7 @@ function App(): JSX.Element {
   const [settings, setSettings] = React.useState<Settings | null>(null);
   const [models, setModels] = React.useState<ModelsState>({ status: "idle", list: [] });
   const [save, setSave] = React.useState<SaveState>({ status: "idle", errors: {} });
+  const [mcp, setMcp] = React.useState<McpViewState>(INITIAL_MCP);
   const [serverConvos, setServerConvos] = React.useState<ServerConversation[]>([]);
   const [refactor, setRefactor] = React.useState<RefactorViewState>(INITIAL_REFACTOR);
   const [explain, setExplain] = React.useState<ExplainViewState>(INITIAL_EXPLAIN);
@@ -124,7 +129,27 @@ function App(): JSX.Element {
     const onMessage = (e: MessageEvent<HostToWebview>) => {
       const data = e.data;
       if (data?.type === "event") {
-        dispatch(data.event as EventEnvelope);
+        const event = data.event as EventEnvelope;
+        if (event.event_type === "mcp.server.status") {
+          const update = event.payload as McpServerInfo;
+          setMcp((m) =>
+            m.list ? { ...m, list: { ...m.list, servers: mergeStatus(m.list.servers, update) } } : m
+          );
+          // A server that just connected may bring prompts for the / menu.
+          if (update.status === "connected") send({ type: "listSlashCommands" });
+        } else if (event.event_type === "mcp.server.removed") {
+          const gone = String(event.payload.server ?? "");
+          setMcp((m) =>
+            m.list
+              ? { ...m, list: { ...m.list, servers: m.list.servers.filter((s) => s.name !== gone) } }
+              : m
+          );
+        }
+        dispatch(event);
+      } else if (data?.type === "mcpServers") {
+        setMcp({ list: data.list, error: "", busy: "" });
+      } else if (data?.type === "mcpError") {
+        setMcp((m) => ({ ...m, error: data.message, busy: "" }));
       } else if (data?.type === "fileMatches") {
         // A slower answer for a prefix the user has already typed past is noise.
         if (mentionQueryRef.current === data.query) {
@@ -410,7 +435,19 @@ function App(): JSX.Element {
   const openSettings = () => {
     setReturnScreen(screen === "settings" ? "chat" : screen);
     if (!settings) send({ type: "getSettings" });
+    send({ type: "mcp", action: "list" });
     setScreen("settings");
+  };
+
+  const runMcpAction = (action: McpAction) => {
+    const name =
+      action.action === "save"
+        ? String(action.server.name ?? "")
+        : action.action === "list"
+          ? ""
+          : action.name;
+    setMcp((m) => ({ ...m, error: "", busy: name }));
+    send({ type: "mcp", ...action });
   };
 
   // -- command + submit ----------------------------------------------------
@@ -654,6 +691,8 @@ function App(): JSX.Element {
             setModels((m) => ({ ...m, status: "loading", error: undefined }));
             send({ type: "listModels" });
           }}
+          mcp={mcp}
+          onMcpAction={runMcpAction}
         />
       </div>
     );
