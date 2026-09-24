@@ -90,6 +90,10 @@ SLASH_COMMANDS = [
     ),
     SlashCommand("/workflows", "List the saved workflows you can run by name."),
     SlashCommand("/skills", "List the skills you can force by name."),
+    SlashCommand(
+        "/rules", "List the rules and instruction files in effect, and where each came from."
+    ),
+    SlashCommand("/agents", "List the sub-agent types the agent can delegate to."),
     SlashCommand("/mcp", "Show the MCP servers, their state and their tools."),
     SlashCommand(
         "/mcp add <name> <command or url>",
@@ -205,6 +209,7 @@ SLASH_COMMANDS = [
 # has no shell to run ``/quit`` in and no config screen behind ``/doctor``.
 BRIDGE_SUPPORTED_PREFIXES = (
     "/act",
+    "/agents",
     "/auto",
     "/cancel",
     "/clear",
@@ -214,6 +219,7 @@ BRIDGE_SUPPORTED_PREFIXES = (
     "/mode",
     "/plan",
     "/replan",
+    "/rules",
     "/skills",
     "/term",
     "/workflows",

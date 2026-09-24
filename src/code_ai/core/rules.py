@@ -1,22 +1,17 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# Mandatory instructions the agent must always follow, injected into the system
-# prompt every session. Two scopes, mirroring how memories split global vs
-# project: ``global`` rules apply install-wide, ``project`` rules live inside the
-# workspace and travel with the repository (like Cline's ``.clinerules``).
-#
-# Rules are read from *sources* rather than from two fixed directories, so a
-# workspace that already carries rules authored for another agent (Cline's
-# ``.clinerules``) is honoured without the user moving or duplicating anything.
-# The foreign layouts themselves live in :mod:`code_ai.interop`; this module only
-# knows how to read a directory or a single file of markdown rules.
+from code_ai.util.frontmatter import as_list, as_text, split_frontmatter
 
-_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
+# Mandatory instructions injected into the system prompt every session, in two
+# scopes like memories: ``global`` (install-wide) and ``project`` (committed with
+# the workspace). Rules come from *sources*, so files written for other agents
+# are read where they are; the foreign layouts live in :mod:`code_ai.interop`.
 
 # Origin label for rules authored through Code-AI itself (``create_rule``).
 NATIVE_ORIGIN = "code-ai"
@@ -25,32 +20,46 @@ NATIVE_ORIGIN = "code-ai"
 # this (Cline treats every file in ``.clinerules/`` as a rule).
 DEFAULT_RULE_EXTENSIONS = frozenset({".md"})
 
+# Claude Code follows imports four hops deep.
+_MAX_IMPORT_DEPTH = 4
+_MAX_IMPORT_BYTES = 256_000
+
+_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+_CODE_SPAN_RE = re.compile(r"`[^`]*`")
+_IMPORT_RE = re.compile(r"(?<![\w@`/\\])@([^\s`'\"<>()\[\]{}]+)")
+_IMPORT_ONLY_LINE_RE = re.compile(r"^\s*(?:[-*+]\s+)?(?:@[^\s`'\"<>()\[\]{}]+\s*)+$")
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+
 
 @dataclass(frozen=True, slots=True)
 class RuleSource:
-    """A place rules are read from.
-
-    ``path`` is either a directory of rule files or a single rule file, so both
-    of Cline's layouts (a bare ``.clinerules`` file and a ``.clinerules/``
-    directory) map onto one source. A missing path is not an error: the loader
-    skips it, which is what makes third-party support free for users who never
-    installed that other agent.
-    """
+    """A directory of rule files, or a single rule file. A missing path is skipped."""
 
     path: Path
     scope: str  # "global" or "project"
     origin: str = NATIVE_ORIGIN
     recursive: bool = False
-    # Sub-directory names ignored while walking a recursive source. Cline keeps
-    # workflows and skills inside its rules directory, and those are loaded as
-    # workflows/skills, not as always-on rules.
+    # Sub-directory names skipped while walking a recursive source: Cline keeps
+    # workflows and skills inside its rules directory.
     exclude_dirs: frozenset[str] = field(default_factory=frozenset)
     extensions: frozenset[str] = DEFAULT_RULE_EXTENSIONS
-    # The project's own instruction file (``CODEAI.md``), as opposed to one rule
-    # among many. Rendered last and under a stronger heading, because its whole
-    # purpose is to let a project overrule the agent's built-in guidance without
-    # anyone editing the agent.
+    # An instruction file (``CODEAI.md``, ``AGENTS.md``...) rather than one rule
+    # among many: rendered last, under a heading that says it outranks the rest.
     authoritative: bool = False
+    # Names each file by where it lives ("packages/web/AGENTS.md", "~/.codex/AGENTS.md")
+    # instead of by its title; "" is the repository root.
+    display_dir: str | None = None
+    # Read instead of ``path`` when it exists (``AGENTS.override.md``).
+    override: Path | None = None
+    # Read, first one found, when ``path`` is missing.
+    fallbacks: tuple[Path, ...] = ()
+    # Claude Code syntax: ``@path`` pulls another file in, and block HTML
+    # comments are notes for maintainers, not for the model.
+    expand_imports: bool = False
+    strip_comments: bool = False
+    # Imports must resolve under this directory; None lets them go anywhere. A
+    # repository cannot import ~/.ssh into the prompt.
+    import_root: Path | None = None
 
 
 @dataclass(slots=True)
@@ -63,28 +72,16 @@ class RuleRecord:
     path: Path
     origin: str = NATIVE_ORIGIN
     authoritative: bool = False
+    # Globs from ``paths:``: the rule only governs matching files.
+    paths: tuple[str, ...] = ()
 
 
-def _parse_rule_markdown(text: str) -> tuple[str, str]:
-    """Return ``(title, body)`` from a rule file's optional frontmatter.
+def _parse_rule_markdown(text: str) -> tuple[str, str, tuple[str, ...]]:
+    """``(title, body, paths)`` from a rule file and its optional frontmatter."""
 
-    Only the minimal single-line ``key: value`` frontmatter rules need is read,
-    with no external YAML dependency (the same shape skill files use). The title
-    is the ``name`` field when present; the body is everything after the
-    frontmatter (or the whole file when there is none).
-    """
-
-    match = _FRONTMATTER_RE.match(text)
-    if not match:
-        return "", text.strip()
-    raw_front, body = match.group(1), match.group(2)
-    title = ""
-    for line in raw_front.splitlines():
-        stripped = line.strip()
-        if stripped.lower().startswith("name:"):
-            title = stripped.partition(":")[2].strip().strip("'\"")
-            break
-    return title, body.strip()
+    front, body = split_frontmatter(text)
+    paths = as_list(front.get("paths") or front.get("globs"))
+    return as_text(front.get("name")), body, tuple(paths)
 
 
 class RulesService:
@@ -97,8 +94,7 @@ class RulesService:
         project_dir: Path,
         extra_sources: Sequence[RuleSource] = (),
     ) -> None:
-        # Native sources first so the user's own Code-AI rules lead each scope;
-        # extras (rules authored for other agents) follow in the order given.
+        # Native sources lead each scope; foreign ones follow in the order given.
         self._sources: tuple[RuleSource, ...] = (
             RuleSource(path=global_dir, scope="global"),
             RuleSource(path=project_dir, scope="project"),
@@ -110,20 +106,22 @@ class RulesService:
         return self._sources
 
     def load(self) -> list[RuleRecord]:
-        """Return every rule, global scope first, each source sorted by filename.
+        """Every rule, global scope first, each source sorted by filename.
 
-        A file reachable from two sources is loaded once (first source wins), so
-        overlapping conventions cannot make the model read the same rule twice.
+        A file reached twice - through two sources, an import, or a copy with the
+        same text - is loaded once, where it is first met.
         """
 
         records: list[RuleRecord] = []
         seen: set[Path] = set()
-        # Stable sort: globals before project rules, native before foreign.
+        bodies: set[str] = set()
         for source in sorted(self._sources, key=lambda item: 0 if item.scope == "global" else 1):
-            records.extend(self._load_source(source, seen=seen))
+            records.extend(self._load_source(source, seen=seen, bodies=bodies))
         return records
 
-    def _load_source(self, source: RuleSource, *, seen: set[Path]) -> list[RuleRecord]:
+    def _load_source(
+        self, source: RuleSource, *, seen: set[Path], bodies: set[str]
+    ) -> list[RuleRecord]:
         records: list[RuleRecord] = []
         for path in self._rule_files(source):
             resolved = path.resolve()
@@ -134,27 +132,39 @@ class RulesService:
                 text = path.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
-            title, body = _parse_rule_markdown(text)
-            if not body:
+            title, body, paths = _parse_rule_markdown(text)
+            if source.strip_comments:
+                body = _strip_html_comments(body)
+            if source.expand_imports:
+                body = _expand_imports(
+                    body, path.parent, seen=seen, depth=1, root=source.import_root
+                )
+            body = body.strip()
+            digest = hashlib.sha256(" ".join(body.split()).encode("utf-8")).hexdigest()
+            if not body or digest in bodies:
                 continue
+            bodies.add(digest)
             records.append(
                 RuleRecord(
-                    name=title or path.stem,
+                    name=_record_name(source, path, title),
                     scope=source.scope,
                     body=body,
                     path=path,
                     origin=source.origin,
                     authoritative=source.authoritative,
+                    paths=paths,
                 )
             )
         return records
 
     def _rule_files(self, source: RuleSource) -> Iterable[Path]:
+        if source.override is not None and source.override.is_file():
+            return [source.override]
         path = source.path
         if path.is_file():
             return [path]
         if not path.is_dir():
-            return []
+            return [fallback for fallback in source.fallbacks if fallback.is_file()][:1]
         pattern = "**/*" if source.recursive else "*"
         try:
             candidates = [
@@ -166,8 +176,7 @@ class RulesService:
                 and not self._excluded(candidate, source)
             ]
         except OSError:
-            # An unreadable directory yields no rules rather than failing the
-            # prompt build: one bad location must not silence every other rule.
+            # One unreadable location must not silence every other rule.
             return []
         return sorted(candidates, key=lambda item: str(item).casefold())
 
@@ -179,18 +188,11 @@ class RulesService:
         return any(part.casefold() in source.exclude_dirs for part in relative.parts[:-1])
 
     def render_for_prompt(self) -> str:
-        """Render all rules as a single binding section, or "" when there are none.
+        """All rules as one binding section, or "" when there are none.
 
-        The heading is deliberately forceful: rules are not advisory context, and
-        the model must treat them as overriding its own defaults. Each rule keeps
-        its title so a rule can be referenced by name, and its origin so a rule
-        the user wrote for another agent is recognisable as theirs.
-
-        Instruction files (``CODEAI.md``) are rendered last, under their own
-        heading. They are what a project uses to change how the agent behaves, so
-        they have to outrank both the ordinary rules above them and the built-in
-        guidance that follows in the prompt - and the model has to be told that
-        in as many words, because nothing about position alone conveys it.
+        Instruction files come last under their own heading: they exist to change
+        how the agent works, so they must outrank both the rules and the built-in
+        guidance further down, and position alone does not say that.
         """
 
         records = self.load()
@@ -234,6 +236,115 @@ class RulesService:
             if record.origin != NATIVE_ORIGIN:
                 label = f"{record.scope}, {record.origin}"
             lines.append(f"## {record.name} ({label})")
+            if record.paths:
+                lines.append(
+                    "Applies only to files matching "
+                    + ", ".join(f"`{pattern}`" for pattern in record.paths)
+                    + ": follow it whenever you read or change one of them."
+                )
             lines.append(record.body)
             lines.append("")
         return lines
+
+
+def _record_name(source: RuleSource, path: Path, title: str) -> str:
+    if source.display_dir is None:
+        return title or path.stem
+    return f"{source.display_dir}/{path.name}" if source.display_dir else path.name
+
+
+def _outside_fences(text: str) -> list[tuple[str, bool]]:
+    """``(line, fenced)`` for every line."""
+
+    lines: list[tuple[str, bool]] = []
+    fence = ""
+    for line in text.split("\n"):
+        match = _FENCE_RE.match(line)
+        if match and (not fence or match.group(1) == fence):
+            fence = "" if fence else match.group(1)
+            lines.append((line, True))
+            continue
+        lines.append((line, bool(fence)))
+    return lines
+
+
+def _strip_html_comments(text: str) -> str:
+    kept: list[str] = []
+    chunk: list[str] = []
+    for line, fenced in _outside_fences(text):
+        if fenced:
+            if chunk:
+                kept.append(_HTML_COMMENT_RE.sub("", "\n".join(chunk)))
+                chunk = []
+            kept.append(line)
+        else:
+            chunk.append(line)
+    if chunk:
+        kept.append(_HTML_COMMENT_RE.sub("", "\n".join(chunk)))
+    return "\n".join(kept)
+
+
+def _expand_imports(
+    text: str, base: Path, *, seen: set[Path], depth: int, root: Path | None
+) -> str:
+    """Inline every ``@path`` that names a readable file, the way Claude Code does.
+
+    A line made only of imports is replaced by them; an import mentioned inside a
+    sentence keeps the sentence and adds the file right after it. Code spans and
+    fenced blocks are left alone, and a file already loaded is not repeated.
+    """
+
+    if depth > _MAX_IMPORT_DEPTH:
+        return text
+    out: list[str] = []
+    for line, fenced in _outside_fences(text):
+        if fenced or "@" not in line:
+            out.append(line)
+            continue
+        visible = _CODE_SPAN_RE.sub(lambda match: " " * len(match.group(0)), line)
+        imported: list[str] = []
+        found = False
+        for match in _IMPORT_RE.finditer(visible):
+            target = _resolve_import(match.group(1), base, root)
+            if target is None:
+                continue
+            found = True
+            if target in seen:
+                continue
+            seen.add(target)
+            try:
+                content = target.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            _, body = split_frontmatter(content)
+            imported.append(
+                _expand_imports(body, target.parent, seen=seen, depth=depth + 1, root=root)
+            )
+        # "@someone" that names no file is a mention, not an import: keep it.
+        if found and _IMPORT_ONLY_LINE_RE.match(visible):
+            out.extend(imported)
+        else:
+            out.append(line)
+            out.extend(imported)
+    return "\n".join(out)
+
+
+def _resolve_import(raw: str, base: Path, root: Path | None) -> Path | None:
+    candidate = raw.rstrip(".,;:!?")
+    if not candidate:
+        return None
+    if candidate.startswith("~"):
+        path = Path(candidate).expanduser()
+    else:
+        path = Path(candidate)
+        if not path.is_absolute():
+            path = base / path
+    try:
+        resolved = path.resolve()
+        if not resolved.is_file() or resolved.stat().st_size > _MAX_IMPORT_BYTES:
+            return None
+    except OSError:
+        return None
+    if root is not None and not resolved.is_relative_to(root):
+        return None
+    return resolved

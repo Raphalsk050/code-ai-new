@@ -231,7 +231,10 @@ class McpDoctorPane(VerticalScroll):
         lines: list[Text] = []
         if server["source"] != "config":
             where = server.get("source_label") or server["source_path"]
-            lines.append(Text(f"Declared by the project in {where}"))
+            if server.get("user_level"):
+                lines.append(Text(f"Set up for {server['source']} in {where}"))
+            else:
+                lines.append(Text(f"Declared by the project in {where}"))
         if server["missing_env"]:
             lines.append(Text(f"Not set in the environment: {', '.join(server['missing_env'])}"))
         if server["error"] and (server["status"] in _FAILING or server["status"] == "disabled"):

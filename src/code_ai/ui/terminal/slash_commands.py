@@ -167,7 +167,7 @@ _HELP_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Goals", ("/goal",)),
     ("Terminal", ("/term",)),
     ("Code index", ("/index",)),
-    ("Workflows and skills", ("/workflows", "/skills")),
+    ("Workflows, skills and rules", ("/workflows", "/skills", "/rules", "/agents")),
     ("MCP servers", ("/mcp",)),
     ("Diagnostics", ("/debug",)),
     ("Configuration", ("/config",)),

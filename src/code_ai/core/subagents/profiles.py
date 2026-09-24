@@ -46,6 +46,9 @@ class SubagentProfile:
     allowed_tools: frozenset[str] | None = None
     # Taken away whatever the capabilities allow.
     blocked_tools: frozenset[str] = frozenset()
+    # Who defined it: built in, or the agent whose file it was read from.
+    origin: str = "code-ai"
+    source_path: str = ""
 
     def __post_init__(self) -> None:
         leaked = self.allowed_capabilities & FORBIDDEN_SUBAGENT_CAPABILITIES

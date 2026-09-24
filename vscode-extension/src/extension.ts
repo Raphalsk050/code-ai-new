@@ -505,11 +505,12 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   private runCommand(
     method: BridgeMethod,
     params: Record<string, unknown>,
-    client: BridgeClient | null | undefined
+    client: BridgeClient | null | undefined,
+    reply: "commandResult" | "report" = "commandResult"
   ): void {
     if (!client) {
       this.webview?.postMessage({
-        type: "commandResult",
+        type: reply,
         ok: false,
         text: "Code-AI: the bridge is not running.",
       });
@@ -520,12 +521,10 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       .then((result) => {
         const text = String(result?.message ?? "");
         if (text.trim()) {
-          this.webview?.postMessage({ type: "commandResult", ok: result?.ok !== false, text });
+          this.webview?.postMessage({ type: reply, ok: result?.ok !== false, text });
         }
       })
-      .catch((err) =>
-        this.webview?.postMessage({ type: "commandResult", ok: false, text: String(err) })
-      );
+      .catch((err) => this.webview?.postMessage({ type: reply, ok: false, text: String(err) }));
   }
 
   /** Run one MCP action, then hand the panel the list as it stands afterwards. */
@@ -787,6 +786,9 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         case "runAsset":
           this.runCommand("runAsset", { token: message.token, argument: message.argument }, client);
+          break;
+        case "report":
+          this.runCommand(message.method, {}, client, "report");
           break;
         case "searchFiles":
           void this.searchWorkspaceFiles(message.query);

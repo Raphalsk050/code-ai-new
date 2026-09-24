@@ -8,6 +8,8 @@ from pathlib import Path
 
 from code_ai.config.defaults import DEFAULT_CONFIG_DIRNAME
 from code_ai.core.errors import ToolArgumentError, ToolExecutionError
+from code_ai.util.arguments import CLAUDE_CODE, fill_arguments
+from code_ai.util.frontmatter import as_list, as_text, is_true, split_frontmatter
 
 # Skills live under ``~/.code-ai/skills`` by default. The location is overridable
 # via an environment variable so tests (and alternate setups) never touch the
@@ -24,10 +26,10 @@ SKILL_ENTRYPOINT = "SKILL.md"
 # the catalog stays honest about where an instruction set came from.
 NATIVE_ORIGIN = "code-ai"
 
-_TRUTHY = frozenset({"true", "yes", "1", "on"})
-
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
-_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
+
+# Claude Code's name for the directory holding a skill's SKILL.md.
+_SKILL_DIR_VARIABLE = "${CLAUDE_SKILL_DIR}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +38,8 @@ class SkillSource:
 
     root: Path
     origin: str = NATIVE_ORIGIN
+    # Placeholder syntax of the files (see :mod:`code_ai.util.arguments`); "" has none.
+    dialect: str = ""
 
 
 @dataclass(slots=True)
@@ -51,6 +55,13 @@ class SkillRecord:
     # it. A disabled skill is left out of the catalog and refuses to load, so the
     # user's own on/off decision is respected instead of silently overridden.
     disabled: bool = False
+    dialect: str = ""
+    # Names for ``$name`` placeholders, in argument order.
+    arguments: tuple[str, ...] = ()
+    # ``disable-model-invocation: true``: out of the model's catalog, still /name.
+    model_invocable: bool = True
+    # ``user-invocable: false``: the model's alone, no /name.
+    user_invocable: bool = True
 
     def to_summary(self) -> dict[str, str]:
         return {"name": self.name, "description": self.description, "origin": self.origin}
@@ -91,25 +102,10 @@ def sanitize_skill_name(value: str) -> str:
 
 
 def parse_skill_markdown(text: str) -> tuple[dict[str, str], str]:
-    """Split a skill markdown file into ``(frontmatter, body)``.
+    """Split a skill markdown file into ``(frontmatter, body)``, values as text."""
 
-    Only the minimal ``key: value`` single-line frontmatter that skills need is
-    parsed (no external YAML dependency). Files without frontmatter yield an
-    empty mapping and the whole text as the body.
-    """
-
-    match = _FRONTMATTER_RE.match(text)
-    if not match:
-        return {}, text.strip()
-    raw_front, body = match.group(1), match.group(2)
-    front: dict[str, str] = {}
-    for line in raw_front.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or ":" not in stripped:
-            continue
-        key, _, raw_value = stripped.partition(":")
-        front[key.strip().lower()] = raw_value.strip().strip("'\"")
-    return front, body.strip()
+    front, body = split_frontmatter(text)
+    return {key: as_text(value) for key, value in front.items()}, body
 
 
 def render_skill_markdown(*, name: str, description: str, instructions: str) -> str:
@@ -136,7 +132,10 @@ def render_skill_invocation(
     so the model can read the rest (and any bundled files) itself.
     """
 
-    body = record.body.strip()
+    extra = argument.strip()
+    body, used = fill_arguments(
+        record.body.strip(), extra, dialect=record.dialect, names=record.arguments
+    )
     truncated = max_chars is not None and len(body) > max_chars
     if truncated:
         body = body[:max_chars].rstrip()
@@ -151,10 +150,9 @@ def render_skill_invocation(
     ]
     if truncated:
         lines.extend(["", f"(Instructions truncated - read {record.path} for the rest.)"])
-    extra = argument.strip()
-    if extra:
+    if extra and not used:
         lines.extend(["", f"Task: {extra}"])
-    else:
+    elif not extra:
         lines.extend(
             [
                 "",
@@ -166,22 +164,32 @@ def render_skill_invocation(
 
 
 def _record_from_file(
-    path: Path, *, fallback_name: str, origin: str = NATIVE_ORIGIN
+    path: Path, *, fallback_name: str, origin: str = NATIVE_ORIGIN, dialect: str = ""
 ) -> SkillRecord:
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         raise ToolExecutionError(f"Could not read skill at {path}: {exc}") from exc
-    front, body = parse_skill_markdown(text)
-    name = front.get("name") or fallback_name
-    description = front.get("description") or ""
+    front, body = split_frontmatter(text)
+    # Claude Code matches on both; "when_to_use" is the second half of the description.
+    description = " ".join(
+        part
+        for part in (as_text(front.get("description")), as_text(front.get("when_to_use")))
+        if part
+    )
+    if dialect == CLAUDE_CODE:
+        body = body.replace(_SKILL_DIR_VARIABLE, str(path.parent))
     return SkillRecord(
-        name=name,
+        name=as_text(front.get("name")) or fallback_name,
         description=description,
         body=body,
         path=path,
         origin=origin,
-        disabled=front.get("disabled", "").strip().casefold() in _TRUTHY,
+        disabled=is_true(front.get("disabled")),
+        dialect=dialect,
+        arguments=tuple(as_list(front.get("arguments"))),
+        model_invocable=not is_true(front.get("disable-model-invocation")),
+        user_invocable=as_text(front.get("user-invocable")).casefold() != "false",
     )
 
 
@@ -232,14 +240,17 @@ def _discover_in_root(source: SkillSource) -> dict[str, SkillRecord]:
             entry = child / SKILL_ENTRYPOINT
             if entry.is_file():
                 records[child.name] = _record_from_file(
-                    entry, fallback_name=child.name, origin=source.origin
+                    entry, fallback_name=child.name, origin=source.origin, dialect=source.dialect
                 )
         elif child.is_file() and child.suffix.lower() == ".md":
             stem = child.stem
             if stem.casefold() == "skill":
                 continue
             records.setdefault(
-                stem, _record_from_file(child, fallback_name=stem, origin=source.origin)
+                stem,
+                _record_from_file(
+                    child, fallback_name=stem, origin=source.origin, dialect=source.dialect
+                ),
             )
     return records
 
@@ -256,7 +267,11 @@ def render_skills_catalog(sources: Sequence[SkillSource] | None = None) -> str:
     Returns ``""`` when there are no skills, so the prompt stays clean.
     """
 
-    skills = discover_skills_from(sources or [native_skill_source()])
+    skills = [
+        record
+        for record in discover_skills_from(sources or [native_skill_source()])
+        if record.model_invocable
+    ]
     if not skills:
         return ""
     lines = [
@@ -290,12 +305,13 @@ def load_skill_from(name: str, *, sources: Sequence[SkillSource]) -> SkillRecord
 
     slug = sanitize_skill_name(name)
     for source in sources:
-        entry = source.root / slug / SKILL_ENTRYPOINT
-        if entry.is_file():
-            return _enabled(_record_from_file(entry, fallback_name=slug, origin=source.origin))
-        flat = source.root / f"{slug}.md"
-        if flat.is_file():
-            return _enabled(_record_from_file(flat, fallback_name=slug, origin=source.origin))
+        for path in (source.root / slug / SKILL_ENTRYPOINT, source.root / f"{slug}.md"):
+            if path.is_file():
+                return _enabled(
+                    _record_from_file(
+                        path, fallback_name=slug, origin=source.origin, dialect=source.dialect
+                    )
+                )
 
     # Fall back to the declared names in the catalog: a skill authored elsewhere
     # can declare a frontmatter name that does not match its filename, and the

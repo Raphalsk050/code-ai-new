@@ -34,6 +34,7 @@ from code_ai.core.reflection import ReflectionService
 from code_ai.core.rules import RuleSource, RulesService
 from code_ai.core.subagents import (
     SubagentCoordinator,
+    SubagentProfileRegistry,
     SubagentRuntime,
     default_profile_registry,
 )
@@ -41,7 +42,12 @@ from code_ai.core.verification import ProjectVerification
 from code_ai.core.workflows import WorkflowService
 from code_ai.events.bus import AsyncEventBus
 from code_ai.index import CodeIndexService, build_code_index
-from code_ai.interop import external_rule_sources, skill_sources, workflow_sources
+from code_ai.interop import (
+    external_rule_sources,
+    skill_sources,
+    subagent_profiles,
+    workflow_sources,
+)
 from code_ai.mcp import McpManager
 from code_ai.mcp.elicitation import ElicitationBroker
 from code_ai.mcp.sampling import SamplingBroker
@@ -458,7 +464,12 @@ def build_application(
         if summary:
             memory.add(kind="project", content=summary, source="detection")
 
-    profile_registry = default_profile_registry()
+    # The built-in profiles, plus the sub-agents the user defined for other
+    # agents; a built-in name is never taken over.
+    built_in = default_profile_registry()
+    profile_registry = SubagentProfileRegistry(
+        [*built_in.all(), *subagent_profiles(config.workspace, reserved=built_in.names())]
+    )
     planner = PlannerService(
         config=config.planner,
         event_bus=event_bus,
@@ -597,6 +608,8 @@ def build_application(
         # factory rather than the dispatch tool's coordinator.
         subagent_runtime=subagent_runtime,
         mcp=mcp,
+        rules=rules,
+        subagent_profiles=profile_registry,
     )
 
 

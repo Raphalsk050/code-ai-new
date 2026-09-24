@@ -247,7 +247,9 @@ function ServerCard({
 
       {!own && (
         <div className="mcp-server-source">
-          {tf("Declared by the project in {0}", server.source_label || server.source_path)}
+          {server.user_level
+            ? tf("Set up for {0} in {1}", server.source, server.source_label || server.source_path)
+            : tf("Declared by the project in {0}", server.source_label || server.source_path)}
         </div>
       )}
       {server.missing_env.length > 0 && (

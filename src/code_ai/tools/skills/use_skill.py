@@ -31,8 +31,8 @@ class UseSkillTool:
     description = (
         "Discover and load reusable '.md' skills. Call with no name to list available "
         "skills; call with a name to load that skill's instructions, then follow them "
-        "for the current task. Skills are read from ~/.code-ai/skills and from skill "
-        "directories other agents keep in this workspace."
+        "for the current task. Skills are read from ~/.code-ai/skills and from the skill "
+        "directories other coding agents keep, in this workspace and in the user's home."
     )
     capabilities = frozenset({ToolCapability.LOCAL_READ})
     input_schema = tool_schema(

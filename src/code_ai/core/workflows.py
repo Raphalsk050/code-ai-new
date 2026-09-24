@@ -4,19 +4,17 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from code_ai.config.defaults import global_workflows_dir, project_workflows_dir
+from code_ai.util import jsonc
+from code_ai.util.arguments import OPENCODE, fill_arguments
+from code_ai.util.frontmatter import as_list, as_text, is_true, split_frontmatter
 
-# Workflows are saved, named procedures the user (or the agent) can run on
-# demand: "release a version", "triage a bug report", "open a PR". They sit
-# between rules (always on) and skills (loaded when the task matches): a workflow
-# runs when it is invoked by name, and its body is the script for that run.
-#
-# The format is a plain markdown file per workflow, which is exactly what Cline
-# writes into ``.clinerules/workflows``. Reading those directly means a user who
-# already authored workflows for Cline can invoke them here with no migration.
-
-_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
+# Workflows are saved, named procedures run on demand ("/deploy"): between rules
+# (always on) and skills (loaded when the task matches). One markdown file per
+# workflow - the shape Cline's workflows, Claude Code's commands, Codex's prompts
+# and OpenCode's commands all share, so theirs run here with no migration.
 
 NATIVE_ORIGIN = "code-ai"
 
@@ -24,20 +22,35 @@ NATIVE_ORIGIN = "code-ai"
 # name and the name with a markdown suffix must resolve to the same workflow.
 WORKFLOW_EXTENSIONS = (".md", ".markdown")
 
+# Codex runs its prompts as ``/prompts:<name>``.
+_INVOCATION_PREFIXES = ("prompts:",)
+
+KIND_MARKDOWN = "markdown"
+# The ``command`` map of an ``opencode.json``.
+KIND_OPENCODE_JSON = "opencode-json"
+
 _MAX_DESCRIPTION_CHARS = 200
 
 # A bullet or numbered step ("- do x", "1. do x"), i.e. a line that is part of the
 # procedure rather than a description of it.
 _STEP_RE = re.compile(r"^(?:[-*+]\s|\d+[.)]\s)")
+_SHELL_RE = re.compile(r"!`[^`]+`|^\s*```!", re.MULTILINE)
+_FILE_REFERENCE_RE = re.compile(r"(?<![\w@`])@[\w.~/\\-]*[\w/\\]")
 
 
 @dataclass(frozen=True, slots=True)
 class WorkflowSource:
-    """A directory workflows are read from."""
+    """Where workflows are read from."""
 
     root: Path
     scope: str  # "global" or "project"
     origin: str = NATIVE_ORIGIN
+    # Placeholder syntax of the files (see :mod:`code_ai.util.arguments`); "" has none.
+    dialect: str = ""
+    recursive: bool = False
+    # A nested file runs as ``/dir:name`` (Claude Code's commands).
+    namespaced: bool = False
+    kind: str = KIND_MARKDOWN
 
 
 @dataclass(slots=True)
@@ -50,6 +63,11 @@ class WorkflowRecord:
     path: Path
     scope: str
     origin: str = NATIVE_ORIGIN
+    dialect: str = ""
+    # Names for ``$name`` placeholders, in argument order.
+    arguments: tuple[str, ...] = ()
+    # ``disable-model-invocation: true``: only the user starts it.
+    model_invocable: bool = True
 
     @property
     def command(self) -> str:
@@ -67,12 +85,7 @@ class WorkflowRecord:
 
 
 def native_workflow_sources(workspace: Path | str) -> list[WorkflowSource]:
-    """Workflow directories owned by Code-AI itself.
-
-    Global workflows live beside the config (``~/.code-ai/workflows``); project
-    workflows live in the workspace (``<workspace>/.code-ai/workflows``) so they
-    can be committed and shared with the team, exactly like project rules.
-    """
+    """Code-AI's own workflow directories: ``~/.code-ai/workflows`` and the workspace's."""
 
     return [
         WorkflowSource(root=global_workflows_dir(), scope="global"),
@@ -81,16 +94,17 @@ def native_workflow_sources(workspace: Path | str) -> list[WorkflowSource]:
 
 
 def normalize_workflow_name(value: str) -> str:
-    """Reduce a user-typed workflow reference to a comparable name.
-
-    Accepts ``deploy``, ``/deploy``, ``deploy.md`` and any casing, so a workflow
-    can be invoked the way Cline spells it or the way a slash command reads.
-    """
+    """``deploy``, ``/deploy``, ``deploy.md`` or ``/prompts:deploy``, any casing."""
 
     text = str(value or "").strip()
     if text.startswith("/"):
         text = text[1:]
     lowered = text.casefold()
+    for prefix in _INVOCATION_PREFIXES:
+        if lowered.startswith(prefix):
+            text = text[len(prefix) :]
+            lowered = text.casefold()
+            break
     for suffix in WORKFLOW_EXTENSIONS:
         if lowered.endswith(suffix):
             text = text[: -len(suffix)]
@@ -99,14 +113,16 @@ def normalize_workflow_name(value: str) -> str:
 
 
 def render_workflow_invocation(record: WorkflowRecord, argument: str = "") -> str:
-    """Turn a workflow into the message that runs it.
+    """The message that runs a workflow: its steps as the task, plus the user's input.
 
-    Invoking a workflow means handing the model the saved steps as the task, the
-    way Cline injects the file's content into the conversation. Anything the user
-    typed after the command name travels along as extra input, so
-    ``/release 1.4.0`` still carries the version.
+    Placeholders take the input where the workflow has them; otherwise it travels
+    along as extra input, so ``/release 1.4.0`` still carries the version.
     """
 
+    extra = argument.strip()
+    body, used = fill_arguments(
+        record.body.strip(), extra, dialect=record.dialect, names=record.arguments
+    )
     lines = [
         f'Run the "{record.name}" workflow saved at {record.path}.',
         "",
@@ -114,40 +130,37 @@ def render_workflow_invocation(record: WorkflowRecord, argument: str = "") -> st
         "specification for this task, not a suggestion. If a step cannot be "
         "carried out, say which one and why instead of silently improvising a "
         "different procedure.",
-        "",
-        record.body.strip(),
     ]
-    extra = argument.strip()
-    if extra:
+    if record.dialect:
+        lines.extend(_syntax_notes(body))
+    lines.extend(["", body])
+    if extra and not used:
         lines.extend(["", f"Additional input for this run: {extra}"])
     return "\n".join(lines)
 
 
-def _parse_workflow_markdown(text: str) -> tuple[dict[str, str], str]:
-    match = _FRONTMATTER_RE.match(text)
-    if not match:
-        return {}, text.strip()
-    raw_front, body = match.group(1), match.group(2)
-    front: dict[str, str] = {}
-    for line in raw_front.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or ":" not in stripped:
-            continue
-        key, _, raw_value = stripped.partition(":")
-        front[key.strip().lower()] = raw_value.strip().strip("'\"")
-    return front, body.strip()
+def _syntax_notes(body: str) -> list[str]:
+    """What the other agent would have done before handing the text over."""
+
+    notes: list[str] = []
+    if _SHELL_RE.search(body):
+        notes.append(
+            "Text written as !`command` (or a ```! block) stands for that command's "
+            "output: run it first and use what it prints."
+        )
+    if _FILE_REFERENCE_RE.search(body):
+        notes.append("An @path names a file to read before you start.")
+    return ["", *notes] if notes else []
 
 
-def _derive_description(front: dict[str, str], body: str) -> str:
+def _derive_description(front: dict[str, Any], body: str) -> str:
     """Best available one-liner for the catalog.
 
-    Workflows written for other agents carry no frontmatter, so the body has to
-    speak for itself. A summary sentence is the most informative label, a title
-    the next best; the steps themselves are skipped, because "1. Build" describes
-    nothing to a reader choosing between workflows.
+    Workflows written for other agents often have no frontmatter. A summary
+    sentence beats a title; steps ("1. Build") describe nothing and are skipped.
     """
 
-    described = front.get("description", "").strip()
+    described = as_text(front.get("description"))
     if described:
         return described
     heading = ""
@@ -175,12 +188,7 @@ class WorkflowService:
         return self._sources
 
     def load(self) -> list[WorkflowRecord]:
-        """Every workflow, sorted by name; the first source to define a name wins.
-
-        Precedence follows source order, so a project workflow can shadow a
-        global one of the same name and Code-AI's own directory takes priority
-        over a third-party layout.
-        """
+        """Every workflow, sorted by name; the first source to define a name wins."""
 
         records: dict[str, WorkflowRecord] = {}
         for source in self._sources:
@@ -189,26 +197,37 @@ class WorkflowService:
         return [records[key] for key in sorted(records)]
 
     def find(self, name: str) -> WorkflowRecord | None:
-        """Resolve a workflow by name, tolerating ``/name`` and ``name.md``."""
+        """Resolve ``/name``, ``name.md`` or ``/prompts:name``.
+
+        A namespaced workflow (``frontend:component``) also answers to its bare
+        name while no other workflow claims it.
+        """
 
         wanted = normalize_workflow_name(name)
         if not wanted:
             return None
-        for record in self.load():
+        records = self.load()
+        for record in records:
             if record.name.casefold() == wanted:
                 return record
-        return None
+        if ":" in wanted:
+            return None
+        nested = [record for record in records if record.name.casefold().endswith(":" + wanted)]
+        return nested[0] if len(nested) == 1 else None
 
     def _load_source(self, source: WorkflowSource) -> list[WorkflowRecord]:
+        if source.kind == KIND_OPENCODE_JSON:
+            return self._load_opencode_commands(source)
         root = source.root
         if not root.is_dir():
             return []
         try:
-            entries = sorted(root.iterdir(), key=lambda item: item.name.casefold())
+            entries = sorted(
+                root.rglob("*") if source.recursive else root.iterdir(),
+                key=lambda item: str(item).casefold(),
+            )
         except OSError:
-            # An unreadable directory (permissions, a stale mount) is treated as
-            # empty: a third-party location the user cannot read must not break
-            # discovery of the ones they can.
+            # An unreadable directory must not break discovery of the others.
             return []
         records: list[WorkflowRecord] = []
         for path in entries:
@@ -220,32 +239,63 @@ class WorkflowService:
                 text = path.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
-            front, body = _parse_workflow_markdown(text)
+            front, body = split_frontmatter(text)
             if not body:
                 continue
+            name = as_text(front.get("name")) or path.stem
+            if source.namespaced:
+                parents = path.relative_to(root).parts[:-1]
+                name = ":".join([*parents, path.stem])
             records.append(
                 WorkflowRecord(
-                    name=front.get("name") or path.stem,
+                    name=name,
                     description=_derive_description(front, body),
                     body=body,
                     path=path,
                     scope=source.scope,
                     origin=source.origin,
+                    dialect=source.dialect,
+                    arguments=tuple(as_list(front.get("arguments"))),
+                    model_invocable=not is_true(front.get("disable-model-invocation")),
+                )
+            )
+        return records
+
+    def _load_opencode_commands(self, source: WorkflowSource) -> list[WorkflowRecord]:
+        commands = jsonc.load_file(source.root).get("command")
+        if not isinstance(commands, dict):
+            return []
+        records: list[WorkflowRecord] = []
+        for name, entry in sorted(commands.items()):
+            if not isinstance(entry, dict):
+                continue
+            body = str(entry.get("template") or "").strip()
+            if not body:
+                continue
+            records.append(
+                WorkflowRecord(
+                    name=str(name),
+                    description=str(entry.get("description") or "") or _derive_description(
+                        {}, body
+                    ),
+                    body=body,
+                    path=source.root,
+                    scope=source.scope,
+                    origin=source.origin,
+                    dialect=source.dialect or OPENCODE,
                 )
             )
         return records
 
     def render_for_prompt(self) -> str:
-        """Render the available workflows as a compact catalog, or "" if none.
+        """The available workflows as a compact catalog, or "" if none.
 
-        Only names and one-line descriptions travel in the prompt; a workflow's
-        steps load on demand via ``use_workflow``. The model needs the catalog
-        because the user invokes a workflow by name ("/deploy", "run the deploy
-        workflow") and would otherwise get an improvised procedure instead of the
-        one they wrote down.
+        Only names and one-liners travel in the prompt; the steps load on demand
+        via ``use_workflow``. Without the catalog a "/deploy" gets an improvised
+        procedure instead of the one the user wrote down.
         """
 
-        records = self.load()
+        records = [record for record in self.load() if record.model_invocable]
         if not records:
             return ""
         lines = [

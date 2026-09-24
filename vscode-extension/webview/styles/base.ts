@@ -191,6 +191,8 @@ body {
   display: flex; align-items: center; gap: 7px; margin: 5px 0 5px 38px;
   font-size: 12px; color: var(--muted);
 }
+/* A listing (/rules, /agents) keeps its lines; long paths wrap. */
+.notice > span { white-space: pre-wrap; overflow-wrap: anywhere; }
 .notice-warning { color: var(--vscode-editorWarning-foreground, #d7a000); }
 .notice-error { color: var(--vscode-errorForeground, #f85149); }
 .notice-plan { color: var(--accent); }

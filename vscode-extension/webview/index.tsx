@@ -167,6 +167,10 @@ function App(): JSX.Element {
         }
       } else if (data?.type === "slashCommands") {
         setCatalog(buildCatalog(data.commands as SlashCommandSpec[]));
+      } else if (data?.type === "report") {
+        if (data.text.trim()) {
+          dispatch(clientEvent(data.ok ? "report" : "error", { message: data.text.trim() }));
+        }
       } else if (data?.type === "commandResult") {
         if (data.text.trim()) {
           dispatch(
@@ -527,6 +531,9 @@ function App(): JSX.Element {
       }
       case "asset":
         send({ type: "runAsset", token: cmd.command, argument });
+        break;
+      case "report":
+        send({ type: "report", method: cmd.action.method });
         break;
       case "settings-update": {
         if (!argument.trim()) {

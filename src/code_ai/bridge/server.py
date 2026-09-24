@@ -368,6 +368,12 @@ class BridgeServer:
     async def _h_list_assets(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._commands.list_assets().to_payload()
 
+    async def _h_list_rules(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._commands.list_rules().to_payload()
+
+    async def _h_list_agents(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._commands.list_agents().to_payload()
+
     async def _h_run_asset(self, params: dict[str, Any]) -> dict[str, Any]:
         token = str(params.get("token") or "")
         argument = str(params.get("argument") or "")
@@ -542,6 +548,8 @@ class BridgeServer:
         "indexStatus": _h_index_status,
         "listSlashCommands": _h_list_slash_commands,
         "listAssets": _h_list_assets,
+        "listRules": _h_list_rules,
+        "listAgents": _h_list_agents,
         "runAsset": _h_run_asset,
         "summarizeConversation": _h_summarize_conversation,
         "graphCatalog": _h_graph_catalog,

@@ -326,3 +326,21 @@ def test_one_line_declarations_and_pasted_json() -> None:
     assert servers == [("my_server", {"url": "https://a"})]
     assert "Not valid JSON" in parse_import("{")[1]
     assert "command or a url" in parse_import('{"mcpServers": {"a": {}}}')[1]
+
+
+def test_a_server_from_another_agents_user_config_is_not_called_the_projects() -> None:
+    server = {
+        "source": "claude-code",
+        "source_path": "/home/me/.claude.json",
+        "source_label": "~/.claude.json",
+        "user_level": True,
+        "missing_env": [],
+        "error": "",
+        "status": "needs_approval",
+    }
+
+    lines = [line.plain for line in McpDoctorPane._detail_lines(server)]
+
+    assert lines == ["Set up for claude-code in ~/.claude.json"]
+    server["user_level"] = False
+    assert McpDoctorPane._detail_lines(server)[0].plain.startswith("Declared by the project")

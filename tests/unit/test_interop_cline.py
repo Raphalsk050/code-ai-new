@@ -7,7 +7,7 @@ import pytest
 from code_ai.core.errors import ToolExecutionError
 from code_ai.core.rules import RulesService
 from code_ai.core.workflows import WorkflowService
-from code_ai.interop import cline, external_rule_sources, skill_sources, workflow_sources
+from code_ai.interop import cline, external_rule_sources, paths, skill_sources, workflow_sources
 from code_ai.tools.skills.common import (
     SKILLS_DIR_ENV,
     discover_skills_from,
@@ -22,10 +22,8 @@ def cline_home(tmp_path, monkeypatch) -> Path:
 
     home = tmp_path / "ClineDocs"
     monkeypatch.setenv(cline.CLINE_HOME_ENV, str(home))
-    # Global skills live under the user's home (~/.cline/skills), not in the
-    # documents folder, so the home directory is redirected as well.
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    # ~/.cline lives under the user's home, not in the documents folder.
+    monkeypatch.setenv(paths.HOME_ENV, str(tmp_path / "home"))
     return home
 
 
@@ -154,7 +152,7 @@ def test_global_cline_skills_are_discovered_and_labelled(
 ) -> None:
     workspace = tmp_path / "ws"
     _write(
-        Path.home() / ".cline" / "skills" / "pdf-magic" / "SKILL.md",
+        paths.home() / ".cline" / "skills" / "pdf-magic" / "SKILL.md",
         "---\nname: pdf-magic\ndescription: Extract tables from PDFs.\n---\n\nDo it.",
     )
     _write(
@@ -175,15 +173,15 @@ def test_global_cline_skills_are_discovered_and_labelled(
 
 
 @pytest.mark.parametrize(
-    "relative",
+    ("relative", "origin"),
     [
-        ".cline/skills",  # modern workspace layout
-        ".clinerules/skills",  # legacy
-        ".agents/skills",  # legacy agents layout
+        (".cline/skills", "cline"),  # modern workspace layout
+        (".clinerules/skills", "cline"),  # legacy
+        (".agents/skills", "agents"),  # shared with other agents
     ],
 )
 def test_every_workspace_skill_layout_is_discovered(
-    tmp_path, cline_home, native_skills, relative
+    tmp_path, cline_home, native_skills, relative, origin
 ) -> None:
     workspace = tmp_path / "ws"
     _write(
@@ -193,7 +191,7 @@ def test_every_workspace_skill_layout_is_discovered(
 
     record = load_skill_from("triage", sources=skill_sources(workspace))
 
-    assert record.origin == "cline"
+    assert record.origin == origin
     assert "repro steps" in record.body
 
 
@@ -219,7 +217,7 @@ def test_native_skill_shadows_a_same_named_cline_skill(tmp_path, cline_home, nat
         "---\nname: review\ndescription: Mine.\n---\n\nMine wins.",
     )
     _write(
-        Path.home() / ".cline" / "skills" / "review" / "SKILL.md",
+        paths.home() / ".cline" / "skills" / "review" / "SKILL.md",
         "---\nname: review\ndescription: Theirs.\n---\n\nTheirs loses.",
     )
 
@@ -283,12 +281,12 @@ def test_native_workflow_shadows_a_cline_one(tmp_path, cline_home, monkeypatch) 
 # --------------------------------------------------------------------------- #
 
 
-def test_modern_global_scope_is_read(tmp_path, cline_home, monkeypatch) -> None:
+def test_modern_global_scope_is_read(tmp_path, cline_home, native_skills, monkeypatch) -> None:
     """Cline's current layout keeps install-wide assets under ``~/.cline``."""
 
     workspace = tmp_path / "ws"
     monkeypatch.setenv("CODE_AI_WORKFLOWS_DIR", str(tmp_path / "own-workflows"))
-    global_dir = Path.home() / ".cline"
+    global_dir = paths.home() / ".cline"
     _write(global_dir / "rules" / "language.md", "Responda em pt-BR.")
     _write(global_dir / "workflows" / "release.md", "Cut a release.")
     _write(
@@ -318,9 +316,9 @@ def test_both_global_layouts_are_read_together(tmp_path, cline_home, monkeypatch
 
     workspace = tmp_path / "ws"
     monkeypatch.setenv("CODE_AI_WORKFLOWS_DIR", str(tmp_path / "own-workflows"))
-    _write(Path.home() / ".cline" / "rules" / "modern.md", "Regra nova.")
+    _write(paths.home() / ".cline" / "rules" / "modern.md", "Regra nova.")
     _write(cline_home / "Rules" / "legacy.md", "Regra antiga.")
-    _write(Path.home() / ".cline" / "workflows" / "modern.md", "Modern steps.")
+    _write(paths.home() / ".cline" / "workflows" / "modern.md", "Modern steps.")
     _write(cline_home / "Workflows" / "legacy.md", "Legacy steps.")
 
     bodies = [

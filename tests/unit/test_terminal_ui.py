@@ -2340,6 +2340,57 @@ async def test_tab_completes_a_workflow_name(tmp_path) -> None:
         assert input_widget.value == "/deploy "
 
 
+async def test_rules_command_lists_instruction_files_with_their_origin(tmp_path) -> None:
+    from code_ai.core.rules import RuleSource, RulesService
+
+    (tmp_path / "CLAUDE.md").write_text("Answer in pt-BR.", encoding="utf-8")
+    fake_app = FakeTerminalApplication(tmp_path)
+    fake_app.rules = RulesService(
+        global_dir=tmp_path / "missing",
+        project_dir=tmp_path / "missing-too",
+        extra_sources=[
+            RuleSource(
+                path=tmp_path / "CLAUDE.md",
+                scope="project",
+                origin="claude-code",
+                authoritative=True,
+                display_dir="",
+            )
+        ],
+    )
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(120, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "/rules"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+
+        rendered = "\n".join(terminal_app.vm.conversation)
+        assert "1 instruction file(s) and 0 rule(s) in effect" in rendered
+        assert "CLAUDE.md (project, claude-code)" in rendered
+        assert fake_app.submitted == []
+
+
+async def test_agents_command_lists_the_sub_agent_types(tmp_path) -> None:
+    from code_ai.core.subagents import default_profile_registry
+
+    fake_app = FakeTerminalApplication(tmp_path)
+    fake_app.subagent_profiles = default_profile_registry()
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(120, 40)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "/agents"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+
+        rendered = "\n".join(terminal_app.vm.conversation)
+        assert "3 sub-agent type(s)" in rendered
+        assert "explorer (code-ai, read-only)" in rendered
+        assert fake_app.submitted == []
+
+
 def _skill_app(tmp_path, files: dict[str, str]):
     """A fake app whose skills come from a real directory on disk."""
 

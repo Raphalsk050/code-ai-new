@@ -1,14 +1,14 @@
 """Where MCP servers are declared, and what one declaration says.
 
-Servers come from the user's own ``config.json`` (``mcp_servers``) and from the
-workspace: Code-AI's ``.code-ai/mcp.json`` plus the files other agents keep -
-``.mcp.json`` (Claude Code), ``.cursor/mcp.json`` and ``.vscode/mcp.json`` - so a
-project already set up for one of them works here untouched.
+Servers come from the user's own ``config.json`` (``mcp_servers``), from the
+workspace - Code-AI's ``.code-ai/mcp.json`` plus ``.mcp.json`` (Claude Code),
+``.cursor/mcp.json`` and ``.vscode/mcp.json`` - and from what other agents keep
+for the user (see :func:`code_ai.interop.mcp_declarations`), so servers already
+set up for one of them work here untouched.
 
-A workspace file can start any program on the user's machine, so a server that
-came from one is not started until the user approves it. The approval is bound
-to what the server runs (its fingerprint): editing the command in the repository
-asks again.
+Anything outside ``config.json`` can start any program on the user's machine, so
+it waits for the user's approval. The approval is bound to what the server runs
+(its fingerprint): editing the command asks again.
 """
 
 from __future__ import annotations
@@ -62,6 +62,9 @@ class McpServerConfig:
     tool_timeout_s: float = 600.0
     source: str = SOURCE_CONFIG
     source_path: str = ""
+    # Declared in another agent's user config, not a repository: one approval
+    # holds in every workspace.
+    user_level: bool = False
     # Set when the declaration could not be read; the server is listed, never run.
     problem: str = ""
 
@@ -78,7 +81,7 @@ class McpServerConfig:
 
         body = json.dumps(
             {
-                "workspace": str(workspace),
+                "workspace": "" if self.user_level else str(workspace),
                 "name": self.name,
                 "transport": self.transport,
                 "command": self.command,
@@ -112,6 +115,7 @@ class McpServerConfig:
             "tool_timeout_s": self.tool_timeout_s,
             "source": self.source,
             "source_path": self.source_path,
+            "user_level": self.user_level,
             "problem": self.problem,
         }
 
@@ -219,7 +223,25 @@ def load_servers(
             for name, raw in _read_declarations(path).items():
                 server = parse_server(name, raw, source=source, source_path=str(path))
                 servers.setdefault(server.name, server)
+        for declaration in _foreign(root):
+            server = parse_server(
+                declaration.name,
+                declaration.raw,
+                source=declaration.origin,
+                source_path=str(declaration.path),
+            )
+            server.user_level = declaration.user_level
+            servers.setdefault(server.name, server)
     return list(servers.values())
+
+
+def _foreign(workspace: Path) -> list[Any]:
+    from code_ai.interop import mcp_declarations
+
+    try:
+        return mcp_declarations(workspace)
+    except Exception:  # noqa: BLE001 - someone else's config must not stop the session
+        return []
 
 
 def parse_import(text: str) -> tuple[list[tuple[str, dict[str, Any]]], str]:

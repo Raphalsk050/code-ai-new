@@ -78,6 +78,9 @@ class _Workflow:
         self.description = f"Run {name}"
         self.origin = "code-ai"
         self.path = f"/wf/{name}.md"
+        self.body = f"1. Run {name}"
+        self.dialect = ""
+        self.arguments = ()
 
 
 class _Skill:
@@ -402,6 +405,8 @@ async def test_bridge_reports_a_command_failure_as_a_result_not_an_error() -> No
         "indexRefresh",
         "indexStatus",
         "listSlashCommands",
+        "listRules",
+        "listAgents",
     ],
 )
 def test_every_new_method_is_registered(method: str) -> None:
@@ -482,3 +487,99 @@ async def test_bridge_run_asset_reports_a_miss() -> None:
 
     (response,) = _messages(out)
     assert response["result"]["ok"] is False
+
+
+# -- rules and sub-agents --------------------------------------------------
+
+
+def _rules_app(tmp_path: Path) -> _App:
+    from code_ai.core.rules import RuleSource, RulesService
+
+    (tmp_path / "AGENTS.md").write_text("Use tabs.", encoding="utf-8")
+    (tmp_path / "rules").mkdir()
+    (tmp_path / "rules" / "api.md").write_text(
+        "---\npaths: src/api/**\n---\nValidate input.", encoding="utf-8"
+    )
+    app = _App()
+    app.rules = RulesService(
+        global_dir=tmp_path / "missing",
+        project_dir=tmp_path / "rules",
+        extra_sources=[
+            RuleSource(
+                path=tmp_path / "AGENTS.md",
+                scope="project",
+                origin="agents",
+                authoritative=True,
+                display_dir="",
+            )
+        ],
+    )
+    return app
+
+
+def test_rules_list_each_file_with_its_scope_and_origin(tmp_path) -> None:
+    result = SessionCommands(_rules_app(tmp_path)).list_rules()
+
+    assert result.ok is True
+    assert result.message.startswith("1 instruction file(s) and 1 rule(s) in effect:")
+    assert "AGENTS.md (project, agents)" in result.message
+    assert "api (project, code-ai) only for src/api/**" in result.message
+    assert [rule["name"] for rule in result.data["rules"]] == ["api", "AGENTS.md"]
+
+
+def test_rules_list_says_how_to_add_one_when_empty(tmp_path) -> None:
+    from code_ai.core.rules import RulesService
+
+    app = _App()
+    app.rules = RulesService(global_dir=tmp_path / "a", project_dir=tmp_path / "b")
+
+    result = SessionCommands(app).list_rules()
+
+    assert result.ok is True
+    assert "AGENTS.md" in result.message and result.data["rules"] == []
+
+
+def test_agents_list_built_in_and_imported_profiles() -> None:
+    from code_ai.core.subagents import SubagentProfileRegistry, default_profile_registry
+    from code_ai.core.subagents.profiles import SubagentProfile
+    from code_ai.tools.base import ToolCapability
+
+    imported = SubagentProfile(
+        name="code-reviewer",
+        description="Reviews code.",
+        allowed_capabilities=frozenset({ToolCapability.LOCAL_READ}),
+        max_model_steps=30,
+        role_prompt="Review.",
+        timeout_field="subagent_explorer_timeout_s",
+        origin="claude-code",
+        source_path="/repo/.claude/agents/reviewer.md",
+    )
+    app = _App()
+    app.subagent_profiles = SubagentProfileRegistry(
+        [*default_profile_registry().all(), imported]
+    )
+
+    result = SessionCommands(app).list_agents()
+
+    assert result.ok is True
+    assert "code-reviewer (claude-code, read-only): Reviews code." in result.message
+    assert "/repo/.claude/agents/reviewer.md" in result.message
+    assert "coder (code-ai, writes)" in result.message
+
+
+async def test_bridge_lists_rules(tmp_path) -> None:
+    server, out = _server(_rules_app(tmp_path))
+    await server._handle_line(
+        json.dumps({"jsonrpc": "2.0", "id": 11, "method": "listRules", "params": {}})
+    )
+
+    (response,) = _messages(out)
+    assert response["result"]["ok"] is True
+    assert "AGENTS.md" in response["result"]["message"]
+
+
+def test_rules_and_agents_are_offered_to_every_front_end() -> None:
+    commands = {entry.command for entry in SLASH_COMMANDS}
+
+    assert {"/rules", "/agents"} <= commands
+    assert bridge_supports("/rules") and bridge_supports("/agents")

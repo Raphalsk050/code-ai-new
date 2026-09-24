@@ -83,6 +83,14 @@ class TerminalController:
             return False, f"mcp> {result.message}"
         return True, str(result.data.get("prompt") or "")
 
+    # -- what the prompt is built from (/rules, /agents) ---------------------
+
+    def rules_text(self) -> str:
+        return f"command> {self.commands.list_rules().message}"
+
+    def agents_text(self) -> str:
+        return f"command> {self.commands.list_agents().message}"
+
     def index_status(self) -> str:
         status = self.app.code_index_status()
         if status is None:

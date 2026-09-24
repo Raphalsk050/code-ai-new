@@ -198,9 +198,14 @@ def create_terminal_app(application, *, config_path: Path | None = None):
     def skill_records(*, refresh: bool = False) -> list[Any]:
         if not session_skill_sources:
             return []
+        # A skill marked user-invocable: false is the model's alone: no /name.
         return _cached(
             "skills",
-            lambda: discover_skills_from(session_skill_sources),
+            lambda: [
+                record
+                for record in discover_skills_from(session_skill_sources)
+                if getattr(record, "user_invocable", True)
+            ],
             refresh=refresh,
         )
 
@@ -1587,6 +1592,12 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 return
             if text.strip() == "/skills":
                 self._append_conversation_line(self._skills_text())
+                return
+            if text.strip() == "/rules":
+                self._append_conversation_line(self.controller.rules_text())
+                return
+            if text.strip() == "/agents":
+                self._append_conversation_line(self.controller.agents_text())
                 return
             if text.strip().startswith("/config"):
                 await self._dispatch_config(text.strip())

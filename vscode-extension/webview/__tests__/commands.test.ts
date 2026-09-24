@@ -68,3 +68,16 @@ test("permission and planner modes are distinct routes", () => {
 test("text that is not a command resolves to nothing", () => {
   assert.equal(resolveCommand(buildCatalog([]), "just a question"), null);
 });
+
+test("/rules and /agents ask the backend for a listing", () => {
+  const catalog = buildCatalog([spec("/rules"), spec("/agents")]);
+  assert.deepEqual(catalog.find((c) => c.command === "/rules")?.action, {
+    kind: "report",
+    method: "listRules",
+  });
+  assert.deepEqual(catalog.find((c) => c.command === "/agents")?.action, {
+    kind: "report",
+    method: "listAgents",
+  });
+  assert.equal(catalog.find((c) => c.command === "/agents")?.available, true);
+});

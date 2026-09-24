@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 24,
-  "patch": 2,
-  "build": 45,
+  "minor": 25,
+  "patch": 0,
+  "build": 46,
   "updated": "2026-09-24",
-  "note": "Commands run with the user's environment; the prompt says where they run"
+  "note": "Reads instructions, rules, skills, commands, sub-agents and MCP servers other agents set up"
 }

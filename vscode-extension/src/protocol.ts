@@ -51,6 +51,8 @@ export type BridgeMethod =
   | "graphStatus"
   | "graphListModels"
   | "listAssets"
+  | "listRules"
+  | "listAgents"
   | "runAsset"
   | "newConversation"
   | "getSettings"
@@ -79,6 +81,9 @@ export type BridgeMethod =
   | "mcpSignIn"
   | "mcpSignOut"
   | "shutdown";
+
+/** Bridge methods whose whole answer is a listing to show the user. */
+export type ReportMethod = "listRules" | "listAgents";
 
 /** The three operating modes; only `agent` shows the chat composer. */
 export type AppMode = "agent" | "refactor" | "explain";
@@ -183,6 +188,8 @@ export interface McpServerInfo {
   source_path: string;
   /** source_path relative to the workspace, for display. */
   source_label?: string;
+  /** Declared in another agent's user config, not in the project. */
+  user_level?: boolean;
   deferred: boolean;
   group: string;
   server: { name: string; title: string; version: string; protocol: string; instructions: string } | null;
@@ -298,6 +305,8 @@ export type HostToWebview =
   | { type: "slashCommands"; commands: SlashCommandSpec[] }
   | { type: "fileMatches"; query: string; paths: string[] }
   | { type: "commandResult"; ok: boolean; text: string }
+  /** A listing the user asked for (/rules, /agents): shown as a plain notice. */
+  | { type: "report"; ok: boolean; text: string }
   | { type: "editorContext"; context: EditorContext | null }
   | { type: "settings"; settings: Settings }
   | { type: "settingsUpdated"; result: UpdateSettingsResult }
@@ -346,6 +355,7 @@ export type WebviewToHost =
   | { type: "summarizeConversation"; id: string }
   | { type: "searchFiles"; query: string }
   | { type: "runAsset"; token: string; argument: string }
+  | { type: "report"; method: ReportMethod }
   | { type: "newConversation"; id: string }
   | { type: "listConversations" }
   | { type: "loadConversation"; id: string }

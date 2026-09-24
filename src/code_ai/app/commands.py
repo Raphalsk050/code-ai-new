@@ -326,6 +326,7 @@ class SessionCommands:
                 "origin": record.origin,
             }
             for record in self._skill_records()
+            if getattr(record, "user_invocable", True)
         ]
         return CommandResult(ok=True, data={"workflows": workflows, "skills": skills})
 
@@ -356,7 +357,7 @@ class SessionCommands:
 
         wanted = name.casefold()
         for record in self._skill_records():
-            if record.name.casefold() != wanted:
+            if record.name.casefold() != wanted or not getattr(record, "user_invocable", True):
                 continue
             config = self._app.session.config
             max_chars = getattr(getattr(config, "budgets", None), "max_tool_output_chars", 20000)
@@ -370,6 +371,96 @@ class SessionCommands:
                 },
             )
         return _failed(f"No workflow or skill named {name!r}.")
+
+    # -- rules and sub-agents ----------------------------------------------
+
+    def list_rules(self) -> CommandResult:
+        """The rules and instruction files in the prompt right now, and where each is from."""
+
+        service = getattr(self._app, "rules", None)
+        if service is None:
+            return _failed("Rules are not available in this session.")
+        try:
+            records = list(service.load())
+        except Exception as exc:  # noqa: BLE001 - one broken file must not blank the list
+            return _failed(f"Could not read the rules: {exc}")
+        if not records:
+            return CommandResult(
+                ok=True,
+                message="No rules or instruction files. Add CODEAI.md, AGENTS.md, CLAUDE.md "
+                "or a rule under .code-ai/rules and it is read on the next turn.",
+                data={"rules": []},
+            )
+        instructions = [record for record in records if record.authoritative]
+        ordinary = [record for record in records if not record.authoritative]
+        lines = [f"{len(instructions)} instruction file(s) and {len(ordinary)} rule(s) in effect:"]
+        groups = (
+            ("Instructions (outrank everything else):", instructions),
+            ("Rules:", ordinary),
+        )
+        for heading, group in groups:
+            if not group:
+                continue
+            lines.append(heading)
+            for record in group:
+                scope = f" only for {', '.join(record.paths)}" if record.paths else ""
+                lines.append(f"  {record.name} ({record.scope}, {record.origin}){scope}")
+                lines.append(f"    {record.path}")
+        return CommandResult(
+            ok=True,
+            message="\n".join(lines),
+            data={
+                "rules": [
+                    {
+                        "name": record.name,
+                        "scope": record.scope,
+                        "origin": record.origin,
+                        "path": str(record.path),
+                        "instructions": record.authoritative,
+                        "paths": list(record.paths),
+                    }
+                    for record in records
+                ]
+            },
+        )
+
+    def list_agents(self) -> CommandResult:
+        """The sub-agent types the agent may delegate to, built in and imported."""
+
+        registry = getattr(self._app, "subagent_profiles", None)
+        profiles = list(registry.all()) if registry is not None else []
+        if not profiles:
+            return _failed("Sub-agents are not available in this session.")
+        lines = [f"{len(profiles)} sub-agent type(s) the agent can delegate to:"]
+        for profile in profiles:
+            description = " ".join(profile.description.split())
+            if len(description) > 100:
+                description = description[:97].rstrip() + "..."
+            access = (
+                "writes"
+                if profile.writes
+                else "runs commands" if profile.runs_processes else "read-only"
+            )
+            lines.append(f"  {profile.name} ({profile.origin}, {access}): {description}")
+            if profile.source_path:
+                lines.append(f"    {profile.source_path}")
+        return CommandResult(
+            ok=True,
+            message="\n".join(lines),
+            data={
+                "agents": [
+                    {
+                        "name": profile.name,
+                        "description": profile.description,
+                        "origin": profile.origin,
+                        "path": profile.source_path,
+                        "writes": profile.writes,
+                        "read_only": profile.read_only,
+                    }
+                    for profile in profiles
+                ]
+            },
+        )
 
     # -- MCP servers -------------------------------------------------------
 

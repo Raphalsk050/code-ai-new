@@ -5,12 +5,13 @@ from pathlib import Path
 
 from code_ai.core.rules import RuleSource
 from code_ai.core.workflows import WorkflowSource
+from code_ai.interop import paths
+from code_ai.interop.mcp import McpDeclaration, json_servers
+from code_ai.interop.subagents import AgentSource
 from code_ai.tools.skills.common import SkillSource
 
-# Cline's on-disk conventions, expressed as Code-AI sources.
-#
-# Cline is mid-migration between two layouts and reads both, so both are read
-# here as well - in each scope the modern ``.cline`` directory comes first:
+# Cline reads two layouts, mid-migration, and so do we; the modern ``.cline``
+# directory comes first in each scope:
 #
 #   modern:  ~/.cline/{rules,workflows,skills}/          (global)
 #            <ws>/.cline/{rules,workflows,skills}/       (project)
@@ -19,22 +20,19 @@ from code_ai.tools.skills.common import SkillSource
 #            <ws>/.clinerules/                           (a directory of rules)
 #            <ws>/.clinerules/workflows/
 #            <ws>/.clinerules/skills/
-#            <ws>/.agents/skills/
 #
-# The legacy documents folder is a Cline setting, and on some Linux setups it
-# lands in ``~/Cline``, so both the alternate default and an explicit override
-# are honoured.
+# The legacy documents folder is a Cline setting and lands in ``~/Cline`` on some
+# Linux setups, so both that and an explicit override are honoured. MCP servers
+# live in the editor's global storage (the VS Code extension) or under
+# ``~/.cline`` (the CLI).
 
 ORIGIN = "cline"
 
-# Points at Cline's global documents folder when it lives somewhere else (Cline's
-# own setting is not readable from here, so an explicit override is the escape
-# hatch).
+# Cline's own setting is not readable from here; this is the escape hatch.
 CLINE_HOME_ENV = "CODE_AI_CLINE_HOME"
 
 MODERN_DIRNAME = ".cline"
 LEGACY_RULES_NAME = ".clinerules"
-LEGACY_AGENTS_DIRNAME = ".agents"
 
 RULES_DIRNAME = "rules"
 WORKFLOWS_DIRNAME = "workflows"
@@ -46,31 +44,31 @@ GLOBAL_WORKFLOWS_DIRNAME = "Workflows"
 # Cline combines every ``.md`` and ``.txt`` file it finds in the rules folder.
 RULE_EXTENSIONS = frozenset({".md", ".markdown", ".mdc", ".txt"})
 
-# Workflows and skills live inside the legacy rules folder but are loaded as
-# workflows and skills, never as always-on rules.
+# Loaded as workflows and skills, never as always-on rules.
 _NON_RULE_DIRS = frozenset({WORKFLOWS_DIRNAME, SKILLS_DIRNAME})
+
+EXTENSION_ID = "saoudrizwan.claude-dev"
+MCP_SETTINGS_FILENAME = "cline_mcp_settings.json"
+# Editors the extension is commonly installed in.
+_EDITORS = ("Code", "Code - Insiders", "VSCodium", "Cursor", "Windsurf")
 
 
 def cline_global_dir() -> Path:
     """Cline's install-wide directory in the current layout (``~/.cline``)."""
 
-    return Path.home() / MODERN_DIRNAME
+    return paths.home() / MODERN_DIRNAME
 
 
 def cline_home() -> Path:
-    """Legacy documents folder holding install-wide rules and workflows.
-
-    ``~/Documents/Cline`` is the documented default; ``~/Cline`` is where it
-    lands on some Linux/WSL setups, so it is used when the default is absent.
-    """
+    """Legacy documents folder: ``~/Documents/Cline``, else ``~/Cline`` when only it exists."""
 
     override = os.environ.get(CLINE_HOME_ENV)
     if override:
         return Path(override).expanduser()
-    documents = Path.home() / "Documents" / "Cline"
+    documents = paths.home() / "Documents" / "Cline"
     if documents.is_dir():
         return documents
-    alternate = Path.home() / "Cline"
+    alternate = paths.home() / "Cline"
     return alternate if alternate.is_dir() else documents
 
 
@@ -86,11 +84,7 @@ def _rules_dir(root: Path, *, scope: str = "project") -> RuleSource:
 
 
 def rule_sources(workspace: Path | str) -> list[RuleSource]:
-    """Rule locations Cline reads, global scope first.
-
-    The legacy ``.clinerules`` entry covers both of its shapes at once: as a file
-    it is a single rule, as a directory it is a tree of them.
-    """
+    """Global scope first. ``.clinerules`` is one rule as a file, a tree as a directory."""
 
     resolved = Path(workspace).expanduser().resolve()
     return [
@@ -102,11 +96,7 @@ def rule_sources(workspace: Path | str) -> list[RuleSource]:
 
 
 def workflow_sources(workspace: Path | str) -> list[WorkflowSource]:
-    """Workflow directories Cline reads, project scope before global.
-
-    Project workflows come first so a repository's procedure wins over a personal
-    one of the same name, which is how a shared repo is expected to behave.
-    """
+    """Project before global, so a repository's procedure wins over a personal one."""
 
     resolved = Path(workspace).expanduser().resolve()
     return [
@@ -134,12 +124,9 @@ def workflow_sources(workspace: Path | str) -> list[WorkflowSource]:
 
 
 def skill_sources(workspace: Path | str) -> list[SkillSource]:
-    """Skill directories Cline scans, in Cline's own order.
+    """Global first, as Cline searches, so a name defined in both resolves the same way.
 
-    Global skills come first here because that is the order Cline searches, so a
-    name defined in both scopes resolves to the same skill in both tools. Skills
-    use the ``<name>/SKILL.md`` layout Code-AI already reads, so nothing else has
-    to change.
+    ``.agents/skills`` is shared with other agents (see code_ai.interop.shared).
     """
 
     resolved = Path(workspace).expanduser().resolve()
@@ -147,5 +134,28 @@ def skill_sources(workspace: Path | str) -> list[SkillSource]:
         SkillSource(root=cline_global_dir() / SKILLS_DIRNAME, origin=ORIGIN),
         SkillSource(root=resolved / MODERN_DIRNAME / SKILLS_DIRNAME, origin=ORIGIN),
         SkillSource(root=resolved / LEGACY_RULES_NAME / SKILLS_DIRNAME, origin=ORIGIN),
-        SkillSource(root=resolved / LEGACY_AGENTS_DIRNAME / SKILLS_DIRNAME, origin=ORIGIN),
     ]
+
+
+def agent_sources(workspace: Path | str) -> list[AgentSource]:
+    return []
+
+
+def mcp_settings_files() -> list[Path]:
+    storage = [
+        paths.app_data() / editor / "User" / "globalStorage" / EXTENSION_ID / "settings"
+        for editor in _EDITORS
+    ]
+    return [
+        *(directory / MCP_SETTINGS_FILENAME for directory in storage),
+        cline_global_dir() / "data" / "settings" / MCP_SETTINGS_FILENAME,
+        cline_global_dir() / "mcp.json",
+    ]
+
+
+def mcp_declarations(workspace: Path | str) -> list[McpDeclaration]:
+    found: list[McpDeclaration] = []
+    for path in mcp_settings_files():
+        if path.is_file():
+            found += json_servers(path, ORIGIN, user_level=True)
+    return found

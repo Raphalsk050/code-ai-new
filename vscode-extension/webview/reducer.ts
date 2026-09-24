@@ -349,6 +349,8 @@ export function applyEvent(state: ViewState, event: EventEnvelope): ViewState {
 
     case "warning":
       return { ...state, items: push(state.items, { kind: "notice", id, level: "warning", text: String(p.message ?? "") }) };
+    case "report":
+      return { ...state, items: push(state.items, { kind: "notice", id, level: "info", text: String(p.message ?? "") }) };
     case "error":
       return { ...state, items: push(state.items, { kind: "notice", id, level: "error", text: String(p.message ?? "") }) };
 

@@ -2,7 +2,7 @@
 // it on connect, so the TUI and the extension never drift); this module only
 // decides what the webview does with the one the user picked.
 
-import type { SlashCommandSpec } from "../src/protocol";
+import type { ReportMethod, SlashCommandSpec } from "../src/protocol";
 
 export type CommandAction =
   | { kind: "clear" }
@@ -19,6 +19,7 @@ export type CommandAction =
   | { kind: "settings-update"; field: string }
   | { kind: "history" }
   | { kind: "assets"; which: "skills" | "workflows" }
+  | { kind: "report"; method: ReportMethod }
   | { kind: "asset" }
   | { kind: "unsupported" };
 
@@ -62,6 +63,8 @@ const ROUTES: { prefix: string; action: CommandAction }[] = [
   { prefix: "/term ctrl", action: { kind: "terminal", action: "ctrl" } },
   { prefix: "/term", action: { kind: "terminal", action: "write" } },
   { prefix: "/skills", action: { kind: "assets", which: "skills" } },
+  { prefix: "/rules", action: { kind: "report", method: "listRules" } },
+  { prefix: "/agents", action: { kind: "report", method: "listAgents" } },
   // The servers live in the settings panel, with their switches and status.
   { prefix: "/mcp", action: { kind: "settings" } },
   { prefix: "/workflows", action: { kind: "assets", which: "workflows" } },

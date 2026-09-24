@@ -5,6 +5,7 @@ import pytest
 from code_ai import bootstrap
 from code_ai.config import models as config_models
 from code_ai.config.defaults import SANDBOX_DIR_ENV
+from code_ai.interop.paths import HOME_ENV as INTEROP_HOME_ENV
 
 
 @pytest.fixture(autouse=True)
@@ -27,6 +28,20 @@ def _isolate_failure_memories(tmp_path_factory, monkeypatch):
     # test that builds an application must not create or reuse a real one.
     index_dir = tmp_path_factory.mktemp("code_ai_index")
     monkeypatch.setattr(config_models, "project_index_dir", lambda _workspace: index_dir)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_other_agents(tmp_path_factory, monkeypatch):
+    """Keep the developer's own Claude Code, Codex, OpenCode and Cline setup out.
+
+    Every foreign location resolves under this empty home, machine-wide ones are
+    switched off, and the agents' own path variables are cleared.
+    """
+
+    monkeypatch.setenv(INTEROP_HOME_ENV, str(tmp_path_factory.mktemp("other_agents_home")))
+    for name in ("CODEX_HOME", "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "CODE_AI_CLINE_HOME"):
+        monkeypatch.delenv(name, raising=False)
     yield
 
 

@@ -84,6 +84,8 @@ class CodeAIApplication:
         browser: Any = None,
         subagent_runtime: Any = None,
         mcp: Any = None,
+        rules: Any = None,
+        subagent_profiles: Any = None,
     ) -> None:
         self.session = session
         self.event_bus = event_bus
@@ -123,6 +125,10 @@ class CodeAIApplication:
         # The session's MCP servers (code_ai.mcp.McpManager); they connect in
         # the background once the session starts. ``None`` when built without.
         self.mcp = mcp
+        # The session's RulesService and sub-agent profiles, for /rules and
+        # /agents: both include what was read from other agents' files.
+        self.rules = rules
+        self.subagent_profiles = subagent_profiles
         # Id of the conversation currently loaded in the live session. Assigned
         # by the client via reset_conversation/load_conversation; a turn persists
         # under it so the user can resume the thread later.
@@ -1094,6 +1100,8 @@ class CodeAIApplication:
         self.code_index = rebuilt.code_index
         self.browser = rebuilt.browser
         self.mcp = rebuilt.mcp
+        self.rules = rebuilt.rules
+        self.subagent_profiles = rebuilt.subagent_profiles
 
         # A project's MCP servers belong to that project, and the ones a
         # workspace declares need approving again for the new one.

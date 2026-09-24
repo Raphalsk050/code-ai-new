@@ -1,63 +1,126 @@
-"""Reuse of rules, skills, and workflows authored for other coding agents.
+"""Reuse of what the user already set up for other coding agents.
 
-A user who already wrote instructions for another agent should not have to
-re-author or copy anything to get the same behaviour here. This package maps
-those agents' on-disk conventions onto Code-AI's own source objects; discovery is
-purely additive and every location is optional, so an install with none of them
-present behaves exactly as before.
+Instructions, rules, skills, commands, sub-agents and MCP servers written for
+Claude Code, Codex, OpenCode or Cline - and the conventions they share, like
+AGENTS.md - are read where they are, so nothing has to be copied or re-authored.
+Every location is optional: an install with none of them behaves as before.
 
-Each provider module (see :mod:`code_ai.interop.cline`) exposes the same three
-functions - ``rule_sources``, ``workflow_sources``, ``skill_sources`` - so
-supporting another agent means adding a module and listing it in ``_PROVIDERS``.
+Each agent has a module mapping its layout onto Code-AI's sources; this one
+decides the order they are consulted in.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
+from typing import TypeVar
 
 from code_ai.core.rules import RuleSource
+from code_ai.core.subagents.profiles import SubagentProfile
 from code_ai.core.workflows import WorkflowSource, native_workflow_sources
-from code_ai.interop import cline
+from code_ai.interop import claude_code, cline, codex, opencode, paths, shared
+from code_ai.interop.mcp import McpDeclaration
+from code_ai.interop.subagents import AgentSource, load_profiles
 from code_ai.tools.skills.common import SkillSource, native_skill_source
 
-_PROVIDERS = (cline,)
-
 __all__ = [
+    "agent_sources",
+    "claude_code",
     "cline",
+    "codex",
     "external_rule_sources",
+    "mcp_declarations",
+    "opencode",
+    "shared",
     "skill_sources",
+    "subagent_profiles",
     "workflow_sources",
 ]
 
+_T = TypeVar("_T")
+
 
 def external_rule_sources(workspace: Path | str) -> list[RuleSource]:
-    """Rule locations owned by other agents.
+    """Rules and instruction files owned by other agents.
 
-    Returned separately from Code-AI's own rule directories because
-    :class:`~code_ai.core.rules.RulesService` already knows those and keeps them
-    first in each scope.
+    Instruction files go the user's first, then the repository's from its root
+    down to the workspace - Claude Code's files before AGENTS.md in each
+    directory, as Claude Code reads them - so the nearest file has the last
+    word. Code-AI's own directories and CODEAI.md are added by the caller.
     """
 
-    return [source for provider in _PROVIDERS for source in provider.rule_sources(workspace)]
+    directories = paths.project_directories(workspace)
+    root = directories[0]
+    sources: list[RuleSource] = []
+    for provider in (claude_code, codex, opencode):
+        sources += provider.global_instruction_sources()
+    for directory in directories:
+        sources += claude_code.instruction_sources(directory, root=root)
+        sources += shared.instruction_sources(directory, root=root)
+    sources += opencode.project_instruction_sources(workspace)
+    for provider in (cline, claude_code):
+        sources += provider.rule_sources(workspace)
+    return _unique(sources, key=lambda source: (source.path, source.override))
 
 
 def skill_sources(workspace: Path | str) -> list[SkillSource]:
-    """Every skill directory to search this session, highest precedence first.
-
-    Code-AI's own directory leads, so a skill the user (or ``create_skill``)
-    wrote here shadows a same-named one picked up from another agent.
-    """
+    """Every skill directory, highest precedence first; Code-AI's own leads."""
 
     sources = [native_skill_source()]
-    for provider in _PROVIDERS:
+    for provider in (cline, claude_code, opencode, codex, shared):
         sources.extend(provider.skill_sources(workspace))
-    return sources
+    return _unique(sources, key=lambda source: source.root)
 
 
 def workflow_sources(workspace: Path | str) -> list[WorkflowSource]:
-    """Every workflow directory to search this session, highest precedence first."""
+    """Code-AI's own first, then every project directory before any global one."""
 
-    sources = list(native_workflow_sources(workspace))
-    for provider in _PROVIDERS:
-        sources.extend(provider.workflow_sources(workspace))
-    return sources
+    foreign = [
+        source
+        for provider in (cline, claude_code, opencode, codex)
+        for source in provider.workflow_sources(workspace)
+    ]
+    foreign.sort(key=lambda source: source.scope != "project")
+    return _unique(
+        [*native_workflow_sources(workspace), *foreign],
+        key=lambda source: (source.root, source.kind),
+    )
+
+
+def agent_sources(workspace: Path | str) -> list[AgentSource]:
+    sources = [
+        source
+        for provider in (claude_code, opencode, cline, codex)
+        for source in provider.agent_sources(workspace)
+    ]
+    return _unique(sources, key=lambda source: (source.root, source.kind))
+
+
+def subagent_profiles(
+    workspace: Path | str, *, reserved: Iterable[str] = ()
+) -> list[SubagentProfile]:
+    """Sub-agents defined for other agents; names in ``reserved`` stay built-in."""
+
+    return load_profiles(agent_sources(workspace), reserved=reserved)
+
+
+def mcp_declarations(workspace: Path | str) -> list[McpDeclaration]:
+    """MCP servers other agents declare outside the workspace files code_ai.mcp reads."""
+
+    return [
+        declaration
+        for provider in (claude_code, codex, opencode, cline)
+        for declaration in provider.mcp_declarations(workspace)
+    ]
+
+
+def _unique(items: Iterable[_T], *, key) -> list[_T]:
+    seen: set = set()
+    unique: list[_T] = []
+    for item in items:
+        marker = key(item)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        unique.append(item)
+    return unique

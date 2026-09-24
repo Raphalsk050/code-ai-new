@@ -547,6 +547,7 @@ const PT: Record<string, string> = {
   "Turn on": "Ligar",
   "Turn off": "Desligar",
   "Declared by the project in {0}": "Declarado pelo projeto em {0}",
+  "Set up for {0} in {1}": "Configurado para o {0} em {1}",
   "Not set in the environment: {0}": "Não definidas no ambiente: {0}",
   Details: "Detalhes",
   "Hide details": "Esconder detalhes",

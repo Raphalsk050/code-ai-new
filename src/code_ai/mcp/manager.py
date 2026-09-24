@@ -713,6 +713,8 @@ class McpManager:
             "transport": state.config.transport,
             "source": state.config.source,
             "source_path": state.config.source_path,
+            # Another agent's user config rather than the project's files.
+            "user_level": state.config.user_level,
             # What the cards print: the file as the project knows it.
             "source_label": _relative(state.config.source_path, self.workspace),
             "deferred": state.deferred,
@@ -833,10 +835,12 @@ def _declaration(raw: dict[str, Any]) -> dict[str, Any]:
 def _relative(path: str, workspace: Path) -> str:
     if not path:
         return ""
-    try:
-        return Path(path).relative_to(workspace).as_posix()
-    except ValueError:
-        return path
+    for base, prefix in ((workspace, ""), (Path.home(), "~/")):
+        try:
+            return prefix + Path(path).relative_to(base).as_posix()
+        except ValueError:
+            continue
+    return path
 
 
 def _diagnostics(state: ServerState) -> str:
