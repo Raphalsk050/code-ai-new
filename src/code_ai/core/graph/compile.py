@@ -18,7 +18,9 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from code_ai.core.graph.functions import is_function
 from code_ai.core.graph.models import (
+    MAX_DYNAMIC_PINS,
     MAX_EDGES,
     MAX_NODES,
     MAX_VARIABLES,
@@ -31,6 +33,7 @@ from code_ai.core.graph.models import (
     NodeSpec,
     PinType,
     can_connect,
+    expanded_pins,
 )
 from code_ai.core.graph.program import GraphProgram, NodeProgram
 
@@ -244,6 +247,18 @@ def _check_edges(
             )
             continue
 
+        missing = _missing_copy(nodes[source_node], out_pin, source_pin, "out") or _missing_copy(
+            nodes[target_node], in_pin, target_pin, "in"
+        )
+        if missing:
+            node_id, pin_name = missing
+            collector.error(
+                f"Pin {pin_name!r} is not on this node any more; remove the wire.",
+                node_id=node_id,
+                pin=pin_name,
+            )
+            continue
+
         is_exec = out_pin.type == PinType.EXEC
         if (in_pin.type == PinType.EXEC) != is_exec:
             collector.error(
@@ -298,20 +313,34 @@ def _check_edges(
     return kept
 
 
+def _missing_copy(
+    node: NodeSpec, declared: Any, pin_name: str, direction: str
+) -> tuple[str, str] | None:
+    """A numbered copy of a dynamic pin beyond the count the node asked for."""
+
+    if not declared.dynamic:
+        return None
+    names = {pin.name for pin in expanded_pins(NODE_KINDS[node.kind], node.data)}
+    return None if pin_name in names else (node.id, pin_name)
+
+
 def _resolve_pin_types(
     nodes: dict[str, NodeSpec], variables: dict[str, Any]
 ) -> dict[tuple[str, str], str]:
     """Pin types after per-node refinement.
 
-    Only the variable nodes need it: ``var_get`` is declared ``any`` in the
-    catalog because its real type is whatever variable the user picked.
+    ``var_get`` is declared ``any`` in the catalog because its real type is the
+    variable the user picked, and an int Math node is float in the catalog.
     """
 
     resolved: dict[tuple[str, str], str] = {}
     for node_id, node in nodes.items():
         spec = NODE_KINDS[node.kind]
-        for pin in spec.pins:
+        for pin in expanded_pins(spec, node.data):
             resolved[(node_id, pin.name)] = str(pin.type)
+        if node.kind == NodeKind.MATH and str(node.data.get("type") or "float") == "int":
+            for pin_name in ("a", "b", "result"):
+                resolved[(node_id, pin_name)] = PinType.INT
         if node.kind in (NodeKind.VAR_GET, NodeKind.VAR_SET):
             declared = variables.get(str(node.data.get("variable") or "").strip())
             if declared is not None:
@@ -346,7 +375,7 @@ def _check_required_inputs(
 ) -> None:
     for node_id, node in nodes.items():
         spec = NODE_KINDS[node.kind]
-        for pin in spec.pins:
+        for pin in expanded_pins(spec, node.data):
             if pin.direction != "in" or not pin.required:
                 continue
             if (node_id, pin.name) in wired:
@@ -408,12 +437,13 @@ def _check_node_data(
     for node_id, node in nodes.items():
         spec = NODE_KINDS[node.kind]
         known = {item.name for item in spec.fields} | {
-            pin.name for pin in spec.pins if pin.direction == "in"
+            pin.name for pin in expanded_pins(spec, node.data) if pin.direction == "in"
         }
-        # Sequence stores its dynamic pin count; every other unknown key is a
-        # typo the user wants to hear about now rather than mid-run.
-        if node.kind == NodeKind.SEQUENCE:
-            known.add("outputs")
+        # A node with "+ Add pin" stores its counts; every other unknown key is
+        # a typo the user wants to hear about now rather than mid-run.
+        for pin in spec.pins:
+            if pin.dynamic:
+                known.add("outputs" if pin.direction == "out" else "inputs")
         for key in node.data:
             if key not in known:
                 collector.warn(
@@ -441,6 +471,10 @@ def _check_node_data(
                 _check_variable_node(node_id, node, variables, collector)
             case NodeKind.SEQUENCE:
                 _check_sequence_node(node_id, node, collector)
+        if node.kind in (NodeKind.APPEND, NodeKind.FORMAT):
+            _check_pin_count(node_id, node, "inputs", collector)
+        if is_function(node.kind):
+            _check_choices(node_id, node, spec, collector)
 
 
 def _check_model_node(node_id: str, node: NodeSpec, collector: _Collector) -> None:
@@ -692,14 +726,37 @@ def _check_variable_node(
 
 
 def _check_sequence_node(node_id: str, node: NodeSpec, collector: _Collector) -> None:
-    outputs = node.data.get("outputs", 2)
+    _check_pin_count(node_id, node, "outputs", collector)
+
+
+def _check_pin_count(node_id: str, node: NodeSpec, key: str, collector: _Collector) -> None:
+    title = NODE_KINDS[node.kind].title
     try:
-        count = int(outputs)
+        count = int(node.data.get(key, 2))
     except (TypeError, ValueError):
-        collector.error("Sequence outputs must be a whole number.", node_id=node_id)
+        collector.error(f"{title} {key} must be a whole number.", node_id=node_id)
         return
-    if not 1 <= count <= 12:
-        collector.error("A Sequence holds between 1 and 12 outputs.", node_id=node_id)
+    if not 1 <= count <= MAX_DYNAMIC_PINS:
+        collector.error(
+            f"A {title} holds between 1 and {MAX_DYNAMIC_PINS} {key}.", node_id=node_id
+        )
+
+
+def _check_choices(node_id: str, node: NodeSpec, spec: Any, collector: _Collector) -> None:
+    """A dropdown's value must be one of its options, or the node would guess."""
+
+    for field in spec.fields:
+        if field.kind != "select" or not field.options:
+            continue
+        value = node.data.get(field.name)
+        if value in (None, ""):
+            continue
+        if str(value) not in field.options:
+            collector.error(
+                f"{field.label} must be one of {', '.join(field.options)}, not {value!r}.",
+                node_id=node_id,
+                field=field.name,
+            )
 
 
 # -- assembly -------------------------------------------------------------
@@ -732,11 +789,11 @@ def _build_program(
     built: dict[str, NodeProgram] = {}
     for node_id, node in nodes.items():
         spec = NODE_KINDS[node.kind]
-        if node.kind == NodeKind.SEQUENCE:
-            count = int(node.data.get("outputs", 2) or 2)
-            ordered = tuple(f"out_{index}" for index in range(count))
-        else:
-            ordered = tuple(pin.name for pin in spec.pins if pin.direction == "out")
+        ordered = tuple(
+            pin.name
+            for pin in expanded_pins(spec, node.data)
+            if pin.direction == "out" and pin.type == PinType.EXEC
+        )
         built[node_id] = NodeProgram(
             id=node_id,
             kind=str(node.kind),

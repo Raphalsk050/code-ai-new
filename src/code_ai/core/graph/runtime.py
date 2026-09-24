@@ -23,7 +23,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Protocol
 
-from code_ai.core.graph.models import PERMISSION_FIELDS, NodeKind, PinType
+from code_ai.core.graph.functions import evaluate, is_function, text_of
+from code_ai.core.graph.models import PERMISSION_FIELDS, NodeKind, PinType, expanded_pins
 from code_ai.core.graph.program import GraphProgram, NodeProgram
 
 # How the interpreter talks to the outside world: one async callable per event.
@@ -741,6 +742,8 @@ class GraphInterpreter:
         if node.kind == NodeKind.VAR_GET:
             name = str(node.data.get("variable") or "").strip()
             return self._vars.get(name)
+        if is_function(node.kind):
+            return await self._evaluate(node, pin)
         if node.kind == NodeKind.LOOP:
             index, item = self._loops.get(node_id, (0, ""))
             return index if pin == "index" else item
@@ -755,6 +758,22 @@ class GraphInterpreter:
             },
         )
         return None
+
+    async def _evaluate(self, node: NodeProgram, pin: str) -> Any:
+        """A function node, computed afresh on every read: its inputs may have moved."""
+
+        inputs: dict[str, Any] = {}
+        for spec in expanded_pins(node.spec, node.data):
+            if spec.direction == "in" and spec.type != PinType.EXEC:
+                inputs[spec.name] = await self._pull(node, spec.name)
+        warnings: list[str] = []
+        value = evaluate(node.kind, node.data, inputs, pin, warnings.append)
+        for message in warnings:
+            await self._emit(
+                "graph.warning",
+                {"run_id": self._run_id, "node_id": node.id, "message": f"{node.label}: {message}"},
+            )
+        return value
 
     def _coerce_pin(self, node: NodeProgram, pin: str, value: Any) -> Any:
         spec = node.spec.pin(pin, "in")
@@ -878,15 +897,8 @@ def _coerce(value: Any, pin_type: str) -> Any:
 
 
 def _as_text(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (ModelBinding, ProfessionBinding, ToolsetBinding)):
-        return value.label()
-    if isinstance(value, str):
-        return value
-    return str(value)
+    # One rule for every node that turns a value into text: 3.0 reads as "3".
+    return text_of(value)
 
 
 def _as_bool(value: Any) -> bool:

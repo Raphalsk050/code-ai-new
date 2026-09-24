@@ -1110,6 +1110,1033 @@
           "group": ""
         }
       ]
+    },
+    {
+      "kind": "math",
+      "title": "Math",
+      "description": "Arithmetic on two numbers. Int works in whole numbers, float keeps the fraction; text on a pin gives up its first number.",
+      "category": "math",
+      "pure": true,
+      "max_instances": 0,
+      "pins": [
+        {
+          "name": "a",
+          "type": "float",
+          "direction": "in",
+          "label": "a",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#A4E22E"
+        },
+        {
+          "name": "b",
+          "type": "float",
+          "direction": "in",
+          "label": "b",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#A4E22E"
+        },
+        {
+          "name": "result",
+          "type": "float",
+          "direction": "out",
+          "label": "result",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#A4E22E"
+        }
+      ],
+      "fields": [
+        {
+          "name": "op",
+          "kind": "select",
+          "label": "Operation",
+          "default": "add",
+          "options": [
+            "add",
+            "subtract",
+            "multiply",
+            "divide",
+            "modulo",
+            "power",
+            "min",
+            "max"
+          ],
+          "help": "",
+          "group": ""
+        },
+        {
+          "name": "type",
+          "kind": "select",
+          "label": "Type",
+          "default": "float",
+          "options": [
+            "float",
+            "int"
+          ],
+          "help": "Int turns every pin into a whole number.",
+          "group": ""
+        },
+        {
+          "name": "a",
+          "kind": "number",
+          "label": "A",
+          "default": 0,
+          "options": [],
+          "help": "",
+          "group": ""
+        },
+        {
+          "name": "b",
+          "kind": "number",
+          "label": "B",
+          "default": 0,
+          "options": [],
+          "help": "",
+          "group": ""
+        }
+      ]
+    },
+    {
+      "kind": "compare",
+      "title": "Compare",
+      "description": "Compares two values: numbers as numbers, anything else as text.",
+      "category": "logic",
+      "pure": true,
+      "max_instances": 0,
+      "pins": [
+        {
+          "name": "a",
+          "type": "any",
+          "direction": "in",
+          "label": "a",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#A0A0A0"
+        },
+        {
+          "name": "b",
+          "type": "any",
+          "direction": "in",
+          "label": "b",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#A0A0A0"
+        },
+        {
+          "name": "result",
+          "type": "bool",
+          "direction": "out",
+          "label": "result",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#8C1B1B"
+        }
+      ],
+      "fields": [
+        {
+          "name": "op",
+          "kind": "select",
+          "label": "Operation",
+          "default": "equal",
+          "options": [
+            "equal",
+            "not_equal",
+            "less",
+            "less_equal",
+            "greater",
+            "greater_equal"
+          ],
+          "help": "",
+          "group": ""
+        },
+        {
+          "name": "a",
+          "kind": "text",
+          "label": "A",
+          "default": "",
+          "options": [],
+          "help": "",
+          "group": ""
+        },
+        {
+          "name": "b",
+          "kind": "text",
+          "label": "B",
+          "default": "",
+          "options": [],
+          "help": "",
+          "group": ""
+        }
+      ]
+    },
+    {
+      "kind": "logic",
+      "title": "Logic",
+      "description": "AND, OR or XOR of two flags, or NOT of the first one.",
+      "category": "logic",
+      "pure": true,
+      "max_instances": 0,
+      "pins": [
+        {
+          "name": "a",
+          "type": "bool",
+          "direction": "in",
+          "label": "a",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#8C1B1B"
+        },
+        {
+          "name": "b",
+          "type": "bool",
+          "direction": "in",
+          "label": "b",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#8C1B1B"
+        },
+        {
+          "name": "result",
+          "type": "bool",
+          "direction": "out",
+          "label": "result",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#8C1B1B"
+        }
+      ],
+      "fields": [
+        {
+          "name": "op",
+          "kind": "select",
+          "label": "Operation",
+          "default": "and",
+          "options": [
+            "and",
+            "or",
+            "xor",
+            "not"
+          ],
+          "help": "",
+          "group": ""
+        },
+        {
+          "name": "a",
+          "kind": "bool",
+          "label": "A",
+          "default": false,
+          "options": [],
+          "help": "",
+          "group": ""
+        },
+        {
+          "name": "b",
+          "kind": "bool",
+          "label": "B",
+          "default": false,
+          "options": [],
+          "help": "",
+          "group": ""
+        }
+      ]
+    },
+    {
+      "kind": "select",
+      "title": "Select",
+      "description": "One of two values, picked by a condition.",
+      "category": "logic",
+      "pure": true,
+      "max_instances": 0,
+      "pins": [
+        {
+          "name": "condition",
+          "type": "bool",
+          "direction": "in",
+          "label": "condition",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#8C1B1B"
+        },
+        {
+          "name": "if_true",
+          "type": "any",
+          "direction": "in",
+          "label": "if true",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#A0A0A0"
+        },
+        {
+          "name": "if_false",
+          "type": "any",
+          "direction": "in",
+          "label": "if false",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#A0A0A0"
+        },
+        {
+          "name": "value",
+          "type": "any",
+          "direction": "out",
+          "label": "value",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#A0A0A0"
+        }
+      ],
+      "fields": [
+        {
+          "name": "condition",
+          "kind": "bool",
+          "label": "Condition",
+          "default": false,
+          "options": [],
+          "help": "",
+          "group": ""
+        },
+        {
+          "name": "if_true",
+          "kind": "text",
+          "label": "If true",
+          "default": "",
+          "options": [],
+          "help": "",
+          "group": ""
+        },
+        {
+          "name": "if_false",
+          "kind": "text",
+          "label": "If false",
+          "default": "",
+          "options": [],
+          "help": "",
+          "group": ""
+        }
+      ]
+    },
+    {
+      "kind": "append",
+      "title": "Append",
+      "description": "Joins texts end to end. Add a pin for every extra part.",
+      "category": "text",
+      "pure": true,
+      "max_instances": 0,
+      "pins": [
+        {
+          "name": "in_0",
+          "type": "string",
+          "direction": "in",
+          "label": "in_0",
+          "required": false,
+          "dynamic": true,
+          "multi": false,
+          "color": "#E040FB"
+        },
+        {
+          "name": "in_1",
+          "type": "string",
+          "direction": "in",
+          "label": "in_1",
+          "required": false,
+          "dynamic": true,
+          "multi": false,
+          "color": "#E040FB"
+        },
+        {
+          "name": "result",
+          "type": "string",
+          "direction": "out",
+          "label": "result",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#E040FB"
+        }
+      ],
+      "fields": [
+        {
+          "name": "separator",
+          "kind": "text",
+          "label": "Separator",
+          "default": "",
+          "options": [],
+          "help": "Put between the parts. \\n is a new line.",
+          "group": ""
+        }
+      ]
+    },
+    {
+      "kind": "format",
+      "title": "Format",
+      "description": "Fills a template: {0}, {1}... become the inputs with that number.",
+      "category": "text",
+      "pure": true,
+      "max_instances": 0,
+      "pins": [
+        {
+          "name": "template",
+          "type": "string",
+          "direction": "in",
+          "label": "template",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#E040FB"
+        },
+        {
+          "name": "arg_0",
+          "type": "string",
+          "direction": "in",
+          "label": "{#}",
+          "required": false,
+          "dynamic": true,
+          "multi": false,
+          "color": "#E040FB"
+        },
+        {
+          "name": "arg_1",
+          "type": "string",
+          "direction": "in",
+          "label": "{#}",
+          "required": false,
+          "dynamic": true,
+          "multi": false,
+          "color": "#E040FB"
+        },
+        {
+          "name": "result",
+          "type": "string",
+          "direction": "out",
+          "label": "result",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#E040FB"
+        }
+      ],
+      "fields": [
+        {
+          "name": "template",
+          "kind": "textarea",
+          "label": "Template",
+          "default": "",
+          "options": [],
+          "help": "Write {0}, {1}... where each input should go.",
+          "group": ""
+        }
+      ]
+    },
+    {
+      "kind": "text_case",
+      "title": "Text case",
+      "description": "Upper case, lower case, trimmed or capitalized text.",
+      "category": "text",
+      "pure": true,
+      "max_instances": 0,
+      "pins": [
+        {
+          "name": "text",
+          "type": "string",
+          "direction": "in",
+          "label": "text",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#E040FB"
+        },
+        {
+          "name": "result",
+          "type": "string",
+          "direction": "out",
+          "label": "result",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#E040FB"
+        }
+      ],
+      "fields": [
+        {
+          "name": "op",
+          "kind": "select",
+          "label": "Operation",
+          "default": "upper",
+          "options": [
+            "upper",
+            "lower",
+            "trim",
+            "capitalize",
+            "title"
+          ],
+          "help": "",
+          "group": ""
+        },
+        {
+          "name": "text",
+          "kind": "textarea",
+          "label": "Text",
+          "default": "",
+          "options": [],
+          "help": "",
+          "group": ""
+        }
+      ]
+    },
+    {
+      "kind": "text_replace",
+      "title": "Replace",
+      "description": "Replaces every occurrence of one piece of text with another.",
+      "category": "text",
+      "pure": true,
+      "max_instances": 0,
+      "pins": [
+        {
+          "name": "text",
+          "type": "string",
+          "direction": "in",
+          "label": "text",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#E040FB"
+        },
+        {
+          "name": "find",
+          "type": "string",
+          "direction": "in",
+          "label": "find",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#E040FB"
+        },
+        {
+          "name": "replace_with",
+          "type": "string",
+          "direction": "in",
+          "label": "with",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#E040FB"
+        },
+        {
+          "name": "result",
+          "type": "string",
+          "direction": "out",
+          "label": "result",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#E040FB"
+        }
+      ],
+      "fields": [
+        {
+          "name": "text",
+          "kind": "textarea",
+          "label": "Text",
+          "default": "",
+          "options": [],
+          "help": "",
+          "group": ""
+        },
+        {
+          "name": "find",
+          "kind": "text",
+          "label": "Find",
+          "default": "",
+          "options": [],
+          "help": "",
+          "group": ""
+        },
+        {
+          "name": "replace_with",
+          "kind": "text",
+          "label": "Replace with",
+          "default": "",
+          "options": [],
+          "help": "",
+          "group": ""
+        },
+        {
+          "name": "case_sensitive",
+          "kind": "bool",
+          "label": "Case sensitive",
+          "default": true,
+          "options": [],
+          "help": "",
+          "group": ""
+        }
+      ]
+    },
+    {
+      "kind": "text_check",
+      "title": "Text check",
+      "description": "Whether text contains, starts or ends with another piece, or is empty.",
+      "category": "text",
+      "pure": true,
+      "max_instances": 0,
+      "pins": [
+        {
+          "name": "text",
+          "type": "string",
+          "direction": "in",
+          "label": "text",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#E040FB"
+        },
+        {
+          "name": "part",
+          "type": "string",
+          "direction": "in",
+          "label": "part",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#E040FB"
+        },
+        {
+          "name": "result",
+          "type": "bool",
+          "direction": "out",
+          "label": "result",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#8C1B1B"
+        }
+      ],
+      "fields": [
+        {
+          "name": "op",
+          "kind": "select",
+          "label": "Operation",
+          "default": "contains",
+          "options": [
+            "contains",
+            "starts_with",
+            "ends_with",
+            "equals",
+            "is_empty"
+          ],
+          "help": "",
+          "group": ""
+        },
+        {
+          "name": "text",
+          "kind": "textarea",
+          "label": "Text",
+          "default": "",
+          "options": [],
+          "help": "",
+          "group": ""
+        },
+        {
+          "name": "part",
+          "kind": "text",
+          "label": "Part",
+          "default": "",
+          "options": [],
+          "help": "",
+          "group": ""
+        },
+        {
+          "name": "case_sensitive",
+          "kind": "bool",
+          "label": "Case sensitive",
+          "default": false,
+          "options": [],
+          "help": "",
+          "group": ""
+        }
+      ]
+    },
+    {
+      "kind": "text_length",
+      "title": "Length",
+      "description": "How many characters a text has.",
+      "category": "text",
+      "pure": true,
+      "max_instances": 0,
+      "pins": [
+        {
+          "name": "text",
+          "type": "string",
+          "direction": "in",
+          "label": "text",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#E040FB"
+        },
+        {
+          "name": "length",
+          "type": "int",
+          "direction": "out",
+          "label": "length",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#1F9E8C"
+        }
+      ],
+      "fields": [
+        {
+          "name": "text",
+          "kind": "textarea",
+          "label": "Text",
+          "default": "",
+          "options": [],
+          "help": "",
+          "group": ""
+        }
+      ]
+    },
+    {
+      "kind": "substring",
+      "title": "Substring",
+      "description": "A piece of text, from a start position and for a length.",
+      "category": "text",
+      "pure": true,
+      "max_instances": 0,
+      "pins": [
+        {
+          "name": "text",
+          "type": "string",
+          "direction": "in",
+          "label": "text",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#E040FB"
+        },
+        {
+          "name": "start",
+          "type": "int",
+          "direction": "in",
+          "label": "start",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#1F9E8C"
+        },
+        {
+          "name": "length",
+          "type": "int",
+          "direction": "in",
+          "label": "length",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#1F9E8C"
+        },
+        {
+          "name": "result",
+          "type": "string",
+          "direction": "out",
+          "label": "result",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#E040FB"
+        }
+      ],
+      "fields": [
+        {
+          "name": "text",
+          "kind": "textarea",
+          "label": "Text",
+          "default": "",
+          "options": [],
+          "help": "",
+          "group": ""
+        },
+        {
+          "name": "start",
+          "kind": "number",
+          "label": "Start",
+          "default": 0,
+          "options": [],
+          "help": "Negative counts from the end.",
+          "group": ""
+        },
+        {
+          "name": "length",
+          "kind": "number",
+          "label": "Length",
+          "default": 0,
+          "options": [],
+          "help": "0 takes the rest.",
+          "group": ""
+        }
+      ]
+    },
+    {
+      "kind": "split",
+      "title": "Split",
+      "description": "Cuts text at a separator into one piece per line - what a Loop's foreach walks - and counts the pieces.",
+      "category": "text",
+      "pure": true,
+      "max_instances": 0,
+      "pins": [
+        {
+          "name": "text",
+          "type": "string",
+          "direction": "in",
+          "label": "text",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#E040FB"
+        },
+        {
+          "name": "separator",
+          "type": "string",
+          "direction": "in",
+          "label": "separator",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#E040FB"
+        },
+        {
+          "name": "lines",
+          "type": "string",
+          "direction": "out",
+          "label": "lines",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#E040FB"
+        },
+        {
+          "name": "count",
+          "type": "int",
+          "direction": "out",
+          "label": "count",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#1F9E8C"
+        }
+      ],
+      "fields": [
+        {
+          "name": "text",
+          "kind": "textarea",
+          "label": "Text",
+          "default": "",
+          "options": [],
+          "help": "",
+          "group": ""
+        },
+        {
+          "name": "separator",
+          "kind": "text",
+          "label": "Separator",
+          "default": ",",
+          "options": [],
+          "help": "Empty splits at spaces and new lines. \\n is a new line.",
+          "group": ""
+        }
+      ]
+    },
+    {
+      "kind": "to_int",
+      "title": "To Int",
+      "description": "A whole number from anything; text gives up the first number in it.",
+      "category": "convert",
+      "pure": true,
+      "max_instances": 0,
+      "pins": [
+        {
+          "name": "value",
+          "type": "any",
+          "direction": "in",
+          "label": "value",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#A0A0A0"
+        },
+        {
+          "name": "result",
+          "type": "int",
+          "direction": "out",
+          "label": "result",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#1F9E8C"
+        }
+      ],
+      "fields": [
+        {
+          "name": "mode",
+          "kind": "select",
+          "label": "Rounding",
+          "default": "truncate",
+          "options": [
+            "truncate",
+            "round",
+            "floor",
+            "ceil"
+          ],
+          "help": "",
+          "group": ""
+        },
+        {
+          "name": "value",
+          "kind": "text",
+          "label": "Value",
+          "default": "",
+          "options": [],
+          "help": "",
+          "group": ""
+        }
+      ]
+    },
+    {
+      "kind": "to_float",
+      "title": "To Float",
+      "description": "A number from anything; text gives up the first number in it.",
+      "category": "convert",
+      "pure": true,
+      "max_instances": 0,
+      "pins": [
+        {
+          "name": "value",
+          "type": "any",
+          "direction": "in",
+          "label": "value",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#A0A0A0"
+        },
+        {
+          "name": "result",
+          "type": "float",
+          "direction": "out",
+          "label": "result",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#A4E22E"
+        }
+      ],
+      "fields": [
+        {
+          "name": "value",
+          "kind": "text",
+          "label": "Value",
+          "default": "",
+          "options": [],
+          "help": "",
+          "group": ""
+        }
+      ]
+    },
+    {
+      "kind": "to_text",
+      "title": "To Text",
+      "description": "Any value as text.",
+      "category": "convert",
+      "pure": true,
+      "max_instances": 0,
+      "pins": [
+        {
+          "name": "value",
+          "type": "any",
+          "direction": "in",
+          "label": "value",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#A0A0A0"
+        },
+        {
+          "name": "result",
+          "type": "string",
+          "direction": "out",
+          "label": "result",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#E040FB"
+        }
+      ],
+      "fields": [
+        {
+          "name": "value",
+          "kind": "text",
+          "label": "Value",
+          "default": "",
+          "options": [],
+          "help": "",
+          "group": ""
+        }
+      ]
+    },
+    {
+      "kind": "to_bool",
+      "title": "To Bool",
+      "description": "true, yes, sim, on and anything but zero read as true.",
+      "category": "convert",
+      "pure": true,
+      "max_instances": 0,
+      "pins": [
+        {
+          "name": "value",
+          "type": "any",
+          "direction": "in",
+          "label": "value",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#A0A0A0"
+        },
+        {
+          "name": "result",
+          "type": "bool",
+          "direction": "out",
+          "label": "result",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#8C1B1B"
+        }
+      ],
+      "fields": [
+        {
+          "name": "value",
+          "kind": "text",
+          "label": "Value",
+          "default": "",
+          "options": [],
+          "help": "",
+          "group": ""
+        }
+      ]
     }
   ],
   "pin_colors": {

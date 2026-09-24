@@ -1462,4 +1462,66 @@ export const tests = {
     assert(footer.includes("own system prompt"), `the footer said ${JSON.stringify(footer)}`);
     await ui.shot("46-clean-agent");
   },
+  // -------------------------------------------------------------------
+  "math and text nodes come from the menu and edit like any other": async (ui, assert) => {
+    await ui.page.setViewportSize({ width: 1400, height: 950 });
+    await boot(ui, graph([node("n1", "start", [0, 0])], []));
+
+    await openCanvasMenu(ui);
+    await ui.page.fill('[data-testid="menu-search"]', "append");
+    await ui.page.click('[data-testid="menu-kind-append"]');
+    await ui.page.click('[data-testid="pins-add"]');
+    await ui.page.fill('[data-testid="literal-in_0"]', "Mendel: ");
+    let sent = await lastGraph(ui);
+    const append = sent.nodes.find((item) => item.kind === "append");
+    assert(append.data.inputs === 3, `the append has ${append.data.inputs} inputs`);
+    assert(append.data.in_0 === "Mendel: ", `the first part is ${JSON.stringify(append.data.in_0)}`);
+    const pins = await ui.page.locator(`[data-testid="node-${append.id}"] [data-direction="in"]`).count();
+    assert(pins === 3, `the node draws ${pins} input pins`);
+
+    await openCanvasMenu(ui, { x: 600, y: 600 });
+    await ui.page.fill('[data-testid="menu-search"]', "math");
+    await ui.page.click('[data-testid="menu-kind-math"]');
+    await ui.page.selectOption('[data-testid="field-op"]', "multiply");
+    await ui.page.selectOption('[data-testid="field-type"]', "int");
+    sent = await lastGraph(ui);
+    const math = sent.nodes.find((item) => item.kind === "math");
+    const summary = await ui.page
+      .locator(`[data-testid="node-${math.id}"] .flow-node-summary`)
+      .textContent();
+    assert(summary === "a × b · int", `the math node reads ${summary}`);
+  },
+
+  "a graph built from functions reads well": async (ui, assert) => {
+    await ui.page.setViewportSize({ width: 1600, height: 950 });
+    const doc = graph(
+      [
+        node("n1", "start", [0, 60]),
+        node("n2", "loop", [260, 60], { kind: "count", count: 3 }),
+        node("n3", "var_get", [0, 300], { variable: "turno" }),
+        node("n4", "math", [260, 300], { op: "add", type: "int", b: 1 }),
+        node("n5", "var_set", [520, 60], { variable: "turno" }),
+        node("n6", "format", [520, 300], { template: "Rodada {0}: {1}", inputs: 2 }),
+        node("n7", "text_check", [780, 300], { op: "contains", part: "fim" }),
+        node("n8", "print", [780, 60], { label: "rodada" }),
+        node("n9", "to_int", [0, 480], { mode: "round" }),
+      ],
+      [
+        wire("e1", ["n1", "out"], ["n2", "in"]),
+        wire("e2", ["n2", "body"], ["n5", "in"]),
+        wire("e3", ["n3", "value"], ["n4", "a"], "data"),
+        wire("e4", ["n4", "result"], ["n5", "value"], "data"),
+        wire("e5", ["n5", "out"], ["n8", "in"]),
+        wire("e6", ["n3", "value"], ["n6", "arg_0"], "data"),
+        wire("e7", ["n6", "result"], ["n8", "value"], "data"),
+        wire("e8", ["n6", "result"], ["n7", "text"], "data"),
+      ],
+      { variables: [{ id: "v1", name: "turno", type: "int", default: 0 }] }
+    );
+    await boot(ui, doc);
+    await ui.page.click('[data-testid="frame"]');
+    await ui.shot("47-functions");
+    const nodes = await ui.page.locator("g.flow-node").count();
+    assert(nodes === 9, `drew ${nodes} nodes`);
+  },
 };

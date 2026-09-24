@@ -260,7 +260,10 @@ export function reduce(state: EditorState, action: Action): EditorState {
       for (const field of spec.fields) {
         if (field.default !== null && field.default !== undefined) data[field.name] = field.default;
       }
-      if (action.kind === "sequence") data.outputs = 2;
+      // "+ Add pin" nodes start with two, stored the way the backend counts them.
+      for (const pin of spec.pins) {
+        if (pin.dynamic) data[pin.direction === "out" ? "outputs" : "inputs"] = 2;
+      }
       Object.assign(data, action.data ?? {});
       const node: FlowNode = {
         id,
@@ -310,9 +313,9 @@ export function reduce(state: EditorState, action: Action): EditorState {
         return { ...node, data };
       });
       let graph: FlowGraph = { ...state.graph, nodes };
-      // Shrinking a Sequence drops the wires that hung off the pins it no
+      // Shrinking a Sequence or an Append drops the wires on the pins it no
       // longer has, rather than leaving edges pointing at nothing.
-      if (action.key === "outputs") {
+      if (action.key === "outputs" || action.key === "inputs") {
         graph = { ...graph, edges: graph.edges.filter((edge) => livePin(graph, state, edge)) };
       }
       return withHistory(state, graph);
@@ -643,13 +646,14 @@ function resolvedPinType(state: EditorState, nodeId: string, declared: string): 
 function livePin(graph: FlowGraph, state: EditorState, edge: FlowEdge): boolean {
   const catalog = state.catalog;
   if (!catalog) return true;
-  const node = graph.nodes.find((item) => item.id === edge.from[0]);
-  if (!node) return false;
-  const spec = catalog.kinds.get(node.kind);
-  if (!spec) return true;
-  return pinsOf(spec, node).some(
-    (pin) => pin.name === edge.from[1] && pin.direction === "out"
-  );
+  const has = ([nodeId, pinName]: [string, string], direction: "in" | "out") => {
+    const node = graph.nodes.find((item) => item.id === nodeId);
+    if (!node) return false;
+    const spec = catalog.kinds.get(node.kind);
+    if (!spec) return true;
+    return pinsOf(spec, node).some((pin) => pin.name === pinName && pin.direction === direction);
+  };
+  return has(edge.from, "out") && has(edge.to, "in");
 }
 
 /** A name no other variable has, so two + clicks do not collide. */

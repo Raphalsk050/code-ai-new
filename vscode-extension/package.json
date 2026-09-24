@@ -2,7 +2,7 @@
   "name": "code-ai",
   "displayName": "Code-AI",
   "description": "Drive the Code-AI agent from VSCode. Ships the agent with it: no Python, no install.",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "publisher": "code-ai",
   "private": true,
   "engines": {

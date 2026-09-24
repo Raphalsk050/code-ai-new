@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 20,
+  "minor": 21,
   "patch": 0,
-  "build": 35,
+  "build": 36,
   "updated": "2026-09-23",
-  "note": "Clean agent node: one model call with no system prompt, no framing, no tools."
+  "note": "Graph function nodes: math, compare, logic, select, text and conversions."
 }

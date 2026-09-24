@@ -11,7 +11,7 @@ import {
   wiredToolsets,
 } from "./access";
 import { GlyphBadge } from "./context-menu";
-import { accentOf } from "./model";
+import { accentOf, dynamicCount, pinsOf } from "./model";
 import type { Action, EditorState } from "./store";
 import { defaultFor } from "./store";
 
@@ -176,39 +176,8 @@ function NodePanel({
         );
       })}
 
-      {node.kind === "sequence" && (
-        <div className="flow-field">
-          <label>{t("Outputs")}</label>
-          <div className="row">
-            <button
-              data-testid="seq-remove"
-              onClick={() =>
-                dispatch({
-                  type: "setNodeData",
-                  id: node.id,
-                  key: "outputs",
-                  value: Math.max(1, Number(node.data.outputs ?? 2) - 1),
-                })
-              }
-            >
-              −
-            </button>
-            <span data-testid="seq-count">{Number(node.data.outputs ?? 2)}</span>
-            <button
-              data-testid="seq-add"
-              onClick={() =>
-                dispatch({
-                  type: "setNodeData",
-                  id: node.id,
-                  key: "outputs",
-                  value: Math.min(12, Number(node.data.outputs ?? 2) + 1),
-                })
-              }
-            >
-              + {t("Add pin")}
-            </button>
-          </div>
-        </div>
+      {spec.pins.some((pin) => pin.dynamic) && (
+        <DynamicPins node={node} state={state} dispatch={dispatch} />
       )}
 
       {nodeIssues.length > 0 && (
@@ -303,7 +272,7 @@ function Field({ field, node, state, dispatch, onListModels, onStoreSecret }: Fi
           <select id={id} data-testid={testId} value={String(value ?? "")} onChange={(e) => set(e.target.value)}>
             {field.options.map((option) => (
               <option key={option} value={option}>
-                {option || t("(session default)")}
+                {option ? t(option.replace(/_/g, " ")) : t("(session default)")}
               </option>
             ))}
           </select>
@@ -449,6 +418,79 @@ function ProfessionHint({ state, name }: { state: EditorState; name: string }) {
       {t(profession.description)} —{" "}
       {profession.read_only ? t("read-only") : t("can edit files")}
     </span>
+  );
+}
+
+// -- "+ Add pin" -------------------------------------------------------------
+
+/**
+ * The count of a node's numbered pins, and a text box for each input copy
+ * nothing is wired into - the only way to give an Append part a literal.
+ */
+function DynamicPins({
+  node,
+  state,
+  dispatch,
+}: {
+  node: FlowNode;
+  state: EditorState;
+  dispatch(action: Action): void;
+}): JSX.Element | null {
+  const spec = state.catalog?.kinds.get(node.kind);
+  if (!spec) return null;
+  const direction = spec.pins.some((pin) => pin.dynamic && pin.direction === "out") ? "out" : "in";
+  const key = direction === "out" ? "outputs" : "inputs";
+  const count = dynamicCount(node, direction);
+  // Sequence keeps its old test ids; everything else says which side it grows.
+  const ids =
+    node.kind === "sequence"
+      ? { add: "seq-add", remove: "seq-remove", count: "seq-count" }
+      : { add: "pins-add", remove: "pins-remove", count: "pins-count" };
+  const set = (next: number) =>
+    dispatch({ type: "setNodeData", id: node.id, key, value: Math.max(1, Math.min(12, next)) });
+  const copies =
+    direction === "in"
+      ? pinsOf(spec, node).filter((pin) => pin.dynamic && pin.direction === "in")
+      : [];
+  const wired = new Set(
+    state.graph.edges.filter((edge) => edge.to[0] === node.id).map((edge) => edge.to[1])
+  );
+
+  return (
+    <div className="flow-field" data-testid="dynamic-pins">
+      <label>{direction === "out" ? t("Outputs") : t("Inputs")}</label>
+      <div className="row">
+        <button data-testid={ids.remove} disabled={count <= 1} onClick={() => set(count - 1)}>
+          −
+        </button>
+        <span data-testid={ids.count}>{count}</span>
+        <button data-testid={ids.add} disabled={count >= 12} onClick={() => set(count + 1)}>
+          + {t("Add pin")}
+        </button>
+      </div>
+      {copies.map((pin) => (
+        <div key={pin.name} className="row flow-pin-literal">
+          <span className="flow-tag">{pin.label}</span>
+          {wired.has(pin.name) ? (
+            <span className="help">{t("wired")}</span>
+          ) : (
+            <input
+              data-testid={`literal-${pin.name}`}
+              value={String(node.data[pin.name] ?? "")}
+              placeholder={t("text")}
+              onChange={(event) =>
+                dispatch({
+                  type: "setNodeData",
+                  id: node.id,
+                  key: pin.name,
+                  value: event.target.value,
+                })
+              }
+            />
+          )}
+        </div>
+      ))}
+    </div>
   );
 }
 

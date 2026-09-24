@@ -1167,3 +1167,90 @@ async def test_two_clean_agents_talk_through_a_variable() -> None:
     }
     assert calls[2]["task"] == "Bia: Ana ouviu: Oi"
     assert outcome.variables["said"] == "Bia: Ana ouviu: Bia: Ana ouviu: Oi"
+
+
+# -- function nodes ----------------------------------------------------------
+
+
+async def test_a_counter_grows_across_a_loop_and_formats_the_answer() -> None:
+    graph = doc(
+        [
+            node("start", "start"),
+            node("loop", "loop", kind="count", count=3),
+            node("read", "var_get", variable="n"),
+            node("plus", "math", op="add", type="int", b=1),
+            node("keep", "var_set", variable="n"),
+            node("again", "var_get", variable="n"),
+            node("say", "format", template="contei {0} vezes", inputs=1),
+            node("end", "end"),
+        ],
+        [
+            wire("e1", ("start", "out"), ("loop", "in")),
+            wire("e2", ("loop", "body"), ("keep", "in")),
+            wire("e3", ("read", "value"), ("plus", "a"), "data"),
+            wire("e4", ("plus", "result"), ("keep", "value"), "data"),
+            wire("e5", ("loop", "completed"), ("end", "in")),
+            wire("e6", ("again", "value"), ("say", "arg_0"), "data"),
+            wire("e7", ("say", "result"), ("end", "result"), "data"),
+        ],
+        variables=[{"id": "v1", "name": "n", "type": "int", "default": 0}],
+    )
+
+    outcome, _, _ = await run(graph)
+
+    assert outcome.status is RunStatus.COMPLETED
+    assert outcome.variables["n"] == 3
+    assert outcome.result == "contei 3 vezes"
+
+
+async def test_a_text_check_steers_a_decision_on_an_agent_report() -> None:
+    graph = doc(
+        [
+            node("start", "start"),
+            node("review", "profession", profession="architect", task="review it"),
+            node("check", "text_check", op="contains", part="approved"),
+            node("gate", "decision", mode="bool"),
+            node("yes", "print", label="ok"),
+            node("no", "print", label="again"),
+        ],
+        [
+            wire("e1", ("start", "out"), ("review", "in")),
+            wire("e2", ("review", "out"), ("gate", "in")),
+            wire("e3", ("review", "report"), ("check", "text"), "data"),
+            wire("e4", ("check", "result"), ("gate", "condition"), "data"),
+            wire("e5", ("gate", "true"), ("yes", "in")),
+            wire("e6", ("gate", "false"), ("no", "in")),
+        ],
+    )
+    executor = FakeExecutor(reports={"review": "Verdict: APPROVED"})
+
+    outcome, recorder, _ = await run(graph, executor)
+
+    assert outcome.status is RunStatus.COMPLETED
+    assert [payload["label"] for payload in recorder.of("graph.print")] == ["ok"]
+
+
+async def test_append_reads_its_parts_and_a_bad_division_only_warns() -> None:
+    graph = doc(
+        [
+            node("start", "start"),
+            node("join", "append", separator=" | ", inputs=3, in_0="a", in_2="c"),
+            node("split", "math", op="divide", a=1, b=0),
+            node("both", "append", inputs=2),
+            node("show", "print"),
+            node("end", "end"),
+        ],
+        [
+            wire("e1", ("start", "out"), ("show", "in")),
+            wire("e2", ("join", "result"), ("both", "in_0"), "data"),
+            wire("e3", ("split", "result"), ("both", "in_1"), "data"),
+            wire("e4", ("both", "result"), ("show", "value"), "data"),
+            wire("e5", ("show", "out"), ("end", "in")),
+        ],
+    )
+
+    outcome, recorder, _ = await run(graph)
+
+    assert outcome.status is RunStatus.COMPLETED
+    assert recorder.printed() == ["a |  | c0"]
+    assert any("division by zero" in item["message"] for item in recorder.of("graph.warning"))

@@ -338,6 +338,10 @@ const CATEGORY_LABELS: Record<string, string> = {
   agent: "Agents",
   data: "Data",
   debug: "Debug",
+  math: "Math",
+  logic: "Logic",
+  text: "Text",
+  convert: "Convert",
 };
 
 /**
@@ -490,7 +494,7 @@ function pinEntries(
       id: "__probe",
       kind: spec.kind,
       pos: [0, 0] as [number, number],
-      data: { outputs: 2 },
+      data: { outputs: 2, inputs: 2 },
     };
     for (const pin of pinsOf(spec, probe)) {
       if (pin.direction !== wanted) continue;

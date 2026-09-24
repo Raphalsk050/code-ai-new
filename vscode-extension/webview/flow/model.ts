@@ -25,7 +25,17 @@ export const CATEGORY_COLORS: Record<string, string> = {
   agent: "#2563eb",
   data: "#7e22ce",
   debug: "#a16207",
+  math: "#4d7c0f",
+  logic: "#9d174d",
+  text: "#a21caf",
+  convert: "#57534e",
 };
+
+/** How many copies of a dynamic pin a node asked for, as the backend counts them. */
+export function dynamicCount(node: FlowNode, direction: "in" | "out"): number {
+  const raw = direction === "out" ? node.data?.outputs : node.data?.inputs;
+  return Math.max(1, Math.min(12, Number(raw ?? 2) || 2));
+}
 
 /** Kinds recognisable on sight get their own tint; the rest take the category's. */
 export const KIND_COLORS: Record<string, string> = {
@@ -68,18 +78,23 @@ export interface NodeLayout {
 /** The pins a node actually shows, after dynamic pins are expanded. */
 export function pinsOf(spec: NodeKindSpec, node: FlowNode): PinSpec[] {
   const pins: PinSpec[] = [];
+  // An int Math node is float in the catalog; its pins follow the node's type.
+  const intMath = node.kind === "math" && String(node.data?.type ?? "float") === "int";
   for (const pin of spec.pins) {
     if (!pin.dynamic) {
-      pins.push(pin);
+      pins.push(intMath && pin.type === "float" ? { ...pin, type: "int" } : pin);
       continue;
     }
     // A dynamic declaration stands for however many the node asked for; the
     // first declaration expands and the rest are its siblings.
     if (!pin.name.endsWith("_0")) continue;
-    const count = Math.max(1, Math.min(12, Number(node.data?.outputs ?? 2) || 2));
+    const count = dynamicCount(node, pin.direction);
     const base = pin.name.slice(0, -2);
     for (let index = 0; index < count; index += 1) {
-      pins.push({ ...pin, name: `${base}_${index}`, label: String(index) });
+      const label = pin.label.includes("#")
+        ? pin.label.split("#").join(String(index))
+        : String(index);
+      pins.push({ ...pin, name: `${base}_${index}`, label });
     }
   }
   return pins;
@@ -156,10 +171,53 @@ export function summaryOf(node: FlowNode, spec: NodeKindSpec): string {
       return String(data.label ?? "");
     case "user_chat":
       return String(data.title ?? "") || t("ask the user");
+    case "math":
+      return `a ${MATH_SIGNS[String(data.op ?? "add")] ?? "?"} b${
+        String(data.type ?? "float") === "int" ? " · int" : ""
+      }`;
+    case "compare":
+      return `a ${COMPARE_SIGNS[String(data.op ?? "equal")] ?? "?"} b`;
+    case "logic":
+      return String(data.op ?? "and") === "not" ? "NOT a" : `a ${String(data.op ?? "and").toUpperCase()} b`;
+    case "select":
+      return t("condition ? true : false");
+    case "append":
+      return tf("{0} parts", dynamicCount(node, "in"));
+    case "format":
+      return String(data.template ?? "").split("\n")[0] || t("write a template");
+    case "text_case":
+    case "text_check":
+      return t(String(data.op ?? "").replace(/_/g, " "));
+    case "text_replace":
+      return `${String(data.find ?? "") || "…"} → ${String(data.replace_with ?? "")}`;
+    case "split":
+      return `${t("at")} "${String(data.separator ?? ",")}"`;
+    case "to_int":
+      return t(String(data.mode ?? "truncate"));
     default:
       return "";
   }
 }
+
+const MATH_SIGNS: Record<string, string> = {
+  add: "+",
+  subtract: "−",
+  multiply: "×",
+  divide: "÷",
+  modulo: "%",
+  power: "^",
+  min: "min",
+  max: "max",
+};
+
+const COMPARE_SIGNS: Record<string, string> = {
+  equal: "==",
+  not_equal: "!=",
+  less: "<",
+  less_equal: "<=",
+  greater: ">",
+  greater_equal: ">=",
+};
 
 function shortUrl(url: string): string {
   return url.replace(/^https?:\/\//, "").replace(/\/v1\/?$/, "");

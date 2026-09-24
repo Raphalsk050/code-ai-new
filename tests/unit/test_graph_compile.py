@@ -569,3 +569,68 @@ def test_a_clean_agent_needs_a_task_and_nothing_more() -> None:
     program, issues = compile_ok(doc)
     assert errors(issues) == []
     assert program.nodes["n3"].label == "Ana"
+
+
+# -- function nodes -----------------------------------------------------------
+
+
+def function_graph(*nodes: dict[str, Any], edges: list[dict[str, Any]] | None = None):
+    doc = graph()
+    doc["nodes"].extend(nodes)
+    doc["edges"].extend(edges or [])
+    return doc
+
+
+def fnode(node_id: str, node_kind: str, **data: Any) -> dict[str, Any]:
+    return {"id": node_id, "kind": node_kind, "pos": [0, 600], "data": data}
+
+
+def test_an_int_math_result_may_feed_an_int_pin_and_a_float_one_may_not() -> None:
+    loop = fnode("lp", "loop", kind="count")
+    ok = function_graph(
+        fnode("m", "math", type="int"),
+        loop,
+        edges=[{"id": "x1", "kind": "data", "from": ["m", "result"], "to": ["lp", "count"]}],
+    )
+    _, issues = compile_graph(ok, professions=PROFESSIONS)
+    assert not any("cannot feed" in message for message in errors(issues))
+
+    bad = function_graph(
+        fnode("m", "math", type="float"),
+        fnode("lp", "loop", kind="count"),
+        edges=[{"id": "x1", "kind": "data", "from": ["m", "result"], "to": ["lp", "count"]}],
+    )
+    program, issues = compile_graph(bad, professions=PROFESSIONS)
+    assert program is None
+    assert "A float value cannot feed a int pin." in errors(issues)
+
+
+def test_a_wire_into_an_input_the_node_no_longer_has_is_refused() -> None:
+    doc = function_graph(
+        fnode("j", "append", inputs=2),
+        fnode("s", "var_get", variable=""),
+        edges=[{"id": "x1", "kind": "data", "from": ["n3", "report"], "to": ["j", "in_4"]}],
+    )
+    program, issues = compile_graph(doc, professions=PROFESSIONS)
+
+    assert program is None
+    assert any("in_4" in message and "not on this node" in message for message in errors(issues))
+
+
+def test_a_function_dropdown_must_hold_one_of_its_options() -> None:
+    doc = function_graph(fnode("m", "math", op="teleport"))
+    program, issues = compile_graph(doc, professions=PROFESSIONS)
+
+    assert program is None
+    assert any("Operation must be one of" in message for message in errors(issues))
+
+
+def test_dynamic_input_counts_are_bounded_and_their_literals_are_known() -> None:
+    doc = function_graph(fnode("j", "append", inputs=3, in_2="x"))
+    _, issues = compile_graph(doc, professions=PROFESSIONS)
+    assert not any("has no field" in message for message in warnings(issues))
+
+    too_many = function_graph(fnode("j", "append", inputs=13))
+    program, issues = compile_graph(too_many, professions=PROFESSIONS)
+    assert program is None
+    assert any("between 1 and 12 inputs" in message for message in errors(issues))

@@ -34,6 +34,8 @@ SCHEMA_VERSION = 1
 MAX_NODES = 400
 MAX_EDGES = 1200
 MAX_VARIABLES = 100
+# A Sequence's outputs, an Append's parts: how far "+ Add pin" goes.
+MAX_DYNAMIC_PINS = 12
 
 
 class NodeKind(StrEnum):
@@ -51,6 +53,23 @@ class NodeKind(StrEnum):
     VAR_SET = "var_set"
     VAR_GET = "var_get"
     PRINT = "print"
+    # Pure functions, Blueprint-style: computed whenever something reads them.
+    MATH = "math"
+    COMPARE = "compare"
+    LOGIC = "logic"
+    SELECT = "select"
+    APPEND = "append"
+    FORMAT = "format"
+    TEXT_CASE = "text_case"
+    TEXT_REPLACE = "text_replace"
+    TEXT_CHECK = "text_check"
+    TEXT_LENGTH = "text_length"
+    SUBSTRING = "substring"
+    SPLIT = "split"
+    TO_INT = "to_int"
+    TO_FLOAT = "to_float"
+    TO_TEXT = "to_text"
+    TO_BOOL = "to_bool"
 
 
 class PinType(StrEnum):
@@ -147,7 +166,9 @@ class PinSpec:
     # ``node.data``. Exec inputs are never required (an orphan node is legal,
     # it simply never runs).
     required: bool = False
-    # Sequence's "+ Add pin": the editor may add/remove numbered copies.
+    # "+ Add pin": the editor may add/remove numbered copies. Outputs count in
+    # node.data["outputs"], inputs in node.data["inputs"]; a "#" in the label
+    # becomes the copy's number.
     dynamic: bool = False
     # A data input that takes any number of wires and reads them as a list.
     multi: bool = False
@@ -274,6 +295,54 @@ _BLOCKED_TOOLS = FieldSpec(
 
 def _grouped(group: str, *fields: FieldSpec) -> tuple[FieldSpec, ...]:
     return tuple(dataclasses.replace(item, group=group) for item in fields)
+
+
+def _in(name: str, pin_type: str, label: str = "") -> PinSpec:
+    return PinSpec(name=name, type=pin_type, direction="in", label=label)
+
+
+def _out(name: str, pin_type: str) -> PinSpec:
+    return PinSpec(name=name, type=pin_type, direction="out")
+
+
+def _op(options: tuple[str, ...]) -> FieldSpec:
+    return FieldSpec(
+        name="op", kind="select", label="Operation", default=options[0], options=options
+    )
+
+
+def _text(name: str, label: str, *, area: bool = False, help: str = "") -> FieldSpec:
+    return FieldSpec(
+        name=name, kind="textarea" if area else "text", label=label, default="", help=help
+    )
+
+
+def dynamic_count(data: dict[str, Any], direction: str) -> int:
+    """How many copies of a dynamic pin a node asked for."""
+
+    raw = data.get("outputs" if direction == "out" else "inputs", 2)
+    try:
+        count = int(raw)
+    except (TypeError, ValueError):
+        count = 2
+    return max(1, min(MAX_DYNAMIC_PINS, count))
+
+
+def expanded_pins(spec: NodeKindSpec, data: dict[str, Any]) -> list[PinSpec]:
+    """The pins a node really has, each dynamic declaration expanded to its copies."""
+
+    pins: list[PinSpec] = []
+    for pin in spec.pins:
+        if not pin.dynamic:
+            pins.append(pin)
+            continue
+        if not pin.name.endswith("_0"):
+            continue
+        base = pin.name[:-2]
+        for index in range(dynamic_count(data, pin.direction)):
+            label = pin.label.replace("#", str(index)) if "#" in pin.label else str(index)
+            pins.append(dataclasses.replace(pin, name=f"{base}_{index}", label=label))
+    return pins
 
 
 _KIND_LIST: tuple[NodeKindSpec, ...] = (
@@ -694,6 +763,248 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
             FieldSpec(name="label", kind="text", label="Label", default=""),
             FieldSpec(name="value", kind="textarea", label="Value", default=""),
         ),
+    ),
+    # -- pure functions -----------------------------------------------------
+    NodeKindSpec(
+        kind=NodeKind.MATH,
+        title="Math",
+        description=(
+            "Arithmetic on two numbers. Int works in whole numbers, float keeps the "
+            "fraction; text on a pin gives up its first number."
+        ),
+        category="math",
+        pins=(_in("a", PinType.FLOAT), _in("b", PinType.FLOAT), _out("result", PinType.FLOAT)),
+        fields=(
+            _op(("add", "subtract", "multiply", "divide", "modulo", "power", "min", "max")),
+            FieldSpec(
+                name="type",
+                kind="select",
+                label="Type",
+                default="float",
+                options=("float", "int"),
+                help="Int turns every pin into a whole number.",
+            ),
+            FieldSpec(name="a", kind="number", label="A", default=0),
+            FieldSpec(name="b", kind="number", label="B", default=0),
+        ),
+    ),
+    NodeKindSpec(
+        kind=NodeKind.COMPARE,
+        title="Compare",
+        description="Compares two values: numbers as numbers, anything else as text.",
+        category="logic",
+        pins=(_in("a", PinType.ANY), _in("b", PinType.ANY), _out("result", PinType.BOOL)),
+        fields=(
+            _op(("equal", "not_equal", "less", "less_equal", "greater", "greater_equal")),
+            _text("a", "A"),
+            _text("b", "B"),
+        ),
+    ),
+    NodeKindSpec(
+        kind=NodeKind.LOGIC,
+        title="Logic",
+        description="AND, OR or XOR of two flags, or NOT of the first one.",
+        category="logic",
+        pins=(_in("a", PinType.BOOL), _in("b", PinType.BOOL), _out("result", PinType.BOOL)),
+        fields=(
+            _op(("and", "or", "xor", "not")),
+            FieldSpec(name="a", kind="bool", label="A", default=False),
+            FieldSpec(name="b", kind="bool", label="B", default=False),
+        ),
+    ),
+    NodeKindSpec(
+        kind=NodeKind.SELECT,
+        title="Select",
+        description="One of two values, picked by a condition.",
+        category="logic",
+        pins=(
+            _in("condition", PinType.BOOL),
+            _in("if_true", PinType.ANY, "if true"),
+            _in("if_false", PinType.ANY, "if false"),
+            _out("value", PinType.ANY),
+        ),
+        fields=(
+            FieldSpec(name="condition", kind="bool", label="Condition", default=False),
+            _text("if_true", "If true"),
+            _text("if_false", "If false"),
+        ),
+    ),
+    NodeKindSpec(
+        kind=NodeKind.APPEND,
+        title="Append",
+        description="Joins texts end to end. Add a pin for every extra part.",
+        category="text",
+        pins=(
+            PinSpec(name="in_0", type=PinType.STRING, direction="in", dynamic=True),
+            PinSpec(name="in_1", type=PinType.STRING, direction="in", dynamic=True),
+            _out("result", PinType.STRING),
+        ),
+        fields=(_text("separator", "Separator", help="Put between the parts. \\n is a new line."),),
+    ),
+    NodeKindSpec(
+        kind=NodeKind.FORMAT,
+        title="Format",
+        description="Fills a template: {0}, {1}... become the inputs with that number.",
+        category="text",
+        pins=(
+            _in("template", PinType.STRING),
+            PinSpec(name="arg_0", type=PinType.STRING, direction="in", label="{#}", dynamic=True),
+            PinSpec(name="arg_1", type=PinType.STRING, direction="in", label="{#}", dynamic=True),
+            _out("result", PinType.STRING),
+        ),
+        fields=(
+            _text(
+                "template",
+                "Template",
+                area=True,
+                help="Write {0}, {1}... where each input should go.",
+            ),
+        ),
+    ),
+    NodeKindSpec(
+        kind=NodeKind.TEXT_CASE,
+        title="Text case",
+        description="Upper case, lower case, trimmed or capitalized text.",
+        category="text",
+        pins=(_in("text", PinType.STRING), _out("result", PinType.STRING)),
+        fields=(
+            _op(("upper", "lower", "trim", "capitalize", "title")),
+            _text("text", "Text", area=True),
+        ),
+    ),
+    NodeKindSpec(
+        kind=NodeKind.TEXT_REPLACE,
+        title="Replace",
+        description="Replaces every occurrence of one piece of text with another.",
+        category="text",
+        pins=(
+            _in("text", PinType.STRING),
+            _in("find", PinType.STRING),
+            _in("replace_with", PinType.STRING, "with"),
+            _out("result", PinType.STRING),
+        ),
+        fields=(
+            _text("text", "Text", area=True),
+            _text("find", "Find"),
+            _text("replace_with", "Replace with"),
+            FieldSpec(name="case_sensitive", kind="bool", label="Case sensitive", default=True),
+        ),
+    ),
+    NodeKindSpec(
+        kind=NodeKind.TEXT_CHECK,
+        title="Text check",
+        description="Whether text contains, starts or ends with another piece, or is empty.",
+        category="text",
+        pins=(
+            _in("text", PinType.STRING),
+            _in("part", PinType.STRING),
+            _out("result", PinType.BOOL),
+        ),
+        fields=(
+            _op(("contains", "starts_with", "ends_with", "equals", "is_empty")),
+            _text("text", "Text", area=True),
+            _text("part", "Part"),
+            FieldSpec(name="case_sensitive", kind="bool", label="Case sensitive", default=False),
+        ),
+    ),
+    NodeKindSpec(
+        kind=NodeKind.TEXT_LENGTH,
+        title="Length",
+        description="How many characters a text has.",
+        category="text",
+        pins=(_in("text", PinType.STRING), _out("length", PinType.INT)),
+        fields=(_text("text", "Text", area=True),),
+    ),
+    NodeKindSpec(
+        kind=NodeKind.SUBSTRING,
+        title="Substring",
+        description="A piece of text, from a start position and for a length.",
+        category="text",
+        pins=(
+            _in("text", PinType.STRING),
+            _in("start", PinType.INT),
+            _in("length", PinType.INT),
+            _out("result", PinType.STRING),
+        ),
+        fields=(
+            _text("text", "Text", area=True),
+            FieldSpec(
+                name="start",
+                kind="number",
+                label="Start",
+                default=0,
+                help="Negative counts from the end.",
+            ),
+            FieldSpec(
+                name="length", kind="number", label="Length", default=0, help="0 takes the rest."
+            ),
+        ),
+    ),
+    NodeKindSpec(
+        kind=NodeKind.SPLIT,
+        title="Split",
+        description=(
+            "Cuts text at a separator into one piece per line - what a Loop's foreach "
+            "walks - and counts the pieces."
+        ),
+        category="text",
+        pins=(
+            _in("text", PinType.STRING),
+            _in("separator", PinType.STRING),
+            _out("lines", PinType.STRING),
+            _out("count", PinType.INT),
+        ),
+        fields=(
+            _text("text", "Text", area=True),
+            FieldSpec(
+                name="separator",
+                kind="text",
+                label="Separator",
+                default=",",
+                help="Empty splits at spaces and new lines. \\n is a new line.",
+            ),
+        ),
+    ),
+    NodeKindSpec(
+        kind=NodeKind.TO_INT,
+        title="To Int",
+        description="A whole number from anything; text gives up the first number in it.",
+        category="convert",
+        pins=(_in("value", PinType.ANY), _out("result", PinType.INT)),
+        fields=(
+            FieldSpec(
+                name="mode",
+                kind="select",
+                label="Rounding",
+                default="truncate",
+                options=("truncate", "round", "floor", "ceil"),
+            ),
+            _text("value", "Value"),
+        ),
+    ),
+    NodeKindSpec(
+        kind=NodeKind.TO_FLOAT,
+        title="To Float",
+        description="A number from anything; text gives up the first number in it.",
+        category="convert",
+        pins=(_in("value", PinType.ANY), _out("result", PinType.FLOAT)),
+        fields=(_text("value", "Value"),),
+    ),
+    NodeKindSpec(
+        kind=NodeKind.TO_TEXT,
+        title="To Text",
+        description="Any value as text.",
+        category="convert",
+        pins=(_in("value", PinType.ANY), _out("result", PinType.STRING)),
+        fields=(_text("value", "Value"),),
+    ),
+    NodeKindSpec(
+        kind=NodeKind.TO_BOOL,
+        title="To Bool",
+        description="true, yes, sim, on and anything but zero read as true.",
+        category="convert",
+        pins=(_in("value", PinType.ANY), _out("result", PinType.BOOL)),
+        fields=(_text("value", "Value"),),
     ),
 )
 
