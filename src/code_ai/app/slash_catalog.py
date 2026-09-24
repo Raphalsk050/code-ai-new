@@ -29,6 +29,9 @@ SLASH_COMMANDS = [
     SlashCommand("/doctor model", "Tune temperature, top_p, top_k and more; applied live."),
     SlashCommand("/doctor tools", "Switch the agent's tools on and off; applied live."),
     SlashCommand(
+        "/doctor mcp", "MCP servers: add, approve, sign in, switch their tools; applied live."
+    ),
+    SlashCommand(
         "/doctor subagents",
         "Sub-agent limits, tool-call protocol, and the models they may use.",
     ),
@@ -88,6 +91,12 @@ SLASH_COMMANDS = [
     SlashCommand("/workflows", "List the saved workflows you can run by name."),
     SlashCommand("/skills", "List the skills you can force by name."),
     SlashCommand("/mcp", "Show the MCP servers, their state and their tools."),
+    SlashCommand(
+        "/mcp add <name> <command or url>",
+        "Add an MCP server in one line; the rest is in /doctor mcp.",
+        "/mcp add ",
+    ),
+    SlashCommand("/mcp remove <name>", "Take an MCP server out of your config.", "/mcp remove "),
     SlashCommand(
         "/mcp reconnect <name>", "Restart one MCP server.", "/mcp reconnect "
     ),

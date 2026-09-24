@@ -622,10 +622,117 @@ DoctorModal {
   padding: 0 0 1 4;
 }
 
+/* The MCP tab: one block per server - its state, what can be done to it, its
+   tools - then the add form and the JSON box. */
+#doctor-mcp {
+  height: 1fr;
+  overflow: auto auto;
+  scrollbar-size: 1 1;
+}
+
+#doctor-mcp-servers {
+  height: auto;
+}
+
+.doctor-mcp-head {
+  padding-top: 1;
+}
+
+.doctor-mcp-detail {
+  color: $ca-muted;
+  padding-left: 2;
+}
+
+.doctor-mcp-actions {
+  height: auto;
+  padding-left: 2;
+}
+
+.doctor-mcp-actions Button {
+  width: auto;
+  margin: 0 1 0 0;
+}
+
+.doctor-mcp-tool {
+  width: 1fr;
+  padding-left: 2;
+}
+
+.doctor-mcp-input {
+  width: 1fr;
+  margin: 0 1;
+}
+
+.doctor-mcp-json {
+  height: 8;
+  border: solid $ca-border;
+  margin-bottom: 1;
+}
+
 #doctor-status {
   height: auto;
   color: $ca-foreground;
   padding-top: 1;
+}
+
+/* --- A question from an MCP server ---------------------------------------
+   Opened while the server's tool call waits, so it has to stay reachable: a
+   bounded field list and the actions always on screen. */
+McpQuestionModal {
+  align: center middle;
+}
+
+#mcp-question-dialog {
+  width: 80%;
+  max-width: 90;
+  height: auto;
+  max-height: 90%;
+  border: thick $ca-accent;
+  background: $ca-surface;
+  padding: 1 2;
+}
+
+#mcp-question-title {
+  color: $ca-accent;
+  text-style: bold;
+  padding-bottom: 1;
+}
+
+#mcp-question-message {
+  color: $ca-foreground;
+  padding-bottom: 1;
+}
+
+#mcp-question-fields {
+  height: auto;
+  max-height: 20;
+}
+
+.mcp-question-label {
+  padding-top: 1;
+}
+
+.mcp-question-hint, #mcp-question-note {
+  color: $ca-muted;
+}
+
+#mcp-question-note {
+  padding-top: 1;
+}
+
+#mcp-question-error {
+  color: $ca-error-soft;
+  height: auto;
+}
+
+#mcp-question-actions {
+  height: auto;
+  padding-top: 1;
+}
+
+#mcp-question-actions Button {
+  width: 1fr;
+  margin: 0 1 0 0;
 }
 
 /* --- Question cards (ask_user) ------------------------------------------

@@ -24,6 +24,7 @@ from code_ai.core.errors import (
     TerminalSessionError,
 )
 from code_ai.core.workflows import render_workflow_invocation
+from code_ai.mcp.config import quick_declaration
 from code_ai.mcp.manager import system_browser
 from code_ai.mcp.tools import render_prompt
 from code_ai.prompts import build_runtime_note
@@ -396,10 +397,34 @@ class SessionCommands:
             if server["error"]:
                 line += f" - {server['error'].splitlines()[0]}"
             lines.append(line)
+        lines.append("Manage them in /doctor mcp.")
         return CommandResult(ok=True, message="\n".join(lines), data={"servers": servers})
 
+    async def mcp_add(self, text: str) -> CommandResult:
+        """``/mcp add <name> <command line or url>``: a server in one line.
+
+        Environment, headers and the rest are the Doctor's MCP tab (or the
+        settings panel); this is the quick way in.
+        """
+
+        mcp = getattr(self._app, "mcp", None)
+        if mcp is None:
+            return _failed("MCP is not available in this session.")
+        name, _, target = text.strip().partition(" ")
+        if not name or not target.strip():
+            return _failed("Use /mcp add <name> <command or url>.")
+        try:
+            described = await mcp.upsert({**quick_declaration(target), "name": name})
+        except ValueError as exc:
+            return _failed(str(exc))
+        return CommandResult(
+            ok=True,
+            message=f"{described['name']}: added, starting now.",
+            data={"server": described},
+        )
+
     async def mcp_action(self, action: str, name: str) -> CommandResult:
-        """``reconnect``, ``approve``, ``on`` or ``off`` one server by name."""
+        """``reconnect``, ``approve``, ``on``, ``off``, ``login``, ``logout`` or ``remove``."""
 
         mcp = getattr(self._app, "mcp", None)
         if mcp is None:
@@ -418,10 +443,13 @@ class SessionCommands:
                 described = await mcp.sign_in(name, open_browser=system_browser)
             elif action == "logout":
                 described = await mcp.sign_out(name)
+            elif action == "remove":
+                await mcp.remove(name)
+                return CommandResult(ok=True, message=f"{name}: removed.")
             else:
                 return _failed(
-                    f"Unknown /mcp action {action!r}: use reconnect, approve, on, off, "
-                    "login or logout."
+                    f"Unknown /mcp action {action!r}: use add, remove, reconnect, approve, "
+                    "on, off, login or logout."
                 )
         except ValueError as exc:
             return _failed(str(exc))

@@ -29,6 +29,7 @@ from code_ai.ui.terminal.code_view import (
     render_live_code,
 )
 from code_ai.ui.terminal.controller import TerminalController
+from code_ai.ui.terminal.mcp_question import McpQuestionModal
 from code_ai.ui.terminal.mentions import (
     file_suggestions,
     mention_completion,
@@ -1225,6 +1226,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             try:
                 self._render_event(event)
                 self._open_questions_if_waiting()
+                self._follow_mcp_question(event)
             except Exception:
                 if not self.is_running:
                     # Shutting down: the widgets are already gone, and an event
@@ -1232,6 +1234,37 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                     return
                 logger.exception("Failed to render %s", event.event_type)
                 self._report_render_failure(event.event_type)
+
+        def _follow_mcp_question(self, event) -> None:
+            """Open the form when an MCP server asks something; close it once answered.
+
+            Unlike the agent's own questions this one opens at once: the
+            server's tool call is paused until it is answered.
+            """
+
+            if event.event_type == "mcp.elicitation.requested":
+                request = dict(event.payload)
+                broker = getattr(getattr(application, "mcp", None), "elicitation", None)
+
+                def answer(action: str, content: dict | None) -> str:
+                    if broker is None:
+                        return "Nothing in this session can take the answer."
+                    return broker.answer(str(request.get("id") or ""), action, content)
+
+                self.push_screen(McpQuestionModal(request, answer))
+            elif event.event_type == "mcp.elicitation.resolved":
+                for screen in list(self.screen_stack):
+                    if (
+                        isinstance(screen, McpQuestionModal)
+                        and not screen.settled
+                        and screen.request_id == str(event.payload.get("id") or "")
+                    ):
+                        # dismiss() pops whatever is on top, so a form under
+                        # another dialog only learns it is done.
+                        if screen is self.screen:
+                            screen.dismiss(None)
+                        else:
+                            screen.settled = True
 
         def _report_render_failure(self, event_type: str) -> None:
             """Say that an event could not be drawn, without risking a second one."""
@@ -1529,6 +1562,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 "/doctor model",
                 "/doctor tools",
                 "/doctor subagents",
+                "/doctor mcp",
             }:
                 # A named tab opens straight on it instead of at the menu.
                 self.push_screen(

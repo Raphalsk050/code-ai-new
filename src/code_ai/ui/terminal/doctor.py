@@ -29,6 +29,7 @@ from code_ai.providers.model_listing import list_available_models
 from code_ai.tools.groups import DEFERRED_TOOL_GROUPS, group_of
 from code_ai.tools.registry import ToolRegistry
 from code_ai.ui.terminal.clipboard import paste_from_system_clipboard
+from code_ai.ui.terminal.doctor_mcp import McpDoctorPane
 
 # The setup topics offered on the main menu, in the order a first-time user would
 # naturally work through them: how to reach the provider, then which model, then
@@ -171,6 +172,7 @@ _TAB_TITLES = {
     "doctor-tab-model": "Model behavior",
     "doctor-tab-tools": "Agent tools",
     "doctor-tab-subagents": "Sub-agents",
+    "doctor-tab-mcp": "MCP servers",
     "doctor-tab-experimental": "Experimental",
 }
 
@@ -316,6 +318,13 @@ class DoctorModal(ModalScreen[None]):
                     yield VerticalScroll(*self._tool_widgets(), id="doctor-tools")
                 with TabPane("Sub-agents", id="doctor-tab-subagents"):
                     yield VerticalScroll(*self._subagent_widgets(), id="doctor-subagents")
+                with TabPane("MCP", id="doctor-tab-mcp"):
+                    yield McpDoctorPane(
+                        self._application,
+                        config_path=self._config_path,
+                        on_change=self._on_change,
+                        status=self._status,
+                    )
                 with TabPane("Experimental", id="doctor-tab-experimental"):
                     yield VerticalScroll(
                         *self._experimental_widgets(), id="doctor-experimental"
@@ -661,7 +670,8 @@ class DoctorModal(ModalScreen[None]):
                 classes="doctor-tools-actions",
             ),
         ]
-        names = registry.registered_names()
+        # A server's tools are switched on the MCP tab, next to its status.
+        names = [name for name in registry.registered_names() if not name.startswith("mcp__")]
         disabled = registry.disabled_names()
         sections = [("Always offered", [name for name in names if group_of(name) is None])]
         sections += [
@@ -968,21 +978,23 @@ class DoctorModal(ModalScreen[None]):
             return
         if not checkbox_id.startswith("doctor-tool-"):
             return
-        disabled = {
-            (box.id or "")[len("doctor-tool-") :]
-            for box in self.query(".doctor-tool").results(Checkbox)
-            if not box.value
-        }
+        boxes = list(self.query(".doctor-tool").results(Checkbox))
+        shown = {(box.id or "")[len("doctor-tool-") :] for box in boxes}
+        # Switches this tab does not show (an MCP server's tools) stay as they are.
+        disabled = {(box.id or "")[len("doctor-tool-") :] for box in boxes if not box.value}
+        disabled |= self._tool_registry.disabled_names() - shown
         # "Disable all" flips every box and saves once; the Changed events it
         # sets off arrive afterwards and find nothing left to save.
         if disabled != self._tool_registry.disabled_names():
             self._status(self._apply_disabled_tools(disabled))
 
     def _set_all_tools(self, enabled: bool) -> None:
-        for box in self.query(".doctor-tool").results(Checkbox):
+        boxes = list(self.query(".doctor-tool").results(Checkbox))
+        for box in boxes:
             box.value = enabled
-        disabled = set() if enabled else set(self._tool_registry.registered_names())
-        self._status(self._apply_disabled_tools(disabled))
+        shown = {(box.id or "")[len("doctor-tool-") :] for box in boxes}
+        others = self._tool_registry.disabled_names() - shown
+        self._status(self._apply_disabled_tools(others if enabled else others | shown))
 
     def _apply_disabled_tools(self, disabled: set[str]) -> str:
         """Persist the switches and take the tools out of (or back into) the agent."""

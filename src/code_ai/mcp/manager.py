@@ -713,6 +713,8 @@ class McpManager:
             "transport": state.config.transport,
             "source": state.config.source,
             "source_path": state.config.source_path,
+            # What the cards print: the file as the project knows it.
+            "source_label": _relative(state.config.source_path, self.workspace),
             "deferred": state.deferred,
             "group": state.group if state.deferred else "",
             "server": (
@@ -826,6 +828,15 @@ def _declaration(raw: dict[str, Any]) -> dict[str, Any]:
     if transport:
         entry["type"] = transport
     return entry
+
+
+def _relative(path: str, workspace: Path) -> str:
+    if not path:
+        return ""
+    try:
+        return Path(path).relative_to(workspace).as_posix()
+    except ValueError:
+        return path
 
 
 def _diagnostics(state: ServerState) -> str:

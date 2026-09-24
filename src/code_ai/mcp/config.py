@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -219,6 +220,56 @@ def load_servers(
                 server = parse_server(name, raw, source=source, source_path=str(path))
                 servers.setdefault(server.name, server)
     return list(servers.values())
+
+
+def parse_import(text: str) -> tuple[list[tuple[str, dict[str, Any]]], str]:
+    """Servers out of a pasted snippet, in any shape a README hands over.
+
+    ``{"mcpServers": {...}}`` (Claude, Cursor), ``{"servers": {...}}`` (VS Code)
+    or the bare name-to-server map. Returns the servers and, when there are
+    none, why.
+    """
+
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        return [], f"Not valid JSON: {exc}"
+    if not isinstance(data, dict):
+        return [], "Paste a JSON object."
+    block = data.get("mcpServers", data.get("servers", data.get("mcp_servers", data)))
+    servers = [
+        (server_name(str(name)), dict(entry))
+        for name, entry in (block.items() if isinstance(block, dict) else ())
+        if isinstance(entry, dict)
+        and (entry.get("command") or entry.get("url") or entry.get("serverUrl"))
+    ]
+    if not servers:
+        return [], "No server found: each one needs a command or a url."
+    return servers, ""
+
+
+def quick_declaration(target: str, extras: str = "", *, legacy_sse: bool = False) -> dict[str, Any]:
+    """A declaration from one line: a command line or a URL, plus ``KEY=value; ...``.
+
+    The pairs are the environment of a command and the headers of a URL. What
+    the terminal's add form and ``/mcp add`` build a server from.
+    """
+
+    target = target.strip()
+    pairs: dict[str, str] = {}
+    for part in extras.split(";"):
+        key, found, value = part.partition("=")
+        if found and key.strip():
+            pairs[key.strip()] = value.strip()
+    if target.startswith(("http://", "https://")):
+        return {"type": "sse" if legacy_sse else "http", "url": target, "headers": pairs}
+    try:
+        # Backslashes are path separators on Windows, not escapes.
+        words = shlex.split(target, posix=os.name != "nt")
+    except ValueError:
+        words = target.split()
+    words = [word.strip('"') for word in words]
+    return {"command": words[0] if words else "", "args": words[1:], "env": pairs}
 
 
 def expand(value: str, *, workspace: Path | str | None, env: dict[str, str] | None = None) -> str:

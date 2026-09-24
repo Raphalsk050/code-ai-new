@@ -194,7 +194,8 @@ function ServerCard({
           {server.name}
         </span>
         <span className="mcp-server-meta">
-          {server.transport} · {t(STATUS_TEXT[server.status] ?? server.status)}
+          {server.status === "invalid" ? "" : `${server.transport} · `}
+          {t(STATUS_TEXT[server.status] ?? server.status)}
           {server.status === "connected" &&
             ` · ${server.tools.length === 1 ? t("1 tool") : tf("{0} tools", server.tools.length)}`}
         </span>
@@ -245,7 +246,9 @@ function ServerCard({
       </div>
 
       {!own && (
-        <div className="mcp-server-source">{tf("Declared by the project in {0}", server.source_path)}</div>
+        <div className="mcp-server-source">
+          {tf("Declared by the project in {0}", server.source_label || server.source_path)}
+        </div>
       )}
       {server.missing_env.length > 0 && (
         <div className="mcp-server-warn">

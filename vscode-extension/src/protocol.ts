@@ -179,6 +179,8 @@ export interface McpServerInfo {
   transport: string;
   source: string;
   source_path: string;
+  /** source_path relative to the workspace, for display. */
+  source_label?: string;
   deferred: boolean;
   group: string;
   server: { name: string; title: string; version: string; protocol: string; instructions: string } | null;

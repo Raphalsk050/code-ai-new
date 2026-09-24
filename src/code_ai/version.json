@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 24,
-  "patch": 0,
-  "build": 43,
+  "patch": 1,
+  "build": 44,
   "updated": "2026-09-24",
-  "note": "MCP OAuth sign-in for remote servers: discovery, registration, PKCE, refresh"
+  "note": "TUI parity for MCP: /doctor mcp tab, server questions as a form, /mcp add and remove"
 }

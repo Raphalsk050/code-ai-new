@@ -506,7 +506,8 @@ def build_application(
     )
 
     async def _persist_mcp(changes: dict[str, Any]) -> None:
-        persist_config_updates(config, changes)
+        # The file this session was started with, which --config may have named.
+        persist_config_updates(config, changes, explicit_path=config_path)
 
     # Servers connect once the session starts (CodeAIApplication.start), in the
     # background; their tools land in this same registry as each one is ready.
