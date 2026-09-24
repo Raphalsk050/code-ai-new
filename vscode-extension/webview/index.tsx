@@ -139,6 +139,10 @@ function App(): JSX.Element {
           );
           // A server that just connected may bring prompts for the / menu.
           if (update.status === "connected") send({ type: "listSlashCommands" });
+        } else if (event.event_type === "mcp.auth.url") {
+          const server = String(event.payload.server ?? "");
+          const url = String(event.payload.url ?? "");
+          setMcp((m) => ({ ...m, authUrls: { ...m.authUrls, [server]: url } }));
         } else if (event.event_type === "mcp.server.removed") {
           const gone = String(event.payload.server ?? "");
           setMcp((m) =>
@@ -149,7 +153,7 @@ function App(): JSX.Element {
         }
         dispatch(event);
       } else if (data?.type === "mcpServers") {
-        setMcp({ list: data.list, error: "", busy: "" });
+        setMcp((m) => ({ ...m, list: data.list, error: "", busy: "" }));
       } else if (data?.type === "mcpError") {
         setMcp((m) => ({ ...m, error: data.message, busy: "" }));
       } else if (data?.type === "mcpElicitationResult") {

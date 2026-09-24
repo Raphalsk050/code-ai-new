@@ -24,6 +24,7 @@ from code_ai.core.errors import (
     TerminalSessionError,
 )
 from code_ai.core.workflows import render_workflow_invocation
+from code_ai.mcp.manager import system_browser
 from code_ai.mcp.tools import render_prompt
 from code_ai.prompts import build_runtime_note
 from code_ai.tools.skills.common import discover_skills_from, render_skill_invocation
@@ -413,9 +414,14 @@ class SessionCommands:
                 described = await mcp.approve(name)
             elif action in ("on", "off"):
                 described = await mcp.set_enabled(name, action == "on")
+            elif action == "login":
+                described = await mcp.sign_in(name, open_browser=system_browser)
+            elif action == "logout":
+                described = await mcp.sign_out(name)
             else:
                 return _failed(
-                    f"Unknown /mcp action {action!r}: use reconnect, approve, on or off."
+                    f"Unknown /mcp action {action!r}: use reconnect, approve, on, off, "
+                    "login or logout."
                 )
         except ValueError as exc:
             return _failed(str(exc))

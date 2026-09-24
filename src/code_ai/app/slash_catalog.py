@@ -104,6 +104,12 @@ SLASH_COMMANDS = [
         "/mcp answer ",
     ),
     SlashCommand("/mcp decline", "Decline the question an MCP server is waiting on."),
+    SlashCommand(
+        "/mcp login <name>", "Sign in to a remote MCP server in the browser.", "/mcp login "
+    ),
+    SlashCommand(
+        "/mcp logout <name>", "Forget the sign-in of a remote MCP server.", "/mcp logout "
+    ),
     SlashCommand("/clear", "Clear the conversation view."),
     SlashCommand("/quit", "Close Code-AI."),
     SlashCommand("/config help", "Browse and pick a /config command to run."),

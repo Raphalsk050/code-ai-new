@@ -588,6 +588,9 @@ const PT: Record<string, string> = {
   "No server found: each one needs a command or a url.":
     "Nenhum servidor encontrado: cada um precisa de um command ou de uma url.",
   "{0} asks": "{0} pergunta",
+  "Sign in": "Entrar",
+  "Sign out": "Sair",
+  "Open the sign-in page again": "Abrir a página de login de novo",
   "The server's tool call waits for this answer.":
     "A ferramenta do servidor está esperando esta resposta.",
   Decline: "Recusar",

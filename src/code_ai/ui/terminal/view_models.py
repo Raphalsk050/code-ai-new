@@ -525,6 +525,8 @@ class TerminalViewModel:
         elif kind == "mcp.elicitation.requested":
             self.conversation.append(_elicitation_text(payload))
             return
+        elif kind == "mcp.auth.url":
+            line = f"mcp> Sign in to {payload.get('server')} in the browser: {payload.get('url')}"
         elif kind == "mcp.elicitation.resolved":
             outcome = {"accept": "answer sent", "decline": "declined", "cancel": "cancelled"}
             action = str(payload.get("action") or "")

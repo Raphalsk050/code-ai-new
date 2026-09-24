@@ -49,6 +49,8 @@ class McpServerConfig:
     cwd: str = ""
     url: str = ""
     headers: dict[str, str] = field(default_factory=dict)
+    # client_id, client_secret, scopes: for a server that does not let clients register.
+    oauth: dict[str, str] = field(default_factory=dict)
     enabled: bool = True
     # Tools the server marks read-only run without an approval prompt.
     trust: bool = False
@@ -101,6 +103,7 @@ class McpServerConfig:
             "cwd": self.cwd,
             "url": self.url,
             "headers": dict(self.headers),
+            "oauth": dict(self.oauth),
             "enabled": self.enabled,
             "trust": self.trust,
             "defer": self.defer,
@@ -128,6 +131,8 @@ class McpServerConfig:
             entry["url"] = self.url
             if self.headers:
                 entry["headers"] = dict(self.headers)
+            if self.oauth:
+                entry["oauth"] = dict(self.oauth)
         if not self.enabled:
             entry["enabled"] = False
         if self.trust:
@@ -184,6 +189,7 @@ def parse_server(
             server.problem = "The url must start with http:// or https://."
         server.url = url
         server.headers = _string_map(raw.get("headers"))
+        server.oauth = _oauth(raw.get("oauth"))
     server.enabled = raw.get("enabled", raw.get("disabled") is not True) is not False
     # Trust is the user's to give; a repository cannot declare itself trusted.
     server.trust = raw.get("trust") is True and source == SOURCE_CONFIG
@@ -265,6 +271,20 @@ def _read_declarations(path: Path) -> dict[str, Any]:
         return {}
     block = data.get("mcpServers", data.get("servers", data.get("mcp_servers")))
     return block if isinstance(block, dict) else {}
+
+
+def _oauth(raw: Any) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    scopes = raw.get("scopes", raw.get("scope"))
+    if isinstance(scopes, list):
+        scopes = " ".join(str(item) for item in scopes)
+    values = {
+        "client_id": raw.get("client_id") or raw.get("clientId"),
+        "client_secret": raw.get("client_secret") or raw.get("clientSecret"),
+        "scopes": scopes,
+    }
+    return {key: str(value) for key, value in values.items() if value}
 
 
 def _string_map(raw: Any) -> dict[str, str]:

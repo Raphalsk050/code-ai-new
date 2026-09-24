@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 23,
-  "patch": 1,
-  "build": 42,
+  "minor": 24,
+  "patch": 0,
+  "build": 43,
   "updated": "2026-09-24",
-  "note": "Graph agents can use MCP tools; the Tools node lists them by server"
+  "note": "MCP OAuth sign-in for remote servers: discovery, registration, PKCE, refresh"
 }

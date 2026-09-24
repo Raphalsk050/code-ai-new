@@ -553,6 +553,10 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         );
       } else if (action.action === "remove") {
         await client.request("mcpRemove", { name: action.name }, MCP_REQUEST_TIMEOUT_MS);
+      } else if (action.action === "signIn") {
+        await client.request("mcpSignIn", { name: action.name }, MCP_REQUEST_TIMEOUT_MS);
+      } else if (action.action === "signOut") {
+        await client.request("mcpSignOut", { name: action.name }, MCP_REQUEST_TIMEOUT_MS);
       }
     } catch (err) {
       this.webview?.postMessage({ type: "mcpError", message: String(err).replace(/^Error: /, "") });
@@ -823,6 +827,11 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     // when the panel is closed and re-attaches when it is reopened.
     const bridgeSub = this.bridge.subscribe({
       onEvent: (event) => {
+        // An MCP sign-in: the page opens in the user's browser, the VS Code way,
+        // so a remote window still reaches the machine the user sits at.
+        // Web pages only: a command: or file: link here would run in the editor.
+        const url = event.event_type === "mcp.auth.url" ? String(event.payload?.url ?? "") : "";
+        if (/^https?:\/\//i.test(url)) void vscode.env.openExternal(vscode.Uri.parse(url));
         void this.webview?.postMessage({ type: "event", event });
       },
       onRestart: () => {

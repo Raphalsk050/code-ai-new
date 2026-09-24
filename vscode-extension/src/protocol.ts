@@ -76,6 +76,8 @@ export type BridgeMethod =
   | "mcpSave"
   | "mcpRemove"
   | "mcpElicitationAnswer"
+  | "mcpSignIn"
+  | "mcpSignOut"
   | "shutdown";
 
 /** The three operating modes; only `agent` shows the chat composer. */
@@ -131,6 +133,8 @@ export interface McpServerSpec {
   cwd: string;
   url: string;
   headers: Record<string, string>;
+  /** client_id, client_secret, scopes, for a server that does not register clients. */
+  oauth?: Record<string, string>;
   enabled: boolean;
   trust: boolean;
   defer: string;
@@ -181,6 +185,10 @@ export interface McpServerInfo {
   tools: McpToolInfo[];
   prompts: McpPromptInfo[];
   resources: boolean;
+  /** Reached over HTTP, so it may need a sign-in. */
+  remote?: boolean;
+  /** A token is stored for it. */
+  signed_in?: boolean;
   missing_env: string[];
   logs: string[];
   diagnostics: string;
@@ -198,7 +206,9 @@ export type McpAction =
   | { action: "approve"; name: string }
   | { action: "setEnabled"; name: string; enabled: boolean }
   | { action: "save"; server: Record<string, unknown>; previous?: string }
-  | { action: "remove"; name: string };
+  | { action: "remove"; name: string }
+  | { action: "signIn"; name: string }
+  | { action: "signOut"; name: string };
 
 /** One architectural improvement suggested in refactor mode. */
 export interface RefactorImprovement {

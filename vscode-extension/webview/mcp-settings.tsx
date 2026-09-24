@@ -20,9 +20,11 @@ export interface McpViewState {
   error: string;
   /** The server an action is running on, so its buttons wait for it. */
   busy: string;
+  /** The sign-in page each server sent the user to, to open it again. */
+  authUrls: Record<string, string>;
 }
 
-export const INITIAL_MCP: McpViewState = { list: null, error: "", busy: "" };
+export const INITIAL_MCP: McpViewState = { list: null, error: "", busy: "", authUrls: {} };
 
 const FAILING = new Set(["failed", "invalid", "needs_auth"]);
 
@@ -102,6 +104,7 @@ export function McpSection({
             <ServerCard
               key={server.name}
               server={server}
+              authUrl={mcp.authUrls[server.name] ?? ""}
               busy={mcp.busy === server.name}
               disabledTools={disabledTools}
               onDisabledToolsChange={onDisabledToolsChange}
@@ -148,6 +151,7 @@ export function McpSection({
 
 function ServerCard({
   server,
+  authUrl,
   busy,
   disabledTools,
   onDisabledToolsChange,
@@ -155,6 +159,7 @@ function ServerCard({
   onEdit,
 }: {
   server: McpServerInfo;
+  authUrl: string;
   busy: boolean;
   disabledTools: string[];
   onDisabledToolsChange: (next: string[]) => void;
@@ -201,6 +206,15 @@ function ServerCard({
               onClick={() => onAction({ action: "approve", name: server.name })}
             >
               {t("Approve")}
+            </button>
+          )}
+          {server.status === "needs_auth" && (
+            <button
+              className="btn-primary mcp-approve"
+              disabled={busy}
+              onClick={() => onAction({ action: "signIn", name: server.name })}
+            >
+              {t("Sign in")}
             </button>
           )}
           {on && server.status !== "invalid" && (
@@ -253,6 +267,11 @@ function ServerCard({
         <div className="mcp-server-source">{t(headline)}</div>
       )}
       {details && extra && <pre className="mcp-details">{extra}</pre>}
+      {server.status === "needs_auth" && authUrl && (
+        <div className="mcp-server-source">
+          <a href={authUrl}>{t("Open the sign-in page again")}</a>
+        </div>
+      )}
 
       {server.tools.length > 0 && (
         <details className="mcp-tools">
@@ -281,12 +300,23 @@ function ServerCard({
         </div>
       )}
 
-      {own && (
+      {(own || server.signed_in) && (
         <div className="mcp-server-foot">
-          <button className="mcp-link" onClick={onEdit} disabled={busy}>
-            {t("Edit")}
-          </button>
-          {confirming ? (
+          {own && (
+            <button className="mcp-link" onClick={onEdit} disabled={busy}>
+              {t("Edit")}
+            </button>
+          )}
+          {server.signed_in && (
+            <button
+              className="mcp-link"
+              onClick={() => onAction({ action: "signOut", name: server.name })}
+              disabled={busy}
+            >
+              {t("Sign out")}
+            </button>
+          )}
+          {!own ? null : confirming ? (
             <span className="mcp-confirm">
               {t("Remove this server?")}
               <button

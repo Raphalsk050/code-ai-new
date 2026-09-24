@@ -322,4 +322,37 @@ export const tests = {
     const [sent] = await ui.toHost("mcpElicitation");
     assert(sent?.action === "decline", "Decline should post decline");
   },
+
+  async "a remote server that wants a sign-in offers the button and the page"(ui, assert) {
+    await openPanel(ui, [
+      server({
+        name: "linear",
+        status: "needs_auth",
+        transport: "http",
+        remote: true,
+        signed_in: false,
+        error: "The server needs you to sign in.",
+        tools: [],
+        spec: spec({ name: "linear", transport: "http", command: "", url: "https://mcp.linear.app/mcp" }),
+      }),
+    ]);
+
+    await ui.page.click('.mcp-approve:has-text("Sign in")');
+    const [sent] = await ui.toHost("mcp");
+    assert(sent?.action === "signIn" && sent.name === "linear", "Sign in should post signIn");
+
+    await ui.fromHost(
+      busEvent("mcp.auth.url", { server: "linear", url: "https://auth.linear.app/authorize?x=1" })
+    );
+    const link = await ui.page.getAttribute(".mcp-server-source a", "href");
+    assert(link === "https://auth.linear.app/authorize?x=1", "the page can be opened again");
+  },
+
+  async "a signed-in server can sign out"(ui, assert) {
+    await openPanel(ui, [server({ transport: "http", remote: true, signed_in: true })]);
+
+    await ui.page.click('.mcp-server-foot button:has-text("Sign out")');
+    const [sent] = await ui.toHost("mcp");
+    assert(sent?.action === "signOut" && sent.name === "github", "Sign out should post signOut");
+  },
 };

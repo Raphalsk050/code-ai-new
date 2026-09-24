@@ -28,6 +28,7 @@ from code_ai.mcp.config import (
     server_name,
 )
 from code_ai.mcp.jsonrpc import McpAuthRequired, McpCancelled, McpError
+from code_ai.mcp.oauth import ClientFactory, OAuthError, OAuthFlow, OpenBrowser, TokenStore
 from code_ai.mcp.tools import (
     PREFIX,
     GetMcpPromptTool,
@@ -67,6 +68,7 @@ _BACKOFF_S = 2.0
 _STABLE_S = 60.0
 _LOG_TAIL = 30
 _MAX_INSTRUCTIONS = 800
+_SIGN_IN_HINT = "The server needs you to sign in."
 
 Persist = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -88,6 +90,8 @@ class ServerState:
     logs: deque[str] = field(default_factory=lambda: deque(maxlen=_LOG_TAIL))
     # The last connection's stderr (stdio) or transport notes, kept after it is gone.
     diagnostics: str = ""
+    # Where the server's 401 said its protected-resource metadata is.
+    auth_hint: str = ""
 
     @property
     def group(self) -> str:
@@ -107,8 +111,13 @@ class McpManager:
         event_bus: AsyncEventBus,
         client_version: str,
         persist: Persist | None = None,
+        auth_store: TokenStore | None = None,
+        oauth_client: ClientFactory | None = None,
     ) -> None:
         self._config = config
+        self._auth_store = auth_store or TokenStore()
+        # The HTTP client sign-in uses; tests hand in one that never leaves the process.
+        self._oauth_client = oauth_client
         self._registry = registry
         self._bus = event_bus
         self._client_version = client_version
@@ -199,7 +208,8 @@ class McpManager:
             try:
                 await self._connect(state)
             except McpAuthRequired as exc:
-                await self._set(state, STATUS_NEEDS_AUTH, str(exc))
+                state.auth_hint = exc.resource_metadata or state.auth_hint
+                await self._set(state, STATUS_NEEDS_AUTH, _SIGN_IN_HINT)
                 return
             except asyncio.CancelledError:
                 raise
@@ -292,12 +302,14 @@ class McpManager:
                 cwd=expand(spec.cwd, workspace=workspace, env=env) or workspace,
             )
         headers = {key: expand(value, workspace=workspace) for key, value in spec.headers.items()}
+        url = expand(spec.url, workspace=workspace)
         options: dict[str, Any] = {
             "headers": headers,
             "verify": self._config.ssl_verification,
             "timeout": spec.timeout_s,
+            # A server given its own Authorization header is not signed in to.
+            "auth": None if _has_authorization(headers) else self._auth_header(state, url),
         }
-        url = expand(spec.url, workspace=workspace)
         if spec.transport == "sse":
             return SseTransport(url, **options)
         return StreamableHttpTransport(url, **options)
@@ -437,6 +449,15 @@ class McpManager:
             )
         except McpCancelled:
             raise CancellationError("The MCP call was cancelled.") from None
+        except McpAuthRequired as exc:
+            # The token expired and could not be renewed: the server is back to
+            # waiting for a sign-in, and the model is told why the call failed.
+            state.auth_hint = exc.resource_metadata or state.auth_hint
+            await self._stop(state)
+            await self._set(state, STATUS_NEEDS_AUTH, _SIGN_IN_HINT)
+            raise ToolExecutionError(
+                f"MCP server {server!r} needs the user to sign in again (Settings > MCP servers)."
+            ) from exc
         except McpError as exc:
             raise ToolExecutionError(f"MCP {server}/{tool}: {exc.message}") from exc
 
@@ -482,6 +503,81 @@ class McpManager:
             return await client.get_prompt(name, arguments)
         except McpError as exc:
             raise ToolExecutionError(f"MCP {server}: {exc.message}") from exc
+
+    # -- signing in ---------------------------------------------------------------
+
+    def _flow(self, state: ServerState, url: str) -> OAuthFlow:
+        oauth = state.config.oauth
+        return OAuthFlow(
+            server_url=url,
+            store=self._auth_store,
+            verify=self._config.ssl_verification,
+            resource_metadata=state.auth_hint,
+            client_id=oauth.get("client_id", ""),
+            client_secret=oauth.get("client_secret", ""),
+            scopes=tuple(oauth.get("scopes", "").split()),
+            client_factory=self._oauth_client,
+        )
+
+    def _auth_header(self, state: ServerState, url: str) -> Callable[[], Awaitable[str]]:
+        """The Authorization value a request carries: the stored token, renewed when due."""
+
+        async def header() -> str:
+            tokens = self._auth_store.tokens(url)
+            if tokens is None:
+                return ""
+            if tokens.expired():
+                try:
+                    tokens = await self._flow(state, url).refresh(tokens)
+                except OAuthError:
+                    # A refusal comes back as a 401 and asks for a new sign-in.
+                    self._auth_store.forget(url)
+                    return ""
+            return tokens.header()
+
+        return header
+
+    def _remote_url(self, state: ServerState) -> str:
+        return expand(state.config.url, workspace=self.workspace)
+
+    def _signed_in(self, state: ServerState) -> bool:
+        if state.config.transport == "stdio":
+            return False
+        return self._auth_store.tokens(self._remote_url(state)) is not None
+
+    async def sign_in(
+        self, name: str, *, open_browser: OpenBrowser | None = None
+    ) -> dict[str, Any]:
+        """Run the OAuth sign-in for a remote server, then connect with the token.
+
+        The page to visit goes out as ``mcp.auth.url`` whatever ``open_browser``
+        does, so a front end that opens links its own way (VS Code) can.
+        """
+
+        state = self._require(name)
+        if state.config.transport == "stdio":
+            raise ValueError(f"{name} runs on this machine; there is nothing to sign in to.")
+        url = self._remote_url(state)
+        await self._set(state, STATUS_NEEDS_AUTH, "Finish signing in in the browser.")
+
+        async def announce(page: str) -> None:
+            await self._bus.emit("mcp.auth.url", {"server": name, "url": page}, source="mcp")
+            if open_browser is not None:
+                with contextlib.suppress(Exception):
+                    await open_browser(page)
+
+        try:
+            await self._flow(state, url).authorize(announce)
+        except OAuthError as exc:
+            await self._set(state, STATUS_NEEDS_AUTH, str(exc))
+            raise ValueError(str(exc)) from exc
+        return await self.reconnect(name)
+
+    async def sign_out(self, name: str) -> dict[str, Any]:
+        state = self._require(name)
+        if state.config.transport != "stdio":
+            self._auth_store.forget(self._remote_url(state))
+        return await self.reconnect(name)
 
     # -- what the server may ask of us ------------------------------------------
 
@@ -608,7 +704,7 @@ class McpManager:
         disabled = set(self._registry.disabled_names())
         spec = state.config.payload()
         if not secrets:
-            for key in ("env", "headers"):
+            for key in ("env", "headers", "oauth"):
                 spec[key] = {name: "***" if value else "" for name, value in spec[key].items()}
         return {
             "name": state.config.name,
@@ -657,6 +753,8 @@ class McpManager:
                 for prompt in state.prompts
             ],
             "resources": bool(identity and identity.supports("resources")),
+            "remote": state.config.transport != "stdio",
+            "signed_in": self._signed_in(state),
             "missing_env": list(state.missing_env),
             "logs": list(state.logs)[-10:],
             "diagnostics": _diagnostics(state)[-2000:],
@@ -738,3 +836,15 @@ def _diagnostics(state: ServerState) -> str:
 def _trim_resource(item: dict[str, Any]) -> dict[str, Any]:
     keys = ("uri", "uriTemplate", "name", "title", "description", "mimeType")
     return {key: item[key] for key in keys if item.get(key)}
+
+
+def _has_authorization(headers: dict[str, str]) -> bool:
+    return any(key.lower() == "authorization" and value for key, value in headers.items())
+
+
+async def system_browser(url: str) -> None:
+    """Open ``url`` in the machine's browser (the terminal's way; VS Code opens its own)."""
+
+    import webbrowser
+
+    await asyncio.to_thread(webbrowser.open, url)

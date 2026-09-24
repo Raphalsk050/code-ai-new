@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -473,6 +474,26 @@ class BridgeServer:
         await self._mcp().remove(str(params.get("name") or ""))
         return {"ok": True}
 
+    async def _h_mcp_sign_in(self, params: dict[str, Any]) -> dict[str, Any]:
+        mcp = self._mcp()
+        name = str(params.get("name") or "")
+        if name not in mcp.servers:
+            return {"ok": False, "message": f"There is no MCP server named {name!r}."}
+
+        async def sign_in() -> None:
+            # The page goes out as mcp.auth.url, which the extension opens; how
+            # it ends travels as the server's status.
+            with contextlib.suppress(Exception):
+                await mcp.sign_in(name, open_browser=None)
+
+        task = asyncio.create_task(sign_in())
+        self._turn_tasks.add(task)
+        task.add_done_callback(self._turn_tasks.discard)
+        return {"ok": True, "message": f"Opening the sign-in page for {name}."}
+
+    async def _h_mcp_sign_out(self, params: dict[str, Any]) -> dict[str, Any]:
+        return await self._mcp().sign_out(str(params.get("name") or ""))
+
     async def _h_mcp_elicitation_answer(self, params: dict[str, Any]) -> dict[str, Any]:
         broker = getattr(self._mcp(), "elicitation", None)
         if broker is None:
@@ -537,6 +558,8 @@ class BridgeServer:
         "mcpSave": _h_mcp_save,
         "mcpRemove": _h_mcp_remove,
         "mcpElicitationAnswer": _h_mcp_elicitation_answer,
+        "mcpSignIn": _h_mcp_sign_in,
+        "mcpSignOut": _h_mcp_sign_out,
         "shutdown": _h_shutdown,
     }
 
@@ -572,6 +595,7 @@ class BridgeServer:
             "mcpSetEnabled",
             "mcpSave",
             "mcpRemove",
+            "mcpSignOut",
         }
     )
 
