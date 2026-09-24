@@ -88,6 +88,46 @@ function statusEvent(payload) {
 const field = (label, tag = "input") =>
   `.mcp-editor .settings-field:has(> .settings-field-label:text-is("${label}")) ${tag}`;
 
+function busEvent(event_type, payload) {
+  return {
+    type: "event",
+    event: {
+      event_id: `e-${Math.random()}`,
+      event_type,
+      event_version: 1,
+      session_id: "s",
+      sequence: 0,
+      timestamp: new Date().toISOString(),
+      source: "mcp",
+      payload,
+    },
+  };
+}
+
+const QUESTION = {
+  id: "mcp-ask-1",
+  server: "github",
+  message: "Which organisation should the issue go to?",
+  fields: [
+    { name: "org", title: "Organisation", description: "", type: "string", required: true },
+    { name: "private", title: "Private", description: "", type: "boolean", required: false },
+    {
+      name: "labels",
+      title: "Labels",
+      description: "",
+      type: "string",
+      required: false,
+      enum: ["bug", "feature"],
+    },
+  ],
+};
+
+/** The chat screen, where a server's question shows up. */
+async function openChat(ui) {
+  await ui.page.click(".home-new");
+  await ui.page.waitForSelector(".composer-wrap");
+}
+
 export const tests = {
   async "opening the settings asks for the MCP servers"(ui, assert) {
     const asked = await openPanel(ui);
@@ -231,5 +271,55 @@ export const tests = {
       `the tool should be switched off, got ${JSON.stringify(sent.updates.disabled_tools)}`
     );
     assert(sent.updates.mcp_enabled === true, "the MCP switch travels with the settings");
+  },
+
+  async "a server's question becomes a form in the chat and posts typed answers"(ui, assert) {
+    await openChat(ui);
+    await ui.fromHost(busEvent("mcp.elicitation.requested", QUESTION));
+    await ui.page.waitForSelector(".elicit-card");
+    await ui.page.locator(".elicit-card").scrollIntoViewIfNeeded();
+    await ui.shot("mcp-04-question");
+
+    await ui.page.click('.elicit-card button:has-text("Send")');
+    assert((await ui.toHost("mcpElicitation")).length === 0, "a required field blocks sending");
+    assert(
+      (await ui.page.textContent(".elicit-error")).includes("Organisation"),
+      "the card names the missing field"
+    );
+
+    await ui.page.fill('.elicit-field:has-text("Organisation") input', "code-ai");
+    await ui.page.check('.elicit-field:has-text("Private") input');
+    await ui.page.selectOption('.elicit-field:has-text("Labels") select', "bug");
+    await ui.page.click('.elicit-card button:has-text("Send")');
+
+    const [sent] = await ui.toHost("mcpElicitation");
+    assert(sent?.id === "mcp-ask-1" && sent.action === "accept", "Send should accept");
+    assert(
+      JSON.stringify(sent.content) === '{"org":"code-ai","private":true,"labels":"bug"}',
+      `the answer should carry each field, got ${JSON.stringify(sent.content)}`
+    );
+
+    await ui.fromHost({
+      type: "mcpElicitationResult",
+      id: "mcp-ask-1",
+      ok: false,
+      message: "Organisation must be lowercase.",
+    });
+    assert(
+      (await ui.page.textContent(".elicit-error")).includes("lowercase"),
+      "a refused answer keeps the card open and says why"
+    );
+
+    await ui.fromHost(busEvent("mcp.elicitation.resolved", { id: "mcp-ask-1", action: "accept" }));
+    assert((await ui.page.locator(".elicit-card").count()) === 0, "a settled question goes away");
+  },
+
+  async "declining a server's question says so to the host"(ui, assert) {
+    await openChat(ui);
+    await ui.fromHost(busEvent("mcp.elicitation.requested", QUESTION));
+    await ui.page.click('.elicit-card button:has-text("Decline")');
+
+    const [sent] = await ui.toHost("mcpElicitation");
+    assert(sent?.action === "decline", "Decline should post decline");
   },
 };

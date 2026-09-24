@@ -34,6 +34,7 @@ from code_ai.mcp.tools import (
     ListMcpResourcesTool,
     McpTool,
     ReadMcpResourceTool,
+    qualified_name,
 )
 from code_ai.mcp.transports import (
     SseTransport,
@@ -121,7 +122,8 @@ class McpManager:
         self._closed = False
         # Handed in by the session once it can answer for a person or a model.
         self.sampling_handler: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None
-        self.elicitation_handler: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None
+        # An ElicitationBroker: called for a server's question, answered by the UI.
+        self.elicitation: Any = None
 
     @property
     def workspace(self) -> Path:
@@ -151,6 +153,8 @@ class McpManager:
         """Stop every server. With a ``reason`` (MCP switched off) they stay listed as off."""
 
         self._closed = True
+        if self.elicitation is not None:
+            self.elicitation.close()
         await asyncio.gather(
             *(self._stop(state) for state in self._servers.values()), return_exceptions=True
         )
@@ -239,7 +243,7 @@ class McpManager:
             handlers=ClientHandlers(
                 roots=self._roots,
                 sampling=self._bind(self.sampling_handler, spec.name),
-                elicitation=self._bind(self.elicitation_handler, spec.name),
+                elicitation=self._bind(self.elicitation, spec.name),
                 notification=lambda method, params: self._on_notification(state, method, params),
             ),
             request_timeout=spec.timeout_s,
@@ -413,6 +417,7 @@ class McpManager:
             await self._bus.emit(
                 "mcp.tool.progress",
                 {
+                    "name": qualified_name(server, tool),
                     "server": server,
                     "tool": tool,
                     "progress": done,

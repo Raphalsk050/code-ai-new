@@ -66,6 +66,10 @@ class TerminalController:
         if not action or action == "status":
             result = self.commands.mcp_status()
             return "\n".join(f"mcp> {line}" for line in result.message.splitlines())
+        if action == "answer":
+            return f"mcp> {self.commands.mcp_answer(name).message}"
+        if action in ("decline", "cancel"):
+            return f"mcp> {self.commands.mcp_answer(action).message}"
         result = await self.commands.mcp_action(action, name)
         return f"mcp> {result.message}"
 

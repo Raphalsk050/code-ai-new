@@ -586,6 +586,12 @@ const PT: Record<string, string> = {
   "Paste a JSON object.": "Cole um objeto JSON.",
   "No server found: each one needs a command or a url.":
     "Nenhum servidor encontrado: cada um precisa de um command ou de uma url.",
+  "{0} asks": "{0} pergunta",
+  "The server's tool call waits for this answer.":
+    "A ferramenta do servidor está esperando esta resposta.",
+  Decline: "Recusar",
+  Send: "Enviar",
+  "{0} is required.": "{0} é obrigatório.",
 };
 
 const TABLES: Record<Lang, Record<string, string>> = { en: {}, pt: PT };

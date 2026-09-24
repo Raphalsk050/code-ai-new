@@ -663,6 +663,30 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         case "mcp":
           void this.runMcp(message, client);
           break;
+        case "mcpElicitation":
+          client
+            ?.request<{ ok: boolean; message: string }>("mcpElicitationAnswer", {
+              id: message.id,
+              action: message.action,
+              content: message.content ?? {},
+            })
+            .then((r) =>
+              this.webview?.postMessage({
+                type: "mcpElicitationResult",
+                id: message.id,
+                ok: r.ok,
+                message: r.message ?? "",
+              })
+            )
+            .catch((err) =>
+              this.webview?.postMessage({
+                type: "mcpElicitationResult",
+                id: message.id,
+                ok: false,
+                message: String(err).replace(/^Error: /, ""),
+              })
+            );
+          break;
         case "cancel":
           client?.send("cancel");
           break;

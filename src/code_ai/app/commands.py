@@ -422,6 +422,39 @@ class SessionCommands:
         status = _MCP_STATUS.get(described["status"], described["status"])
         return CommandResult(ok=True, message=f"{name}: {status}.", data={"server": described})
 
+    def mcp_answer(self, text: str) -> CommandResult:
+        """Answer the question an MCP server is waiting on: ``key=value`` pairs,
+        the bare value of a one-field question, or ``decline``/``cancel``."""
+
+        broker = getattr(getattr(self._app, "mcp", None), "elicitation", None)
+        pending = broker.pending() if broker is not None else []
+        if not pending:
+            return _failed("No MCP server is waiting for an answer.")
+        request = pending[0]
+        text = text.strip()
+        if text in ("decline", "cancel"):
+            broker.answer(request["id"], text)
+            done = "declined" if text == "decline" else "cancelled"
+            return CommandResult(ok=True, message=f"{request['server']}: {done}.")
+        fields = request["fields"]
+        try:
+            words = shlex.split(text)
+        except ValueError:
+            words = text.split()
+        if words and all("=" in word for word in words):
+            content = dict(word.split("=", 1) for word in words)
+        elif len(fields) == 1:
+            content = {fields[0]["name"]: text}
+        elif not fields:
+            content = {}
+        else:
+            names = " ".join(f"{field_['name']}=..." for field_ in fields)
+            return _failed(f"Answer each field by name: /mcp answer {names}")
+        problem = broker.answer(request["id"], "accept", content)
+        if problem:
+            return _failed(problem)
+        return CommandResult(ok=True, message=f"Answer sent to {request['server']}.")
+
     def mcp_prompts(self) -> list[dict[str, Any]]:
         """Every prompt a connected server offers, as ``/mcp:<server>:<prompt>``."""
 

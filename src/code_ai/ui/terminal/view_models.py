@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from code_ai.core.interaction import Questionnaire
 from code_ai.events.models import EventEnvelope
@@ -22,6 +23,28 @@ _INDEX_BAR_CELLS = 24
 # (see ``flush_stream``), so every other handler finds a whole line at the end
 # of the transcript.
 _STREAMING_EVENTS = frozenset({"model.stream.delta", "model.thinking.delta"})
+# Server log levels loud enough for the transcript; the rest stay on /mcp.
+_LOUD_MCP_LOGS = frozenset({"warning", "error", "critical", "alert", "emergency"})
+
+
+def _elicitation_text(payload: dict[str, Any]) -> str:
+    """A server's question, with the command that answers it."""
+
+    fields = payload.get("fields") or []
+    lines = [f"mcp> {payload.get('server')} asks: {payload.get('message') or ''}"]
+    for field_ in fields:
+        kind = "one of " + ", ".join(field_["enum"]) if field_.get("enum") else field_["type"]
+        need = ", required" if field_.get("required") else ""
+        about = f" - {field_['description']}" if field_.get("description") else ""
+        lines.append(f"       {field_['name']} ({kind}{need}){about}")
+    if len(fields) == 1:
+        lines.append("     Answer with /mcp answer <value>, or /mcp decline.")
+    elif fields:
+        pairs = " ".join(f"{field_['name']}=..." for field_ in fields)
+        lines.append(f"     Answer with /mcp answer {pairs}, or /mcp decline.")
+    else:
+        lines.append("     Confirm with /mcp answer, or /mcp decline.")
+    return "\n".join(lines)
 
 
 def _format_wait(value: object) -> str:
@@ -173,6 +196,8 @@ class TerminalViewModel:
             # The refresh is over and its summary is appended to the transcript
             # by whoever asked for it, so the live bar has nothing left to show.
             self.index_progress = ""
+        elif event.event_type.startswith("mcp."):
+            self._apply_mcp(event.event_type, event.payload)
         elif event.event_type == "planning.mode.changed":
             self.planner_mode = str(event.payload.get("mode", self.planner_mode))
         elif event.event_type == "planning.phase.changed":
@@ -465,6 +490,47 @@ class TerminalViewModel:
             )
         elif kind == "goal.stopped":
             self.conversation.append(f"goal> stopped: {payload.get('reason', '')}")
+
+    def _apply_mcp(self, kind: str, payload: dict[str, Any]) -> None:
+        """MCP servers in the transcript: state changes, warnings, progress, questions."""
+
+        line = ""
+        if kind == "mcp.server.status":
+            name = str(payload.get("name") or "")
+            status = payload.get("status")
+            if status == "connected":
+                line = f"mcp> {name}: connected ({len(payload.get('tools') or [])} tools)"
+            elif status == "failed":
+                reason = (str(payload.get("error") or "").splitlines() or ["no reason given"])[0]
+                line = f"mcp> {name} failed: {reason}"
+            elif status == "needs_approval":
+                where = payload.get("source_path") or "the project"
+                line = f"mcp> {name} (from {where}) is waiting: /mcp approve {name}"
+            elif status == "needs_auth":
+                line = f"mcp> {name} needs you to sign in."
+        elif kind == "mcp.server.log":
+            if payload.get("level") in _LOUD_MCP_LOGS:
+                line = f"mcp> [{payload.get('server')}] {payload.get('message')}"
+        elif kind == "mcp.tool.progress":
+            total = payload.get("total")
+            done = payload.get("progress")
+            amount = f"{done:g}/{total:g}" if isinstance(total, int | float) else f"{done}"
+            detail = " ".join(f"{amount} {payload.get('message') or ''}".split())
+            prefix = f"tool~ {payload.get('name') or payload.get('tool')}: "
+            if self.conversation and self.conversation[-1].startswith(prefix):
+                self.conversation[-1] = prefix + detail
+            else:
+                self.conversation.append(prefix + detail)
+            return
+        elif kind == "mcp.elicitation.requested":
+            self.conversation.append(_elicitation_text(payload))
+            return
+        elif kind == "mcp.elicitation.resolved":
+            outcome = {"accept": "answer sent", "decline": "declined", "cancel": "cancelled"}
+            action = str(payload.get("action") or "")
+            line = f"mcp> {payload.get('server')}: {outcome.get(action, action)}"
+        if line and (not self.conversation or self.conversation[-1] != line):
+            self.conversation.append(line)
 
     def _apply_tool_progress(self, payload: dict[object, object]) -> None:
         """Render live 'writing code' feedback while a tool call streams in.

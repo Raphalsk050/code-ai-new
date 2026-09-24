@@ -98,6 +98,12 @@ SLASH_COMMANDS = [
     ),
     SlashCommand("/mcp on <name>", "Switch an MCP server on.", "/mcp on "),
     SlashCommand("/mcp off <name>", "Switch an MCP server off.", "/mcp off "),
+    SlashCommand(
+        "/mcp answer <values>",
+        "Answer the question an MCP server is waiting on (name=value ...).",
+        "/mcp answer ",
+    ),
+    SlashCommand("/mcp decline", "Decline the question an MCP server is waiting on."),
     SlashCommand("/clear", "Clear the conversation view."),
     SlashCommand("/quit", "Close Code-AI."),
     SlashCommand("/config help", "Browse and pick a /config command to run."),

@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 22,
-  "patch": 1,
-  "build": 40,
+  "minor": 23,
+  "patch": 0,
+  "build": 41,
   "updated": "2026-09-24",
-  "note": "MCP servers in the settings panel, /mcp in the terminal, MCP prompts as slash commands"
+  "note": "MCP sampling with approval, server questions answered in a form, tool progress and server warnings in the chat"
 }

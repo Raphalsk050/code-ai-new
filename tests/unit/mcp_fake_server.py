@@ -78,6 +78,12 @@ def tools() -> list[dict]:
         {"name": "grow", "description": "Add a tool and announce it.", "inputSchema": schema()},
         {"name": "picture", "description": "Return an image.", "inputSchema": schema()},
         {"name": "shout", "description": "Log a message.", "inputSchema": schema(text="string")},
+        {
+            "name": "ask_model",
+            "description": "Ask the client's model.",
+            "inputSchema": schema(prompt="string"),
+        },
+        {"name": "ask_user", "description": "Ask the user who they are.", "inputSchema": schema()},
     ]
     for index in range(int(option("--many", "0"))):
         listed.append(
@@ -152,6 +158,45 @@ def call_tool(request_id, name: str, arguments: dict) -> dict:
         return {"content": [{"type": "text", "text": "shouted"}]}
     if name == "extra":
         return {"content": [{"type": "text", "text": "extra ran"}]}
+    if name == "ask_model":
+        answer = ask_client(
+            "sampling/createMessage",
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": {"type": "text", "text": arguments.get("prompt", "hi")},
+                    }
+                ],
+                "systemPrompt": "Answer in one word.",
+                "maxTokens": 50,
+            },
+            timeout=20,
+        )
+        if "error" in answer:
+            return {
+                "content": [{"type": "text", "text": answer["error"]["message"]}],
+                "isError": True,
+            }
+        return {"content": [{"type": "text", "text": answer["result"]["content"]["text"]}]}
+    if name == "ask_user":
+        answer = ask_client(
+            "elicitation/create",
+            {
+                "message": "Who are you?",
+                "requestedSchema": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "title": "Name"},
+                        "age": {"type": "integer", "minimum": 0},
+                        "plan": {"type": "string", "enum": ["free", "pro"]},
+                    },
+                    "required": ["name"],
+                },
+            },
+            timeout=20,
+        )
+        return {"content": [{"type": "text", "text": json.dumps(answer.get("result") or answer)}]}
     raise LookupError(name)
 
 

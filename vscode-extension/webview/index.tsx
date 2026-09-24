@@ -19,6 +19,7 @@ import type {
 } from "../src/protocol";
 import { ApprovalCard } from "./approval";
 import { CommandMenu } from "./command-menu";
+import { ElicitationCard } from "./elicitation-card";
 import { buildCatalog, matchCommands, resolveCommand, SlashCommand } from "./commands";
 import { ExplainPanel, ExplainViewState, INITIAL_EXPLAIN } from "./explain";
 import { HomeScreen } from "./home";
@@ -97,6 +98,7 @@ function App(): JSX.Element {
   const [models, setModels] = React.useState<ModelsState>({ status: "idle", list: [] });
   const [save, setSave] = React.useState<SaveState>({ status: "idle", errors: {} });
   const [mcp, setMcp] = React.useState<McpViewState>(INITIAL_MCP);
+  const [elicitErrors, setElicitErrors] = React.useState<Record<string, string>>({});
   const [serverConvos, setServerConvos] = React.useState<ServerConversation[]>([]);
   const [refactor, setRefactor] = React.useState<RefactorViewState>(INITIAL_REFACTOR);
   const [explain, setExplain] = React.useState<ExplainViewState>(INITIAL_EXPLAIN);
@@ -150,6 +152,9 @@ function App(): JSX.Element {
         setMcp({ list: data.list, error: "", busy: "" });
       } else if (data?.type === "mcpError") {
         setMcp((m) => ({ ...m, error: data.message, busy: "" }));
+      } else if (data?.type === "mcpElicitationResult") {
+        // A refused answer leaves the question open; the card says why.
+        setElicitErrors((errors) => ({ ...errors, [data.id]: data.ok ? "" : data.message }));
       } else if (data?.type === "fileMatches") {
         // A slower answer for a prefix the user has already typed past is noise.
         if (mentionQueryRef.current === data.query) {
@@ -839,6 +844,20 @@ function App(): JSX.Element {
                     <QuestionsCard
                       questions={state.questions.pending}
                       onAnswer={(text) => send({ type: "answerQuestions", text })}
+                    />
+                  )}
+                  {state.elicitations.pending.length > 0 && (
+                    <ElicitationCard
+                      request={state.elicitations.pending[0]}
+                      error={elicitErrors[state.elicitations.pending[0].id] ?? ""}
+                      onAnswer={(action, content) =>
+                        send({
+                          type: "mcpElicitation",
+                          id: state.elicitations.pending[0].id,
+                          action,
+                          content,
+                        })
+                      }
                     />
                   )}
                 </div>

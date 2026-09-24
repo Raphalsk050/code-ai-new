@@ -473,6 +473,15 @@ class BridgeServer:
         await self._mcp().remove(str(params.get("name") or ""))
         return {"ok": True}
 
+    async def _h_mcp_elicitation_answer(self, params: dict[str, Any]) -> dict[str, Any]:
+        broker = getattr(self._mcp(), "elicitation", None)
+        if broker is None:
+            return {"ok": False, "message": "Nothing in this session can take the answer."}
+        problem = broker.answer(
+            str(params.get("id") or ""), str(params.get("action") or ""), params.get("content")
+        )
+        return {"ok": not problem, "message": problem}
+
     async def _h_shutdown(self, params: dict[str, Any]) -> dict[str, Any]:
         self._stop.set()
         return {"status": "closing"}
@@ -527,6 +536,7 @@ class BridgeServer:
         "mcpSetEnabled": _h_mcp_set_enabled,
         "mcpSave": _h_mcp_save,
         "mcpRemove": _h_mcp_remove,
+        "mcpElicitationAnswer": _h_mcp_elicitation_answer,
         "shutdown": _h_shutdown,
     }
 

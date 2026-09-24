@@ -51,6 +51,24 @@ function push(items: Item[], item: Item): Item[] {
   return [...items, item];
 }
 
+/** Server log levels worth interrupting the chat for; the rest stay on the settings card. */
+const LOUD_MCP_LOGS = new Set(["warning", "error", "critical", "alert", "emergency"]);
+
+/** A server whose state needs the user, as one line; "" for the ones that do not. */
+function mcpStatusNotice(p: Record<string, any>): string {
+  const name = String(p.name ?? "");
+  switch (p.status) {
+    case "failed":
+      return `MCP server ${name} failed: ${String(p.error ?? "").split("\n")[0]}`;
+    case "needs_approval":
+      return `MCP server ${name} (${p.source_path || "declared by the project"}) is waiting for your approval in Settings.`;
+    case "needs_auth":
+      return `MCP server ${name} needs you to sign in.`;
+    default:
+      return "";
+  }
+}
+
 function extendText(items: Item[], kind: Item["kind"], text: string, makeNew: () => Item): Item[] {
   const last = items[items.length - 1];
   if (last && last.kind === kind) {
@@ -297,6 +315,47 @@ export function applyTranscript(state: TranscriptState, event: EventEnvelope): T
           text: `call cut off mid-stream, asking again (${p.attempt ?? "?"}/${p.max_attempts ?? "?"})`,
         }),
       };
+
+    case "mcp.tool.progress": {
+      // The running call of that tool shows how far it has got.
+      const name = String(p.name ?? "");
+      for (let i = items.length - 1; i >= 0; i--) {
+        const it = items[i];
+        if (it.kind === "tool" && it.status === "running" && it.name === name) {
+          const total = typeof p.total === "number" ? `/${p.total}` : "";
+          const note = p.message ? ` · ${p.message}` : "";
+          const copy = items.slice();
+          copy[i] = { ...it, detail: `${p.progress ?? ""}${total}${note}` };
+          return { items: copy };
+        }
+      }
+      return state;
+    }
+    case "mcp.server.log": {
+      const level = String(p.level ?? "");
+      if (!LOUD_MCP_LOGS.has(level)) return state;
+      return {
+        items: push(items, {
+          kind: "notice",
+          id,
+          level: level === "warning" ? "warning" : "error",
+          text: `MCP ${p.server}: ${p.message}`,
+        }),
+      };
+    }
+    case "mcp.server.status": {
+      const text = mcpStatusNotice(p);
+      const last = items[items.length - 1];
+      if (!text || (last && last.kind === "notice" && last.text === text)) return state;
+      return {
+        items: push(items, {
+          kind: "notice",
+          id,
+          level: p.status === "failed" ? "warning" : "info",
+          text,
+        }),
+      };
+    }
 
     case "command.output": {
       const text = String(p.text ?? "");

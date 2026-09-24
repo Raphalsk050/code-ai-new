@@ -223,6 +223,22 @@ export const PANELS_STYLE = `
 }
 .qcard textarea:focus { outline: none; border-color: var(--accent); }
 
+/* ---- questions from an MCP server ---- */
+.elicit-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 9px; font-size: 12.5px; }
+.elicit-check { flex-direction: row; align-items: center; gap: 8px; flex-wrap: wrap; cursor: pointer; }
+.elicit-check input { accent-color: var(--accent); }
+.elicit-check .elicit-hint { flex-basis: 100%; }
+.elicit-label { font-size: 12px; }
+.elicit-required { color: var(--vscode-errorForeground, #f85149); }
+.elicit-hint { font-size: 11px; color: var(--muted); }
+.elicit-field input:not([type="checkbox"]), .elicit-field select {
+  font-family: inherit; font-size: 12.5px;
+  color: var(--vscode-input-foreground); background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, var(--border)); border-radius: 7px; padding: 6px 9px;
+}
+.elicit-field input:focus, .elicit-field select:focus { outline: none; border-color: var(--accent); }
+.elicit-error { font-size: 12px; color: var(--vscode-errorForeground, #f85149); margin-bottom: 8px; }
+
 /* ---- doctor: tool switches ---- */
 .tool-switches { display: flex; flex-direction: column; gap: 7px; }
 .tool-switch-all {

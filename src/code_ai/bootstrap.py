@@ -24,6 +24,7 @@ from code_ai.context.compression import ContextCompressor
 from code_ai.context.conversation import ConversationState
 from code_ai.context.token_counting import TokenCounter
 from code_ai.context.usage import UsageLedger
+from code_ai.core.approval import DenyAllGateway
 from code_ai.core.git_baseline import GitBaseline
 from code_ai.core.identity import detect_user_name
 from code_ai.core.memory import FailureMemoryStore, MemoryService, MemoryStore
@@ -42,6 +43,8 @@ from code_ai.events.bus import AsyncEventBus
 from code_ai.index import CodeIndexService, build_code_index
 from code_ai.interop import external_rule_sources, skill_sources, workflow_sources
 from code_ai.mcp import McpManager
+from code_ai.mcp.elicitation import ElicitationBroker
+from code_ai.mcp.sampling import SamplingBroker
 from code_ai.prompts import build_failure_lesson_prompt, build_system_prompt
 from code_ai.providers.base import ModelProvider
 from code_ai.providers.factory import create_provider
@@ -552,6 +555,18 @@ def build_application(
         mcp_catalog=mcp.prompt_catalog,
         reflection=reflection,
         git_baseline=GitBaseline(workspace),
+    )
+    # What a server may ask of the session. Both read the orchestrator's gateway
+    # per request: the UI attaches its own after the session is built.
+    mcp.sampling_handler = SamplingBroker(
+        config=config,
+        provider=provider,
+        event_bus=event_bus,
+        gateway=lambda: orchestrator.approval_gateway,
+    )
+    mcp.elicitation = ElicitationBroker(
+        event_bus=event_bus,
+        interactive=lambda: not isinstance(orchestrator.approval_gateway, DenyAllGateway),
     )
     session = ApplicationSession(session_id=event_bus.session_id, config=config)
     conversation_store = ConversationStore(project_conversations_dir(config.workspace))

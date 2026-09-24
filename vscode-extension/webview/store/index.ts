@@ -5,6 +5,7 @@ import type { EventEnvelope } from "../../src/protocol";
 import { AgentsState, applyAgents, initialAgents } from "./agents";
 import { ApprovalsState, applyApprovals, initialApprovals } from "./approvals";
 import { applyCode, CodeStreamState, initialCode } from "./code";
+import { applyElicitations, ElicitationsState, initialElicitations } from "./elicitations";
 import { applyGoal, GoalState, initialGoal } from "./goal";
 import { applyPlan, initialPlan, PlanState } from "./plan";
 import { applyQuestions, initialQuestions, QuestionsState } from "./questions";
@@ -24,6 +25,7 @@ export interface AppState {
   questions: QuestionsState;
   code: CodeStreamState;
   goal: GoalState;
+  elicitations: ElicitationsState;
 }
 
 export const initialAppState: AppState = {
@@ -37,6 +39,7 @@ export const initialAppState: AppState = {
   questions: initialQuestions,
   code: initialCode,
   goal: initialGoal,
+  elicitations: initialElicitations,
 };
 
 export function applyEvent(state: AppState, event: EventEnvelope): AppState {
@@ -50,6 +53,7 @@ export function applyEvent(state: AppState, event: EventEnvelope): AppState {
   const questions = applyQuestions(state.questions, event);
   const code = applyCode(state.code, event);
   const goal = applyGoal(state.goal, event);
+  const elicitations = applyElicitations(state.elicitations, event);
 
   if (
     transcript === state.transcript &&
@@ -61,7 +65,8 @@ export function applyEvent(state: AppState, event: EventEnvelope): AppState {
     terminal === state.terminal &&
     questions === state.questions &&
     code === state.code &&
-    goal === state.goal
+    goal === state.goal &&
+    elicitations === state.elicitations
   ) {
     return state;
   }
@@ -76,12 +81,14 @@ export function applyEvent(state: AppState, event: EventEnvelope): AppState {
     questions,
     code,
     goal,
+    elicitations,
   };
 }
 
 export * from "./agents";
 export * from "./approvals";
 export * from "./code";
+export * from "./elicitations";
 export * from "./goal";
 export * from "./plan";
 export * from "./questions";

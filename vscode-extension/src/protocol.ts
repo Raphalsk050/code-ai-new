@@ -75,6 +75,7 @@ export type BridgeMethod =
   | "mcpSetEnabled"
   | "mcpSave"
   | "mcpRemove"
+  | "mcpElicitationAnswer"
   | "shutdown";
 
 /** The three operating modes; only `agent` shows the chat composer. */
@@ -290,6 +291,7 @@ export type HostToWebview =
   | { type: "modelsError"; message: string }
   | { type: "mcpServers"; list: McpList }
   | { type: "mcpError"; message: string }
+  | { type: "mcpElicitationResult"; id: string; ok: boolean; message: string }
   | { type: "conversationsList"; conversations: ServerConversation[] }
   | { type: "conversationLoaded"; id: string; messages: StoredMessage[] }
   | { type: "refactorStatus"; status: "analyzing" | "idle" }
@@ -338,6 +340,12 @@ export type WebviewToHost =
   | { type: "updateSettings"; updates: Record<string, unknown> }
   | { type: "listModels" }
   | ({ type: "mcp" } & McpAction)
+  | {
+      type: "mcpElicitation";
+      id: string;
+      action: "accept" | "decline" | "cancel";
+      content?: Record<string, unknown>;
+    }
   | { type: "setMode"; mode: AppMode; autoRunRefactor: boolean }
   | { type: "analyzeRefactor" }
   | { type: "planRefactor"; id: string; improvements: RefactorImprovement[] }
