@@ -58,6 +58,7 @@ class ModelBinding:
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None
+    reasoning_effort: str = ""
 
     @property
     def empty(self) -> bool:
@@ -843,6 +844,7 @@ def _binding_from(node: NodeProgram) -> ModelBinding:
         temperature=_as_opt_float(node.data.get("temperature")),
         top_p=_as_opt_float(node.data.get("top_p")),
         top_k=_as_opt_int(node.data.get("top_k")),
+        reasoning_effort=str(node.data.get("reasoning_effort") or "").strip(),
     )
 
 

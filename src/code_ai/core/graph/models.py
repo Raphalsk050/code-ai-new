@@ -405,6 +405,17 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
             ),
             *_grouped(
                 "Sampling",
+                FieldSpec(
+                    name="reasoning_effort",
+                    kind="select",
+                    label="Reasoning effort",
+                    default="",
+                    options=("", "none", "minimal", "low", "medium", "high", "xhigh"),
+                    help=(
+                        "Empty follows the session; none sends no effort and leaves it to "
+                        "the endpoint."
+                    ),
+                ),
                 FieldSpec(name="temperature", kind="number", label="Temperature", default=None),
                 FieldSpec(name="top_p", kind="number", label="Top P", default=None),
                 FieldSpec(name="top_k", kind="number", label="Top K", default=None),

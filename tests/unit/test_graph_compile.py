@@ -634,3 +634,15 @@ def test_dynamic_input_counts_are_bounded_and_their_literals_are_known() -> None
     program, issues = compile_graph(too_many, professions=PROFESSIONS)
     assert program is None
     assert any("between 1 and 12 inputs" in message for message in errors(issues))
+
+
+def test_a_model_node_reasoning_effort_must_be_a_known_level() -> None:
+    doc = graph()
+    doc["nodes"][1]["data"]["reasoning_effort"] = "ludicrous"
+    program, issues = compile_graph(doc, professions=PROFESSIONS)
+
+    assert program is None
+    assert "Unknown reasoning effort 'ludicrous'." in errors(issues)
+
+    doc["nodes"][1]["data"]["reasoning_effort"] = "high"
+    compile_ok(doc)

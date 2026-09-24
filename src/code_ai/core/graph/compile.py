@@ -491,6 +491,11 @@ def _check_model_node(node_id: str, node: NodeSpec, collector: _Collector) -> No
         collector.error(
             "Base URL must start with http:// or https://.", node_id=node_id, field="base_url"
         )
+    effort = str(node.data.get("reasoning_effort") or "").strip()
+    if effort and effort not in ("none", "minimal", "low", "medium", "high", "xhigh"):
+        collector.error(
+            f"Unknown reasoning effort {effort!r}.", node_id=node_id, field="reasoning_effort"
+        )
     api_mode = str(node.data.get("api_mode") or "").strip()
     if api_mode and api_mode not in ("responses", "completions", "ollama"):
         collector.error(

@@ -394,3 +394,20 @@ async def test_a_clean_agent_that_fails_reports_instead_of_raising() -> None:
 
     assert outcome.status == "failed"
     assert "endpoint down" in outcome.error
+
+
+def test_a_model_node_sets_the_reasoning_effort_its_agents_think_at() -> None:
+    config = AppConfig.from_mapping(
+        {"api_mode": "completions", "model": "qwen", "sampling": {"reasoning_effort": "xhigh"}}
+    )
+    instance = executor(config=config)
+
+    provider, _ = instance._endpoint_for(ModelBinding(model="qwen", reasoning_effort="low"))
+    off, _ = instance._endpoint_for(ModelBinding(model="qwen", reasoning_effort="none"))
+    same, overrides = instance._endpoint_for(ModelBinding(model="qwen"))
+
+    built = instance.built  # type: ignore[attr-defined]
+    assert provider is not None and built[0].sampling.reasoning_effort == "low"
+    # none is what the settings panel means by it: no effort sent at all.
+    assert off is not None and built[1].sampling.reasoning_effort is None
+    assert same is None and overrides == {}

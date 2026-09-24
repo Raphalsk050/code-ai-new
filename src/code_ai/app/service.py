@@ -795,6 +795,7 @@ class CodeAIApplication:
             "temperature": config.sampling.temperature,
             "top_p": config.sampling.top_p,
             "top_k": config.sampling.top_k,
+            "presence_penalty": config.sampling.presence_penalty,
             "supported": {
                 "api_mode": sorted(SUPPORTED_API_MODES),
                 "permission_mode": sorted(SUPPORTED_PERMISSION_MODES),
@@ -942,7 +943,7 @@ class CodeAIApplication:
                     validated = persist_config_updates(config, {"budgets": budgets})
                     config.budgets = validated.budgets
                     applied.append(key)
-                elif key in {"temperature", "top_p", "top_k"}:
+                elif key in {"temperature", "top_p", "top_k", "presence_penalty"}:
                     sampling = asdict(config.sampling)
                     if value in (None, "", "none"):
                         sampling[key] = None

@@ -240,6 +240,10 @@ const PT: Record<string, string> = {
   web: "web",
   review: "revisar",
   "none picked": "nenhuma",
+  "Raise it towards 1 when a thinking model keeps going back over the same point.":
+    "Suba até perto de 1 quando um modelo com raciocínio fica voltando ao mesmo ponto.",
+  "Empty follows the session; none sends no effort and leaves it to the endpoint.":
+    "Vazio segue a sessão; none não manda esforço e deixa com o endpoint.",
 
   // -- function nodes -------------------------------------------------------
   Math: "Matemática",

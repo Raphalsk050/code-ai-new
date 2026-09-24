@@ -103,6 +103,7 @@ export interface Settings {
   temperature: number | null;
   top_p: number | null;
   top_k: number | null;
+  presence_penalty?: number | null;
   supported: {
     api_mode: string[];
     permission_mode: string[];

@@ -139,6 +139,18 @@ async def test_sampling_values_round_trip_and_clear(app: CodeAIApplication) -> N
     assert app.session.config.sampling.top_k is None
 
 
+async def test_presence_penalty_is_a_panel_setting(app: CodeAIApplication) -> None:
+    # The Qwen knob against a thinking model circling the same point.
+    result = await app.update_settings({"presence_penalty": 0.8})
+
+    assert "presence_penalty" in result["applied"]
+    assert app.session.config.sampling.presence_penalty == pytest.approx(0.8)
+    assert app.get_settings()["presence_penalty"] == pytest.approx(0.8)
+
+    await app.update_settings({"presence_penalty": ""})
+    assert app.session.config.sampling.presence_penalty is None
+
+
 async def test_an_unknown_setting_is_reported_not_swallowed(app: CodeAIApplication) -> None:
     result = await app.update_settings({"nao_existe": 1})
 

@@ -116,6 +116,23 @@
           "group": "Endpoint"
         },
         {
+          "name": "reasoning_effort",
+          "kind": "select",
+          "label": "Reasoning effort",
+          "default": "",
+          "options": [
+            "",
+            "none",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ],
+          "help": "Empty follows the session; none sends no effort and leaves it to the endpoint.",
+          "group": "Sampling"
+        },
+        {
           "name": "temperature",
           "kind": "number",
           "label": "Temperature",

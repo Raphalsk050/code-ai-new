@@ -27,6 +27,7 @@ export function draftFromSettings(settings: Settings): Draft {
     temperature: settings.temperature,
     top_p: settings.top_p,
     top_k: settings.top_k,
+    presence_penalty: settings.presence_penalty ?? null,
   };
 }
 

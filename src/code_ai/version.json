@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 21,
-  "patch": 0,
-  "build": 36,
+  "patch": 1,
+  "build": 37,
   "updated": "2026-09-23",
-  "note": "Graph function nodes: math, compare, logic, select, text and conversions."
+  "note": "presence_penalty in the settings panel, reasoning effort on the graph's Model node."
 }

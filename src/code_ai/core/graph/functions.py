@@ -22,9 +22,7 @@ _PLACEHOLDER = re.compile(r"\{(\d+)\}")
 Warn = Callable[[str], None]
 
 
-def evaluate(
-    kind: str, data: dict[str, Any], inputs: dict[str, Any], pin: str, warn: Warn
-) -> Any:
+def evaluate(kind: str, data: dict[str, Any], inputs: dict[str, Any], pin: str, warn: Warn) -> Any:
     """The value on output ``pin`` of a function node of ``kind``."""
 
     handler = _HANDLERS.get(kind)

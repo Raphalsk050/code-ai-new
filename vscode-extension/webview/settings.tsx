@@ -376,6 +376,20 @@ export function SettingsScreen({
                 onChange={(e) => set("top_k", e.target.value === "" ? null : Number(e.target.value))}
               />
             </Field>
+            <Field label="presence_penalty">
+              <input
+                type="number"
+                step="0.1"
+                value={draft.presence_penalty == null ? "" : String(draft.presence_penalty)}
+                placeholder={t("endpoint default")}
+                onChange={(e) =>
+                  set("presence_penalty", e.target.value === "" ? null : Number(e.target.value))
+                }
+              />
+              <span className="settings-hint">
+                {t("Raise it towards 1 when a thinking model keeps going back over the same point.")}
+              </span>
+            </Field>
           </Section>
 
           <div className="settings-restart">
