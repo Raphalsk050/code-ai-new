@@ -31,6 +31,8 @@ class ToolCapability(StrEnum):
     INTERNAL_COMPLETION = "internal_completion"
     MEMORY = "memory"
     DELEGATE = "delegate"
+    # A tool served by an MCP server: it can do anything its server does.
+    MCP = "mcp"
 
 
 @dataclass(slots=True)

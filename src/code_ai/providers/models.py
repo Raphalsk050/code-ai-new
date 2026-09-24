@@ -114,6 +114,9 @@ class ToolDefinition:
     name: str
     description: str
     input_schema: dict[str, Any]
+    # None follows the session's strict_tools. A schema written elsewhere (an
+    # MCP server's) says False: strict mode would refuse it.
+    strict: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

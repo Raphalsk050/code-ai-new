@@ -83,6 +83,7 @@ class CodeAIApplication:
         code_index: CodeIndexService | None = None,
         browser: Any = None,
         subagent_runtime: Any = None,
+        mcp: Any = None,
     ) -> None:
         self.session = session
         self.event_bus = event_bus
@@ -119,6 +120,9 @@ class CodeAIApplication:
         # dispatch tool's coordinator; the orchestrator graph needs it directly,
         # because a Profession node *is* a sub-agent profile.
         self.subagent_runtime = subagent_runtime
+        # The session's MCP servers (code_ai.mcp.McpManager); they connect in
+        # the background once the session starts. ``None`` when built without.
+        self.mcp = mcp
         # Id of the conversation currently loaded in the live session. Assigned
         # by the client via reset_conversation/load_conversation; a turn persists
         # under it so the user can resume the thread later.
@@ -177,6 +181,8 @@ class CodeAIApplication:
         if self.terminal_manager is not None and self._terminal_poll_task is None:
             self._terminal_poll_task = asyncio.create_task(self._poll_terminal_screens())
         self.start_index_warmup()
+        if self.mcp is not None:
+            await self.mcp.start()
 
     def start_index_warmup(self) -> bool:
         """Build the index in the background, once, at the start of a session.
@@ -1032,6 +1038,7 @@ class CodeAIApplication:
         previous_terminals = self.terminal_manager
         previous_index = self.code_index
         previous_browser = self.browser
+        previous_mcp = self.mcp
         gateway = self.orchestrator.approval_gateway
         allowlist = set(self.orchestrator._session_allowlist)
 
@@ -1053,7 +1060,15 @@ class CodeAIApplication:
         self.terminal_manager = rebuilt.terminal_manager
         self.code_index = rebuilt.code_index
         self.browser = rebuilt.browser
+        self.mcp = rebuilt.mcp
 
+        # A project's MCP servers belong to that project, and the ones a
+        # workspace declares need approving again for the new one.
+        if previous_mcp is not None and previous_mcp is not self.mcp:
+            with contextlib.suppress(Exception):
+                await previous_mcp.close()
+        if self.mcp is not None:
+            await self.mcp.start()
         # The index is rooted at the workspace like everything else here, but it
         # is also subscribed to the event bus, which survives the rebuild - so
         # the old one has to be closed rather than dropped, or it would go on
@@ -1619,6 +1634,10 @@ class CodeAIApplication:
             # opening the same profile.
             with contextlib.suppress(Exception):
                 await self.browser.close()
+        if self.mcp is not None:
+            # Stdio servers are child processes; they must not outlive us.
+            with contextlib.suppress(Exception):
+                await self.mcp.close()
         await self.provider.close()
         self.session.state = AgentState.CLOSED
         await self.event_bus.emit("session.closed", {}, source="app")

@@ -431,6 +431,42 @@ class BridgeServer:
             return {"ok": False, "message": str(exc) or type(exc).__name__, "models": []}
         return {"ok": True, "models": models}
 
+    # -- MCP servers -------------------------------------------------------
+
+    def _mcp(self) -> Any:
+        if self._app.mcp is None:
+            raise RuntimeError("MCP is not available in this session.")
+        return self._app.mcp
+
+    async def _h_mcp_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        mcp = self._app.mcp
+        return {
+            "enabled": bool(self._app.session.config.mcp_enabled),
+            # With env and header values: this is what the editor edits.
+            "servers": mcp.snapshot(secrets=True) if mcp is not None else [],
+        }
+
+    async def _h_mcp_reconnect(self, params: dict[str, Any]) -> dict[str, Any]:
+        return await self._mcp().reconnect(str(params.get("name") or ""))
+
+    async def _h_mcp_approve(self, params: dict[str, Any]) -> dict[str, Any]:
+        return await self._mcp().approve(str(params.get("name") or ""))
+
+    async def _h_mcp_set_enabled(self, params: dict[str, Any]) -> dict[str, Any]:
+        return await self._mcp().set_enabled(
+            str(params.get("name") or ""), bool(params.get("enabled"))
+        )
+
+    async def _h_mcp_save(self, params: dict[str, Any]) -> dict[str, Any]:
+        server = params.get("server")
+        if not isinstance(server, dict):
+            raise ValueError("No server was sent.")
+        return await self._mcp().upsert(server, previous=str(params.get("previous") or ""))
+
+    async def _h_mcp_remove(self, params: dict[str, Any]) -> dict[str, Any]:
+        await self._mcp().remove(str(params.get("name") or ""))
+        return {"ok": True}
+
     async def _h_shutdown(self, params: dict[str, Any]) -> dict[str, Any]:
         self._stop.set()
         return {"status": "closing"}
@@ -479,6 +515,12 @@ class BridgeServer:
         "graphAnswer": _h_graph_answer,
         "graphStatus": _h_graph_status,
         "graphListModels": _h_graph_list_models,
+        "mcpList": _h_mcp_list,
+        "mcpReconnect": _h_mcp_reconnect,
+        "mcpApprove": _h_mcp_approve,
+        "mcpSetEnabled": _h_mcp_set_enabled,
+        "mcpSave": _h_mcp_save,
+        "mcpRemove": _h_mcp_remove,
         "shutdown": _h_shutdown,
     }
 
@@ -506,6 +548,12 @@ class BridgeServer:
             "graphRun",
             "graphStop",
             "graphListModels",
+            # Stopping a server can wait on its process for a few seconds.
+            "mcpReconnect",
+            "mcpApprove",
+            "mcpSetEnabled",
+            "mcpSave",
+            "mcpRemove",
         }
     )
 

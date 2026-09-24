@@ -83,7 +83,7 @@ def tools_to_chat(
             "description": tool.description,
             "parameters": tool.input_schema,
         }
-        if strict:
+        if strict if tool.strict is None else tool.strict:
             function["strict"] = True
         definitions.append({"type": "function", "function": function})
     return definitions
@@ -100,7 +100,7 @@ def tools_to_responses(
             "description": tool.description,
             "parameters": tool.input_schema,
         }
-        if strict:
+        if strict if tool.strict is None else tool.strict:
             definition["strict"] = True
         definitions.append(definition)
     return definitions

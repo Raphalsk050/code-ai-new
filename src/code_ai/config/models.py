@@ -855,6 +855,13 @@ class AppConfig:
     # keep the expensive one for the conversation. Empty means every sub-agent
     # inherits the session model.
     subagent_models: list[str] = field(default_factory=list)
+    # MCP servers, in the shape Claude Code and Cursor use: name -> {command,
+    # args, env} or {type: "http", url, headers}. The workspace can declare more
+    # (.code-ai/mcp.json, .mcp.json, ...); those start once their fingerprint
+    # is in mcp_approved.
+    mcp_enabled: bool = True
+    mcp_servers: dict[str, Any] = field(default_factory=dict)
+    mcp_approved: list[str] = field(default_factory=list)
     # How tool calls reach the model. "auto" asks for native function calling
     # and falls back to the text protocol the first time an endpoint refuses
     # it; "native" insists; "text" never asks. The fallback is what makes a
@@ -946,6 +953,11 @@ class AppConfig:
             # they build by hand in the Doctor, and the first entry is the one a
             # sub-agent gets by default.
             subagent_models=_unique_names(data.get("subagent_models")),
+            mcp_enabled=bool(data.get("mcp_enabled", True)),
+            mcp_servers=(
+                dict(data["mcp_servers"]) if isinstance(data.get("mcp_servers"), dict) else {}
+            ),
+            mcp_approved=_unique_names(data.get("mcp_approved")),
             tool_calling=str(data.get("tool_calling", "auto")),
             memories_dir=(
                 str(data["memories_dir"]) if data.get("memories_dir") is not None else None

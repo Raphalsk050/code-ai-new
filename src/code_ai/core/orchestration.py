@@ -229,6 +229,8 @@ _APPROVAL_SENSITIVE_CAPABILITIES = frozenset(
         # Delegating runs sub-agents that may themselves write and run
         # processes, so the user approves the delegation once at this boundary.
         ToolCapability.DELEGATE,
+        # An MCP tool does whatever its server does; its own hints are untrusted.
+        ToolCapability.MCP,
     }
 )
 
@@ -518,6 +520,7 @@ class AgentOrchestrator:
         rules: RulesService | None = None,
         skills_catalog: Callable[[], str] | None = None,
         workflows_catalog: Callable[[], str] | None = None,
+        mcp_catalog: Callable[[], str] | None = None,
         system_prompt_builder: Callable[[], str] | None = None,
         reflection: ReflectionService | None = None,
         git_baseline: GitBaseline | None = None,
@@ -558,6 +561,8 @@ class AgentOrchestrator:
         # workflow the user just authored (here or in another agent's directory)
         # is invocable by name without a restart.
         self._workflows_catalog = workflows_catalog
+        # The connected MCP servers, which come and go while the session runs.
+        self._mcp_catalog = mcp_catalog
         # Interactive approver. Defaults to deny-all so non-interactive runs keep
         # the prior behaviour; the terminal UI swaps in a modal-backed gateway.
         self.approval_gateway: ApprovalGateway = approval_gateway or DenyAllGateway()
@@ -714,6 +719,7 @@ class AgentOrchestrator:
             rules=self.rules.render_for_prompt() if self.rules else "",
             skills=self._skills_catalog() if self._skills_catalog else "",
             workflows=self._workflows_catalog() if self._workflows_catalog else "",
+            mcp=self._mcp_catalog() if self._mcp_catalog else "",
             code_index=self._code_index_summary(),
             tool_enabled=self.tool_registry.has,
             on_demand_catalog=(
@@ -3253,6 +3259,9 @@ class AgentOrchestrator:
             # of failing the tool outright.
             return True
         if mode == "auto":
+            return False
+        # A read-only tool from an MCP server the user trusts needs no prompt.
+        if getattr(self.tool_registry.get(name), "approval_exempt", False):
             return False
         # "ask": prompt before tools that mutate the workspace or run processes.
         return bool(self._capabilities_for(name) & _APPROVAL_SENSITIVE_CAPABILITIES)

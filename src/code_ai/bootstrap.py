@@ -18,7 +18,7 @@ from code_ai.config.defaults import (
     project_memories_dir,
     project_rules_dir,
 )
-from code_ai.config.loader import load_config
+from code_ai.config.loader import load_config, persist_config_updates
 from code_ai.config.models import AppConfig
 from code_ai.context.compression import ContextCompressor
 from code_ai.context.conversation import ConversationState
@@ -41,6 +41,7 @@ from code_ai.core.workflows import WorkflowService
 from code_ai.events.bus import AsyncEventBus
 from code_ai.index import CodeIndexService, build_code_index
 from code_ai.interop import external_rule_sources, skill_sources, workflow_sources
+from code_ai.mcp import McpManager
 from code_ai.prompts import build_failure_lesson_prompt, build_system_prompt
 from code_ai.providers.base import ModelProvider
 from code_ai.providers.factory import create_provider
@@ -139,6 +140,7 @@ from code_ai.tools.terminal import (
 from code_ai.tools.web import WebSearchTool
 from code_ai.tools.workflows import UseWorkflowTool
 from code_ai.util.paths import WorkspacePolicy
+from code_ai.version import __version__
 
 
 def build_tool_registry() -> ToolRegistry:
@@ -500,6 +502,19 @@ def build_application(
         )
     )
 
+    async def _persist_mcp(changes: dict[str, Any]) -> None:
+        persist_config_updates(config, changes)
+
+    # Servers connect once the session starts (CodeAIApplication.start), in the
+    # background; their tools land in this same registry as each one is ready.
+    mcp = McpManager(
+        config=config,
+        registry=registry,
+        event_bus=event_bus,
+        client_version=__version__,
+        persist=_persist_mcp,
+    )
+
     def tool_context(cancel_event: asyncio.Event | None) -> ToolContext:
         return ToolContext(
             config=config,
@@ -534,6 +549,7 @@ def build_application(
         rules=rules,
         skills_catalog=_skills_catalog,
         workflows_catalog=workflows.render_for_prompt,
+        mcp_catalog=mcp.prompt_catalog,
         reflection=reflection,
         git_baseline=GitBaseline(workspace),
     )
@@ -555,6 +571,7 @@ def build_application(
         # The orchestrator graph hires sub-agents directly, so it needs the
         # factory rather than the dispatch tool's coordinator.
         subagent_runtime=subagent_runtime,
+        mcp=mcp,
     )
 
 

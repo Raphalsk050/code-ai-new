@@ -24,6 +24,11 @@ class ToolRegistry:
             raise ToolArgumentError(f"Tool already registered: {tool.name}")
         self._tools[tool.name] = tool
 
+    def unregister(self, name: str) -> None:
+        """Drop a tool whose provider went away (an MCP server disconnecting)."""
+
+        self._tools.pop(name, None)
+
     def names(self) -> list[str]:
         return sorted(name for name in self._tools if name not in self._disabled)
 
@@ -56,6 +61,7 @@ class ToolRegistry:
                 name=self._tools[name].name,
                 description=self._tools[name].description,
                 input_schema=self._tools[name].input_schema,
+                strict=getattr(self._tools[name], "strict", None),
             )
             for name in self.names()
             if allowed_names is None or name in allowed_names

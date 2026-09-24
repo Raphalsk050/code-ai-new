@@ -187,6 +187,7 @@ class PlannerToolPolicy:
                     ToolCapability.LOCAL_READ,
                     ToolCapability.LOCAL_WRITE,
                     ToolCapability.COMPUTER_CONTROL,
+                    ToolCapability.MCP,
                     ToolCapability.INTERACTION,
                     ToolCapability.INTERNAL_TRANSITION,
                     ToolCapability.INTERNAL_COMPLETION,
@@ -225,6 +226,7 @@ class PlannerToolPolicy:
                     ToolCapability.LOCAL_WRITE,
                     ToolCapability.PROCESS,
                     ToolCapability.COMPUTER_CONTROL,
+                    ToolCapability.MCP,
                     ToolCapability.INTERACTION,
                     ToolCapability.INTERNAL_TRANSITION,
                     ToolCapability.INTERNAL_COMPLETION,
@@ -350,11 +352,23 @@ class PlannerToolPolicy:
         registry: ToolRegistry,
         capabilities: set[ToolCapability],
     ) -> set[str]:
+        # An MCP tool that only reads (a ticket, a page, a resource) is allowed
+        # wherever reading is; the approval prompt still covers it.
+        reading = ToolCapability.LOCAL_READ in capabilities
         return {
             name
             for name in names
             if self._capabilities(registry, name).intersection(capabilities)
+            or (reading and self._reads_through_mcp(registry, name))
         }
+
+    def _reads_through_mcp(self, registry: ToolRegistry, name: str) -> bool:
+        tool = registry.get(name)
+        return (
+            tool is not None
+            and getattr(tool, "read_only", False) is True
+            and ToolCapability.MCP in self._capabilities(registry, name)
+        )
 
     def _has_capability(
         self, registry: ToolRegistry, name: str, capability: ToolCapability
