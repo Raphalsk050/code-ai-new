@@ -167,6 +167,18 @@ class NodeExecutor(Protocol):
         name: str = "",
     ) -> AgentOutcome: ...
 
+    async def run_clean(
+        self,
+        *,
+        node_id: str,
+        name: str,
+        system: str,
+        task: str,
+        model: ModelBinding | None,
+        timeout_s: int,
+        cancel: asyncio.Event,
+    ) -> AgentOutcome: ...
+
     async def judge(
         self,
         *,
@@ -461,6 +473,8 @@ class GraphInterpreter:
                 raise _Stop(RunStatus.COMPLETED, "reached End")
             case NodeKind.PROFESSION:
                 return await self._run_profession(node, stack)
+            case NodeKind.CLEAN_AGENT:
+                return await self._run_clean(node, stack)
             case NodeKind.PRINT:
                 return await self._run_print(node, stack)
             case NodeKind.SEQUENCE:
@@ -515,6 +529,26 @@ class GraphInterpreter:
                 name=str(node.data.get("name") or "").strip(),
             )
         )
+        return await self._take_report(node, outcome, stack)
+
+    async def _run_clean(self, node: NodeProgram, stack: list[_Step]) -> str:
+        model = await self._pull(node, "model")
+        outcome = await self._race(
+            self._executor.run_clean(
+                node_id=node.id,
+                name=str(node.data.get("name") or "").strip(),
+                system=_as_text(await self._pull(node, "system")),
+                task=_as_text(await self._pull(node, "task")),
+                model=model if isinstance(model, ModelBinding) else None,
+                timeout_s=_as_int(node.data.get("timeout_s"), 0),
+                cancel=self._cancel,
+            )
+        )
+        return await self._take_report(node, outcome, stack)
+
+    async def _take_report(
+        self, node: NodeProgram, outcome: AgentOutcome, stack: list[_Step]
+    ) -> str:
         for key, value in (outcome.usage or {}).items():
             self._usage[key] = self._usage.get(key, 0) + int(value)
         if outcome.status == "cancelled":

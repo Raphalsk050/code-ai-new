@@ -41,6 +41,7 @@ from code_ai.core.subagents.runtime import SubagentRuntime
 from code_ai.events.bus import AsyncEventBus
 from code_ai.events.models import EventEnvelope
 from code_ai.providers.base import ModelProvider
+from code_ai.providers.models import Message, ModelRequest
 from code_ai.tools.output import bound_text
 
 logger = logging.getLogger(__name__)
@@ -139,9 +140,9 @@ class GraphNodeExecutor:
         self._run_id = run_id
         self._provider_factory = provider_factory
         self._secrets = dict(secrets or {})
-        # One provider per distinct endpoint, so ten nodes pointing at the same
-        # server share a client instead of opening ten.
-        self._providers: dict[tuple[str, str, str], ModelProvider] = {}
+        # One provider per distinct endpoint and sampling, so ten nodes pointing
+        # at the same server share a client instead of opening ten.
+        self._providers: dict[tuple[str, ...], ModelProvider] = {}
 
     # -- NodeExecutor -----------------------------------------------------
 
@@ -282,6 +283,94 @@ class GraphNodeExecutor:
             status="completed", summary=result.text or "", usage=usage, agent_name=agent_name
         )
 
+    async def run_clean(
+        self,
+        *,
+        node_id: str,
+        name: str,
+        system: str,
+        task: str,
+        model: ModelBinding | None,
+        timeout_s: int,
+        cancel: asyncio.Event,
+    ) -> AgentOutcome:
+        """One model call carrying exactly what the node says: no framing, no tools."""
+
+        agent_name = generate_agent_name()
+        try:
+            provider, _ = self._endpoint_for(model)
+        except ValueError as exc:
+            return AgentOutcome(status="rejected", error=str(exc), agent_name=agent_name)
+        messages = [Message(role="user", content=task)]
+        if system.strip():
+            messages.insert(0, Message(role="system", content=system))
+        request = ModelRequest(
+            model=(model.model if model and model.model else self._config.model),
+            messages=messages,
+            max_output_tokens=self._config.output_token_reserve,
+        )
+        label = name.strip() or "clean agent"
+        await self._bus.emit(
+            "graph.agent.started",
+            {
+                "run_id": self._run_id,
+                "node_id": node_id,
+                "agent_name": agent_name,
+                "profession": label,
+                "model": model.label() if model else self._config.model,
+                "writes": False,
+                "tools": [],
+                "tool_count": 0,
+                "task": bound_text(task, 500),
+            },
+            source="graph",
+        )
+        await self._bus.emit(
+            "graph.node.progress",
+            {
+                "run_id": self._run_id,
+                "node_id": node_id,
+                "agent_name": agent_name,
+                "profession": label,
+                "event": "model.request.started",
+                "detail": "waiting for the model",
+            },
+            source="graph",
+        )
+        timeout = timeout_s or self._config.budgets.subagent_worker_timeout_s
+        try:
+            response = await asyncio.wait_for(
+                (provider or self._runtime.provider).complete(request), timeout=timeout
+            )
+        except TimeoutError:
+            return AgentOutcome(
+                status="timeout",
+                error=f"The model did not answer within {timeout}s.",
+                agent_name=agent_name,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # degrade: a broken node reports, never crashes the run
+            logger.exception("Graph node %s failed", node_id)
+            return AgentOutcome(
+                status="failed", error=str(exc) or type(exc).__name__, agent_name=agent_name
+            )
+        usage = response.usage
+        return AgentOutcome(
+            status="completed",
+            summary=response.text or "",
+            usage=(
+                {
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    "total_tokens": usage.total_tokens,
+                }
+                if usage
+                else {}
+            ),
+            agent_name=agent_name,
+        )
+
     async def judge(
         self,
         *,
@@ -339,9 +428,10 @@ class GraphNodeExecutor:
     ) -> tuple[ModelProvider | None, dict[str, Any]]:
         """Resolve a Model node into a provider plus the config fields to replace.
 
-        ``None`` means "the session's own provider", which is the common case: a
-        node that only names a model runs on the session endpoint, and only a
-        different endpoint costs a second client.
+        ``None`` means "the session's own provider": a node that only names a
+        model runs on the session endpoint. A provider reads sampling from the
+        config it was built with, so a node that sets any gets a client of its
+        own even on that endpoint - on the session's, it would be ignored.
         """
 
         if binding is None:
@@ -350,20 +440,25 @@ class GraphNodeExecutor:
         sampling = self._sampling_overrides(binding)
         if sampling is not None:
             overrides["sampling"] = sampling
-        if not (binding.base_url or binding.api_mode or binding.api_key_ref not in ("", "session")):
+        own_endpoint = bool(
+            binding.base_url or binding.api_mode or binding.api_key_ref not in ("", "session")
+        )
+        if not own_endpoint and sampling is None:
             return None, overrides
 
         api_mode = binding.api_mode or self._config.api_mode
         base_url = binding.base_url or self._config.base_url
         api_key = self._resolve_key(binding.api_key_ref)
-        overrides |= {"api_mode": api_mode, "base_url": base_url, "api_key": api_key}
+        if own_endpoint:
+            overrides |= {"api_mode": api_mode, "base_url": base_url, "api_key": api_key}
+        sampling = sampling or self._config.sampling
 
-        key = (api_mode, base_url, api_key)
+        key = (api_mode, base_url, api_key, repr(sampling))
         cached = self._providers.get(key)
         if cached is not None:
             return cached, overrides
         candidate = dataclasses.replace(
-            self._config, api_mode=api_mode, base_url=base_url, api_key=api_key
+            self._config, api_mode=api_mode, base_url=base_url, api_key=api_key, sampling=sampling
         )
         factory = self._provider_factory or _default_provider_factory
         provider = factory(candidate)

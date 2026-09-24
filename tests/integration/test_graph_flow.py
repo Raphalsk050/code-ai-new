@@ -727,3 +727,39 @@ async def test_a_profession_with_no_switch_on_can_only_talk(tmp_path) -> None:
 
     assert _offered(provider) == set()
     assert started["tool_count"] == 0
+
+
+async def test_a_clean_agent_reaches_the_model_with_nothing_added(tmp_path) -> None:
+    provider = ScriptedProvider(default="tudo bem, e voce?")
+    app = app_for(tmp_path, provider)
+    collector = Collector()
+    app.subscribe(collector)
+    await app.start()
+    doc = graph(
+        [
+            node("start", "start"),
+            node("ana", "clean_agent", task="Ola, tudo bem?"),
+            node("bia", "clean_agent", task="Oi", system="Sempre termine com uma pergunta."),
+            node("show", "print"),
+            node("end", "end"),
+        ],
+        [
+            wire("e1", ("start", "out"), ("ana", "in")),
+            wire("e2", ("ana", "out"), ("bia", "in")),
+            wire("e3", ("bia", "out"), ("show", "in")),
+            wire("e4", ("ana", "report"), ("show", "value"), "data"),
+            wire("e5", ("show", "out"), ("end", "in")),
+        ],
+    )
+    await run_graph(app, doc)
+    await app.close()
+
+    assert collector.of("graph.run.completed")[0]["status"] == "completed"
+    assert collector.of("graph.print")[0]["text"] == "tudo bem, e voce?"
+    first, second = provider.requests[-2:]
+    assert [(m.role, m.content) for m in first.messages] == [("user", "Ola, tudo bem?")]
+    assert [(m.role, m.content) for m in second.messages] == [
+        ("system", "Sempre termine com uma pergunta."),
+        ("user", "Oi"),
+    ]
+    assert not first.tools and not second.tools

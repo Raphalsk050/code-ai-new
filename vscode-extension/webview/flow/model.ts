@@ -33,13 +33,14 @@ export const KIND_COLORS: Record<string, string> = {
   end: "#b91c1c",
   model: "#0369a1",
   profession: "#2563eb",
+  clean_agent: "#1e40af",
   custom_profession: "#c2410c",
   tools: "#4338ca",
   user_chat: "#0f766e",
   print: "#a16207",
 };
 
-const FOOTER_KINDS = new Set(["profession", "custom_profession", "tools"]);
+const FOOTER_KINDS = new Set(["profession", "clean_agent", "custom_profession", "tools"]);
 
 export function accentOf(spec: NodeKindSpec): string {
   return KIND_COLORS[spec.kind] ?? CATEGORY_COLORS[spec.category] ?? CATEGORY_COLORS.flow;
@@ -130,6 +131,8 @@ export function summaryOf(node: FlowNode, spec: NodeKindSpec): string {
       const profession = String(data.profession ?? "").trim();
       return profession ? profession.replace(/_/g, " ") : t("custom agent");
     }
+    case "clean_agent":
+      return String(data.name ?? "").trim() || t("clean agent");
     case "tools": {
       const name = String(data.name ?? "").trim();
       const count = Array.isArray(data.tools) ? data.tools.length : 0;

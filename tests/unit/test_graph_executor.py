@@ -112,14 +112,24 @@ def test_different_endpoints_get_different_providers() -> None:
     assert len(instance.built) == 2  # type: ignore[attr-defined]
 
 
-def test_sampling_overrides_ride_along_without_a_new_provider() -> None:
+def test_sampling_gets_a_provider_built_with_it() -> None:
+    # A provider reads sampling from its own config: on the session's client a
+    # node's temperature would never reach the model.
     instance = executor()
+    binding = ModelBinding(model="m", temperature=0.1, top_k=20)
 
-    provider, overrides = instance._endpoint_for(ModelBinding(model="m", temperature=0.1, top_k=20))
+    provider, overrides = instance._endpoint_for(binding)
+    again, _ = instance._endpoint_for(ModelBinding(model="other", temperature=0.1, top_k=20))
 
-    assert provider is None
+    assert provider is not None and again is provider
+    built = instance.built  # type: ignore[attr-defined]
+    assert len(built) == 1
+    assert built[0].sampling.temperature == pytest.approx(0.1)
+    assert built[0].sampling.top_k == 20
+    # Still the session endpoint: only the sampling is the node's own.
+    assert built[0].base_url == "http://session.local/v1"
+    assert "base_url" not in overrides
     assert overrides["sampling"].temperature == pytest.approx(0.1)
-    assert overrides["sampling"].top_k == 20
 
 
 def test_an_env_key_is_read_from_the_environment(monkeypatch) -> None:
@@ -287,3 +297,100 @@ async def test_a_second_question_with_the_same_id_releases_the_first() -> None:
     assert await first == ""
     assert gateway.resolve("c1", "answer") is True
     assert await second == "answer"
+
+
+# -- the clean agent -------------------------------------------------------
+
+
+class ChatStub:
+    """A provider that answers once and remembers exactly what it was sent."""
+
+    def __init__(self, reply: str = "oi") -> None:
+        self.reply = reply
+        self.requests: list = []
+
+    async def complete(self, request):
+        from code_ai.providers.models import ModelResponse, TokenUsage
+
+        self.requests.append(request)
+        return ModelResponse(
+            text=self.reply,
+            usage=TokenUsage(input_tokens=5, output_tokens=2, total_tokens=7),
+        )
+
+
+def clean_executor(chat: ChatStub) -> GraphNodeExecutor:
+    from types import SimpleNamespace
+
+    return GraphNodeExecutor(
+        config=AppConfig.from_mapping({"api_mode": "ollama", "model": "session-model"}),
+        runtime=SimpleNamespace(provider=chat),  # type: ignore[arg-type]
+        profiles=graph_profile_registry(),
+        event_bus=AsyncEventBus(),
+        judge_call=None,  # type: ignore[arg-type]
+        gateway=UserChatGateway(),
+        run_id="run-1",
+    )
+
+
+async def test_a_clean_agent_sends_the_task_and_nothing_else() -> None:
+    chat = ChatStub("tudo bem, e voce?")
+
+    outcome = await clean_executor(chat).run_clean(
+        node_id="n1",
+        name="",
+        system="",
+        task="Ola, tudo bem?",
+        model=None,
+        timeout_s=0,
+        cancel=asyncio.Event(),
+    )
+
+    assert outcome.ok and outcome.summary == "tudo bem, e voce?"
+    assert outcome.usage == {"input_tokens": 5, "output_tokens": 2, "total_tokens": 7}
+    request = chat.requests[0]
+    assert [(message.role, message.content) for message in request.messages] == [
+        ("user", "Ola, tudo bem?")
+    ]
+    assert request.tools == []
+    assert request.model == "session-model"
+
+
+async def test_a_clean_agent_sends_its_system_prompt_verbatim() -> None:
+    chat = ChatStub()
+
+    await clean_executor(chat).run_clean(
+        node_id="n1",
+        name="Goodall",
+        system="Sempre termine com uma pergunta.",
+        task="Oi",
+        model=ModelBinding(model="gemma"),
+        timeout_s=0,
+        cancel=asyncio.Event(),
+    )
+
+    request = chat.requests[0]
+    assert [(message.role, message.content) for message in request.messages] == [
+        ("system", "Sempre termine com uma pergunta."),
+        ("user", "Oi"),
+    ]
+    assert request.model == "gemma"
+
+
+async def test_a_clean_agent_that_fails_reports_instead_of_raising() -> None:
+    class Broken(ChatStub):
+        async def complete(self, request):
+            raise RuntimeError("endpoint down")
+
+    outcome = await clean_executor(Broken()).run_clean(
+        node_id="n1",
+        name="",
+        system="",
+        task="Oi",
+        model=None,
+        timeout_s=0,
+        cancel=asyncio.Event(),
+    )
+
+    assert outcome.status == "failed"
+    assert "endpoint down" in outcome.error

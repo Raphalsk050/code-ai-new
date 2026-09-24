@@ -42,6 +42,7 @@ class NodeKind(StrEnum):
     MODEL = "model"
     PROFESSION = "profession"
     CUSTOM_PROFESSION = "custom_profession"
+    CLEAN_AGENT = "clean_agent"
     TOOLS = "tools"
     SEQUENCE = "sequence"
     DECISION = "decision"
@@ -463,6 +464,53 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
                     default=40,
                     help="How many tool round-trips it gets before it must report.",
                 ),
+                FieldSpec(
+                    name="timeout_s",
+                    kind="number",
+                    label="Timeout (s)",
+                    default=0,
+                    help="0 keeps the worker budget from settings.",
+                ),
+            ),
+        ),
+    ),
+    NodeKindSpec(
+        kind=NodeKind.CLEAN_AGENT,
+        title="Clean agent",
+        description=(
+            "Sends the task to the model as it is: no system prompt unless you write "
+            "one, no framing, no tools, nothing added. The reply is the report."
+        ),
+        category="agent",
+        pins=(
+            _exec_in(),
+            _exec_out(),
+            PinSpec(name="model", type=PinType.MODEL, direction="in"),
+            PinSpec(name="system", type=PinType.STRING, direction="in"),
+            PinSpec(name="task", type=PinType.STRING, direction="in", required=True),
+            PinSpec(name="report", type=PinType.STRING, direction="out"),
+        ),
+        fields=(
+            *_grouped(
+                "Who",
+                FieldSpec(
+                    name="name",
+                    kind="text",
+                    label="Name",
+                    default="",
+                    help="What to call it on the node and in the log.",
+                ),
+                FieldSpec(
+                    name="system",
+                    kind="textarea",
+                    label="System prompt",
+                    default="",
+                    help="Sent exactly as written. Empty sends no system message at all.",
+                ),
+            ),
+            *_grouped("Task", FieldSpec(name="task", kind="textarea", label="Task", default="")),
+            *_grouped(
+                "Limits",
                 FieldSpec(
                     name="timeout_s",
                     kind="number",

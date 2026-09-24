@@ -554,3 +554,18 @@ def test_the_catalog_serves_the_permissions_and_the_tool_groups() -> None:
     tools_pin = next(pin for pin in agent["pins"] if pin["name"] == "tools")
     assert tools_pin["multi"] is True
     assert sum(1 for row in payload["professions"] if row["plain"]) == 1
+
+
+def test_a_clean_agent_needs_a_task_and_nothing_more() -> None:
+    doc = graph()
+    doc["nodes"][2] = {"id": "n3", "kind": "clean_agent", "pos": [200, 0], "data": {}}
+    doc["edges"] = [edge for edge in doc["edges"] if edge["id"] != "e2"]
+    program, issues = compile_graph(doc, professions=PROFESSIONS)
+
+    assert program is None
+    assert any("needs task" in message for message in errors(issues))
+
+    doc["nodes"][2]["data"] = {"task": "Oi", "name": "Ana"}
+    program, issues = compile_ok(doc)
+    assert errors(issues) == []
+    assert program.nodes["n3"].label == "Ana"

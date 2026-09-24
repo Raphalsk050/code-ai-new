@@ -21,6 +21,11 @@ export const GLYPHS: Record<string, Glyph> = {
     fill: "M7.1 2.6 A0.9 0.9 0 1 0 8.9 2.6 A0.9 0.9 0 1 0 7.1 2.6 Z " +
       "M5 8.5 A1 1 0 1 0 7 8.5 A1 1 0 1 0 5 8.5 Z M9 8.5 A1 1 0 1 0 11 8.5 A1 1 0 1 0 9 8.5 Z",
   },
+  // The agent's head with nothing around it: no antenna, no ears.
+  clean_agent: {
+    d: "M3.5 4.5 H12.5 V12.5 H3.5 Z",
+    fill: "M5 8.5 A1 1 0 1 0 7 8.5 A1 1 0 1 0 5 8.5 Z M9 8.5 A1 1 0 1 0 11 8.5 A1 1 0 1 0 9 8.5 Z",
+  },
   custom_profession: {
     d: "M2.5 4 H13.5 V12.5 H2.5 Z M9 7 H11.5 M9 9.5 H11.5 M4 11 Q6 8.9 8 11",
     fill: "M4.6 7.2 A1.4 1.4 0 1 0 7.4 7.2 A1.4 1.4 0 1 0 4.6 7.2 Z",

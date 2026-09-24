@@ -145,6 +145,13 @@ export function chipsFor(catalog: Catalog | null, graph: FlowGraph, node: FlowNo
     if (names.length === 0) return [{ label: t("none picked"), tone: "muted" }];
     return names.map((name) => ({ label: name, tone: "tools" }));
   }
+  if (node.kind === "clean_agent") {
+    const own = String(node.data?.system ?? "").trim() !== "";
+    return [
+      { label: t(own ? "own system prompt" : "no system prompt"), tone: "muted" },
+      { label: t("no tools"), tone: "muted" },
+    ];
+  }
   if (node.kind !== "profession" && node.kind !== "custom_profession") return [];
   if (node.kind === "profession" && wiredToolsets(graph, node.id).length > 0) {
     const granted = grantedTools(catalog, graph, node);

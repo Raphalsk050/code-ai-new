@@ -40,6 +40,7 @@ class FakeExecutor:
         self.answers = list(answers or [])
         self.answer_delay = answer_delay
         self.agent_calls: list[dict[str, Any]] = []
+        self.clean_calls: list[dict[str, Any]] = []
         self.judge_calls: list[dict[str, Any]] = []
         self.ask_calls: list[dict[str, Any]] = []
 
@@ -82,6 +83,25 @@ class FakeExecutor:
         return AgentOutcome(
             status="completed", summary=f"{profession} did: {task}", usage={"total_tokens": 10}
         )
+
+    async def run_clean(
+        self,
+        *,
+        node_id: str,
+        name: str,
+        system: str,
+        task: str,
+        model: ModelBinding | None,
+        timeout_s: int,
+        cancel: asyncio.Event,
+    ) -> AgentOutcome:
+        self.clean_calls.append(
+            {"node_id": node_id, "name": name, "system": system, "task": task, "model": model}
+        )
+        scripted = self.reports.get(node_id)
+        if callable(scripted):
+            scripted = scripted(task)
+        return AgentOutcome(status="completed", summary=scripted or f"clean: {task}")
 
     async def judge(
         self,
@@ -1104,3 +1124,46 @@ async def test_an_agent_with_no_profession_passes_its_instructions_through() -> 
     call = executor.agent_calls[0]
     assert call["profession"] == ""
     assert call["extra"] == "You are an auditor."
+
+
+async def test_two_clean_agents_talk_through_a_variable() -> None:
+    graph = doc(
+        [
+            node("start", "start"),
+            node("loop", "loop", kind="count", count=2),
+            node("read", "var_get", variable="said"),
+            node("ana", "clean_agent", name="Ana", system="Pergunte algo."),
+            node("bia", "clean_agent", name="Bia"),
+            node("keep", "var_set", variable="said"),
+            node("end", "end"),
+        ],
+        [
+            wire("e1", ("start", "out"), ("loop", "in")),
+            wire("e2", ("loop", "body"), ("ana", "in")),
+            wire("e3", ("read", "value"), ("ana", "task"), "data"),
+            wire("e4", ("ana", "out"), ("bia", "in")),
+            wire("e5", ("ana", "report"), ("bia", "task"), "data"),
+            wire("e6", ("bia", "out"), ("keep", "in")),
+            wire("e7", ("bia", "report"), ("keep", "value"), "data"),
+            wire("e8", ("loop", "completed"), ("end", "in")),
+        ],
+        variables=[{"id": "v1", "name": "said", "type": "string", "default": "Oi"}],
+    )
+    executor = FakeExecutor(
+        reports={"ana": lambda task: f"Ana ouviu: {task}", "bia": lambda task: f"Bia: {task}"}
+    )
+
+    outcome, _, _ = await run(graph, executor)
+
+    assert outcome.status is RunStatus.COMPLETED
+    calls = executor.clean_calls
+    assert [call["name"] for call in calls] == ["Ana", "Bia", "Ana", "Bia"]
+    assert calls[0] == {
+        "node_id": "ana",
+        "name": "Ana",
+        "system": "Pergunte algo.",
+        "task": "Oi",
+        "model": None,
+    }
+    assert calls[2]["task"] == "Bia: Ana ouviu: Oi"
+    assert outcome.variables["said"] == "Bia: Ana ouviu: Bia: Ana ouviu: Oi"

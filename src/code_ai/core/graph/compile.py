@@ -431,6 +431,8 @@ def _check_node_data(
                 _check_custom_profession_node(node_id, node, tools, collector)
             case NodeKind.TOOLS:
                 _check_tools_node(node_id, node, tools, collector)
+            case NodeKind.CLEAN_AGENT:
+                _check_budgets(node_id, node, collector)
             case NodeKind.DECISION:
                 _check_decision_node(node_id, node, wired, collector)
             case NodeKind.LOOP:

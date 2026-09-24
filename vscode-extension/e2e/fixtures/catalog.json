@@ -456,6 +456,114 @@
       ]
     },
     {
+      "kind": "clean_agent",
+      "title": "Clean agent",
+      "description": "Sends the task to the model as it is: no system prompt unless you write one, no framing, no tools, nothing added. The reply is the report.",
+      "category": "agent",
+      "pure": false,
+      "max_instances": 0,
+      "pins": [
+        {
+          "name": "in",
+          "type": "exec",
+          "direction": "in",
+          "label": "in",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#FFFFFF"
+        },
+        {
+          "name": "out",
+          "type": "exec",
+          "direction": "out",
+          "label": "out",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#FFFFFF"
+        },
+        {
+          "name": "model",
+          "type": "model",
+          "direction": "in",
+          "label": "model",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#3794FF"
+        },
+        {
+          "name": "system",
+          "type": "string",
+          "direction": "in",
+          "label": "system",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#E040FB"
+        },
+        {
+          "name": "task",
+          "type": "string",
+          "direction": "in",
+          "label": "task",
+          "required": true,
+          "dynamic": false,
+          "multi": false,
+          "color": "#E040FB"
+        },
+        {
+          "name": "report",
+          "type": "string",
+          "direction": "out",
+          "label": "report",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#E040FB"
+        }
+      ],
+      "fields": [
+        {
+          "name": "name",
+          "kind": "text",
+          "label": "Name",
+          "default": "",
+          "options": [],
+          "help": "What to call it on the node and in the log.",
+          "group": "Who"
+        },
+        {
+          "name": "system",
+          "kind": "textarea",
+          "label": "System prompt",
+          "default": "",
+          "options": [],
+          "help": "Sent exactly as written. Empty sends no system message at all.",
+          "group": "Who"
+        },
+        {
+          "name": "task",
+          "kind": "textarea",
+          "label": "Task",
+          "default": "",
+          "options": [],
+          "help": "",
+          "group": "Task"
+        },
+        {
+          "name": "timeout_s",
+          "kind": "number",
+          "label": "Timeout (s)",
+          "default": 0,
+          "options": [],
+          "help": "0 keeps the worker budget from settings.",
+          "group": "Limits"
+        }
+      ]
+    },
+    {
       "kind": "tools",
       "title": "Tools",
       "description": "A hand-picked set of tools. Wire it into an Agent's tools pin and the agent gets exactly these; wire several and they add up.",

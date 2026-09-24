@@ -94,6 +94,12 @@ class SubagentRuntime:
 
         return self._base_registry
 
+    @property
+    def provider(self) -> ModelProvider:
+        """The session's provider, for a call that needs no agent around it."""
+
+        return self._provider
+
     def build(
         self,
         profile: SubagentProfile,

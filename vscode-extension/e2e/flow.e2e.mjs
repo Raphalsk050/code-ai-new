@@ -1435,4 +1435,31 @@ export const tests = {
     const selected = await ui.page.evaluate(() => String(window.getSelection() ?? ""));
     assert(selected === "", `the drag selected text: ${JSON.stringify(selected.slice(0, 80))}`);
   },
+  // -------------------------------------------------------------------
+  "a clean agent sends only what it is given": async (ui, assert) => {
+    await ui.page.setViewportSize({ width: 1400, height: 950 });
+    await boot(ui, graph([node("n1", "start", [0, 0])], []));
+    await openCanvasMenu(ui);
+    await ui.page.fill('[data-testid="menu-search"]', "clean");
+    await ui.page.click('[data-testid="menu-kind-clean_agent"]');
+
+    let sent = await lastGraph(ui);
+    const added = sent.nodes.find((item) => item.kind === "clean_agent");
+    assert(Boolean(added), "no clean agent reached the document");
+    let footer = await ui.page
+      .locator(`[data-testid="node-${added.id}"] .flow-node-chip-text`)
+      .allTextContents();
+    assert(footer.includes("no system prompt"), `the footer said ${JSON.stringify(footer)}`);
+
+    await ui.page.fill('[data-testid="field-system"]', "Sempre termine com uma pergunta.");
+    await ui.page.fill('[data-testid="field-task"]', "Ola, tudo bem?");
+    sent = await lastGraph(ui);
+    const edited = sent.nodes.find((item) => item.id === added.id);
+    assert(edited.data.system === "Sempre termine com uma pergunta.", "the system prompt was lost");
+    footer = await ui.page
+      .locator(`[data-testid="node-${added.id}"] .flow-node-chip-text`)
+      .allTextContents();
+    assert(footer.includes("own system prompt"), `the footer said ${JSON.stringify(footer)}`);
+    await ui.shot("46-clean-agent");
+  },
 };

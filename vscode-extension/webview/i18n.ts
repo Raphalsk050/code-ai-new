@@ -240,6 +240,17 @@ const PT: Record<string, string> = {
   web: "web",
   review: "revisar",
   "none picked": "nenhuma",
+  "clean agent": "agente limpo",
+  "Clean agent": "Agente limpo",
+  "no system prompt": "sem prompt de sistema",
+  "own system prompt": "prompt de sistema próprio",
+  "no tools": "sem ferramentas",
+  "System prompt": "Prompt de sistema",
+  "Sends the task to the model as it is: no system prompt unless you write one, no framing, no tools, nothing added. The reply is the report.":
+    "Manda a tarefa ao modelo do jeito que está: sem prompt de sistema a não ser que você escreva um, sem enquadramento, sem ferramentas, nada a mais. A resposta é o relatório.",
+  "Sent exactly as written. Empty sends no system message at all.":
+    "Vai exatamente como escrito. Vazio não manda mensagem de sistema nenhuma.",
+  "What to call it on the node and in the log.": "Como chamá-lo no nó e no log.",
   "talk only": "só conversa",
 
   // -- toolbar, inspector sections, minimap -------------------------------
