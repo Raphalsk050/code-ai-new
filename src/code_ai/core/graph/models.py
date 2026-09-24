@@ -111,6 +111,7 @@ PERMISSIONS: tuple[tuple[str, str, str], ...] = (
     ("can_run", "process", "Run commands"),
     ("can_browse", "web", "Use the web"),
     ("can_review", "review", "Run reviews"),
+    ("can_mcp", "mcp", "Use MCP tools"),
 )
 PERMISSION_FIELDS: tuple[str, ...] = tuple(field for field, _, _ in PERMISSIONS)
 
@@ -271,7 +272,7 @@ def _exec_out(name: str = "out", label: str = "", dynamic: bool = False) -> PinS
 
 
 def _permission_fields(*, inherit: bool) -> tuple[FieldSpec, ...]:
-    """The five switches. On an Agent they start unset and follow its profession."""
+    """The permission switches. On an Agent they start unset and follow its profession."""
 
     return tuple(
         FieldSpec(

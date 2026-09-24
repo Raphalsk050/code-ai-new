@@ -323,6 +323,15 @@
           "group": "Access"
         },
         {
+          "name": "can_mcp",
+          "kind": "permission",
+          "label": "Use MCP tools",
+          "default": null,
+          "options": [],
+          "help": "",
+          "group": "Access"
+        },
+        {
           "name": "blocked_tools",
           "kind": "tools",
           "label": "Never use",
@@ -438,6 +447,15 @@
           "name": "can_review",
           "kind": "permission",
           "label": "Run reviews",
+          "default": false,
+          "options": [],
+          "help": "",
+          "group": "Access"
+        },
+        {
+          "name": "can_mcp",
+          "kind": "permission",
+          "label": "Use MCP tools",
           "default": false,
           "options": [],
           "help": "",
@@ -2367,6 +2385,11 @@
       "field": "can_review",
       "capability": "review",
       "label": "Run reviews"
+    },
+    {
+      "field": "can_mcp",
+      "capability": "mcp",
+      "label": "Use MCP tools"
     }
   ],
   "tools": [

@@ -95,7 +95,33 @@ test("an unset switch follows the profession", () => {
     can_run: false,
     can_browse: true,
     can_review: false,
+    // No built-in profession reaches MCP servers; a node has to switch it on.
+    can_mcp: false,
   });
+});
+
+test("MCP tools are grouped by the server they come from", () => {
+  const mcp = (name: string, group: string) => ({
+    name,
+    description: "",
+    capabilities: ["mcp"],
+    group,
+    enabled: true,
+  });
+  const view = groupTools(
+    indexCatalog({
+      ...RAW,
+      tools: [
+        ...(RAW.tools ?? []),
+        mcp("mcp__zeta__a", "mcp:zeta"),
+        mcp("mcp__alpha__b", "mcp:alpha"),
+      ],
+    })
+  );
+
+  const titles = view.map((group) => group.title);
+  assert.deepEqual(titles.slice(-2), ["MCP · alpha", "MCP · zeta"]);
+  assert.equal(titles.includes("Other"), false);
 });
 
 test("an agent with no profession starts from the plain toolbox", () => {

@@ -503,7 +503,7 @@ interface AccessProps {
 }
 
 /**
- * The five switches. On an Agent an unset switch follows the profession, and
+ * The permission switches. On an Agent an unset switch follows the profession, and
  * wired Tools nodes replace them outright, so both states are drawn as such.
  */
 function PermissionGroup({ node, state, dispatch }: AccessProps): JSX.Element {

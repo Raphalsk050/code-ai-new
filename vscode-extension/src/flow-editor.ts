@@ -121,6 +121,9 @@ export class FlowEditorProvider implements vscode.CustomTextEditorProvider {
   }
 }
 
+/** MCP server states that add or take away tools. */
+const MCP_TOOLS_MOVED = new Set(["connected", "disabled", "failed"]);
+
 /** One open graph tab. */
 class FlowSession {
   constructor(
@@ -138,6 +141,7 @@ class FlowSession {
   private runId = "";
   private running = false;
   private validateTimer?: NodeJS.Timeout;
+  private catalogTimer?: NodeJS.Timeout;
   private pendingValidation?: FlowGraph;
 
   start(): void {
@@ -197,6 +201,7 @@ class FlowSession {
 
   dispose(): void {
     if (this.validateTimer) clearTimeout(this.validateTimer);
+    if (this.catalogTimer) clearTimeout(this.catalogTimer);
     // A tab closed mid-run leaves the backend running the graph; stopping it is
     // what the user means by closing the editor.
     if (this.running) this.bridge.send("graphStop", { run_id: this.runId });
@@ -242,6 +247,16 @@ class FlowSession {
   }
 
   private onBridgeEvent(event: EventEnvelope): void {
+    // A server connecting or going away changes the tools a Tools node offers.
+    // Servers come up together at startup, so the reloads are coalesced.
+    if (event.event_type === "mcp.server.status" && MCP_TOOLS_MOVED.has(String(event.payload?.status))) {
+      clearTimeout(this.catalogTimer);
+      this.catalogTimer = setTimeout(() => {
+        this.invalidateCatalog();
+        void this.sendCatalog();
+      }, 500);
+      return;
+    }
     // Only graph traffic and the bridge's own notices concern this editor; the
     // chat panel handles the rest.
     if (!event.event_type.startsWith("graph.") && event.event_type !== "error") return;

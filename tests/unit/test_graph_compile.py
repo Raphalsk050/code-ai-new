@@ -547,6 +547,7 @@ def test_the_catalog_serves_the_permissions_and_the_tool_groups() -> None:
         "can_run",
         "can_browse",
         "can_review",
+        "can_mcp",
     ]
     assert payload["tools"] == [{"name": "read_file"}]
     assert payload["tool_groups"][0]["name"] == "read"

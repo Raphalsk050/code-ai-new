@@ -85,6 +85,7 @@ class ProfessionBinding:
     can_run: bool = False
     can_browse: bool = False
     can_review: bool = False
+    can_mcp: bool = False
     blocked: tuple[str, ...] = ()
     max_steps: int = 0
     timeout_s: int = 0
@@ -875,6 +876,7 @@ def _profession_from(node: NodeProgram) -> ProfessionBinding:
         can_run=_as_bool(node.data.get("can_run")),
         can_browse=_as_bool(node.data.get("can_browse")),
         can_review=_as_bool(node.data.get("can_review")),
+        can_mcp=_as_bool(node.data.get("can_mcp")),
         blocked=_names(node.data.get("blocked_tools")),
         max_steps=_as_int(node.data.get("max_steps"), 0),
         timeout_s=_as_int(node.data.get("timeout_s"), 0),

@@ -27,6 +27,7 @@ const SHORT: Record<string, string> = {
   can_run: "run",
   can_browse: "web",
   can_review: "review",
+  can_mcp: "mcp",
 };
 
 export interface PermissionState {
@@ -86,7 +87,7 @@ export function wiredToolsets(graph: FlowGraph, nodeId: string): FlowNode[] {
   return wiredInto(graph, nodeId, "tools").filter((node) => node.kind === "tools");
 }
 
-/** The five switches as they will apply to this node's agent. */
+/** The permission switches as they will apply to this node's agent. */
 export function permissionsOf(
   catalog: Catalog | null,
   graph: FlowGraph,
@@ -181,7 +182,17 @@ export function groupTools(catalog: Catalog | null, query = ""): ToolGroupView[]
     title: group.title,
     tools: matches.filter((tool) => tool.group === group.name),
   }));
+  // An MCP server is a group of its own, named after it; anything else unknown is "Other".
   const rest = matches.filter((tool) => !known.has(tool.group));
-  if (rest.length > 0) groups.push({ name: "other", title: "Other", tools: rest });
+  const servers = [...new Set(rest.map((tool) => tool.group).filter((g) => g.startsWith("mcp:")))];
+  for (const group of servers.sort()) {
+    groups.push({
+      name: group,
+      title: `MCP · ${group.slice(4)}`,
+      tools: rest.filter((tool) => tool.group === group),
+    });
+  }
+  const other = rest.filter((tool) => !tool.group.startsWith("mcp:"));
+  if (other.length > 0) groups.push({ name: "other", title: "Other", tools: other });
   return groups.filter((group) => group.tools.length > 0);
 }

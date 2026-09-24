@@ -112,3 +112,21 @@ def test_select_narrows_to_names_and_drops_the_excluded(registry) -> None:
     )
 
     assert subset.names() == ["read_file"]
+
+
+def test_mcp_tools_come_grouped_by_server_and_need_the_mcp_switch() -> None:
+    from code_ai.mcp.tools import McpTool
+
+    registry = build_tool_registry()
+    registry.register(
+        McpTool(manager=None, server="github", spec={"name": "search"}, trusted=False)
+    )
+    rows = {row["name"]: row for row in tools_payload(registry)}
+
+    assert rows["mcp__github__search"]["group"] == "mcp:github"
+    assert rows["mcp__github__search"]["capabilities"] == ["mcp"]
+
+    plain = apply_access(profile("explorer"), None, registry)
+    allowed = apply_access(profile("explorer"), ToolAccess(switches={"can_mcp": True}), registry)
+    assert "mcp__github__search" not in granted(registry, plain)
+    assert "mcp__github__search" in granted(registry, allowed)

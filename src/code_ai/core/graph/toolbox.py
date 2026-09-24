@@ -49,7 +49,7 @@ def tools_payload(registry: ToolRegistry) -> list[dict[str, Any]]:
                 "name": name,
                 "description": _summary(tool),
                 "capabilities": sorted(str(item) for item in caps),
-                "group": _group(name, caps),
+                "group": _group(name, tool, caps),
                 # Switched off in the settings: the agent would not get it anyway.
                 "enabled": registry.has(name),
             }
@@ -103,7 +103,10 @@ def apply_access(
     )
 
 
-def _group(name: str, caps: frozenset[ToolCapability]) -> str:
+def _group(name: str, tool: Any, caps: frozenset[ToolCapability]) -> str:
+    if ToolCapability.MCP in caps and getattr(tool, "server", ""):
+        # One group per server, whether or not its tools load on demand.
+        return f"mcp:{tool.server}"
     deferred = group_of(name)
     if deferred is not None:
         return deferred.name

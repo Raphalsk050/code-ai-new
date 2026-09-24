@@ -210,6 +210,7 @@ const PT: Record<string, string> = {
   Permissions: "Permissões",
   "Use the web": "Usar a web",
   "Run reviews": "Rodar revisões",
+  "Use MCP tools": "Usar ferramentas MCP",
   Custom: "Personalizado",
   "custom agent": "agente personalizado",
   profession: "profissão",
