@@ -63,7 +63,7 @@ def rule_sources(workspace: Path | str) -> list[RuleSource]:
 def skill_sources(workspace: Path | str) -> list[SkillSource]:
     sources = [SkillSource(root=codex_home() / "skills", origin=ORIGIN)]
     admin = paths.machine_file("", "/etc/codex/skills", "/etc/codex/skills")
-    if admin is not None and str(admin):
+    if admin is not None:
         sources.append(SkillSource(root=admin, origin=ORIGIN))
     return sources
 

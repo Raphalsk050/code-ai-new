@@ -40,13 +40,17 @@ def app_data() -> Path:
 
 
 def machine_file(windows: str, macos: str, linux: str) -> Path | None:
-    """A file IT deploys for every user of the machine; none while redirected."""
+    """A file IT deploys for every user of the machine; none while redirected,
+    or where the platform's entry is empty."""
 
     if redirected():
         return None
     if sys.platform == "win32":
-        return Path(windows)
-    return Path(macos if sys.platform == "darwin" else linux)
+        chosen = windows
+    else:
+        chosen = macos if sys.platform == "darwin" else linux
+    # Path("") is the current directory, never what was meant.
+    return Path(chosen) if chosen else None
 
 
 def env_path(name: str) -> Path | None:

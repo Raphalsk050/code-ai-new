@@ -589,3 +589,15 @@ def test_a_session_starts_with_everything_another_agent_left(tmp_path, home, rep
     assert app.subagent_profiles.get("code-reviewer") is not None
     dispatch = app.orchestrator.tool_registry.get("dispatch_agent")
     assert "code-reviewer: Reviews diffs." in dispatch.description
+
+
+def test_a_platform_without_a_machine_location_never_means_the_current_directory(
+    monkeypatch, tmp_path
+) -> None:
+    from code_ai.interop import codex
+
+    monkeypatch.delenv(paths.HOME_ENV)
+    monkeypatch.setattr(paths.sys, "platform", "win32")
+
+    assert paths.machine_file("", "/etc/x", "/etc/x") is None
+    assert all(str(source.root) != "." for source in codex.skill_sources(tmp_path))

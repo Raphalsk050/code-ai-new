@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 25,
-  "patch": 0,
-  "build": 46,
+  "patch": 1,
+  "build": 47,
   "updated": "2026-09-24",
-  "note": "Reads instructions, rules, skills, commands, sub-agents and MCP servers other agents set up"
+  "note": "Codex admin skills are not read from the current directory on Windows"
 }
