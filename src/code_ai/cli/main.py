@@ -10,6 +10,7 @@ from code_ai.bootstrap import build_application
 from code_ai.cli.headless import run_headless
 from code_ai.config.loader import config_init, load_config, redacted_config_json
 from code_ai.core.errors import CodeAIError, ConfigurationError
+from code_ai.util.unicode import use_utf8_stdio
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -146,6 +147,7 @@ def _overrides(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    use_utf8_stdio()
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

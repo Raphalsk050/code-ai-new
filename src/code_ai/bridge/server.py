@@ -14,6 +14,7 @@ from code_ai.app.slash_catalog import catalog_payload
 from code_ai.bridge.approval import WireApprovalGateway
 from code_ai.events.models import EventEnvelope
 from code_ai.providers.models import ImageContent
+from code_ai.util.unicode import scrub_json
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +97,8 @@ class BridgeServer:
         if not isinstance(params, dict):
             self._send_error(request_id, _INVALID_REQUEST, "params must be an object.")
             return
+        # A lone surrogate (JSON may escape one) would break every later request.
+        params = scrub_json(params)
 
         handler = self._HANDLERS.get(method)
         if handler is None:

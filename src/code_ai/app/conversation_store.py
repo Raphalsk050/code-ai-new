@@ -9,6 +9,7 @@ from typing import Any
 
 from code_ai.providers.models import ImageContent, Message, ToolCall
 from code_ai.util.fileio import RetryPolicy, atomic_write_text
+from code_ai.util.unicode import scrub_json
 
 # The store is not handed the app configuration, so it uses the built-in
 # retry defaults, which mirror the file_io section's own.
@@ -173,7 +174,8 @@ class ConversationStore:
         data = self.load(conversation_id)
         if not data:
             return []
-        return [_message_from_record(r) for r in data.get("messages", [])]
+        # Scrubbed so a conversation saved while Windows garbled the pipe resumes.
+        return [_message_from_record(scrub_json(r)) for r in data.get("messages", [])]
 
     def list(self) -> list[dict[str, Any]]:
         """Conversation metadata, newest-first (id, title, timestamps, count)."""
