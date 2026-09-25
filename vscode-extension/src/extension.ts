@@ -91,6 +91,10 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   onSettingsSaved?: () => void;
   private view?: vscode.WebviewView;
   private webview?: vscode.Webview;
+  /** The thread on screen, so a backend that restarts can pick it up again. */
+  private activeConversation?: string;
+  /** Messages sent while the backend was down, delivered once it is back. */
+  private pendingSubmits: Record<string, unknown>[] = [];
   private mode: AppMode = "agent";
   private autoRunRefactor = false;
   // Inline code hints (editor ghost text). Enabled state + model are mirrored
@@ -587,17 +591,32 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         case "submit": {
           const context =
             message.includeContext === false ? "" : formatEditorContext(currentEditorContext());
-          client?.send("submitUserMessage", {
+          const params = {
             text: message.text,
             context,
             images: message.images ?? [],
             // Default false: a second message is usually a second question, and
             // steering silently folds it into the answer to the first.
             steer: message.steer === true,
+          };
+          if (client) {
+            client.send("submitUserMessage", params);
+            break;
+          }
+          // Dropping it here is what made one crash look like a dead panel.
+          this.pendingSubmits.push(params);
+          void this.webview?.postMessage({
+            type: "event",
+            event: syntheticNotice(
+              "The Code-AI backend is not running; starting it, and your message goes " +
+                "out as soon as it is up."
+            ),
           });
+          this.bridge.ensureStarted();
           break;
         }
         case "newConversation":
+          this.activeConversation = message.id;
           client?.send("newConversation", { conversation_id: message.id });
           break;
         case "listConversations":
@@ -609,6 +628,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
             .catch((err) => console.error("[code-ai] listConversations failed", err));
           break;
         case "loadConversation":
+          this.activeConversation = message.id;
           client
             ?.request<{ id: string; messages: any[] }>("loadConversation", { conversation_id: message.id })
             .then((r) =>
@@ -621,6 +641,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
             .catch((err) => this.recoverFromMissingConversation(client, message.id, err));
           break;
         case "deleteConversation":
+          if (message.id === this.activeConversation) this.activeConversation = undefined;
           client?.send("deleteConversation", { conversation_id: message.id });
           break;
         case "getSettings":
@@ -841,6 +862,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         // The restart re-read the config, so the hint state may have changed.
         this.refreshInlineSettings();
       },
+      onStarted: (client) => void this.resume(client),
     });
 
     view.onDidDispose(() => {
@@ -858,6 +880,24 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     // Learn whether inline hints are on so the provider and status bar are
     // correct straight away (and after a restart re-reads edited config).
     this.refreshInlineSettings();
+  }
+
+  /**
+   * A new backend process knows nothing of the thread on screen. Point it back
+   * at that thread first, then send what was typed while it was down, in that
+   * order, so the message lands in the conversation it was written for.
+   */
+  private async resume(client: BridgeClient): Promise<void> {
+    const id = this.activeConversation;
+    if (id) {
+      try {
+        await client.request("loadConversation", { conversation_id: id, adopt: true });
+      } catch (err) {
+        console.error("[code-ai] could not resume the conversation", err);
+      }
+    }
+    const pending = this.pendingSubmits.splice(0);
+    for (const params of pending) client.send("submitUserMessage", params);
   }
 
   /**

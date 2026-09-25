@@ -70,15 +70,26 @@ class BridgeServer:
     # -- command ingress ---------------------------------------------------
 
     async def _read_loop(self) -> None:
+        # One bad line must never end the session: the extension does not get a
+        # second chance to send anything once this loop is gone.
         loop = asyncio.get_running_loop()
         while not self._stop.is_set():
-            line = await loop.run_in_executor(None, self._stdin.readline)
+            try:
+                line = await loop.run_in_executor(None, self._stdin.readline)
+            except (UnicodeDecodeError, ValueError):
+                logger.exception("Bridge could not read a line")
+                self._send_error(None, _PARSE_ERROR, "The message was not valid text.")
+                continue
             if line == "":  # EOF: the client closed the pipe.
                 break
             line = line.strip()
             if not line:
                 continue
-            await self._handle_line(line)
+            try:
+                await self._handle_line(line)
+            except Exception:  # noqa: BLE001 - reported, and the loop goes on
+                logger.exception("Bridge failed on a message")
+                self._send_error(None, _PARSE_ERROR, "The bridge could not handle a message.")
 
     async def _handle_line(self, line: str) -> None:
         try:
@@ -212,6 +223,8 @@ class BridgeServer:
 
     async def _h_load_conversation(self, params: dict[str, Any]) -> dict[str, Any]:
         conversation_id = str(params.get("conversation_id") or params.get("id") or "")
+        if params.get("adopt"):
+            return await self._app.load_conversation(conversation_id, adopt=True)
         return await self._app.load_conversation(conversation_id)
 
     async def _h_delete_conversation(self, params: dict[str, Any]) -> dict[str, Any]:

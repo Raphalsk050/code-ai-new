@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 25,
-  "patch": 2,
-  "build": 48,
+  "patch": 3,
+  "build": 49,
   "updated": "2026-09-25",
-  "note": "Extension text reaches the model intact on Windows"
+  "note": "The extension keeps working after the backend fails"
 }

@@ -105,3 +105,14 @@ async def test_delete_clears_current_id(tmp_path: Path) -> None:
     assert await app.delete_conversation("c-9") is True
     assert app.conversation_id is None
     assert app.conversation_store.load("c-9") is None
+
+
+async def test_a_restarted_backend_adopts_a_thread_it_never_saved(tmp_path: Path) -> None:
+    app = _app(tmp_path, ConversationState(messages=[Message(role="system", content="SYS")]))
+
+    result = await app.load_conversation("c-unsaved", adopt=True)
+
+    assert app.conversation_id == "c-unsaved"
+    assert result == {"id": "c-unsaved", "title": "", "messages": []}
+    # Nothing on screen may be wiped: no reset for the client to act on.
+    assert app.event_bus.events == []

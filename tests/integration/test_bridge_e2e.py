@@ -134,9 +134,19 @@ async def test_a_turn_streams_events_and_persists_the_conversation(tmp_path) -> 
     )
     await asyncio.gather(*server._turn_tasks)
 
-    types = [event["event_type"] for event in _events(out.lines)]
+    events = _events(out.lines)
+    types = [event["event_type"] for event in events]
     assert "user.message" in types
-    assert "assistant.final" in types
+    # A streamed answer reaches the panel as deltas; assistant.final is only for
+    # text that never streamed.
+    answer = "".join(
+        event["payload"]["text"]
+        for event in events
+        if event["event_type"] == "model.stream.delta"
+        and event["payload"].get("channel", "answer") == "answer"
+    )
+    assert answer == "feito"
+    assert "turn.completed" in types
     assert "status.changed" in types
 
     # The extension's history reads this list, so it must include the thread and

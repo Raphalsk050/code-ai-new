@@ -103,8 +103,9 @@ class _StubApp:
     async def list_conversations(self) -> list:
         return [{"id": "c1", "title": "T", "updated_at": 1.0, "message_count": 2}]
 
-    async def load_conversation(self, conversation_id: str) -> dict:
+    async def load_conversation(self, conversation_id: str, *, adopt: bool = False) -> dict:
         self.loaded_id = conversation_id
+        self.adopted = adopt
         return {
             "id": conversation_id,
             "title": "T",
@@ -470,3 +471,61 @@ async def test_the_client_decides_between_steering_and_waiting() -> None:
         )
         await asyncio.gather(*server._turn_tasks)
     assert app.submitted_steer == [False, True]
+
+
+class _BadThenGood:
+    """A pipe whose first line cannot be decoded, as Windows' cp1252 used to fail."""
+
+    def __init__(self, lines: list[str]) -> None:
+        self._lines = lines
+        self._failed = False
+
+    def readline(self) -> str:
+        if not self._failed:
+            self._failed = True
+            raise UnicodeDecodeError("charmap", b"\x9d", 0, 1, "character maps to <undefined>")
+        return self._lines.pop(0) if self._lines else ""
+
+
+async def test_one_unreadable_line_does_not_end_the_session() -> None:
+    app = _StubApp()
+    stdin = _BadThenGood(
+        [json.dumps({"jsonrpc": "2.0", "method": "setPermissionMode", "params": {"mode": "auto"}})]
+    )
+    out = io.StringIO()
+    server = BridgeServer(app, stdin=stdin, stdout=out)
+
+    assert await server.run() == 0
+    assert app.permission_mode == "auto"
+    assert '"code": -32700' in out.getvalue()
+
+
+async def test_a_message_that_blows_up_does_not_end_the_session(monkeypatch) -> None:
+    app = _StubApp()
+    lines = [
+        json.dumps({"jsonrpc": "2.0", "method": "boom", "params": {}}),
+        json.dumps({"jsonrpc": "2.0", "method": "setPermissionMode", "params": {"mode": "auto"}}),
+    ]
+    server = BridgeServer(app, stdin=io.StringIO("\n".join(lines) + "\n"), stdout=io.StringIO())
+    handle = server._handle_line
+
+    async def flaky(line: str) -> None:
+        if '"boom"' in line:
+            raise RuntimeError("unexpected")
+        await handle(line)
+
+    monkeypatch.setattr(server, "_handle_line", flaky)
+
+    assert await server.run() == 0
+    assert app.permission_mode == "auto"
+
+
+async def test_resuming_after_a_restart_adopts_the_thread() -> None:
+    app = _StubApp()
+    server, out = _server(app)
+    await server._handle_line(
+        json.dumps({"jsonrpc": "2.0", "id": 5, "method": "loadConversation",
+                    "params": {"conversation_id": "c-9", "adopt": True}})
+    )
+
+    assert (app.loaded_id, app.adopted) == ("c-9", True)

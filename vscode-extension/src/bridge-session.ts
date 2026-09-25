@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as vscode from "vscode";
 
 import { BridgeClient } from "./bridge-client";
+import { afterCrash } from "./crash-policy";
 import { DEFAULT_COMMAND, resolveCommand, spawnFailureHint } from "./resolve-command";
 import type { BridgeMethod, EventEnvelope } from "./protocol";
 
@@ -19,10 +20,15 @@ export interface BridgeSubscriber {
   onEvent(event: EventEnvelope): void;
   /** The bridge was replaced; a view holding per-session state should drop it. */
   onRestart?(): void;
+  /** A backend process was just spawned, the first one or a replacement. */
+  onStarted?(client: BridgeClient): void;
 }
 
 /** How many stderr lines to keep, so a traceback survives whole. */
 const STDERR_TAIL = 40;
+
+/** Pause before starting a backend that died, so a crash cannot spin the CPU. */
+const AUTO_RESTART_DELAY_MS = 1_000;
 
 export class BridgeSession {
   constructor(private readonly extensionPath: string) {}
@@ -35,6 +41,9 @@ export class BridgeSession {
   private log?: vscode.OutputChannel;
   /** The tail of it, to quote when the process dies without explaining itself. */
   private stderrTail: string[] = [];
+  /** When the backend died unasked, recently: what bounds the automatic restarts. */
+  private crashes: number[] = [];
+  private pendingRestart?: ReturnType<typeof setTimeout>;
 
   /** The live client, or `undefined` while the backend is down. */
   get client(): BridgeClient | undefined {
@@ -78,7 +87,13 @@ export class BridgeSession {
   /** Spawn the backend if it is not already up. Safe to call from every view. */
   ensureStarted(): void {
     if (this.bridge) return;
+    this.cancelPendingRestart();
     this.spawn();
+  }
+
+  private cancelPendingRestart(): void {
+    if (this.pendingRestart) clearTimeout(this.pendingRestart);
+    this.pendingRestart = undefined;
   }
 
   send(method: BridgeMethod, params: Record<string, unknown> = {}): void {
@@ -103,6 +118,9 @@ export class BridgeSession {
   restart(): void {
     const previous = this.bridge;
     this.bridge = undefined;
+    this.cancelPendingRestart();
+    // Asked for by the user: whatever crashed before starts from a clean slate.
+    this.crashes = [];
     previous?.dispose();
     this.broadcast(syntheticStatus("RECONNECTING"));
     this.broadcast(syntheticNotice("Restarting Code-AI to apply your settings…"));
@@ -111,6 +129,7 @@ export class BridgeSession {
   }
 
   dispose(): void {
+    this.cancelPendingRestart();
     this.bridge?.dispose();
     this.bridge = undefined;
     this.subscribers.clear();
@@ -198,14 +217,38 @@ export class BridgeSession {
       this.broadcast(
         syntheticError(said ? `bridge exited (${code}): ${said}` : `bridge exited (${code})`)
       );
-      if (said) {
-        vscode.window
-          .showErrorMessage(`Code-AI backend stopped: ${said}`, "Show log")
-          .then((choice) => {
-            if (choice === "Show log") this.log?.show(true);
-          });
+      // Left down, every message after this would go nowhere: start it again,
+      // unless it keeps dying on its own.
+      const decision = afterCrash(this.crashes, Date.now());
+      this.crashes = decision.crashes;
+      if (decision.restart) {
+        this.broadcast(syntheticNotice("The Code-AI backend stopped; starting it again…"));
+        this.pendingRestart = setTimeout(() => {
+          this.pendingRestart = undefined;
+          if (this.bridge) return;
+          for (const subscriber of this.subscribers) subscriber.onRestart?.();
+          this.spawn();
+        }, AUTO_RESTART_DELAY_MS);
+        return;
       }
+      vscode.window
+        .showErrorMessage(
+          `Code-AI backend stopped${said ? `: ${said}` : ` (exit ${code})`}`,
+          "Restart",
+          "Show log"
+        )
+        .then((choice) => {
+          if (choice === "Restart") this.restart();
+          if (choice === "Show log") this.log?.show(true);
+        });
     });
+    for (const subscriber of this.subscribers) {
+      try {
+        subscriber.onStarted?.(client);
+      } catch (err) {
+        console.error("[code-ai] bridge subscriber failed on start", err);
+      }
+    }
   }
 }
 

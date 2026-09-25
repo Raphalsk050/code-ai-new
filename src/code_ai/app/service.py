@@ -524,17 +524,26 @@ class CodeAIApplication:
             return []
         return self.conversation_store.list()
 
-    async def load_conversation(self, conversation_id: str) -> dict[str, Any]:
+    async def load_conversation(
+        self, conversation_id: str, *, adopt: bool = False
+    ) -> dict[str, Any]:
         """Resume a saved conversation: reload its messages into the live session.
 
         The current system prompt is kept (so rules/skills stay current) and the
         saved history replaces the rest, giving the model full context to
         continue. Returns the stored messages so the UI can rebuild the
         transcript when its own cache is empty.
+
+        ``adopt`` is for a backend that restarted under a thread it never saved
+        (it died during the first turn): the id is kept for what comes next
+        instead of failing, and nothing on screen is reset.
         """
         if not self.conversation_store:
             raise RuntimeError("Conversation persistence is not configured.")
         record = self.conversation_store.load(conversation_id)
+        if record is None and adopt and conversation_id:
+            self._conversation_id = conversation_id
+            return {"id": conversation_id, "title": "", "messages": []}
         if record is None:
             raise ValueError(f"No saved conversation with id {conversation_id!r}.")
         await self._cancel_running_turn()
