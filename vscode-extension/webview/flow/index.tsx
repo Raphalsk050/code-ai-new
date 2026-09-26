@@ -44,8 +44,10 @@ const send = (message: FlowWebviewToHost) => vscode.postMessage(message);
 function App(): JSX.Element {
   const [state, dispatch] = React.useReducer(reduce, undefined, initialState);
   // The graph as the host last saw it, so an edit that only changed selection
-  // does not write the document.
-  const pushed = React.useRef<string>("");
+  // does not write the document. Seeded with the placeholder the panel mounts
+  // on: that graph is not the user's, and pushing it blanks the file.
+  const pushed = React.useRef<string | null>(null);
+  if (pushed.current === null) pushed.current = JSON.stringify(state.graph);
   const stateRef = React.useRef(state);
   stateRef.current = state;
   // The right-click menu is pure UI: it never belongs in the document, so it

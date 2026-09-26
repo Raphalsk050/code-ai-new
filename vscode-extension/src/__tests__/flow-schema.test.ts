@@ -7,6 +7,7 @@ import {
   FLOW_SCHEMA_VERSION,
   nextId,
   parseFlow,
+  sameFlowText,
   serializeFlow,
 } from "../flow-schema";
 
@@ -141,6 +142,13 @@ test("a graph with no name still writes the version", () => {
 
   assert.equal(written.version, FLOW_SCHEMA_VERSION);
   assert.equal(written.name, "");
+});
+
+test("a CRLF document still reads as the text the editor wrote", () => {
+  const written = serializeFlow(parseFlow(JSON.stringify(SAMPLE)).graph!);
+
+  assert.equal(sameFlowText(written.replace(/\n/g, "\r\n"), written), true);
+  assert.equal(sameFlowText(written, serializeFlow(emptyFlow("pipeline"))), false);
 });
 
 // -- pin rules -----------------------------------------------------------

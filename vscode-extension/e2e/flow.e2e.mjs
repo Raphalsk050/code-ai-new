@@ -1524,4 +1524,22 @@ export const tests = {
     const nodes = await ui.page.locator("g.flow-node").count();
     assert(nodes === 9, `drew ${nodes} nodes`);
   },
+
+  // Opening a file is not an edit. The panel mounts on a placeholder graph, and
+  // pushing that one dirties the tab and blanks the file before it arrives.
+  "opening a graph leaves the document alone": async (ui, assert) => {
+    await ui.fromHost({ type: "flowCatalog", catalog: CATALOG });
+    await ui.fromHost({
+      type: "flowDocument",
+      graph: pipeline(),
+      fileName: "pipeline.flow.json",
+      readOnly: false,
+    });
+    await ui.page.waitForSelector('[data-testid="node-n3"]');
+
+    const edits = await ui.toHost("flowEdit");
+    assert(edits.length === 0, `sent ${edits.length} flowEdit just by opening`);
+    const nodes = await ui.page.locator("g.flow-node").count();
+    assert(nodes === 6, `drew ${nodes} nodes`);
+  },
 };

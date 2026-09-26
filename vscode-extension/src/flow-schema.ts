@@ -266,6 +266,15 @@ export function serializeFlow(graph: FlowGraph): string {
   return JSON.stringify(doc, null, 2) + "\n";
 }
 
+/**
+ * Whether two graph texts are the same file. VSCode keeps a file's CRLF and
+ * converts every edit to it, so a document never reads back byte-equal to what
+ * `serializeFlow` wrote.
+ */
+export function sameFlowText(a: string, b: string): boolean {
+  return a.replace(/\r\n/g, "\n") === b.replace(/\r\n/g, "\n");
+}
+
 function round(value: number): number {
   return Math.round((Number.isFinite(value) ? value : 0) * 1000) / 1000;
 }

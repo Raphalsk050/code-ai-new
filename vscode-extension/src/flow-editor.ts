@@ -10,6 +10,7 @@ import {
   FlowWebviewToHost,
   GraphCatalog,
   parseFlow,
+  sameFlowText,
   serializeFlow,
   ValidationIssue,
 } from "./flow-schema";
@@ -153,7 +154,7 @@ class FlowSession {
         if (event.document.uri.toString() !== this.document.uri.toString()) return;
         // Our own write comes back as a change; re-pushing it would fight the
         // user's cursor and, mid-drag, undo the drag.
-        if (event.document.getText() === this.lastWritten) return;
+        if (sameFlowText(event.document.getText(), this.lastWritten)) return;
         this.pushDocument();
       }),
       this.bridge.subscribe({
@@ -324,7 +325,7 @@ class FlowSession {
   /** Replace the whole document text. VSCode then owns dirty state and Ctrl+S. */
   private async write(graph: FlowGraph): Promise<void> {
     const text = serializeFlow(graph);
-    if (text === this.document.getText()) return;
+    if (sameFlowText(text, this.document.getText())) return;
     this.lastWritten = text;
     const edit = new vscode.WorkspaceEdit();
     edit.replace(

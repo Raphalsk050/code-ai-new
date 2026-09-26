@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 25,
-  "patch": 3,
-  "build": 49,
-  "updated": "2026-09-25",
-  "note": "The extension keeps working after the backend fails"
+  "patch": 4,
+  "build": 50,
+  "updated": "2026-09-26",
+  "note": "Open a saved graph without blanking it"
 }
