@@ -116,6 +116,8 @@ function App(): JSX.Element {
   const [dropping, setDropping] = React.useState(false);
   const [reveal, setReveal] = React.useState<{ section: "terminal"; nonce: number } | null>(null);
   const [terminalFocus, setTerminalFocus] = React.useState(0);
+  // Edits are shown in the editor's diff view: no live code or diff in here.
+  const [editorDiff, setEditorDiff] = React.useState(false);
 
   const [rootRef, width] = useContainerWidth<HTMLDivElement>();
   const scrollRef = React.useRef<HTMLDivElement>(null);
@@ -152,6 +154,8 @@ function App(): JSX.Element {
           );
         }
         dispatch(event);
+      } else if (data?.type === "editorDiff") {
+        setEditorDiff(data.enabled);
       } else if (data?.type === "mcpServers") {
         setMcp((m) => ({ ...m, list: data.list, error: "", busy: "" }));
       } else if (data?.type === "mcpError") {
@@ -657,6 +661,7 @@ function App(): JSX.Element {
 
   const resolveApproval = (callId: string, scope: ApprovalScope, reason?: string) =>
     send({ type: "resolveApproval", call_id: callId, scope, reason });
+  const openDiff = React.useCallback((path: string) => send({ type: "openDiff", path }), []);
   const setPermission = (m: PermissionMode) => send({ type: "setPermissionMode", mode: m });
 
   const applyRefactor = (markdown: string) => {
@@ -835,7 +840,9 @@ function App(): JSX.Element {
                       </div>
                     </div>
                   ) : (
-                    items.map((item) => <ItemView key={item.id} item={item} />)
+                    items.map((item) => (
+                      <ItemView key={item.id} item={item} onOpenDiff={editorDiff ? openDiff : undefined} />
+                    ))
                   )}
                   {showTyping && (
                     <TypingIndicator
@@ -847,6 +854,7 @@ function App(): JSX.Element {
                     <ApprovalCard
                       approval={state.approvals.pending}
                       onResolve={resolveApproval}
+                      onOpenDiff={editorDiff ? openDiff : undefined}
                     />
                   )}
                   {state.questions.pending.length > 0 && (
@@ -872,7 +880,7 @@ function App(): JSX.Element {
                 </div>
               </div>
 
-              <LiveCodePanel code={state.code} />
+              {!editorDiff && <LiveCodePanel code={state.code} />}
 
               <div
                 className={`composer-wrap ${dropping ? "dropping" : ""}`}

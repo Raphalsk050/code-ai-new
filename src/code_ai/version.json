@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 27,
+  "minor": 28,
   "patch": 0,
-  "build": 53,
+  "build": 54,
   "updated": "2026-09-29",
-  "note": "Failed steps retry on their own, and the running tool is named with its target"
+  "note": "File edits open in VS Code's own diff view as they are written"
 }

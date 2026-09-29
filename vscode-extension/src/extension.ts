@@ -4,6 +4,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 
 import type { BridgeClient } from "./bridge-client";
+import { EditDiffs } from "./edit-diff";
 import {
   BridgeSession,
   StartReason,
@@ -44,11 +45,16 @@ export function activate(context: vscode.ExtensionContext): void {
   // One backend for the window. Both the chat panel and the orchestrator-graph
   // editor subscribe to it, so either can be the first thing the user opens.
   const bridge = new BridgeSession(context.extensionUri.fsPath);
-  const provider = new ChatViewProvider(context.extensionUri, bridge);
+  // The agent's file edits, shown in the editor's diff view as they are made.
+  // Subscribed here rather than by the chat view, so they show with it closed.
+  const diffs = new EditDiffs();
+  const provider = new ChatViewProvider(context.extensionUri, bridge, diffs);
   const flowEditor = new FlowEditorProvider(context.extensionUri, bridge, context.secrets);
   provider.onSettingsSaved = () => flowEditor.refreshCatalog();
   context.subscriptions.push(
     bridge,
+    diffs,
+    bridge.subscribe({ onEvent: (event) => diffs.handle(event) }),
     vscode.window.registerWebviewViewProvider("code-ai.chat", provider, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
@@ -92,7 +98,8 @@ export function deactivate(): void {
 class ChatViewProvider implements vscode.WebviewViewProvider {
   constructor(
     private readonly extensionUri: vscode.Uri,
-    private readonly bridge: BridgeSession
+    private readonly bridge: BridgeSession,
+    private readonly diffs: EditDiffs
   ) {}
 
   /** The window's backend, shared with the graph editor. */
@@ -844,6 +851,9 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         case "restartBridge":
           this.bridge.restart();
           break;
+        case "openDiff":
+          void this.diffs.open(message.path);
+          break;
       }
     });
 
@@ -884,6 +894,16 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       },
       onStarted: (client, reason) => void this.resume(client, reason),
     });
+
+    // Where edits are reviewed: the editor's diff, or the panel's own view.
+    const postEditorDiff = () =>
+      void this.webview?.postMessage({ type: "editorDiff", enabled: this.diffs.enabled });
+    editorSubs.push(
+      vscode.workspace.onDidChangeConfiguration((e) => {
+        if (e.affectsConfiguration("code-ai.diff.openInEditor")) postEditorDiff();
+      })
+    );
+    postEditorDiff();
 
     view.onDidDispose(() => {
       editorSubs.forEach((d) => d.dispose());

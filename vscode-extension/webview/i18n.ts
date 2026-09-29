@@ -508,6 +508,9 @@ const PT: Record<string, string> = {
   "retrying {0}": "tentando de novo {0}",
   "retrying {0}/{1}": "tentando de novo {0}/{1}",
   "in {0}s": "em {0}s",
+  "Show the change in the editor": "Mostrar a mudança no editor",
+  "Show diff": "Ver diff",
+  "The change is open in the editor, as a diff.": "A mudança está aberta no editor, como diff.",
   "The backend restarted mid-answer; sending your message again ({0}/{1})":
     "O backend reiniciou no meio da resposta; enviando sua mensagem de novo ({0}/{1})",
   "{0} nodes": "{0} nós",

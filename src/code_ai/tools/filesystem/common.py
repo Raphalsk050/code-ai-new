@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from code_ai.core.errors import ToolExecutionError
 from code_ai.util.fileio import NO_RETRY, RetryPolicy, read_bytes, retry_transient
+
+if TYPE_CHECKING:
+    from code_ai.tools.base import ToolContext
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -71,3 +75,28 @@ def read_text_file(path: Path, *, policy: RetryPolicy = NO_RETRY) -> tuple[str, 
         return data.decode("utf-8"), sha256_bytes(data)
     except UnicodeDecodeError as exc:
         raise ToolExecutionError(f"File is not valid UTF-8 text: {path}") from exc
+
+
+# A snapshot rides on one event; past this a front end reads the file itself.
+_SNAPSHOT_MAX_CHARS = 512_000
+
+
+async def announce_write(context: ToolContext, path: Path, before: str | None) -> None:
+    """Tell front ends what a file held right before a tool rewrites it.
+
+    The VS Code extension shows the change in the editor's diff view, and a
+    copy it read itself could already be the new content by the time it
+    lands. ``before`` is None for a file that does not exist yet. Never lets
+    a failure here stop the write.
+    """
+
+    if before is not None and len(before) > _SNAPSHOT_MAX_CHARS:
+        return
+    try:
+        await context.event_bus.emit(
+            "file.write.before",
+            {"path": str(path), "content": before or "", "existed": before is not None},
+            source="tools",
+        )
+    except Exception:  # noqa: BLE001 - a preview must never cost the write
+        return

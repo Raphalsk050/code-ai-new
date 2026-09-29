@@ -324,7 +324,9 @@ export type HostToWebview =
   | { type: "refactorPlanned"; id: string; markdown: string }
   | { type: "explainStatus"; status: "analyzing"; target: ExplainTarget }
   | { type: "explainResult"; markdown: string; target: ExplainTarget }
-  | { type: "explainError"; message: string };
+  | { type: "explainError"; message: string }
+  /** Whether file edits open in the editor's diff view (so the panel shows none). */
+  | { type: "editorDiff"; enabled: boolean };
 
 export type PermissionMode = "ask" | "auto" | "bypass";
 
@@ -377,4 +379,6 @@ export type WebviewToHost =
   | { type: "compact" }
   | { type: "resolveApproval"; call_id: string; scope: ApprovalScope; reason?: string }
   | { type: "setPermissionMode"; mode: PermissionMode }
-  | { type: "restartBridge" };
+  | { type: "restartBridge" }
+  /** Show what the agent changed in a file, in the editor's diff view. */
+  | { type: "openDiff"; path: string };

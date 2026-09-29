@@ -197,3 +197,40 @@ def test_rg_line_rejects_a_non_match_line(tmp_path) -> None:
 
     assert _parse_rg_line("", workspace_root=tmp_path, max_output_chars=600) is None
     assert _parse_rg_line("nonsense", workspace_root=tmp_path, max_output_chars=600) is None
+
+
+async def test_a_write_says_what_the_file_held_before_it(tmp_path) -> None:
+    # The VS Code extension diffs against this: a copy it read itself could
+    # already be the new content by the time the read lands.
+    context = make_context(tmp_path)
+    seen: list[dict] = []
+    context.event_bus.subscribe(
+        lambda event: seen.append(event.payload)
+        if event.event_type == "file.write.before"
+        else None
+    )
+    (tmp_path / "a.py").write_bytes(b"x = 1\n")
+
+    edit = {"path": "a.py", "old_text": "x = 1", "new_text": "x = 2"}
+    await EditCodeTool().execute(edit, context)
+    await WriteFileTool().execute({"path": "a.py", "content": "y = 3\n"}, context)
+    await WriteFileTool().execute({"path": "new.py", "content": "z\n"}, context)
+
+    assert [payload["content"] for payload in seen] == ["x = 1\n", "x = 2\n", ""]
+    assert [payload["existed"] for payload in seen] == [True, True, False]
+    assert seen[2]["path"] == str((tmp_path / "new.py").resolve())
+
+
+async def test_a_binary_file_is_not_offered_as_text_before_a_write(tmp_path) -> None:
+    context = make_context(tmp_path)
+    seen: list[dict] = []
+    context.event_bus.subscribe(
+        lambda event: seen.append(event.payload)
+        if event.event_type == "file.write.before"
+        else None
+    )
+    (tmp_path / "blob.bin").write_bytes(b"\x00\x01binary")
+
+    await WriteFileTool().execute({"path": "blob.bin", "content": "text now\n"}, context)
+
+    assert seen == []

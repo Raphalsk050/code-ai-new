@@ -2,7 +2,7 @@
   "name": "code-ai",
   "displayName": "Code-AI",
   "description": "Drive the Code-AI agent from VSCode. Ships the agent with it: no Python, no install.",
-  "version": "0.27.0",
+  "version": "0.28.0",
   "publisher": "code-ai",
   "private": true,
   "engines": {
@@ -108,6 +108,11 @@
           },
           "default": [],
           "description": "Extra arguments inserted before `bridge` (e.g. [\"--config\", \"/path/config.json\"])."
+        },
+        "code-ai.diff.openInEditor": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the agent's file edits in the editor's diff view as they are written, instead of inside the Code-AI panel."
         }
       }
     }

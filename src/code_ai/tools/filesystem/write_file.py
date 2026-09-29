@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 
 from code_ai.core.errors import ToolArgumentError, ToolExecutionError
 from code_ai.tools.base import ToolCapability, ToolContext
-from code_ai.tools.filesystem.common import sha256_bytes, sha256_file
+from code_ai.tools.filesystem.common import (
+    announce_write,
+    read_text_file,
+    sha256_bytes,
+    sha256_file,
+)
 from code_ai.tools.locations import LOCATION_SCHEMA, for_context
 from code_ai.tools.schema import tool_schema
 from code_ai.util.fileio import RetryPolicy, atomic_write_bytes
@@ -71,6 +77,9 @@ class WriteFileTool:
             raise ToolExecutionError("expected_sha256 was provided but file does not exist.")
 
         data = content.encode("utf-8")
+        before = await _current_text(path, policy)
+        if before is not None or not path.exists():
+            await announce_write(context, path, before)
         # Off the event loop: the write retries a locked file for up to a
         # second or two on Windows, and a slow network share can take longer
         # still. Neither should freeze the UI.
@@ -92,3 +101,15 @@ class WriteFileTool:
             "bytes_written": len(data),
             **outcome.to_dict(),
         }
+
+
+async def _current_text(path: Path, policy: RetryPolicy) -> str | None:
+    """The file's text before the write; None when it is new, binary or too big."""
+    if not path.exists():
+        return None
+    try:
+        text, _ = await asyncio.to_thread(read_text_file, path, policy=policy)
+    except (OSError, ToolExecutionError):
+        # Binary or oversized: nothing a text diff could show.
+        return None
+    return text

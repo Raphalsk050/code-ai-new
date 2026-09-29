@@ -24,7 +24,17 @@ import type { SessionState } from "./store/session";
 import { Item, ToolStatus, workingLabel } from "./store/transcript";
 import { ToolKind, toolKind } from "./tool-target";
 
-export function ItemView({ item }: { item: Item }): JSX.Element | null {
+/** The tools whose change the editor can show as a diff. */
+const DIFF_TOOLS = new Set(["write_file", "edit_code"]);
+
+export function ItemView({
+  item,
+  onOpenDiff,
+}: {
+  item: Item;
+  /** Set when edits are reviewed in the editor's diff view. */
+  onOpenDiff?: (path: string) => void;
+}): JSX.Element | null {
   switch (item.kind) {
     case "user":
       return <UserRow text={item.text} />;
@@ -36,7 +46,17 @@ export function ItemView({ item }: { item: Item }): JSX.Element | null {
       return <ThinkingRow text={item.text} streaming={item.streaming} />;
     case "tool":
       return (
-        <ToolRow name={item.name} target={item.target} status={item.status} detail={item.detail} />
+        <ToolRow
+          name={item.name}
+          target={item.target}
+          status={item.status}
+          detail={item.detail}
+          onOpen={
+            onOpenDiff && item.path && DIFF_TOOLS.has(item.name)
+              ? () => onOpenDiff(item.path)
+              : undefined
+          }
+        />
       );
     case "notice":
       return <NoticeRow level={item.level} text={item.text} />;
@@ -134,7 +154,13 @@ const KIND_ICON: Record<ToolKind, (props: { size?: number; className?: string })
   tool: IconTool,
 };
 
-function ToolRow(props: { name: string; target: string; status: ToolStatus; detail: string }) {
+function ToolRow(props: {
+  name: string;
+  target: string;
+  status: ToolStatus;
+  detail: string;
+  onOpen?: () => void;
+}) {
   const { name, target, status } = props;
   const [open, setOpen] = React.useState(false);
   // A write reports its path, which the target already shows.
@@ -156,11 +182,16 @@ function ToolRow(props: { name: string; target: string; status: ToolStatus; deta
           instead of being squeezed to a few letters in a narrow panel. */}
       {(target || (detail && !long)) && (
         <div className="tool-sub">
-          {target && (
-            <span className="tool-target" title={target}>
-              {target}
-            </span>
-          )}
+          {target &&
+            (props.onOpen ? (
+              <button className="tool-target tool-target-link" title={t("Show the change in the editor")} onClick={props.onOpen}>
+                {target}
+              </button>
+            ) : (
+              <span className="tool-target" title={target}>
+                {target}
+              </span>
+            ))}
           {detail && !long && <span className="tool-detail-inline">{detail}</span>}
         </div>
       )}

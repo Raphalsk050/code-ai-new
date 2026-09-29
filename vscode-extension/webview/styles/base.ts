@@ -193,6 +193,28 @@ body {
   color: var(--vscode-foreground);
 }
 .tool-sub .tool-detail-inline { flex: 1 1 0; min-width: 40px; margin-left: 0; }
+/* A file the agent changed: one click shows the change in the editor's diff. */
+.tool-target-link {
+  background: none; border: none; padding: 0; margin: 0; cursor: pointer; text-align: left;
+  color: var(--vscode-textLink-foreground, var(--accent));
+  text-decoration: underline; text-decoration-color: transparent; text-underline-offset: 2px;
+}
+.tool-target-link:hover { text-decoration-color: currentColor; }
+.tool-target-link:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--accent)); outline-offset: 2px; }
+/* An edit waiting for approval, reviewed in the editor rather than in here. */
+.approval-editor-diff {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface);
+}
+.approval-editor-diff .diff-path {
+  flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 0; border: none; background: none;
+  font-family: var(--vscode-editor-font-family, monospace); font-size: 12px;
+  color: var(--vscode-foreground);
+}
+.approval-editor-diff .btn-ghost { flex: none; padding: 3px 10px; }
+.approval-editor-note { flex-basis: 100%; font-size: 11.5px; color: var(--muted); }
 /* The call in flight is the one the reader is looking for. */
 .tool-running { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
 .tool-running .tool-name { color: var(--accent); }

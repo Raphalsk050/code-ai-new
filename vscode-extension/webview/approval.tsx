@@ -4,9 +4,12 @@ import { t, tf } from "./i18n";
 
 import type { ApprovalScope } from "../src/protocol";
 import { DiffView } from "./diff";
-import { IconTool } from "./icons";
+import { IconFile, IconTool } from "./icons";
 import { ripple } from "./motion";
 import type { PendingApproval } from "./store/approvals";
+
+/** The tools the editor shows as a diff while they wait for approval. */
+const EDITOR_DIFF_TOOLS = new Set(["write_file", "edit_code"]);
 
 function summarizeArgs(args: Record<string, any>): string {
   if (!args || typeof args !== "object") return "";
@@ -62,6 +65,8 @@ function renderDiff(tool: string, args: Record<string, any>): JSX.Element | null
 export function ApprovalCard(props: {
   approval: PendingApproval;
   onResolve: (callId: string, scope: ApprovalScope, reason?: string) => void;
+  /** Set when the change is reviewed in the editor's diff view instead of here. */
+  onOpenDiff?: (path: string) => void;
 }): JSX.Element {
   const { approval, onResolve } = props;
   const [denying, setDenying] = React.useState(false);
@@ -99,9 +104,10 @@ export function ApprovalCard(props: {
   const args = approval.arguments ?? {};
   const deny = () => onResolve(approval.call_id, "deny", feedback.trim());
 
-  const diff = renderDiff(approval.tool_name, args);
-  const argSummary = diff ? "" : summarizeArgs(args);
   const path = typeof args.path === "string" ? args.path : "";
+  const inEditor = !!props.onOpenDiff && !!path && EDITOR_DIFF_TOOLS.has(approval.tool_name);
+  const diff = inEditor ? null : renderDiff(approval.tool_name, args);
+  const argSummary = diff || inEditor ? "" : summarizeArgs(args);
 
   return (
     <div className="approval-card" ref={cardRef}>
@@ -112,6 +118,18 @@ export function ApprovalCard(props: {
       </div>
 
       <div className="approval-body">
+        {inEditor && (
+          <div className="approval-editor-diff">
+            <IconFile size={14} />
+            <span className="diff-path" title={path}>
+              {path}
+            </span>
+            <button className="btn-ghost" onPointerDown={ripple} onClick={() => props.onOpenDiff?.(path)}>
+              {t("Show diff")}
+            </button>
+            <div className="approval-editor-note">{t("The change is open in the editor, as a diff.")}</div>
+          </div>
+        )}
         {diff && (
           <div className="diff-wrap">
             {path && <div className="diff-path">{path}</div>}

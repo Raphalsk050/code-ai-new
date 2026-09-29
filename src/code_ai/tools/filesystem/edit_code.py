@@ -7,7 +7,7 @@ from typing import Any
 
 from code_ai.core.errors import ToolArgumentError, ToolExecutionError
 from code_ai.tools.base import ToolCapability, ToolContext
-from code_ai.tools.filesystem.common import read_text_file, sha256_bytes
+from code_ai.tools.filesystem.common import announce_write, read_text_file, sha256_bytes
 from code_ai.tools.locations import LOCATION_SCHEMA, for_context
 from code_ai.tools.output import bound_text
 from code_ai.tools.schema import tool_schema
@@ -84,6 +84,7 @@ class EditCodeTool:
         )
 
         data = edited.encode("utf-8")
+        await announce_write(context, path, original)
         outcome = await asyncio.to_thread(
             atomic_write_bytes,
             path,

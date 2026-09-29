@@ -21,6 +21,8 @@ export type Item =
       name: string;
       /** What the call works on: the file, the command, the query. */
       target: string;
+      /** The file it works on, whole, when it has one: the diff opens it. */
+      path: string;
       status: ToolStatus;
       detail: string;
     }
@@ -169,6 +171,7 @@ export function messagesToItems(messages: StoredMessage[]): Item[] {
           toolId: call.id,
           name: call.name,
           target: callTarget(call.arguments),
+          path: typeof call.arguments?.path === "string" ? call.arguments.path : "",
           status: "done",
           detail: "",
         });
@@ -373,6 +376,7 @@ function applyItems(state: TranscriptState, event: EventEnvelope): Pick<Transcri
           toolId: String(p.tool_call_id ?? id),
           name: String(p.name ?? "tool"),
           target: String(p.target ?? ""),
+          path: String(p.path ?? ""),
           status: "running",
           detail: "",
         }),
