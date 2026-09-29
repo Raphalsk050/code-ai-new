@@ -81,6 +81,7 @@ export type BridgeMethod =
   | "mcpSignIn"
   | "mcpSignOut"
   | "checkForUpdate"
+  | "signInForUpdates"
   | "downloadUpdate"
   | "shutdown";
 
@@ -331,9 +332,20 @@ export type HostToWebview =
   | { type: "editorDiff"; enabled: boolean }
   /** A newer release is out (see src/code_ai/updates.py for where it is looked for). */
   | { type: "updateAvailable"; version: string; current: string; notes: string; url: string }
-  | { type: "updateProgress"; state: UpdateState; message?: string };
+  /** The releases live on a host this machine has no login for yet. */
+  | { type: "updateLogin"; host: string }
+  | { type: "updateProgress"; state: UpdateState; message?: string }
+  /** Signed in and nothing newer: the button goes away. */
+  | { type: "updateCleared" };
 
-export type UpdateState = "available" | "downloading" | "installing" | "installed" | "failed";
+export type UpdateState =
+  | "available"
+  | "downloading"
+  | "installing"
+  | "installed"
+  | "failed"
+  | "login"
+  | "signingIn";
 
 export type PermissionMode = "ask" | "auto" | "bypass";
 
@@ -390,4 +402,5 @@ export type WebviewToHost =
   /** Show what the agent changed in a file, in the editor's diff view. */
   | { type: "openDiff"; path: string }
   | { type: "installUpdate" }
+  | { type: "signInForUpdates" }
   | { type: "reloadWindow" };

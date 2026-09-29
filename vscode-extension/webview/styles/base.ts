@@ -67,6 +67,14 @@ body {
   color: var(--vscode-errorForeground, #f85149); background: transparent;
   border-color: color-mix(in srgb, var(--vscode-errorForeground, #f85149) 60%, transparent);
 }
+/* No login yet for the releases host: an invitation, quieter than an update. */
+.update-login, .update-signingIn {
+  color: var(--vscode-textLink-foreground, var(--accent)); background: transparent;
+  border-color: color-mix(in srgb, var(--vscode-textLink-foreground, var(--accent)) 55%, transparent);
+}
+.update-login:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--vscode-textLink-foreground, var(--accent)) 14%, transparent);
+}
 .statusbar .meta .pill {
   padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px;
 }
@@ -495,7 +503,7 @@ button { font-family: inherit; cursor: pointer; }
 .mode-hint-line { margin: 6px 0; font-size: 12.5px; line-height: 1.5; }
 
 /* ---- home settings affordance ---- */
-.home-topbar { display: flex; justify-content: flex-end; padding: 8px 12px 0; }
+.home-topbar { display: flex; justify-content: flex-end; align-items: center; gap: 8px; padding: 8px 12px 0; }
 
 /* ---- settings screen ---- */
 .settings { display: flex; flex-direction: column; height: 100%; }

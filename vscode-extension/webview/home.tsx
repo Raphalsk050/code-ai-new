@@ -11,17 +11,21 @@ export function HomeScreen({
   onOpen,
   onDelete,
   onSettings,
+  update,
 }: {
   entries: HistoryEntry[];
   onNew: () => void;
   onOpen: (id: string) => void;
   onDelete: (id: string) => void;
   onSettings: () => void;
+  /** The update (or sign-in) button: the panel opens here, so it shows here too. */
+  update?: React.ReactNode;
 }): JSX.Element {
   const list = entries;
   return (
     <div className="home">
       <div className="home-topbar">
+        {update}
         <button className="icon-btn" title={t("Settings")} onClick={onSettings}>
           <IconSettings size={16} />
         </button>

@@ -52,6 +52,9 @@ interface UpdateInfo {
   /** False when no release repository is set; ``message`` says where to set it. */
   configured?: boolean;
   message?: string;
+  /** The releases need a login on ``host`` this machine does not have yet. */
+  needsLogin?: boolean;
+  host?: string;
 }
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -138,6 +141,9 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   private updateProblem?: string;
   private updateTimer?: ReturnType<typeof setInterval>;
   private updating = false;
+  private signingIn = false;
+  /** Set while the releases host wants a login; the button offers it. */
+  private loginHost?: string;
   private mode: AppMode = "agent";
   private autoRunRefactor = false;
   // Inline code hints (editor ghost text). Enabled state + model are mirrored
@@ -875,6 +881,9 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         case "installUpdate":
           void this.installUpdate();
           break;
+        case "signInForUpdates":
+          void this.signInForUpdates();
+          break;
         case "reloadWindow":
           void vscode.commands.executeCommand("workbench.action.reloadWindow");
           break;
@@ -961,6 +970,11 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     try {
       const found = await client.request<UpdateInfo>("checkForUpdate", {}, 60_000);
       this.updateProblem = found?.configured === false ? found.message || "Updates are off." : undefined;
+      // Only while no sign-in is under way: its own answer is the one to show.
+      if (!this.signingIn) {
+        this.loginHost = found?.needsLogin ? found.host || "GitHub" : undefined;
+        if (found?.needsLogin) this.postUpdate();
+      }
       // Silent when there is none, or GitHub is out of reach.
       if (found?.version) {
         this.update = found;
@@ -977,7 +991,10 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private postUpdate(): void {
     const found = this.update;
-    if (!found?.version) return;
+    if (!found?.version) {
+      if (this.loginHost) void this.webview?.postMessage({ type: "updateLogin", host: this.loginHost });
+      return;
+    }
     void this.webview?.postMessage({
       type: "updateAvailable",
       version: found.version,
@@ -988,6 +1005,39 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Sign in to the releases host in git's own window (the one a clone opens), then
+   * look again. The login stays with git, so later checks find it by themselves.
+   */
+  private async signInForUpdates(): Promise<UpdateInfo | undefined> {
+    const client = this.client;
+    if (!client || this.signingIn) return undefined;
+    const post = (state: string, message = "") =>
+      void this.webview?.postMessage({ type: "updateProgress", state, message });
+    this.signingIn = true;
+    post("signingIn");
+    try {
+      const found = await client.request<UpdateInfo>("signInForUpdates", {}, 10 * 60_000);
+      this.loginHost = undefined;
+      this.updateProblem = undefined;
+      if (found?.version) {
+        this.update = found;
+        this.postUpdate();
+        return found;
+      }
+      void this.webview?.postMessage({ type: "updateCleared" });
+      void vscode.window.showInformationMessage("Signed in. Code-AI is up to date.");
+      return undefined;
+    } catch (err) {
+      const reason = String(err).replace(/^Error: /, "");
+      post("login", reason);
+      void vscode.window.showWarningMessage(reason);
+      return undefined;
+    } finally {
+      this.signingIn = false;
+    }
+  }
+
+  /**
    * Download the release's package for this platform through the backend (which
    * knows the proxy and where releases live), install it, and offer a reload.
    */
@@ -995,7 +1045,12 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     if (this.updating) return;
     const client = this.client;
     if (!client) return;
-    const found = this.update ?? (await this.checkForUpdate());
+    let found = this.update ?? (await this.checkForUpdate());
+    if (!found?.version && this.loginHost) {
+      // /update was asked for: sign in here instead of explaining how.
+      found = await this.signInForUpdates();
+      if (!found?.version) return; // it has said why
+    }
     if (!found?.version) {
       if (this.updateProblem) void vscode.window.showWarningMessage(this.updateProblem);
       else void vscode.window.showInformationMessage("Code-AI is up to date.");

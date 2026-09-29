@@ -258,6 +258,77 @@ async def test_a_refused_lookup_says_why_and_clears_the_button(tmp_path, monkeyp
         assert not terminal_app.query_one("#update-button", Button).display
 
 
+async def test_a_login_wall_offers_a_sign_in_that_leads_to_the_update(
+    tmp_path, monkeypatch
+) -> None:
+    from textual.widgets import Button
+
+    from code_ai import updates
+    from code_ai.ui.terminal import app as terminal_module
+
+    release = updates.Release(
+        version="9.9.9", tag="v9.9.9", name="", notes="", url="", prerelease=False, assets=()
+    )
+    signed_in: list[bool] = []
+
+    async def wall(**_kwargs):
+        raise updates.LoginRequired("team/code-ai wants you signed in")
+
+    async def sign_in(**_kwargs):
+        signed_in.append(True)
+        return release
+
+    monkeypatch.setattr(updates, "check", wall)
+    monkeypatch.setattr(updates, "sign_in", sign_in)
+    monkeypatch.setattr(terminal_module, "_UPDATE_CHECK_DELAY_S", 0)
+    terminal_app = create_terminal_app(
+        FakeTerminalApplication(tmp_path), config_path=tmp_path / "config.json"
+    )
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause(0.3)
+        button = terminal_app.query_one("#update-button", Button)
+        assert "Sign in to update" in str(button.label)
+        assert any("sign in once" in line for line in terminal_app.vm.conversation)
+
+        # The click only signs in; the button then offers the update.
+        await pilot.click("#update-button")
+        await pilot.pause(0.3)
+        assert signed_in == [True]
+        assert "v9.9.9" in str(button.label)
+        assert any("Signed in to" in line for line in terminal_app.vm.conversation)
+
+
+async def test_update_signs_in_first_when_the_releases_want_it(tmp_path, monkeypatch) -> None:
+    from textual.widgets import Button
+
+    from code_ai import updates
+
+    signed_in: list[bool] = []
+
+    async def wall(**_kwargs):
+        raise updates.LoginRequired("team/code-ai wants you signed in")
+
+    async def sign_in(**_kwargs):
+        signed_in.append(True)
+        return None
+
+    monkeypatch.setattr(updates, "running_binary", lambda: tmp_path / "code-ai.exe")
+    monkeypatch.setattr(updates, "RELEASES_REPOSITORY", "team/code-ai")
+    monkeypatch.setattr(updates, "check", wall)
+    monkeypatch.setattr(updates, "sign_in", sign_in)
+    terminal_app = create_terminal_app(
+        FakeTerminalApplication(tmp_path), config_path=tmp_path / "config.json"
+    )
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        await terminal_app._install_update()
+        await pilot.pause()
+        assert signed_in == [True]
+        assert any("Code-AI is up to date" in line for line in terminal_app.vm.conversation)
+        assert not terminal_app.query_one("#update-button", Button).display
+
+
 async def test_no_release_no_button(tmp_path, monkeypatch) -> None:
     from textual.widgets import Button
 

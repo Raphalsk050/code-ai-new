@@ -518,6 +518,11 @@ const PT: Record<string, string> = {
   "Update failed · retry": "Falhou · tentar de novo",
   "Update {0}": "Atualizar {0}",
   "Code-AI v{0} is out (this is v{1}).": "Saiu o Code-AI v{0} (este é o v{1}).",
+  "Sign in to update": "Entrar para atualizar",
+  "Signing in…": "Entrando…",
+  "Finish signing in in the window that opened.": "Termine o login na janela que abriu.",
+  "Code-AI updates come from {0}. Sign in once, in the same window git uses.":
+    "As atualizações do Code-AI vêm de {0}. Entre uma vez, na mesma janela que o git usa.",
   "The change is open in the editor, as a diff.": "A mudança está aberta no editor, como diff.",
   "The backend restarted mid-answer; sending your message again ({0}/{1})":
     "O backend reiniciou no meio da resposta; enviando sua mensagem de novo ({0}/{1})",

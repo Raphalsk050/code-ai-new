@@ -48,10 +48,16 @@ UNSET_MESSAGE = (
 _TAG = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
 _TIMEOUT_S = 30.0
 _TOOL_TIMEOUT_S = 15.0
+# Long enough to finish a sign-in in the browser.
+_SIGN_IN_TIMEOUT_S = 300.0
 
 
 class UpdateError(RuntimeError):
     """GitHub refused the lookup; the message says what to fix."""
+
+
+class LoginRequired(UpdateError):
+    """The repository wants a login this machine does not have yet."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,8 +188,11 @@ _refused: set[str] = set()
 
 def login_host() -> str:
     """The host a login is kept under; github.com's API lives on api.github.com."""
-    host = (urlsplit(RELEASES_API).hostname or "").lower()
-    return "github.com" if host == "api.github.com" else host
+    parts = urlsplit(RELEASES_API)
+    host = (parts.hostname or "").lower()
+    if host == "api.github.com":
+        return "github.com"
+    return f"{host}:{parts.port}" if parts.port else host
 
 
 def find_credential() -> Credential | None:
@@ -212,23 +221,39 @@ def _machine_logins(host: str) -> Iterator[Credential]:
     if token := _run_tool(["gh", "auth", "token", "--hostname", host]).strip():
         yield Credential(token)
     # Git Credential Manager keeps the login from the last clone or push.
-    scheme = urlsplit(RELEASES_API).scheme or "https"
-    filled = _run_tool(
-        ["git", "-c", "credential.interactive=never", "-c", "core.askPass=", "credential", "fill"],
-        stdin=f"protocol={scheme}\nhost={host}\n\n",
-    )
-    fields = dict(line.partition("=")[::2] for line in filled.splitlines())
+    fields = _git_credential("fill", _git_target())
     if secret := fields.get("password", "").strip():
         yield Credential(secret, username=fields.get("username", "").strip())
 
 
-def _run_tool(argv: list[str], stdin: str = "") -> str:
-    """A local tool's output, or "" when it is missing, fails or wants to ask."""
+def _git_target() -> dict[str, str]:
+    return {"protocol": urlsplit(RELEASES_API).scheme or "https", "host": login_host()}
+
+
+def _git_credential(
+    action: str, fields: dict[str, str], *, interactive: bool = False
+) -> dict[str, str]:
+    """``git credential <action>`` for ``fields``; what git answers, as fields."""
+    argv = ["git", "-c", "core.askPass="]
+    if not interactive:
+        argv += ["-c", "credential.interactive=never"]
+    stdin = "".join(f"{key}={value}\n" for key, value in fields.items()) + "\n"
+    out = _run_tool([*argv, "credential", action], stdin=stdin, interactive=interactive)
+    return dict(line.partition("=")[::2] for line in out.splitlines() if line)
+
+
+def _run_tool(argv: list[str], stdin: str = "", *, interactive: bool = False) -> str:
+    """A local tool's output, or "" when it is missing or fails.
+
+    Never a terminal prompt, there is no terminal. ``interactive`` only lets
+    git's credential manager open its own sign-in window.
+    """
     exe = shutil.which(argv[0])
     if exe is None:
         return ""
     env = {k: v for k, v in os.environ.items() if k not in ("GIT_ASKPASS", "SSH_ASKPASS")}
-    env.update(GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never", GH_PROMPT_DISABLED="1")
+    env.update(GIT_TERMINAL_PROMPT="0", GH_PROMPT_DISABLED="1")
+    env["GCM_INTERACTIVE"] = "auto" if interactive else "never"
     try:
         done = subprocess.run(
             [exe, *argv[1:]],
@@ -237,7 +262,7 @@ def _run_tool(argv: list[str], stdin: str = "") -> str:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=_TOOL_TIMEOUT_S,
+            timeout=_SIGN_IN_TIMEOUT_S if interactive else _TOOL_TIMEOUT_S,
             env=env,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
@@ -281,7 +306,13 @@ async def newest_release(*, verify_ssl: bool) -> Release | None:
             # A stale login; the next one, or none, gets the same question.
             _refused.add(credential.secret)
         if response.status_code in (401, 403, 404):
-            raise UpdateError(_refusal(response.status_code, credential))
+            where = f"{RELEASES_REPOSITORY} on {login_host()}"
+            if credential is None:
+                raise LoginRequired(f"{where} wants you signed in to show its releases.")
+            raise UpdateError(
+                f"GitHub answered {response.status_code} for {where}: check "
+                "RELEASES_REPOSITORY and that this login can read it."
+            )
         response.raise_for_status()
         listing = response.json()
     if not isinstance(listing, list):
@@ -289,20 +320,40 @@ async def newest_release(*, verify_ssl: bool) -> Release | None:
     return pick_newest(listing, include_prereleases=INCLUDE_PRERELEASES)
 
 
-def _refusal(status: int, credential: Credential | None) -> str:
-    where = f"{RELEASES_REPOSITORY} on {login_host()}"
-    if credential is None:
-        return (
-            f"GitHub answered {status} for {where}. A private repository needs a login: "
-            f"sign in to {login_host()} with git or gh, or set {RELEASES_TOKEN_ENV}."
-        )
-    return f"GitHub answered {status} for {where}: check RELEASES_REPOSITORY and the login."
-
-
 async def check(*, verify_ssl: bool) -> Release | None:
     """A release newer than this build, or None."""
     release = await newest_release(verify_ssl=verify_ssl)
     return release if is_newer(release, current_version()) else None
+
+
+async def sign_in(*, verify_ssl: bool) -> Release | None:
+    """Sign in to the releases host through git's credential manager, then check.
+
+    The one call here allowed a window of its own, so it only runs on a click.
+    The login is kept as a clone would keep it, so git gets to use it too.
+    """
+    target = _git_target()
+    kept = await asyncio.to_thread(_git_credential, "fill", target)
+    if kept.get("password", "").strip() in _refused:
+        # Already turned down, and git would hand it straight back unasked.
+        await asyncio.to_thread(_git_credential, "reject", {**target, **kept})
+    fields = await asyncio.to_thread(_git_credential, "fill", target, interactive=True)
+    secret = fields.get("password", "").strip()
+    if not secret:
+        host = target["host"]
+        raise UpdateError(
+            f"The sign-in to {host} did not finish. A clone over HTTPS from {host}, "
+            f"'gh auth login --hostname {host}' or {RELEASES_TOKEN_ENV} work as well."
+        )
+    login = {**target, **fields}
+    await asyncio.to_thread(_git_credential, "approve", login)
+    _refused.discard(secret)
+    try:
+        return await check(verify_ssl=verify_ssl)
+    except LoginRequired:
+        # Turned down: dropped, as git drops a login a push was refused with.
+        await asyncio.to_thread(_git_credential, "reject", login)
+        raise
 
 
 async def download(

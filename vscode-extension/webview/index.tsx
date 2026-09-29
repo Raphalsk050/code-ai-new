@@ -168,6 +168,14 @@ function App(): JSX.Element {
           state: u && u.version === data.version ? u.state : "available",
           message: "",
         }));
+      } else if (data?.type === "updateLogin") {
+        setUpdate((u) =>
+          u?.state === "signingIn"
+            ? u
+            : { version: "", current: "", notes: "", state: "login", message: "", host: data.host }
+        );
+      } else if (data?.type === "updateCleared") {
+        setUpdate(null);
       } else if (data?.type === "updateProgress") {
         setUpdate((u) => (u ? { ...u, state: data.state, message: data.message ?? "" } : u));
       } else if (data?.type === "mcpServers") {
@@ -708,6 +716,15 @@ function App(): JSX.Element {
 
   const history = mergeHistory(persisted.conversations, serverConvos);
 
+  const updateButton = update && (
+    <UpdateButton
+      update={update}
+      onInstall={() => send({ type: "installUpdate" })}
+      onReload={() => send({ type: "reloadWindow" })}
+      onSignIn={() => send({ type: "signInForUpdates" })}
+    />
+  );
+
   // -- screens -------------------------------------------------------------
   if (screen === "settings") {
     return (
@@ -745,6 +762,7 @@ function App(): JSX.Element {
           onOpen={openConversation}
           onDelete={deleteConversation}
           onSettings={openSettings}
+          update={updateButton}
         />
       </div>
     );
@@ -775,13 +793,7 @@ function App(): JSX.Element {
           )}
         </div>
         <div className="meta">
-          {update && (
-            <UpdateButton
-              update={update}
-              onInstall={() => send({ type: "installUpdate" })}
-              onReload={() => send({ type: "reloadWindow" })}
-            />
-          )}
+          {updateButton}
           <div className="topbar-actions">
             {busy && (
               <button
@@ -859,7 +871,7 @@ function App(): JSX.Element {
                       </div>
                       <h2>Code-AI</h2>
                       <div>
-                        {t("Ask anything about this workspace. Tools, plan and")}
+                        {t("Ask anything about this workspace. Tools, plan and")}{" "}
                         {t("approvals show up here.")}
                       </div>
                     </div>

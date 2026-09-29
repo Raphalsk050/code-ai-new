@@ -118,6 +118,7 @@ _STREAM_TAIL_MAX_ROWS = 14
 _STREAM_TAIL_MAX_CHARS = 4000
 # Seconds after start before looking for a newer release: the screen comes first.
 _UPDATE_CHECK_DELAY_S = 3.0
+_SIGN_IN_LABEL = "⬆ Sign in to update"
 
 # Cap on how many committed lines are kept mounted in the scrollback. Each line
 # is a selectable widget, so this bounds widget count the way RichLog.max_lines
@@ -1088,6 +1089,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             # The newest release, once the background check has found one.
             self._update_release: updates.Release | None = None
             self._update_release_installed = False
+            self._update_needs_login = False
             self._updating = False
 
         def compose(self) -> ComposeResult:
@@ -1974,7 +1976,9 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             if event.button.id == "toggle-session":
                 self.action_toggle_session()
             elif event.button.id == "update-button":
-                self._spawn(self._install_update(), "the update")
+                # Signing in only signs in; the button then offers the update.
+                then_install = not self._update_needs_login
+                self._spawn(self._install_update(then_install=then_install), "the update")
 
         # --- Updates ---------------------------------------------------------
 
@@ -1995,6 +1999,14 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 release = await updates.check(
                     verify_ssl=application.session.config.ssl_verification
                 )
+            except updates.LoginRequired:
+                self._update_needs_login = True
+                self._show_update_button(_SIGN_IN_LABEL)
+                self._append_conversation_line(
+                    f"update> Code-AI updates come from {updates.login_host()}: sign in "
+                    "once with the button above, or /update."
+                )
+                return
             except Exception:  # noqa: BLE001 - see the docstring
                 logger.debug("Update check failed", exc_info=True)
                 return
@@ -2007,20 +2019,53 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 f"v{updates.current_version()}): /update installs it"
             )
 
-        async def _install_update(self) -> None:
+        async def _install_update(self, *, then_install: bool = True) -> None:
             if self._updating:
                 return
             self._updating = True
             try:
-                await self._run_update()
+                if then_install:
+                    await self._run_update()
+                else:
+                    await self._sign_in_for_updates()
             except updates.UpdateError as exc:
                 self._append_conversation_line(f"update> {exc}")
             finally:
                 self._updating = False
                 release = self._update_release
-                if not self._update_release_installed:
+                if self._update_needs_login:
+                    self._show_update_button(_SIGN_IN_LABEL)
+                elif not self._update_release_installed:
                     # Back to what it said before, or gone: never stuck on "checking".
                     self._show_update_button(f"⬆ Update to v{release.version}" if release else None)
+
+        async def _sign_in_for_updates(self) -> bool:
+            """Sign in with git's own window; True once the releases can be read."""
+            host = updates.login_host()
+            self._update_needs_login = True
+            self._show_update_button("⬆ signing in…")
+            self._append_conversation_line(
+                f"update> Signing in to {host}: finish in the window that opens."
+            )
+            try:
+                release = await updates.sign_in(
+                    verify_ssl=application.session.config.ssl_verification
+                )
+            except updates.UpdateError as exc:
+                self._append_conversation_line(f"update> {exc}")
+                return False
+            self._update_needs_login = False
+            self._update_release = release
+            if release is None:
+                self._append_conversation_line(
+                    f"update> Signed in to {host}. Code-AI is up to date."
+                )
+            else:
+                self._append_conversation_line(
+                    f"update> Signed in to {host}. Code-AI v{release.version} is out: "
+                    "/update installs it"
+                )
+            return True
 
         async def _run_update(self) -> None:
             """Download the newest release's binary and put it where this one runs."""
@@ -2042,7 +2087,13 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 return
             verify = application.session.config.ssl_verification
             self._show_update_button("⬇ checking…")
-            release = await updates.check(verify_ssl=verify)
+            try:
+                release = await updates.check(verify_ssl=verify)
+            except updates.LoginRequired:
+                # /update was asked for: sign in here instead of explaining how.
+                if not await self._sign_in_for_updates() or self._update_release is None:
+                    return
+                release = self._update_release
             if release is None:
                 self._update_release = None
                 self._show_update_button(None)

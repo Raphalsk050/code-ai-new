@@ -183,16 +183,49 @@ async def test_nothing_newer_is_no_update(github) -> None:
     assert await updates.check(verify_ssl=False) is None
 
 
-def _tools(monkeypatch, *, gh: str = "", git: str = "") -> list[tuple[list[str], str]]:
-    """Stand-ins for gh and git, answering as this machine's logins would."""
+def _tools(monkeypatch, *, gh: str = "", git="") -> list[tuple[list[str], str]]:
+    """Stand-ins for gh and git, answering as this machine's logins would.
+
+    ``git`` is its answer, or a callable for one that remembers what it is told.
+    """
     calls: list[tuple[list[str], str]] = []
 
-    def run(argv: list[str], stdin: str = "") -> str:
+    def run(argv: list[str], stdin: str = "", *, interactive: bool = False) -> str:
         calls.append((argv, stdin))
-        return {"gh": gh, "git": git}[argv[0]]
+        if argv[0] == "gh":
+            return gh
+        return git(argv, stdin, interactive) if callable(git) else git
 
     monkeypatch.setattr(updates, "_run_tool", run)
     return calls
+
+
+class _CredentialManager:
+    """git's credential manager: a stored login, and a window that signs in."""
+
+    def __init__(self, window: dict | None = None, stored: dict | None = None) -> None:
+        self.window = window or {}
+        self.stored = dict(stored or {})
+        self.windows = 0
+
+    def __call__(self, argv: list[str], stdin: str, interactive: bool) -> str:
+        action = argv[-1]
+        told = dict(line.partition("=")[::2] for line in stdin.splitlines() if line)
+        if action == "approve":
+            self.stored = told
+        elif action == "reject" and told.get("password") == self.stored.get("password"):
+            self.stored = {}
+        elif action == "fill":
+            answer = self.stored
+            if not answer and interactive:
+                self.windows += 1
+                answer = {**told, **self.window}
+            return "".join(f"{key}={value}\n" for key, value in answer.items())
+        return ""
+
+
+def _basic(username: str, secret: str) -> str:
+    return "Basic " + base64.b64encode(f"{username}:{secret}".encode()).decode()
 
 
 def test_a_login_is_kept_under_the_web_host(monkeypatch) -> None:
@@ -256,11 +289,74 @@ async def test_a_stale_login_gives_way_to_an_anonymous_ask(github, monkeypatch) 
     assert updates.find_credential() is None
 
 
-async def test_a_private_repository_without_a_login_says_how_to_get_one(github) -> None:
+async def test_a_private_repository_without_a_login_asks_for_one(github) -> None:
     github([_release("v0.29.0")], private=True)
 
-    with pytest.raises(updates.UpdateError, match="sign in to 127.0.0.1 with git or gh"):
+    with pytest.raises(updates.LoginRequired, match="wants you signed in"):
         await updates.check(verify_ssl=False)
+
+
+async def test_signing_in_opens_git_s_window_once_and_keeps_the_login(github, monkeypatch) -> None:
+    fake = github([_release("v0.29.0")], private=True)
+    manager = _CredentialManager(window={"username": "rafael", "password": "gho_new"})
+    _tools(monkeypatch, git=manager)
+
+    release = await updates.sign_in(verify_ssl=False)
+
+    assert release is not None and release.version == "0.29.0"
+    assert fake.requests[-1][1].get("Authorization") == _basic("rafael", "gho_new")
+    # Kept the way a clone keeps it: the next check finds it, no window.
+    assert manager.stored["password"] == "gho_new"
+    assert await updates.check(verify_ssl=False) is not None
+    assert manager.windows == 1
+
+
+async def test_a_login_the_api_turns_down_is_dropped_again(github, monkeypatch) -> None:
+    github([_release("v0.29.0")], private=True, bad_tokens={_basic("rafael", "gho_bad")})
+    manager = _CredentialManager(window={"username": "rafael", "password": "gho_bad"})
+    _tools(monkeypatch, git=manager)
+
+    with pytest.raises(updates.LoginRequired):
+        await updates.sign_in(verify_ssl=False)
+
+    assert manager.stored == {}
+
+
+async def test_a_stale_stored_login_does_not_keep_the_window_shut(github, monkeypatch) -> None:
+    github([_release("v0.29.0")], private=True, bad_tokens={_basic("rafael", "gho_stale")})
+    manager = _CredentialManager(
+        window={"username": "rafael", "password": "gho_new"},
+        stored={"username": "rafael", "password": "gho_stale"},
+    )
+    _tools(monkeypatch, git=manager)
+    with pytest.raises(updates.LoginRequired):
+        await updates.check(verify_ssl=False)
+
+    release = await updates.sign_in(verify_ssl=False)
+
+    assert release is not None
+    assert manager.windows == 1
+    assert manager.stored["password"] == "gho_new"
+
+
+async def test_an_unfinished_sign_in_says_what_else_works(github, monkeypatch) -> None:
+    github([_release("v0.29.0")], private=True)
+    # The window was closed without signing in.
+    _tools(monkeypatch, git=_CredentialManager())
+
+    with pytest.raises(updates.UpdateError, match="did not finish"):
+        await updates.sign_in(verify_ssl=False)
+
+
+async def test_the_bridge_offers_a_sign_in_then_signs_in(github, monkeypatch) -> None:
+    github([_release("v0.29.0")], private=True)
+    _tools(monkeypatch, git=_CredentialManager(window={"username": "rafael", "password": "gho"}))
+
+    wall = await BridgeServer._h_check_for_update(_bridge(), {})
+    signed = await BridgeServer._h_sign_in_for_updates(_bridge(), {})
+
+    assert wall["needsLogin"] is True and wall["host"] == updates.login_host()
+    assert signed["version"] == "0.29.0"
 
 
 async def test_the_login_never_leaves_the_api_host(github, monkeypatch, tmp_path) -> None:

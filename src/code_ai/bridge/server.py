@@ -531,7 +531,17 @@ class BridgeServer:
         if not updates.configured():
             return {"configured": False, "message": updates.UNSET_MESSAGE}
         verify = self._app.session.config.ssl_verification
-        release = await updates.check(verify_ssl=verify)
+        try:
+            release = await updates.check(verify_ssl=verify)
+        except updates.LoginRequired as exc:
+            # Not a failure: the front end offers to sign in.
+            return {"needsLogin": True, "host": updates.login_host(), "message": str(exc)}
+        return release.describe(updates.current_version()) if release else {}
+
+    async def _h_sign_in_for_updates(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Sign in to the releases host in git's own window, then check again."""
+        verify = self._app.session.config.ssl_verification
+        release = await updates.sign_in(verify_ssl=verify)
         return release.describe(updates.current_version()) if release else {}
 
     async def _h_download_update(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -609,6 +619,7 @@ class BridgeServer:
         "mcpSignIn": _h_mcp_sign_in,
         "mcpSignOut": _h_mcp_sign_out,
         "checkForUpdate": _h_check_for_update,
+        "signInForUpdates": _h_sign_in_for_updates,
         "downloadUpdate": _h_download_update,
         "shutdown": _h_shutdown,
     }
@@ -646,8 +657,9 @@ class BridgeServer:
             "mcpSave",
             "mcpRemove",
             "mcpSignOut",
-            # Both talk to GitHub; a download can take minutes.
+            # All talk to GitHub; a download or a sign-in can take minutes.
             "checkForUpdate",
+            "signInForUpdates",
             "downloadUpdate",
         }
     )
