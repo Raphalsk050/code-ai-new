@@ -1,6 +1,7 @@
 name: Build standalone binaries
 
-# One-file executables for Linux and Windows. Users run them with no Python
+# One-file executables for Linux and Windows, the VSCode extension carrying
+# them, and a GitHub release with all three. Users run them with no Python
 # installed.
 #
 # code-linux is the company's only runner: GitHub-hosted ones are unreachable
@@ -10,14 +11,17 @@ name: Build standalone binaries
 # The `runner` dropdown on a manual run picks the other environment, where the
 # constraint is the mirror image: github.com refuses v3 outright. The two
 # versions cannot share a job - the refusal happens while the job resolves its
-# actions, before any step-level `if` is read - so each pair of jobs carries one
-# version and the dropdown decides which pair runs. A job that does not run
+# actions, before any step-level `if` is read - so each set of jobs carries one
+# version and the dropdown decides which set runs. A job that does not run
 # resolves nothing, which is what makes this work at all.
 #
 # Everything unattended, and a manual run left alone, uses code-linux with v3.
 #
 # No Windows runner, so the .exe is cross-built under Wine - PyInstaller
 # cannot cross-compile.
+#
+# Every artifact and release asset is named after src/code_ai/version.json
+# (code-ai-win-v0.27.1.exe, ...), read by the "Read the version" steps.
 #
 # PIP_TRUSTED_HOST: the proxy re-signs TLS with a certificate the containers
 # do not have. PIP_CACHE_DIR: mounted off the runner's disk, or every run
@@ -55,6 +59,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Read the version
+        run: |
+          v() { sed -n "s/.*\"$1\": *\([0-9]*\).*/\1/p" src/code_ai/version.json; }
+          echo "CODE_AI_VERSION=$(v major).$(v minor).$(v patch)" >> "$GITHUB_ENV"
+
       # Built inside a Debian Bullseye image (glibc 2.31) so the resulting
       # binary runs on a wide range of older Linux distributions too.
       - name: Build Linux binary
@@ -83,13 +92,13 @@ jobs:
       - name: Stage artifact
         run: |
           mkdir -p out
-          cp dist/code-ai out/code-ai-linux-x86_64
-          chmod +x out/code-ai-linux-x86_64
+          cp dist/code-ai "out/code-ai-linux-v$CODE_AI_VERSION"
+          chmod +x "out/code-ai-linux-v$CODE_AI_VERSION"
 
       - uses: actions/upload-artifact@v3
         with:
-          name: code-ai-linux-x86_64
-          path: out/code-ai-linux-x86_64
+          name: code-ai-linux-v${{ env.CODE_AI_VERSION }}
+          path: out/code-ai-linux-v${{ env.CODE_AI_VERSION }}
           if-no-files-found: error
 
   windows:
@@ -99,6 +108,11 @@ jobs:
     runs-on: code-linux
     steps:
       - uses: actions/checkout@v4
+
+      - name: Read the version
+        run: |
+          v() { sed -n "s/.*\"$1\": *\([0-9]*\).*/\1/p" src/code_ai/version.json; }
+          echo "CODE_AI_VERSION=$(v major).$(v minor).$(v patch)" >> "$GITHUB_ENV"
 
       # The interpreter reports itself as win32, so pip pulls Windows wheels -
       # Playwright's included, with its node.exe. Separate cache from the Linux
@@ -137,12 +151,12 @@ jobs:
       - name: Stage artifact
         run: |
           mkdir -p out
-          cp dist/code-ai.exe out/code-ai-windows-x86_64.exe
+          cp dist/code-ai.exe "out/code-ai-win-v$CODE_AI_VERSION.exe"
 
       - uses: actions/upload-artifact@v3
         with:
-          name: code-ai-windows-x86_64
-          path: out/code-ai-windows-x86_64.exe
+          name: code-ai-win-v${{ env.CODE_AI_VERSION }}
+          path: out/code-ai-win-v${{ env.CODE_AI_VERSION }}.exe
           if-no-files-found: error
 
   # ---- the same two binaries, on a GitHub-hosted runner --------------------
@@ -156,6 +170,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Read the version
+        run: |
+          v() { sed -n "s/.*\"$1\": *\([0-9]*\).*/\1/p" src/code_ai/version.json; }
+          echo "CODE_AI_VERSION=$(v major).$(v minor).$(v patch)" >> "$GITHUB_ENV"
 
       - name: Build Linux binary
         run: |
@@ -178,13 +197,13 @@ jobs:
       - name: Stage artifact
         run: |
           mkdir -p out
-          cp dist/code-ai out/code-ai-linux-x86_64
-          chmod +x out/code-ai-linux-x86_64
+          cp dist/code-ai "out/code-ai-linux-v$CODE_AI_VERSION"
+          chmod +x "out/code-ai-linux-v$CODE_AI_VERSION"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: code-ai-linux-x86_64
-          path: out/code-ai-linux-x86_64
+          name: code-ai-linux-v${{ env.CODE_AI_VERSION }}
+          path: out/code-ai-linux-v${{ env.CODE_AI_VERSION }}
           if-no-files-found: error
 
   windows-public:
@@ -193,6 +212,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Read the version
+        run: |
+          v() { sed -n "s/.*\"$1\": *\([0-9]*\).*/\1/p" src/code_ai/version.json; }
+          echo "CODE_AI_VERSION=$(v major).$(v minor).$(v patch)" >> "$GITHUB_ENV"
 
       - name: Build Windows binary inside Wine
         run: |
@@ -217,12 +241,12 @@ jobs:
       - name: Stage artifact
         run: |
           mkdir -p out
-          cp dist/code-ai.exe out/code-ai-windows-x86_64.exe
+          cp dist/code-ai.exe "out/code-ai-win-v$CODE_AI_VERSION.exe"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: code-ai-windows-x86_64
-          path: out/code-ai-windows-x86_64.exe
+          name: code-ai-win-v${{ env.CODE_AI_VERSION }}
+          path: out/code-ai-win-v${{ env.CODE_AI_VERSION }}.exe
           if-no-files-found: error
 
   # ---- the VSCode extension ------------------------------------------------
@@ -239,38 +263,53 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Read the version
+        run: |
+          v() { sed -n "s/.*\"$1\": *\([0-9]*\).*/\1/p" src/code_ai/version.json; }
+          echo "CODE_AI_VERSION=$(v major).$(v minor).$(v patch)" >> "$GITHUB_ENV"
+
       - uses: actions/download-artifact@v3
         with:
-          name: code-ai-linux-x86_64
+          name: code-ai-linux-v${{ env.CODE_AI_VERSION }}
           path: out
 
       - uses: actions/download-artifact@v3
         with:
-          name: code-ai-windows-x86_64
+          name: code-ai-win-v${{ env.CODE_AI_VERSION }}
           path: out
 
       # Node comes from the same container pattern as the binaries: the runner
       # itself is only asked for Docker.
       - name: Build the packages
         run: |
-          chmod +x out/code-ai-linux-x86_64
+          chmod +x "out/code-ai-linux-v$CODE_AI_VERSION"
           docker run --rm \
             --user "$(id -u):$(id -g)" \
             -e HOME=/tmp \
             -e npm_config_cache=/tmp/npm \
+            -e CODE_AI_VERSION \
             -v "$PWD":/work -w /work/vscode-extension \
             node:20-bookworm \
             bash -euxc '
               npm ci --no-audit --no-fund || npm install --no-audit --no-fund
               node scripts/package.mjs \
-                --linux ../out/code-ai-linux-x86_64 \
-                --win ../out/code-ai-windows-x86_64.exe
+                --linux "../out/code-ai-linux-v$CODE_AI_VERSION" \
+                --win "../out/code-ai-win-v$CODE_AI_VERSION.exe"
             '
+
+      - name: Stage artifact
+        run: |
+          mkdir -p out/vsix
+          for vsix in vscode-extension/vsix/*.vsix; do
+            target="${vsix##*-$CODE_AI_VERSION-}"
+            cp "$vsix" "out/vsix/code-ai-vscode-v$CODE_AI_VERSION-$target"
+          done
+          ls -l out/vsix
 
       - uses: actions/upload-artifact@v3
         with:
-          name: code-ai-vsix
-          path: vscode-extension/vsix/*.vsix
+          name: code-ai-vscode-v${{ env.CODE_AI_VERSION }}
+          path: out/vsix/*.vsix
           if-no-files-found: error
 
   vsix-public:
@@ -281,14 +320,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Read the version
+        run: |
+          v() { sed -n "s/.*\"$1\": *\([0-9]*\).*/\1/p" src/code_ai/version.json; }
+          echo "CODE_AI_VERSION=$(v major).$(v minor).$(v patch)" >> "$GITHUB_ENV"
+
       - uses: actions/download-artifact@v4
         with:
-          name: code-ai-linux-x86_64
+          name: code-ai-linux-v${{ env.CODE_AI_VERSION }}
           path: out
 
       - uses: actions/download-artifact@v4
         with:
-          name: code-ai-windows-x86_64
+          name: code-ai-win-v${{ env.CODE_AI_VERSION }}
           path: out
 
       - uses: actions/setup-node@v4
@@ -298,14 +342,127 @@ jobs:
       - name: Build the packages
         working-directory: vscode-extension
         run: |
-          chmod +x ../out/code-ai-linux-x86_64
+          chmod +x "../out/code-ai-linux-v$CODE_AI_VERSION"
           npm ci --no-audit --no-fund || npm install --no-audit --no-fund
           node scripts/package.mjs \
-            --linux ../out/code-ai-linux-x86_64 \
-            --win ../out/code-ai-windows-x86_64.exe
+            --linux "../out/code-ai-linux-v$CODE_AI_VERSION" \
+            --win "../out/code-ai-win-v$CODE_AI_VERSION.exe"
+
+      - name: Stage artifact
+        run: |
+          mkdir -p out/vsix
+          for vsix in vscode-extension/vsix/*.vsix; do
+            target="${vsix##*-$CODE_AI_VERSION-}"
+            cp "$vsix" "out/vsix/code-ai-vscode-v$CODE_AI_VERSION-$target"
+          done
+          ls -l out/vsix
 
       - uses: actions/upload-artifact@v4
         with:
-          name: code-ai-vsix
-          path: vscode-extension/vsix/*.vsix
+          name: code-ai-vscode-v${{ env.CODE_AI_VERSION }}
+          path: out/vsix/*.vsix
           if-no-files-found: error
+
+  # ---- the release -----------------------------------------------------------
+  # Every build becomes the release for its version (tag vX.Y.Z), with short
+  # notes from the feat/fix/perf commits since the previous release
+  # (scripts/release.py). The default branch and tags publish a release; other
+  # branches a pre-release. Building a version again moves its tag and replaces
+  # the assets.
+
+  release:
+    name: GitHub release
+    needs: [vsix]
+    if: inputs.runner != 'ubuntu-latest'
+    runs-on: code-linux
+    permissions:
+      contents: write
+    steps:
+      # The whole history: the notes are the commits since the last release tag.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read the version
+        run: |
+          v() { sed -n "s/.*\"$1\": *\([0-9]*\).*/\1/p" src/code_ai/version.json; }
+          echo "CODE_AI_VERSION=$(v major).$(v minor).$(v patch)" >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@v3
+        with:
+          name: code-ai-linux-v${{ env.CODE_AI_VERSION }}
+          path: out
+
+      - uses: actions/download-artifact@v3
+        with:
+          name: code-ai-win-v${{ env.CODE_AI_VERSION }}
+          path: out
+
+      - uses: actions/download-artifact@v3
+        with:
+          name: code-ai-vscode-v${{ env.CODE_AI_VERSION }}
+          path: out
+
+      - name: Publish the release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          prerelease=--prerelease
+          if [ "$GITHUB_REF_NAME" = "$DEFAULT_BRANCH" ] || [ "$GITHUB_REF_TYPE" = tag ]; then
+            prerelease=
+          fi
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e GITHUB_TOKEN -e GITHUB_REPOSITORY -e GITHUB_SHA -e GITHUB_API_URL \
+            -e PRERELEASE="$prerelease" \
+            -v "$PWD":/work -w /work \
+            python:3.12-bullseye \
+            bash -euc '
+              git config --global --add safe.directory /work
+              python scripts/release.py publish $PRERELEASE out/*
+            '
+
+  release-public:
+    name: GitHub release (GitHub-hosted)
+    needs: [vsix-public]
+    if: inputs.runner == 'ubuntu-latest'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read the version
+        run: |
+          v() { sed -n "s/.*\"$1\": *\([0-9]*\).*/\1/p" src/code_ai/version.json; }
+          echo "CODE_AI_VERSION=$(v major).$(v minor).$(v patch)" >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: code-ai-linux-v${{ env.CODE_AI_VERSION }}
+          path: out
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: code-ai-win-v${{ env.CODE_AI_VERSION }}
+          path: out
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: code-ai-vscode-v${{ env.CODE_AI_VERSION }}
+          path: out
+
+      - name: Publish the release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          prerelease=--prerelease
+          if [ "$GITHUB_REF_NAME" = "$DEFAULT_BRANCH" ] || [ "$GITHUB_REF_TYPE" = tag ]; then
+            prerelease=
+          fi
+          python3 scripts/release.py publish $prerelease out/*

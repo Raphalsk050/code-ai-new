@@ -16,12 +16,33 @@ build counter moves on every bump and never resets.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from code_ai.version import bump, read_version  # noqa: E402
+
+EXTENSION = Path(__file__).resolve().parents[1] / "vscode-extension"
+# The extension's own version, and the lock file's two copies of it (the root
+# and the "" package), which are the first "version" keys in each file.
+_EXTENSION_VERSIONS = (("package.json", 1), ("package-lock.json", 2))
+
+
+def sync_extension_version(release: str, root: Path = EXTENSION) -> None:
+    """Ship the VS Code extension under the product's X.Y.Z, not a number of its own."""
+    for name, count in _EXTENSION_VERSIONS:
+        path = root / name
+        if not path.is_file():
+            continue
+        # newline="": keep the file's own line endings.
+        with open(path, encoding="utf-8", newline="") as handle:
+            text = handle.read()
+        updated = re.sub(r'("version":\s*")[^"]*(")', rf"\g<1>{release}\g<2>", text, count=count)
+        if updated != text:
+            with open(path, "w", encoding="utf-8", newline="") as handle:
+                handle.write(updated)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -69,6 +90,7 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    sync_extension_version(updated.release)
     print(f"v{previous.full} -> v{updated.full}")
     return 0
 
