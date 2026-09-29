@@ -158,6 +158,9 @@ class NativeOllamaProvider:
             options["num_predict"] = request.max_output_tokens
         if options:
             payload["options"] = options
+        if self._config.sampling.thinking_off(request.reasoning_effort):
+            # Left out, a thinking model thinks. False is safe on one that can't.
+            payload["think"] = False
 
         debug = ModelDebugLogger.for_request(self._config, provider="ollama")
         if debug:

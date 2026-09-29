@@ -113,6 +113,18 @@ async def test_disabling_a_tool_reaches_the_live_registry(app: CodeAIApplication
     assert app.orchestrator.tool_registry.disabled_names() == {"write_file"}
 
 
+async def test_none_is_thinking_off_but_no_follow_up_of_its_own(app: CodeAIApplication) -> None:
+    assert app.get_settings()["reasoning_effort"] == "none"
+
+    await app.update_settings({"reasoning_effort": "high", "followup_reasoning_effort": "low"})
+    await app.update_settings({"reasoning_effort": "none", "followup_reasoning_effort": "none"})
+
+    sampling = app.session.config.sampling
+    assert sampling.reasoning_effort == "none"
+    assert sampling.thinking_off()
+    assert sampling.followup_reasoning_effort is None
+
+
 async def test_subagent_models_keep_the_user_s_order(app: CodeAIApplication) -> None:
     await app.update_settings({"subagent_models": ["zeta", "alpha", "zeta", ""]})
 

@@ -260,12 +260,11 @@ DEFAULT_BUDGETS: dict[str, int] = {
 
 
 DEFAULT_SAMPLING: dict[str, object] = {
-    # Tuned for Qwen3.8-27B in thinking mode at the highest reasoning effort,
-    # which is how Code-AI runs it. The model card's temperature 1.0 holds up
-    # for a short think block and falls apart in a long one - by the end of an
-    # xhigh block the model was drifting between languages and topics. 0.6
-    # keeps it on the rails, and both penalties stay off because they do the
-    # same damage as the block grows.
+    # Tuned for Qwen3.8-27B. Thinking starts off; once it is on, the model
+    # card's temperature 1.0 holds up for a short think block and falls apart
+    # in a long one - by the end of an xhigh block the model was drifting
+    # between languages and topics. 0.6 keeps it on the rails, and both
+    # penalties stay off because they do the same damage as the block grows.
     # https://huggingface.co/Qwen/Qwen3.8-27B
     #
     # Standard OpenAI sampling controls. ``None`` means "omit and let the
@@ -284,7 +283,8 @@ DEFAULT_SAMPLING: dict[str, object] = {
     "repeat_penalty": 1.05,
     # Reasoning controls. Sent on Chat Completions and Responses; on most local
     # servers this is the switch that turns thinking on as well as how much.
-    "reasoning_effort": "xhigh",
+    # "none" turns it off, templates that think unless told otherwise included.
+    "reasoning_effort": "none",
     "reasoning_summary": None,
     # Effort for a tool-loop step that follows a clean round; the first step, and
     # any step after an error or a runtime correction, keep reasoning_effort.

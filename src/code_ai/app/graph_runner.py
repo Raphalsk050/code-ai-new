@@ -480,10 +480,8 @@ class GraphNodeExecutor:
             temperature=current.temperature if binding.temperature is None else binding.temperature,
             top_p=current.top_p if binding.top_p is None else binding.top_p,
             top_k=current.top_k if binding.top_k is None else binding.top_k,
-            # "none" reads as the settings panel reads it: send no effort at all.
-            reasoning_effort=current.reasoning_effort
-            if not effort
-            else (None if effort == "none" else effort),
+            # "none" reads as the settings panel reads it: thinking off.
+            reasoning_effort=effort or current.reasoning_effort,
         )
 
     def _resolve_key(self, reference: str) -> str:

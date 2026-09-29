@@ -222,11 +222,13 @@ def test_sampling_loads_from_config_file(tmp_path) -> None:
     assert chat["top_p"] == 0.95
     assert chat["presence_penalty"] == 0.0
     # top_k/min_p are not OpenAI fields -> forwarded via extra_body alongside passthrough.
+    # The default effort is none, which also tells the chat template not to think.
     assert chat["extra_body"] == {
         "repetition_penalty": 1.05,
         "top_k": 20,
         "min_p": 0.0,
         "repeat_penalty": 1.05,
+        "chat_template_kwargs": {"enable_thinking": False},
     }
 
     responses = sampling.responses_kwargs()
@@ -413,12 +415,12 @@ def test_repeat_penalty_is_lifted_out_of_extra_body(tmp_path) -> None:
     assert sampling.ollama_options()["repeat_penalty"] == 1.3
 
 
-def test_the_defaults_think_at_xhigh_with_a_cool_sampler() -> None:
+def test_the_defaults_do_not_think_and_keep_a_cool_sampler() -> None:
     from code_ai.config.models import SamplingConfig
 
     sampling = SamplingConfig.from_mapping({})
 
-    assert sampling.reasoning_effort == "xhigh"
+    assert sampling.reasoning_effort == "none"
     assert sampling.temperature == 0.6
     assert sampling.frequency_penalty == 0.0
     assert sampling.repeat_penalty == 1.05
@@ -453,6 +455,38 @@ def test_light_reasoning_effort_only_ever_lowers(configured, light) -> None:
 def test_followup_effort_never_exceeds_the_main_one(main, followup, expected) -> None:
     sampling = SamplingConfig(reasoning_effort=main, followup_reasoning_effort=followup)
     assert sampling.followup_effort() == expected
+
+
+def test_effort_none_switches_thinking_off_on_the_wire() -> None:
+    kwargs = SamplingConfig(reasoning_effort="none").chat_completion_kwargs()
+
+    assert kwargs["reasoning_effort"] == "none"
+    # Qwen-style templates think unless told not to, whatever the effort says.
+    assert kwargs["extra_body"]["chat_template_kwargs"] == {"enable_thinking": False}
+    high = SamplingConfig(reasoning_effort="high").chat_completion_kwargs()
+    assert "chat_template_kwargs" not in high.get("extra_body", {})
+
+
+def test_the_user_s_own_template_kwargs_win() -> None:
+    mine = {"enable_thinking": True, "custom": 1}
+    sampling = SamplingConfig(reasoning_effort="none", extra_body={"chat_template_kwargs": mine})
+
+    sent = sampling.chat_completion_kwargs()["extra_body"]["chat_template_kwargs"]
+
+    assert sent == {"enable_thinking": True, "custom": 1}
+    assert mine == {"enable_thinking": True, "custom": 1}
+
+
+def test_a_step_at_effort_none_does_not_think() -> None:
+    sampling = SamplingConfig(reasoning_effort="high", followup_reasoning_effort="none")
+
+    kwargs = sampling.chat_completion_kwargs(sampling.followup_effort())
+
+    assert kwargs["reasoning_effort"] == "none"
+    assert kwargs["extra_body"]["chat_template_kwargs"] == {"enable_thinking": False}
+    # A session that sends no effort is left alone by a request's own.
+    assert SamplingConfig().chat_completion_kwargs("none") == {}
+    assert not SamplingConfig().thinking_off("none")
 
 
 def test_followup_reasoning_effort_is_validated(tmp_path) -> None:

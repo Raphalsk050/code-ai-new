@@ -799,6 +799,52 @@ async def test_chat_completions_request_effort_replaces_the_configured_one() -> 
     assert sent["reasoning_effort"] == "low"
 
 
+async def test_chat_completions_step_at_effort_none_does_not_think() -> None:
+    provider = _chat_provider([])
+    provider._sampling_supported = True
+    provider._config = AppConfig(sampling=SamplingConfig(reasoning_effort="high"))
+    sent = _record_create(provider._client.chat.completions)
+    request = ModelRequest(
+        model="test-model",
+        messages=[Message(role="user", content="hi")],
+        reasoning_effort="none",
+    )
+
+    [event async for event in provider.stream(request)]
+
+    assert sent["reasoning_effort"] == "none"
+    assert sent["extra_body"]["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def _record_stream(client) -> list[dict]:
+    sent: list[dict] = []
+    original = client.stream
+
+    def _record(*args: object, **kwargs: object):
+        sent.append(kwargs["json"])
+        return original(*args, **kwargs)
+
+    client.stream = _record
+    return sent
+
+
+async def test_ollama_is_told_not_to_think_only_at_effort_none() -> None:
+    done = json.dumps({"message": {"content": "hi"}, "done": True})
+    request = ModelRequest(model="fake", messages=[Message(role="user", content="go")])
+    payloads: dict[str, dict] = {}
+
+    for effort in ("none", "high"):
+        provider = _ollama_provider([done])
+        provider._config = AppConfig(sampling=SamplingConfig(reasoning_effort=effort))
+        sent = _record_stream(provider._client)
+        [event async for event in provider.stream(request)]
+        payloads[effort] = sent[0]
+
+    assert payloads["none"]["think"] is False
+    # Any other effort leaves it to the model, as before.
+    assert "think" not in payloads["high"]
+
+
 async def test_chat_completions_request_effort_never_switches_reasoning_on() -> None:
     provider = _chat_provider([])
     provider._sampling_supported = True

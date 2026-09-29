@@ -129,7 +129,7 @@
             "high",
             "xhigh"
           ],
-          "help": "Empty follows the session; none sends no effort and leaves it to the endpoint.",
+          "help": "Empty follows the session; none turns thinking off.",
           "group": "Sampling"
         },
         {

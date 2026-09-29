@@ -939,7 +939,11 @@ class CodeAIApplication:
                     applied.append(key)
                 elif key in {"reasoning_effort", "followup_reasoning_effort"}:
                     sampling = asdict(config.sampling)
-                    sampling[key] = None if value in (None, "", "none") else value
+                    # "none" is thinking off; as the follow-up, no follow-up of its own.
+                    unset = value in (None, "") or (
+                        key == "followup_reasoning_effort" and value == "none"
+                    )
+                    sampling[key] = None if unset else value
                     validated = persist_config_updates(config, {"sampling": sampling})
                     config.sampling = validated.sampling
                     applied.append(key)

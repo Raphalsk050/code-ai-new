@@ -412,10 +412,7 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
                     label="Reasoning effort",
                     default="",
                     options=("", "none", "minimal", "low", "medium", "high", "xhigh"),
-                    help=(
-                        "Empty follows the session; none sends no effort and leaves it to "
-                        "the endpoint."
-                    ),
+                    help="Empty follows the session; none turns thinking off.",
                 ),
                 FieldSpec(name="temperature", kind="number", label="Temperature", default=None),
                 FieldSpec(name="top_p", kind="number", label="Top P", default=None),

@@ -408,6 +408,6 @@ def test_a_model_node_sets_the_reasoning_effort_its_agents_think_at() -> None:
 
     built = instance.built  # type: ignore[attr-defined]
     assert provider is not None and built[0].sampling.reasoning_effort == "low"
-    # none is what the settings panel means by it: no effort sent at all.
-    assert off is not None and built[1].sampling.reasoning_effort is None
+    # none is what the settings panel means by it: thinking off.
+    assert off is not None and built[1].sampling.reasoning_effort == "none"
     assert same is None and overrides == {}

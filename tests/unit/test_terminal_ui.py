@@ -1507,7 +1507,7 @@ def test_config_effort_command_rejects_unknown_value(tmp_path) -> None:
         config_path=config_path,
     )
     assert "Unsupported reasoning effort" in result
-    assert fake_app.session.config.sampling.reasoning_effort == "xhigh"
+    assert fake_app.session.config.sampling.reasoning_effort == "none"
     assert not config_path.exists()
 
 

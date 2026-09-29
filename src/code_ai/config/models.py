@@ -708,6 +708,16 @@ class SamplingConfig:
             return None
         return order[min(order.index(followup), order.index(main))]
 
+    def effort_for(self, requested: str | None) -> str | None:
+        """The effort one request runs at: its own replaces the configured one,
+        but never switches reasoning on when the session sends none."""
+        if requested and self.reasoning_effort is not None:
+            return requested
+        return self.reasoning_effort
+
+    def thinking_off(self, requested: str | None = None) -> bool:
+        return self.effort_for(requested) == "none"
+
     def _extra_body_with_passthrough(self) -> dict[str, Any]:
         extra_body = dict(self.extra_body)
         if self.top_k is not None:
@@ -718,8 +728,10 @@ class SamplingConfig:
             extra_body.setdefault("repeat_penalty", self.repeat_penalty)
         return extra_body
 
-    def chat_completion_kwargs(self) -> dict[str, Any]:
-        """Sampling kwargs for the OpenAI Chat Completions endpoint."""
+    def chat_completion_kwargs(self, effort: str | None = None) -> dict[str, Any]:
+        """Sampling kwargs for the OpenAI Chat Completions endpoint; ``effort``
+        is the request's own, see ``effort_for``."""
+        effort = self.effort_for(effort)
         kwargs: dict[str, Any] = {}
         if self.temperature is not None:
             kwargs["temperature"] = self.temperature
@@ -729,7 +741,7 @@ class SamplingConfig:
             kwargs["presence_penalty"] = self.presence_penalty
         if self.frequency_penalty is not None:
             kwargs["frequency_penalty"] = self.frequency_penalty
-        if self.reasoning_effort is not None:
+        if effort is not None:
             # Chat Completions carries reasoning_effort as a plain field, and for
             # several local servers it is the *only* switch that turns thinking
             # on: Ollama's OpenAI-compatible endpoint ignores its own `think`
@@ -738,8 +750,13 @@ class SamplingConfig:
             # such model apparently thinking-free. A server that rejects the
             # field trips the sampling-retry path and the request goes again
             # without any sampling kwargs.
-            kwargs["reasoning_effort"] = self.reasoning_effort
+            kwargs["reasoning_effort"] = effort
         extra_body = self._extra_body_with_passthrough()
+        template = extra_body.get("chat_template_kwargs")
+        if effort == "none" and (template is None or isinstance(template, dict)):
+            # Qwen-style templates on vLLM, SGLang and llama.cpp think unless
+            # told not to, whatever the effort says. The user's own keys win.
+            extra_body["chat_template_kwargs"] = {"enable_thinking": False, **(template or {})}
         if extra_body:
             kwargs["extra_body"] = extra_body
         return kwargs

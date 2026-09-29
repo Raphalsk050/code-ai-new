@@ -270,6 +270,9 @@ export function SettingsScreen({
                   <option key={m} value={m}>{m}</option>
                 ))}
               </select>
+              <span className="settings-hint">
+                {t("How hard the model thinks before answering; none turns thinking off.")}
+              </span>
             </Field>
             <Field label={t("Follow-up effort")}>
               <select

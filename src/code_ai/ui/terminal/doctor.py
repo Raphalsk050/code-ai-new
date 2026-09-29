@@ -144,14 +144,15 @@ _KNOBS: tuple[_Knob, ...] = (
 )
 _KNOB_BY_FIELD = {knob.field: knob for knob in _KNOBS}
 
-# The pick-one controls on the same tab. "none" stands for "not sent".
+# The pick-one controls on the same tab. "none" stands for "not sent", except
+# as the reasoning effort, where it turns thinking off.
 _CHOICE_KNOBS: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
     (
         "reasoning_effort",
         "Reasoning effort",
         _EFFORT_CHOICES,
-        "How hard the model thinks before answering. On many local servers it "
-        "is also the switch that turns thinking on.",
+        "How hard the model thinks before answering; none turns thinking off. "
+        "On many local servers it is also the switch that turns it on.",
     ),
     (
         "followup_reasoning_effort",
@@ -1129,7 +1130,8 @@ class DoctorModal(ModalScreen[None]):
 
     def _pick(self, spec: str) -> None:
         field, _, value = spec.partition("-")
-        self._status(self._apply_sampling({field: None if value == "none" else value}))
+        unset = value == "none" and field != "reasoning_effort"
+        self._status(self._apply_sampling({field: None if unset else value}))
         self._mark_choice(field)
 
     def _mark_choice(self, field: str) -> None:

@@ -243,8 +243,10 @@ const PT: Record<string, string> = {
   "none picked": "nenhuma",
   "Raise it towards 1 when a thinking model keeps going back over the same point.":
     "Suba até perto de 1 quando um modelo com raciocínio fica voltando ao mesmo ponto.",
-  "Empty follows the session; none sends no effort and leaves it to the endpoint.":
-    "Vazio segue a sessão; none não manda esforço e deixa com o endpoint.",
+  "Empty follows the session; none turns thinking off.":
+    "Vazio segue a sessão; none desliga o raciocínio.",
+  "How hard the model thinks before answering; none turns thinking off.":
+    "Quanto o modelo pensa antes de responder; none desliga o raciocínio.",
 
   // -- function nodes -------------------------------------------------------
   Math: "Matemática",
