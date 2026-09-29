@@ -1,7 +1,7 @@
 import * as path from "path";
 import * as vscode from "vscode";
 
-import { DIFF_TOOLS, diffTitle, proposedContent, writesToProject } from "./edit-plan";
+import { applyEdits, DIFF_TOOLS, diffTitle, proposedContent, writesToProject } from "./edit-plan";
 import type { EventEnvelope } from "./protocol";
 
 const SCHEME = "code-ai-diff";
@@ -9,6 +9,22 @@ const SCHEME = "code-ai-diff";
 const REPAINT_MS = 150;
 
 type Payload = Record<string, any>;
+
+// Backend states that end a turn: a proposal still open then belongs to a call
+// that never ran.
+const TURN_OVER = new Set(["READY", "FAILED", "CLOSED"]);
+
+/** A write_file or edit_code call whose arguments are still streaming in. */
+interface Stream {
+  file: FileEdit;
+  tool: string;
+  /** The streamed source: write_file's content, or edit_code's new text. */
+  text: string;
+  /** edit_code: what the edit replaces, once the backend has sent it. */
+  oldText?: string;
+  /** edit_code: the file the edit applies to, read once. */
+  current?: Promise<string>;
+}
 
 /** A file the agent is changing this turn. */
 interface FileEdit {
@@ -46,8 +62,10 @@ export class EditDiffs implements vscode.TextDocumentContentProvider, vscode.Dis
   private readonly changed = new vscode.EventEmitter<vscode.Uri>();
   readonly onDidChange = this.changed.event;
   private files = new Map<string, FileEdit>();
-  /** write_file calls streaming in, by their index in the model's response. */
-  private readonly streams = new Map<number, { file: FileEdit; text: string }>();
+  /** Writing calls streaming in, by their index in the model's response. */
+  private readonly streams = new Map<number, Stream>();
+  /** The last written change shown this turn, put back when a proposal goes away. */
+  private lastWritten?: FileEdit;
   private readonly disposables: vscode.Disposable[];
 
   constructor() {
@@ -82,9 +100,17 @@ export class EditDiffs implements vscode.TextDocumentContentProvider, vscode.Dis
           // A new turn: the next change to a file is measured from what it is now.
           this.files = new Map();
           this.streams.clear();
+          this.lastWritten = undefined;
           break;
         case "model.request.started":
           this.streams.clear();
+          break;
+        case "model.request.retrying":
+          // A broken attempt's calls are being thrown away with its text.
+          if (p.discarded) this.dropUnrun();
+          break;
+        case "status.changed":
+          if (TURN_OVER.has(String(p.state ?? ""))) this.dropUnrun();
           break;
         case "tool.call.progress":
           this.onProgress(p);
@@ -125,7 +151,8 @@ export class EditDiffs implements vscode.TextDocumentContentProvider, vscode.Dis
   // --- events ------------------------------------------------------------
 
   private onProgress(p: Payload): void {
-    if (!p.writes || String(p.name ?? "") !== "write_file") return;
+    const tool = String(p.name ?? "");
+    if (!p.writes || !DIFF_TOOLS.has(tool)) return;
     const index = Number(p.index ?? 0);
     if (p.call_started) this.streams.delete(index);
     let stream = this.streams.get(index);
@@ -133,15 +160,37 @@ export class EditDiffs implements vscode.TextDocumentContentProvider, vscode.Dis
       // Arguments are still arriving, so the file is untouched yet: safe to read.
       const file = typeof p.path === "string" ? this.file(p.path, true) : undefined;
       if (!file) return;
-      stream = { file, text: "" };
+      stream = { file, tool, text: "" };
       this.streams.set(index, stream);
+      // A new call: until the backend names it, it has not run.
+      if (!file.proposing) file.callId = "";
     }
-    if (p.code_key !== "content" || typeof p.code_delta !== "string") return;
+    if (typeof p.old_text === "string") stream.oldText = p.old_text;
+    const key = tool === "write_file" ? "content" : "new_text";
+    if (p.code_key !== key || typeof p.code_delta !== "string") return;
     const offset = Number(p.code_offset ?? 0);
     if (offset === 0) stream.text = p.code_delta;
     else if (offset === stream.text.length) stream.text += p.code_delta;
     else return; // an update went missing: hold the last coherent text
-    this.propose(stream.file, stream.text);
+    if (tool === "write_file") this.propose(stream.file, stream.text);
+    else void this.proposeEdit(stream);
+  }
+
+  /** The file with an edit_code call's replacement applied as far as it has arrived. */
+  private async proposeEdit(stream: Stream): Promise<void> {
+    if (stream.oldText === undefined) return;
+    stream.current ??= this.readDisk(stream.file.path);
+    const current = await stream.current;
+    const next = applyEdits(current, [{ old: stream.oldText, new: stream.text, expected: 1 }]);
+    if (next !== null) this.propose(stream.file, next);
+  }
+
+  /** Take down proposals for calls that were streamed but never ran. */
+  private dropUnrun(): void {
+    this.streams.clear();
+    for (const file of this.files.values()) {
+      if (file.proposing && !file.callId) void this.settle(file, file.written);
+    }
   }
 
   private onApproval(p: Payload): void {
@@ -281,6 +330,7 @@ export class EditDiffs implements vscode.TextDocumentContentProvider, vscode.Dis
     if (file.before === undefined) return;
     this.contents.set(file.beforeUri.toString(), file.before);
     const right = phase === "proposed" ? file.proposedUri : vscode.Uri.file(file.path);
+    if (phase === "written") this.lastWritten = file;
     await vscode.commands.executeCommand("vscode.diff", file.beforeUri, right, diffTitle(file.relative, phase), {
       preview: true,
       preserveFocus: true,
@@ -299,6 +349,7 @@ export class EditDiffs implements vscode.TextDocumentContentProvider, vscode.Dis
     const stale = file.proposedUri.toString();
     const wasProposing = file.proposing;
     file.proposing = false;
+    file.callId = "";
     // A fresh name for the next proposal, so a tab left over can never show it.
     file.proposedUri = this.virtual(file.relative, "proposed");
     if (showWritten) await this.show(file, "written");
@@ -308,5 +359,8 @@ export class EditDiffs implements vscode.TextDocumentContentProvider, vscode.Dis
       .filter((tab) => tab.input instanceof vscode.TabInputTextDiff && tab.input.modified.toString() === stale);
     if (tabs.length) await vscode.window.tabGroups.close(tabs, true);
     this.contents.delete(stale);
+    // The proposal had taken the preview slot of the change shown before it.
+    const previous = this.lastWritten;
+    if (!showWritten && previous && previous !== file) await this.show(previous, "written");
   }
 }

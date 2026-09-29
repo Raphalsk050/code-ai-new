@@ -342,6 +342,21 @@ async def test_edit_code_previews_the_replacement_text(tmp_path) -> None:
     assert "".join(p["code_delta"] for p in coded) == "after\nmore\n"
 
 
+async def test_an_edit_says_what_it_replaces_once_before_its_replacement(tmp_path) -> None:
+    # With the old text the editor can show the edit in place while the new
+    # text is still streaming, instead of only once it has landed.
+    arguments = json.dumps(
+        {"path": "a.py", "old_text": "timeout = 30\n", "new_text": "timeout = DEFAULT\n" * 8}
+    )
+
+    payloads = await _progress_for(tmp_path, arguments, name="edit_code")
+
+    carrying = [p for p in payloads if "old_text" in p]
+    assert [p["old_text"] for p in carrying] == ["timeout = 30\n"]
+    first_code = next(i for i, p in enumerate(payloads) if "code_delta" in p)
+    assert payloads.index(carrying[0]) <= first_code
+
+
 async def test_the_write_is_announced_before_its_source(tmp_path) -> None:
     # The arguments are declared path -> reason -> content, so this is the order
     # a model streams them in: the UI learns what is being written, and why,

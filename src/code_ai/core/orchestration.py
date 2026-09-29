@@ -225,6 +225,9 @@ _CODE_PROGRESS_STEP_CHARS = 48
 # one writing it.
 _CODE_ARGUMENT_KEYS = ("content", "new_text", "instructions")
 _PATH_ARGUMENT_KEY = "path"
+# What an edit_code call replaces. Sent once, when complete: with it a front end
+# can show the edit in place while its replacement is still streaming.
+_OLD_TEXT_ARGUMENT_KEY = "old_text"
 # The model's plain-language justification for the change. Declared ahead of the
 # bulk arguments on the writing tools precisely so it arrives first and the UI
 # can open with the reason already on screen.
@@ -495,6 +498,7 @@ class _ToolCallStream:
     # Whether the consumer has been told the source is final, so the live view
     # is never left showing a write that is still in progress.
     announced_complete: bool = False
+    announced_old_text: bool = False
 
 
 @dataclass(slots=True)
@@ -3212,7 +3216,12 @@ class AgentOrchestrator:
         stream = _ToolCallStream(
             name=name,
             decoder=PartialObjectDecoder(
-                (_PATH_ARGUMENT_KEY, _REASON_ARGUMENT_KEY, *_CODE_ARGUMENT_KEYS)
+                (
+                    _PATH_ARGUMENT_KEY,
+                    _REASON_ARGUMENT_KEY,
+                    _OLD_TEXT_ARGUMENT_KEY,
+                    *_CODE_ARGUMENT_KEYS,
+                )
             ),
             writes=self._writes_to_workspace(name),
         )
@@ -3281,6 +3290,10 @@ class AgentOrchestrator:
         path = decoder.value(_PATH_ARGUMENT_KEY)
         if path is not None and path.closed and path.text:
             payload["path"] = path.text
+        old_text = decoder.value(_OLD_TEXT_ARGUMENT_KEY) if stream.writes else None
+        if old_text is not None and old_text.closed and not stream.announced_old_text:
+            payload["old_text"] = old_text.text
+            stream.announced_old_text = True
         if code is not None:
             text = code.text
             payload["code_key"] = code_key
