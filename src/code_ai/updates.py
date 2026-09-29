@@ -99,25 +99,38 @@ def current_version() -> str:
     return read_version().release
 
 
-def platform_key(platform: str = sys.platform) -> str:
-    """``win`` or ``linux``: the platforms CI builds for; "" for the rest."""
+def platform_key(platform: str = sys.platform, machine: str = "") -> str:
+    """What CI builds for this machine: ``win``, ``linux``, ``mac-arm64`` or
+    ``mac-x64``; "" for the rest."""
     if platform.startswith("win"):
         return "win"
     if platform.startswith("linux"):
         return "linux"
+    if platform == "darwin":
+        # Under Rosetta an x86_64 Python says x86_64, and gets the build it runs.
+        return "mac-arm64" if (machine or _machine()) == "arm64" else "mac-x64"
     return ""
+
+
+def _machine() -> str:
+    import platform
+
+    return platform.machine()
 
 
 def asset_name(kind: str, version: str, target: str = "") -> str:
     """The file name CI gives an asset (see .github/workflows/build-binaries.yml).
 
-    ``kind`` is "binary" (``target`` is "win" or "linux") or "vsix"
-    (``target`` is VS Code's platform, e.g. "win32-x64").
+    ``kind`` is "binary" (``target`` as platform_key gives it) or "vsix"
+    (``target`` is VS Code's platform, e.g. "win32-x64"). On macOS the
+    "binary" is the installer vscode-extension/scripts/package.mjs writes.
     """
     if kind == "vsix":
         return f"code-ai-vscode-v{version}-{target}.vsix"
     if target == "win":
         return f"code-ai-win-v{version}.exe"
+    if target.startswith("mac-"):
+        return f"code-ai-{target}-v{version}.sh"
     return f"code-ai-{target}-v{version}"
 
 
@@ -396,6 +409,29 @@ def running_binary() -> Path | None:
     if not getattr(sys, "frozen", False):
         return None
     return Path(sys.executable).resolve()
+
+
+def mac_bundle() -> Path | None:
+    """The folder of the macOS build this runs from; its launcher says which."""
+    if sys.platform != "darwin":
+        return None
+    folder = os.environ.get("CODE_AI_BUNDLE", "")
+    return Path(folder) if folder else None
+
+
+def run_mac_installer(installer: Path) -> None:
+    """Install a downloaded macOS build over this one, as its user would.
+
+    The installer keeps the version this process runs from until the next one.
+    """
+    done = subprocess.run(
+        ["sh", str(installer), "--quiet", "--no-vscode"],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    if done.returncode != 0:
+        raise UpdateError(done.stderr.strip() or f"The installer stopped with {done.returncode}.")
 
 
 def bundled_with_extension(path: Path) -> bool:

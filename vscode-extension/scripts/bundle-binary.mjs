@@ -8,7 +8,20 @@
 // moves it into place and refuses the mistakes that produce a VSIX which
 // installs cleanly and then cannot start.
 
-import { chmodSync, copyFileSync, mkdirSync, openSync, readSync, rmSync, closeSync, statSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  copyFileSync,
+  cpSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -97,4 +110,51 @@ export function stageBinary(platform, source) {
   // for the VSIXes built on Windows, where there is no bit to keep.
   chmodSync(target, 0o755);
   return { target, size };
+}
+
+/**
+ * Stage a macOS build, the folder scripts/build_mac_bundle.py writes: its
+ * launcher lands at bin/code-ai, where the extension looks on any POSIX host,
+ * with the runtime beside it. Returns the files (relative to bin/) that must
+ * stay executable, as the bundle's manifest lists them.
+ */
+export function stageBundle(arch, source) {
+  if (!statSync(source).isDirectory()) {
+    throw new Error(
+      `${source} is not a folder. Unpack code-ai-mac-${arch}-v*.tar.gz and pass the ` +
+        `code-ai-mac-${arch} folder in it.`
+    );
+  }
+  const manifest = JSON.parse(readFileSync(join(source, "code-ai-bundle.json"), "utf8"));
+  if (manifest.arch !== arch) {
+    throw new Error(`${source} holds the ${manifest.arch} build, not ${arch}`);
+  }
+  rmSync(BIN_DIR, { recursive: true, force: true });
+  cpSync(source, BIN_DIR, { recursive: true });
+  for (const file of manifest.executables) chmodSync(join(BIN_DIR, file), 0o755);
+  return { executables: manifest.executables, size: treeSize(BIN_DIR) };
+}
+
+/**
+ * What Mac users download: packaging/mac-install.sh with the darwin VSIX after
+ * it, so one file installs the command and the extension (see the script).
+ */
+export function writeMacInstaller(file, vsix, { version, arch }) {
+  const template = readFileSync(join(REPO_ROOT, "packaging", "mac-install.sh"), "utf8");
+  // A Windows checkout may have given it CRLF, which no Mac shell would run.
+  const header = template.replace(/\r\n/g, "\n").replaceAll("__VERSION__", version).replaceAll("__ARCH__", arch);
+  if (!header.endsWith("\n__CODE_AI_PAYLOAD__\n")) {
+    throw new Error("packaging/mac-install.sh has to end with its payload marker line");
+  }
+  writeFileSync(file, Buffer.concat([Buffer.from(header, "utf8"), readFileSync(vsix)]));
+  chmodSync(file, 0o755);
+}
+
+function treeSize(dir) {
+  let total = 0;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    total += entry.isDirectory() ? treeSize(path) : statSync(path).size;
+  }
+  return total;
 }

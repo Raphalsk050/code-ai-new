@@ -50,6 +50,8 @@ def test_the_notes_lead_with_the_version_and_stay_short() -> None:
     assert "**Fixed**\n- VS Code: Read the pipe as UTF-8" in notes
     assert "Plus 3 smaller changes." in notes
     assert "code-ai-vscode" in notes
+    # A Mac user gets the exact command for this release.
+    assert "`sh ~/Downloads/code-ai-mac-arm64-v0.27.1.sh`" in notes
 
 
 def test_a_build_with_nothing_to_announce_says_so() -> None:

@@ -11,7 +11,7 @@ import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { BIN_DIR, PLATFORMS, stageBinary } from "./bundle-binary.mjs";
+import { BIN_DIR, PLATFORMS, stageBinary, stageBundle, writeMacInstaller } from "./bundle-binary.mjs";
 import { SkippedTarget, ensureBackend } from "./ensure-backend.mjs";
 import { vscePath } from "./ensure-deps.mjs";
 import { makeEntryExecutable, verify } from "./verify-vsix.mjs";
@@ -28,7 +28,22 @@ const VSCE = vscePath(EXT_ROOT);
 const TARGETS = {
   "win32-x64": "win32",
   "linux-x64": "linux",
+  // Not PyInstaller: folders scripts/build_mac_bundle.py assembles, handed in
+  // with --mac-arm64 / --mac-x64.
+  "darwin-arm64": "darwin",
+  "darwin-x64": "darwin",
 };
+
+/** The macOS folder for a darwin target, or why it cannot be packaged here. */
+function macBundle(target, mac) {
+  const arch = target.split("-")[1];
+  if (!mac[arch]) {
+    throw new SkippedTarget(
+      `no macOS build given: run scripts/build_mac_bundle.py, then pass --mac-${arch} <code-ai-mac-${arch} folder>`
+    );
+  }
+  return resolve(mac[arch]);
+}
 
 function run(command, args, label) {
   process.stdout.write(`  ${label}\n`);
@@ -40,6 +55,7 @@ function parseArgs(argv) {
     targets: [],
     win: null,
     linux: null,
+    mac: { arm64: null, x64: null },
     skipVerify: false,
     skipSmoke: false,
     verifySsl: false,
@@ -51,6 +67,8 @@ function parseArgs(argv) {
     if (arg === "--target") args.targets.push(...argv[++i].split(","));
     else if (arg === "--win") args.win = argv[++i];
     else if (arg === "--linux") args.linux = argv[++i];
+    else if (arg === "--mac-arm64") args.mac.arm64 = argv[++i];
+    else if (arg === "--mac-x64") args.mac.x64 = argv[++i];
     else if (arg === "--skip-verify") args.skipVerify = true;
     // For a binary this machine cannot start: a fake in the tests, or one
     // handed in with --win/--linux that was built somewhere else.
@@ -92,12 +110,15 @@ function main() {
 
       let source;
       try {
-        source = ensureBackend(platform, {
-          explicit: platform === "win32" ? args.win : args.linux,
-          verifySsl: args.verifySsl,
-          refresh: args.refresh,
-          smoke: !args.skipSmoke,
-        });
+        source =
+          platform === "darwin"
+            ? macBundle(target, args.mac)
+            : ensureBackend(platform, {
+                explicit: platform === "win32" ? args.win : args.linux,
+                verifySsl: args.verifySsl,
+                refresh: args.refresh,
+                smoke: !args.skipSmoke,
+              });
       } catch (err) {
         // A target the user named has to be built or the run has failed; one we
         // picked ourselves is allowed to be out of reach on this machine.
@@ -106,7 +127,10 @@ function main() {
         skipped.push([target, err.message]);
         continue;
       }
-      const { size } = stageBinary(platform, source);
+      const { size, executables } =
+        platform === "darwin"
+          ? stageBundle(target.split("-")[1], source)
+          : { ...stageBinary(platform, source), executables: [PLATFORMS[platform].staged] };
       console.log(`  staged ${relative(EXT_ROOT, source)} (${(size / 1024 / 1024).toFixed(1)} MB)`);
 
       const out = join(outDir, `code-ai-${version}-${target}.vsix`);
@@ -120,12 +144,14 @@ function main() {
       // vsce copies the mode off the filesystem, and a Windows host has no
       // executable bit to copy: without this, a Linux package built here
       // unpacks as a file Linux will not run.
-      const mode = makeEntryExecutable(out, `extension/bin/${PLATFORMS[platform].staged}`);
-      console.log(`  backend mode ${(mode & 0o777).toString(8)}`);
+      for (const file of executables) {
+        const mode = makeEntryExecutable(out, `extension/bin/${file}`);
+        console.log(`  ${file} mode ${(mode & 0o777).toString(8)}`);
+      }
 
       if (!args.skipVerify) {
-        const { problems, warnings, binary, entries } = verify(out, target);
-        console.log(`  verify: ${entries.length} entries, backend ${(binary.size / 1024 / 1024).toFixed(1)} MB`);
+        const { problems, warnings, backendBytes, entries } = verify(out, target);
+        console.log(`  verify: ${entries.length} entries, backend ${(backendBytes / 1024 / 1024).toFixed(1)} MB`);
         for (const warning of warnings) console.log(`  warning: ${warning}`);
         if (problems.length) {
           for (const problem of problems) console.error(`  FAIL: ${problem}`);
@@ -133,6 +159,13 @@ function main() {
         }
       }
       built.push(out);
+
+      if (platform === "darwin") {
+        const arch = target.split("-")[1];
+        const installer = join(outDir, `code-ai-mac-${arch}-v${version}.sh`);
+        writeMacInstaller(installer, out, { version, arch });
+        built.push(installer);
+      }
     }
   } finally {
     // bin/ is staging, not an artifact: leaving a binary there would silently

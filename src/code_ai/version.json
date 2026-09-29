@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 31,
+  "minor": 32,
   "patch": 0,
-  "build": 61,
+  "build": 62,
   "updated": "2026-09-29",
-  "note": "One-click sign-in for updates"
+  "note": "macOS build, installer and Mac runner check"
 }

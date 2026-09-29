@@ -2070,13 +2070,16 @@ def create_terminal_app(application, *, config_path: Path | None = None):
         async def _run_update(self) -> None:
             """Download the newest release's binary and put it where this one runs."""
             binary = updates.running_binary()
-            if binary is None:
+            # macOS is not frozen: its installer puts the new version in place.
+            bundle = updates.mac_bundle()
+            installed = binary or bundle
+            if installed is None:
                 self._append_conversation_line(
                     "update> This Code-AI runs from source: update it with git pull, or "
                     "reinstall it with pip."
                 )
                 return
-            if updates.bundled_with_extension(binary):
+            if updates.bundled_with_extension(installed):
                 self._append_conversation_line(
                     "update> This copy came with the VS Code extension: update the "
                     "extension from its Update button, and this one comes along."
@@ -2121,7 +2124,10 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                     )
 
             new = await updates.download(asset, verify_ssl=verify, progress=progress)
-            await asyncio.to_thread(updates.replace_binary, new, binary)
+            if bundle is not None:
+                await asyncio.to_thread(updates.run_mac_installer, new)
+            else:
+                await asyncio.to_thread(updates.replace_binary, new, binary)
             self._update_release_installed = True
             self._show_update_button(None)
             self._append_conversation_line(

@@ -329,6 +329,39 @@ async def test_update_signs_in_first_when_the_releases_want_it(tmp_path, monkeyp
         assert not terminal_app.query_one("#update-button", Button).display
 
 
+async def test_update_on_a_mac_runs_the_new_installer(tmp_path, monkeypatch) -> None:
+    from code_ai import updates
+
+    asset = updates.Asset(name="code-ai-mac-arm64-v9.9.9.sh", download_url="", api_url="", size=1)
+    release = updates.Release(
+        version="9.9.9", tag="v9.9.9", name="", notes="", url="", prerelease=False, assets=(asset,)
+    )
+    installed: list = []
+
+    async def newer(**_kwargs):
+        return release
+
+    async def fetched(asset, directory=None, **_kwargs):
+        return tmp_path / asset.name
+
+    # Not frozen: the launcher of ~/.code-ai/app says where the build lives.
+    monkeypatch.setattr(updates, "mac_bundle", lambda: tmp_path / ".code-ai" / "app" / "v9.9.8")
+    monkeypatch.setattr(updates, "platform_key", lambda *_args: "mac-arm64")
+    monkeypatch.setattr(updates, "RELEASES_REPOSITORY", "team/code-ai")
+    monkeypatch.setattr(updates, "check", newer)
+    monkeypatch.setattr(updates, "download", fetched)
+    monkeypatch.setattr(updates, "run_mac_installer", installed.append)
+    terminal_app = create_terminal_app(
+        FakeTerminalApplication(tmp_path), config_path=tmp_path / "config.json"
+    )
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        await terminal_app._install_update()
+        await pilot.pause()
+        assert installed == [tmp_path / "code-ai-mac-arm64-v9.9.9.sh"]
+        assert any("v9.9.9 is installed" in line for line in terminal_app.vm.conversation)
+
+
 async def test_no_release_no_button(tmp_path, monkeypatch) -> None:
     from textual.widgets import Button
 

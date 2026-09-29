@@ -69,7 +69,42 @@ def test_asset_names_are_the_ones_ci_publishes() -> None:
     assert vsix == "code-ai-vscode-v1.2.3-win32-x64.vsix"
     assert updates.platform_key("win32") == "win"
     assert updates.platform_key("linux") == "linux"
-    assert updates.platform_key("darwin") == ""
+    assert updates.platform_key("freebsd13") == ""
+
+
+def test_a_mac_updates_through_the_installer_for_its_chip() -> None:
+    # vscode-extension/scripts/package.mjs names the installers.
+    package = (_WORKFLOW.parents[2] / "vscode-extension" / "scripts" / "package.mjs").read_text(
+        encoding="utf-8"
+    )
+    assert "`code-ai-mac-${arch}-v${version}.sh`" in package
+
+    assert updates.platform_key("darwin", "arm64") == "mac-arm64"
+    # An x86_64 Python under Rosetta keeps getting the build it runs.
+    assert updates.platform_key("darwin", "x86_64") == "mac-x64"
+    assert updates.asset_name("binary", "1.2.3", "mac-arm64") == "code-ai-mac-arm64-v1.2.3.sh"
+
+
+def test_the_mac_build_says_where_it_lives_and_its_installer_is_run(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(updates.sys, "platform", "linux")
+    monkeypatch.setenv("CODE_AI_BUNDLE", str(tmp_path))
+    assert updates.mac_bundle() is None
+    monkeypatch.setattr(updates.sys, "platform", "darwin")
+    assert updates.mac_bundle() == tmp_path
+
+    ran: list[list[str]] = []
+
+    def installer(argv, **_kwargs):
+        ran.append(argv)
+        return SimpleNamespace(returncode=1, stderr="This Mac has an Intel chip")
+
+    monkeypatch.setattr(updates.subprocess, "run", installer)
+    with pytest.raises(updates.UpdateError, match="Intel chip"):
+        updates.run_mac_installer(tmp_path / "code-ai-mac-arm64-v1.2.3.sh")
+    # Only the command: the extension updates itself.
+    assert ran[0][2:] == ["--quiet", "--no-vscode"]
 
 
 class _FakeGitHub:

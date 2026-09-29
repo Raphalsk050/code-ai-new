@@ -113,6 +113,20 @@ export function makeEntryExecutable(file, name) {
 
 /** Minimum plausible size of a one-file PyInstaller build, in bytes. */
 const MIN_BINARY_BYTES = 5 * 1024 * 1024;
+/** And of the macOS folder: a Python runtime plus Playwright's Node alone pass it. */
+const MIN_BUNDLE_BYTES = 40 * 1024 * 1024;
+
+/** The macOS build: a launcher script, and a runtime whose programs need the bit too. */
+const MAC_BUNDLE = {
+  binary: "extension/bin/code-ai",
+  forbidden: "extension/bin/code-ai.exe",
+  needsExecutableBit: true,
+  bundle: [
+    "extension/bin/code-ai-bundle.json",
+    "extension/bin/runtime/bin/python3.12",
+    "extension/bin/runtime/lib/python3.12/site-packages/playwright/driver/node",
+  ],
+};
 
 const EXPECTED = {
   "win32-x64": {
@@ -126,7 +140,20 @@ const EXPECTED = {
     forbidden: "extension/bin/code-ai.exe",
     needsExecutableBit: true,
   },
+  "darwin-arm64": MAC_BUNDLE,
+  "darwin-x64": MAC_BUNDLE,
 };
+
+function checkExecutable(entry, problems) {
+  if (entry.mode === null) {
+    problems.push(
+      `${entry.name} carries no POSIX mode, so it unpacks unrunnable on Linux and macOS ` +
+        `(run makeEntryExecutable on the package)`
+    );
+  } else if (!(entry.mode & 0o111)) {
+    problems.push(`${entry.name} has mode ${(entry.mode & 0o777).toString(8)} — not executable`);
+  }
+}
 
 /**
  * Check one VSIX against the target it claims to serve. Returns a list of
@@ -154,20 +181,29 @@ export function verify(file, target) {
   }
 
   const binary = byName.get(expected.binary);
+  // What the backend weighs: the binary, or the whole folder on macOS.
+  let backendBytes = binary?.size ?? 0;
   if (!binary) {
     problems.push(`missing ${expected.binary} — the VSIX carries no backend, so a fresh install cannot start`);
-  } else if (binary.size < MIN_BINARY_BYTES) {
+  } else if (!expected.bundle && binary.size < MIN_BINARY_BYTES) {
     problems.push(
       `${expected.binary} is ${(binary.size / 1024 / 1024).toFixed(1)} MB, too small to be the real binary`
     );
   } else if (expected.needsExecutableBit) {
-    if (binary.mode === null) {
-      problems.push(
-        `${expected.binary} carries no POSIX mode, so it unpacks unrunnable on Linux ` +
-          `(run makeEntryExecutable on the package)`
-      );
-    } else if (!(binary.mode & 0o111)) {
-      problems.push(`${expected.binary} has mode ${(binary.mode & 0o777).toString(8)} — not executable`);
+    checkExecutable(binary, problems);
+  }
+
+  if (expected.bundle) {
+    for (const name of expected.bundle) {
+      const entry = byName.get(name);
+      if (!entry) problems.push(`missing ${name} — the macOS runtime is incomplete`);
+      else if (!name.endsWith(".json")) checkExecutable(entry, problems);
+    }
+    backendBytes = entries
+      .filter((e) => e.name.startsWith("extension/bin/"))
+      .reduce((total, e) => total + e.size, 0);
+    if (backendBytes < MIN_BUNDLE_BYTES) {
+      problems.push(`the macOS runtime is ${(backendBytes / 1024 / 1024).toFixed(1)} MB, too small to be whole`);
     }
   }
 
@@ -181,20 +217,20 @@ export function verify(file, target) {
   const sources = entries.filter((e) => /^extension\/(src|webview)\//.test(e.name));
   if (sources.length) warnings.push(`${sources.length} source files shipped (check .vscodeignore)`);
 
-  return { entries, problems, warnings, binary };
+  return { entries, problems, warnings, binary, backendBytes };
 }
 
 function main() {
   const [file, target] = process.argv.slice(2);
   if (!file || !target) {
-    console.error("usage: verify-vsix.mjs <file.vsix> <win32-x64|linux-x64>");
+    console.error("usage: verify-vsix.mjs <file.vsix> <win32-x64|linux-x64|darwin-arm64|darwin-x64>");
     process.exit(2);
   }
-  const { entries, problems, warnings, binary } = verify(file, target);
+  const { entries, problems, warnings, backendBytes } = verify(file, target);
   const total = statSync(file).size;
   console.log(
     `${basename(file)}: ${entries.length} entries, ${(total / 1024 / 1024).toFixed(1)} MB packed` +
-      (binary ? `, backend ${(binary.size / 1024 / 1024).toFixed(1)} MB` : "")
+      (backendBytes ? `, backend ${(backendBytes / 1024 / 1024).toFixed(1)} MB` : "")
   );
   for (const warning of warnings) console.log(`  warning: ${warning}`);
   if (problems.length) {

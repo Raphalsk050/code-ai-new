@@ -1,8 +1,8 @@
 name: Build standalone binaries
 
-# One-file executables for Linux and Windows, the VSCode extension carrying
-# them, and a GitHub release with all three. Users run them with no Python
-# installed.
+# One-file executables for Linux and Windows, a macOS build with its own
+# Python, the VSCode extension carrying each, and a GitHub release with all of
+# them. Users run them with no Python installed.
 #
 # code-linux is the company's only runner: GitHub-hosted ones are unreachable
 # from that network, and upload-artifact is pinned to v3 because v4 does not
@@ -159,6 +159,51 @@ jobs:
           path: out/code-ai-win-v${{ env.CODE_AI_VERSION }}.exe
           if-no-files-found: error
 
+  # ---- macOS, assembled on Linux ---------------------------------------------
+  # PyInstaller cannot build for a Mac anywhere else, but the Mac build is not
+  # frozen: scripts/build_mac_bundle.py unpacks a macOS Python and installs the
+  # macOS wheels into it, nothing compiled. Running it takes a Mac, which the
+  # macos-check job does once one is registered. A failure here costs the
+  # release its macOS files, never the rest.
+
+  macos:
+    name: macOS arm64 + x86_64 (assembled on Linux)
+    if: inputs.runner != 'ubuntu-latest'
+    runs-on: code-linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the version
+        run: |
+          v() { sed -n "s/.*\"$1\": *\([0-9]*\).*/\1/p" src/code_ai/version.json; }
+          echo "CODE_AI_VERSION=$(v major).$(v minor).$(v patch)" >> "$GITHUB_ENV"
+
+      # The macOS Python comes from github.com; the repository variable
+      # CODE_AI_PBS_MIRROR points at an internal copy if that is blocked.
+      - name: Assemble the macOS builds
+        env:
+          CODE_AI_PBS_MIRROR: ${{ vars.CODE_AI_PBS_MIRROR }}
+        run: |
+          cache="$HOME/.cache/code-ai-ci/mac"
+          mkdir -p "$cache/pip"
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PIP_TRUSTED_HOST \
+            -e PIP_CACHE_DIR=/cache/pip \
+            -e CODE_AI_BUILD_CACHE=/cache \
+            -e CODE_AI_PBS_MIRROR \
+            -v "$cache":/cache \
+            -v "$PWD":/work -w /work \
+            python:3.12-bullseye \
+            python scripts/build_mac_bundle.py --out out
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: code-ai-mac-bundle-v${{ env.CODE_AI_VERSION }}
+          path: out/code-ai-mac-*.tar.gz
+          if-no-files-found: error
+
   # ---- the same two binaries, on a GitHub-hosted runner --------------------
   # Only these mention v4, and they are skipped unless the dropdown asks for
   # them. No PIP_TRUSTED_HOST: that gets past a proxy which re-signs TLS, and
@@ -249,72 +294,8 @@ jobs:
           path: out/code-ai-win-v${{ env.CODE_AI_VERSION }}.exe
           if-no-files-found: error
 
-  # ---- the VSCode extension ------------------------------------------------
-  # One VSIX per platform, each carrying the binary built above, so installing
-  # it needs nothing else on the machine. scripts/package.mjs fails the build if
-  # a package would ship without its backend, with the wrong platform's, or
-  # without the executable bit.
-
-  vsix:
-    name: VSCode extension
-    needs: [linux, windows]
-    if: inputs.runner != 'ubuntu-latest'
-    runs-on: code-linux
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Read the version
-        run: |
-          v() { sed -n "s/.*\"$1\": *\([0-9]*\).*/\1/p" src/code_ai/version.json; }
-          echo "CODE_AI_VERSION=$(v major).$(v minor).$(v patch)" >> "$GITHUB_ENV"
-
-      - uses: actions/download-artifact@v3
-        with:
-          name: code-ai-linux-v${{ env.CODE_AI_VERSION }}
-          path: out
-
-      - uses: actions/download-artifact@v3
-        with:
-          name: code-ai-win-v${{ env.CODE_AI_VERSION }}
-          path: out
-
-      # Node comes from the same container pattern as the binaries: the runner
-      # itself is only asked for Docker.
-      - name: Build the packages
-        run: |
-          chmod +x "out/code-ai-linux-v$CODE_AI_VERSION"
-          docker run --rm \
-            --user "$(id -u):$(id -g)" \
-            -e HOME=/tmp \
-            -e npm_config_cache=/tmp/npm \
-            -e CODE_AI_VERSION \
-            -v "$PWD":/work -w /work/vscode-extension \
-            node:20-bookworm \
-            bash -euxc '
-              npm ci --no-audit --no-fund || npm install --no-audit --no-fund
-              node scripts/package.mjs \
-                --linux "../out/code-ai-linux-v$CODE_AI_VERSION" \
-                --win "../out/code-ai-win-v$CODE_AI_VERSION.exe"
-            '
-
-      - name: Stage artifact
-        run: |
-          mkdir -p out/vsix
-          for vsix in vscode-extension/vsix/*.vsix; do
-            target="${vsix##*-$CODE_AI_VERSION-}"
-            cp "$vsix" "out/vsix/code-ai-vscode-v$CODE_AI_VERSION-$target"
-          done
-          ls -l out/vsix
-
-      - uses: actions/upload-artifact@v3
-        with:
-          name: code-ai-vscode-v${{ env.CODE_AI_VERSION }}
-          path: out/vsix/*.vsix
-          if-no-files-found: error
-
-  vsix-public:
-    name: VSCode extension (GitHub-hosted)
-    needs: [linux-public, windows-public]
+  macos-public:
+    name: macOS arm64 + x86_64 (GitHub-hosted, assembled on Linux)
     if: inputs.runner == 'ubuntu-latest'
     runs-on: ubuntu-latest
     steps:
@@ -325,6 +306,140 @@ jobs:
           v() { sed -n "s/.*\"$1\": *\([0-9]*\).*/\1/p" src/code_ai/version.json; }
           echo "CODE_AI_VERSION=$(v major).$(v minor).$(v patch)" >> "$GITHUB_ENV"
 
+      - name: Assemble the macOS builds
+        run: |
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -v "$PWD":/work -w /work \
+            python:3.12-bullseye \
+            python scripts/build_mac_bundle.py --out out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: code-ai-mac-bundle-v${{ env.CODE_AI_VERSION }}
+          path: out/code-ai-mac-*.tar.gz
+          if-no-files-found: error
+
+  # ---- the VSCode extension ------------------------------------------------
+  # One VSIX per platform, each carrying the binary built above, so installing
+  # it needs nothing else on the machine. scripts/package.mjs fails the build if
+  # a package would ship without its backend, with the wrong platform's, or
+  # without the executable bit. For macOS it also writes what Mac users
+  # download: the command and the extension in one file (packaging/mac-install.sh).
+
+  vsix:
+    name: VSCode extension
+    needs: [linux, windows, macos]
+    # macOS is extra: when its build fails, the other packages still ship.
+    if: >-
+      !cancelled() && inputs.runner != 'ubuntu-latest'
+      && needs.linux.result == 'success' && needs.windows.result == 'success'
+    runs-on: code-linux
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+      mac: ${{ steps.package.outputs.mac }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the version
+        id: version
+        run: |
+          v() { sed -n "s/.*\"$1\": *\([0-9]*\).*/\1/p" src/code_ai/version.json; }
+          echo "CODE_AI_VERSION=$(v major).$(v minor).$(v patch)" >> "$GITHUB_ENV"
+          echo "value=$(v major).$(v minor).$(v patch)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v3
+        with:
+          name: code-ai-linux-v${{ env.CODE_AI_VERSION }}
+          path: out
+
+      - uses: actions/download-artifact@v3
+        with:
+          name: code-ai-win-v${{ env.CODE_AI_VERSION }}
+          path: out
+
+      - uses: actions/download-artifact@v3
+        if: needs.macos.result == 'success'
+        with:
+          name: code-ai-mac-bundle-v${{ env.CODE_AI_VERSION }}
+          path: out
+
+      # Node comes from the same container pattern as the binaries: the runner
+      # itself is only asked for Docker.
+      - name: Build the packages
+        id: package
+        run: |
+          chmod +x "out/code-ai-linux-v$CODE_AI_VERSION"
+          CODE_AI_MAC_ARGS=""
+          for arch in arm64 x64; do
+            bundle="out/code-ai-mac-$arch-v$CODE_AI_VERSION.tar.gz"
+            if [ -f "$bundle" ]; then
+              tar -xzf "$bundle" -C out
+              CODE_AI_MAC_ARGS="$CODE_AI_MAC_ARGS --mac-$arch ../out/code-ai-mac-$arch"
+            fi
+          done
+          export CODE_AI_MAC_ARGS
+          if [ -n "$CODE_AI_MAC_ARGS" ]; then echo "mac=true" >> "$GITHUB_OUTPUT"; fi
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e npm_config_cache=/tmp/npm \
+            -e CODE_AI_VERSION \
+            -e CODE_AI_MAC_ARGS \
+            -v "$PWD":/work -w /work/vscode-extension \
+            node:20-bookworm \
+            bash -euxc '
+              npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+              node scripts/package.mjs \
+                --linux "../out/code-ai-linux-v$CODE_AI_VERSION" \
+                --win "../out/code-ai-win-v$CODE_AI_VERSION.exe" \
+                $CODE_AI_MAC_ARGS
+            '
+
+      - name: Stage artifact
+        run: |
+          mkdir -p out/vsix out/mac
+          for vsix in vscode-extension/vsix/*.vsix; do
+            target="${vsix##*-$CODE_AI_VERSION-}"
+            cp "$vsix" "out/vsix/code-ai-vscode-v$CODE_AI_VERSION-$target"
+          done
+          cp vscode-extension/vsix/code-ai-mac-*.sh out/mac/ 2>/dev/null || true
+          ls -l out/vsix out/mac
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: code-ai-vscode-v${{ env.CODE_AI_VERSION }}
+          path: out/vsix/*.vsix
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v3
+        if: steps.package.outputs.mac == 'true'
+        with:
+          name: code-ai-mac-v${{ env.CODE_AI_VERSION }}
+          path: out/mac/*.sh
+          if-no-files-found: error
+
+  vsix-public:
+    name: VSCode extension (GitHub-hosted)
+    needs: [linux-public, windows-public, macos-public]
+    if: >-
+      !cancelled() && inputs.runner == 'ubuntu-latest'
+      && needs.linux-public.result == 'success' && needs.windows-public.result == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+      mac: ${{ steps.package.outputs.mac }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the version
+        id: version
+        run: |
+          v() { sed -n "s/.*\"$1\": *\([0-9]*\).*/\1/p" src/code_ai/version.json; }
+          echo "CODE_AI_VERSION=$(v major).$(v minor).$(v patch)" >> "$GITHUB_ENV"
+          echo "value=$(v major).$(v minor).$(v patch)" >> "$GITHUB_OUTPUT"
+
       - uses: actions/download-artifact@v4
         with:
           name: code-ai-linux-v${{ env.CODE_AI_VERSION }}
@@ -335,33 +450,102 @@ jobs:
           name: code-ai-win-v${{ env.CODE_AI_VERSION }}
           path: out
 
+      - uses: actions/download-artifact@v4
+        if: needs.macos-public.result == 'success'
+        with:
+          name: code-ai-mac-bundle-v${{ env.CODE_AI_VERSION }}
+          path: out
+
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
 
       - name: Build the packages
+        id: package
         working-directory: vscode-extension
         run: |
           chmod +x "../out/code-ai-linux-v$CODE_AI_VERSION"
+          mac_args=""
+          for arch in arm64 x64; do
+            bundle="../out/code-ai-mac-$arch-v$CODE_AI_VERSION.tar.gz"
+            if [ -f "$bundle" ]; then
+              tar -xzf "$bundle" -C ../out
+              mac_args="$mac_args --mac-$arch ../out/code-ai-mac-$arch"
+            fi
+          done
+          if [ -n "$mac_args" ]; then echo "mac=true" >> "$GITHUB_OUTPUT"; fi
           npm ci --no-audit --no-fund || npm install --no-audit --no-fund
           node scripts/package.mjs \
             --linux "../out/code-ai-linux-v$CODE_AI_VERSION" \
-            --win "../out/code-ai-win-v$CODE_AI_VERSION.exe"
+            --win "../out/code-ai-win-v$CODE_AI_VERSION.exe" \
+            $mac_args
 
       - name: Stage artifact
         run: |
-          mkdir -p out/vsix
+          mkdir -p out/vsix out/mac
           for vsix in vscode-extension/vsix/*.vsix; do
             target="${vsix##*-$CODE_AI_VERSION-}"
             cp "$vsix" "out/vsix/code-ai-vscode-v$CODE_AI_VERSION-$target"
           done
-          ls -l out/vsix
+          cp vscode-extension/vsix/code-ai-mac-*.sh out/mac/ 2>/dev/null || true
+          ls -l out/vsix out/mac
 
       - uses: actions/upload-artifact@v4
         with:
           name: code-ai-vscode-v${{ env.CODE_AI_VERSION }}
           path: out/vsix/*.vsix
           if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: steps.package.outputs.mac == 'true'
+        with:
+          name: code-ai-mac-v${{ env.CODE_AI_VERSION }}
+          path: out/mac/*.sh
+          if-no-files-found: error
+
+  # ---- the Mac check -----------------------------------------------------------
+  # Installs the macOS build as a user does and starts it, on a real Mac: the
+  # one step no Linux runner can take (scripts/check_mac_build.sh). On the
+  # company side only once a Mac is registered (scripts/setup_mac_runner.sh)
+  # and the repository variable CODE_AI_MAC_RUNNER names its label; while that
+  # Mac is off, the release waits for it. A failure keeps the macOS files out of
+  # the release, never the rest.
+
+  macos-check:
+    name: macOS check (company Mac)
+    needs: [vsix]
+    if: >-
+      inputs.runner != 'ubuntu-latest' && vars.CODE_AI_MAC_RUNNER != ''
+      && needs.vsix.outputs.mac == 'true'
+    runs-on: ${{ vars.CODE_AI_MAC_RUNNER }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v3
+        with:
+          name: code-ai-mac-v${{ needs.vsix.outputs.version }}
+          path: out
+
+      - name: Install and start each build
+        run: sh scripts/check_mac_build.sh "${{ needs.vsix.outputs.version }}" out
+
+  macos-check-public:
+    name: macOS check (GitHub-hosted Mac)
+    needs: [vsix-public]
+    if: inputs.runner == 'ubuntu-latest' && needs.vsix-public.outputs.mac == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: code-ai-mac-v${{ needs.vsix-public.outputs.version }}
+          path: out
+
+      - name: Install and start each build
+        run: sh scripts/check_mac_build.sh "${{ needs.vsix-public.outputs.version }}" out
 
   # ---- the release -----------------------------------------------------------
   # Every build becomes the release for its version (tag vX.Y.Z), with short
@@ -372,8 +556,10 @@ jobs:
 
   release:
     name: GitHub release
-    needs: [vsix]
-    if: inputs.runner != 'ubuntu-latest'
+    needs: [vsix, macos-check]
+    # With or without a Mac check: see the step that leaves out what it refused.
+    if: >-
+      !cancelled() && inputs.runner != 'ubuntu-latest' && needs.vsix.result == 'success'
     runs-on: code-linux
     permissions:
       contents: write
@@ -403,6 +589,18 @@ jobs:
           name: code-ai-vscode-v${{ env.CODE_AI_VERSION }}
           path: out
 
+      - uses: actions/download-artifact@v3
+        if: needs.vsix.outputs.mac == 'true'
+        with:
+          name: code-ai-mac-v${{ env.CODE_AI_VERSION }}
+          path: out
+
+      - name: Leave out a macOS build the Mac turned down
+        if: needs.macos-check.result != 'success' && needs.macos-check.result != 'skipped'
+        run: |
+          rm -f out/*darwin*.vsix out/code-ai-mac-*.sh
+          echo "::warning::The macOS check did not pass, so this release carries no macOS files."
+
       - name: Publish the release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -426,8 +624,9 @@ jobs:
 
   release-public:
     name: GitHub release (GitHub-hosted)
-    needs: [vsix-public]
-    if: inputs.runner == 'ubuntu-latest'
+    needs: [vsix-public, macos-check-public]
+    if: >-
+      !cancelled() && inputs.runner == 'ubuntu-latest' && needs.vsix-public.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -455,6 +654,20 @@ jobs:
         with:
           name: code-ai-vscode-v${{ env.CODE_AI_VERSION }}
           path: out
+
+      - uses: actions/download-artifact@v4
+        if: needs.vsix-public.outputs.mac == 'true'
+        with:
+          name: code-ai-mac-v${{ env.CODE_AI_VERSION }}
+          path: out
+
+      - name: Leave out a macOS build the Mac turned down
+        if: >-
+          needs.macos-check-public.result != 'success'
+          && needs.macos-check-public.result != 'skipped'
+        run: |
+          rm -f out/*darwin*.vsix out/code-ai-mac-*.sh
+          echo "::warning::The macOS check did not pass, so this release carries no macOS files."
 
       - name: Publish the release
         env:

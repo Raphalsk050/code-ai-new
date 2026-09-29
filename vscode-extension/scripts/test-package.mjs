@@ -25,7 +25,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { BIN_DIR, PLATFORMS, assertBinary, stageBinary } from "./bundle-binary.mjs";
+import { BIN_DIR, PLATFORMS, assertBinary, stageBinary, stageBundle } from "./bundle-binary.mjs";
 import {
   SkippedTarget,
   cleanEggInfo,
@@ -45,6 +45,28 @@ const EXT_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const SCRATCH = mkdtempSync(join(tmpdir(), "code-ai-package-tests-"));
 
 process.on("exit", () => rmSync(SCRATCH, { recursive: true, force: true }));
+
+const MAC_PROGRAMS = [
+  "code-ai",
+  "runtime/bin/python3.12",
+  "runtime/lib/python3.12/site-packages/playwright/driver/node",
+];
+
+/** A folder shaped like scripts/build_mac_bundle.py's, heavy enough to pass. */
+function fakeMacBundle(arch) {
+  const dir = join(SCRATCH, `code-ai-mac-${arch}`);
+  rmSync(dir, { recursive: true, force: true });
+  const driver = join(dir, "runtime", "lib", "python3.12", "site-packages", "playwright", "driver");
+  mkdirSync(join(dir, "runtime", "bin"), { recursive: true });
+  mkdirSync(driver, { recursive: true });
+  writeFileSync(join(dir, "code-ai"), "#!/bin/sh\nexit 0\n");
+  writeFileSync(join(dir, "runtime", "bin", "python3.12"), Buffer.alloc(1024));
+  // A real runtime weighs this much; the verifier refuses a hollow one.
+  writeFileSync(join(driver, "node"), Buffer.alloc(41 * 1024 * 1024));
+  const manifest = { version: "0", arch, python: "3.12.14", executables: MAC_PROGRAMS };
+  writeFileSync(join(dir, "code-ai-bundle.json"), JSON.stringify(manifest));
+  return dir;
+}
 
 /** A file with a platform's magic bytes, padded past the size floor. */
 function fakeBinary(platform, name, megabytes = 6) {
@@ -197,8 +219,14 @@ test("verify rejects the other platform's binary and a non-executable one", () =
  * same version-derived name, and these tests must not delete it.
  */
 function packageFor(target, platform) {
-  const flag = platform === "win32" ? "--win" : "--linux";
-  const source = fakeBinary(platform, `backend-${platform}${platform === "win32" ? ".exe" : ""}`, 6);
+  let backend;
+  if (platform === "darwin") {
+    const arch = target.split("-")[1];
+    backend = [`--mac-${arch}`, fakeMacBundle(arch)];
+  } else {
+    const flag = platform === "win32" ? "--win" : "--linux";
+    backend = [flag, fakeBinary(platform, `backend-${platform}${platform === "win32" ? ".exe" : ""}`, 6)];
+  }
   const outDir = join(SCRATCH, "out");
   execFileSync(
     process.execPath,
@@ -206,8 +234,7 @@ function packageFor(target, platform) {
       join(EXT_ROOT, "scripts", "package.mjs"),
       "--target",
       target,
-      flag,
-      source,
+      ...backend,
       "--out-dir",
       outDir,
       // The binary is a fake with the right magic bytes; it cannot start.
@@ -255,6 +282,62 @@ for (const [target, platform] of [
     }
   });
 }
+
+test("a macOS build is staged from its folder, and only for its own arch", () => {
+  const dir = fakeMacBundle("x64");
+  assert.throws(() => stageBundle("arm64", dir), /holds the x64 build, not arm64/);
+  const tarball = join(SCRATCH, "code-ai-mac-x64-v0.tar.gz");
+  writeFileSync(tarball, "not unpacked");
+  assert.throws(() => stageBundle("x64", tarball), /is not a folder/);
+
+  const { executables } = stageBundle("x64", dir);
+  assert.deepEqual(executables, MAC_PROGRAMS);
+  assert.ok(existsSync(join(BIN_DIR, "code-ai")), "the launcher sits where the extension looks");
+  rmSync(BIN_DIR, { recursive: true, force: true });
+});
+
+test("verify wants the whole macOS runtime, every program executable", () => {
+  const file = join(SCRATCH, "hollow-mac.vsix");
+  buildZip(file, [
+    ["extension/package.json", Buffer.from("{}")],
+    ["extension/dist/extension.js", Buffer.from("//")],
+    ["extension/dist/webview.js", Buffer.from("//")],
+    ["extension/dist/flow.js", Buffer.from("//")],
+    ["extension/bin/code-ai", Buffer.from("#!/bin/sh\n"), 0o755],
+    ["extension/bin/runtime/bin/python3.12", Buffer.alloc(1024), 0o644],
+  ]);
+  const text = verify(file, "darwin-arm64").problems.join("\n");
+  assert.match(text, /python3\.12 has mode 644/);
+  assert.match(text, /missing extension\/bin\/code-ai-bundle\.json/);
+  assert.match(text, /missing .*playwright\/driver\/node/);
+  assert.match(text, /too small to be whole/);
+});
+
+test("end to end: a macOS folder becomes a darwin VSIX whose programs keep the bit", () => {
+  const out = packageFor("darwin-arm64", "darwin");
+  try {
+    const { problems, entries } = verify(out, "darwin-arm64");
+    assert.deepEqual(problems, [], problems.join("; "));
+    const byName = new Map(entries.map((e) => [e.name, e]));
+    for (const program of MAC_PROGRAMS) {
+      const entry = byName.get(`extension/bin/${program}`);
+      assert.ok(entry && entry.mode & 0o111, `${program} mode was ${entry?.mode?.toString(8)}`);
+    }
+    assert.ok(byName.has("extension/bin/code-ai-bundle.json"), "the extension reads it to chmod");
+
+    // And the file Mac users download: the installer, then this very VSIX.
+    const version = JSON.parse(readFileSync(join(EXT_ROOT, "package.json"), "utf8")).version;
+    const installer = readFileSync(join(SCRATCH, "out", `code-ai-mac-arm64-v${version}.sh`));
+    const marker = Buffer.from("\n__CODE_AI_PAYLOAD__\n");
+    const at = installer.indexOf(marker);
+    assert.ok(installer.subarray(0, 10).toString() === "#!/bin/sh\n", "a shell script up front");
+    assert.ok(!installer.subarray(0, at).includes("\r"), "no CR a Mac shell would choke on");
+    assert.ok(installer.subarray(at + marker.length).equals(readFileSync(out)), "the VSIX follows");
+    assert.ok(installer.subarray(0, at).includes(`VERSION="${version}"`));
+  } finally {
+    rmSync(out, { force: true });
+  }
+});
 
 test("packaging leaves nothing staged behind", () => {
   assert.equal(existsSync(BIN_DIR), false);

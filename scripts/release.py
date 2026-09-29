@@ -107,7 +107,12 @@ def build_notes(version: dict, subjects: list[str]) -> str:
     lines += [
         "",
         "**Downloads**: `code-ai-win` (Windows), `code-ai-linux` (Linux), "
-        "`code-ai-vscode` (VS Code extension, the agent included).",
+        "`code-ai-vscode` (VS Code extension, the agent included), "
+        "`code-ai-mac` (macOS: the command and the VS Code extension in one).",
+        "",
+        "**macOS**: `code-ai-mac-arm64` for Apple chips (M1 and later), `code-ai-mac-x64` "
+        "for Intel. Install from the Terminal with "
+        f"`sh ~/Downloads/code-ai-mac-arm64-v{release_version(version)}.sh`.",
     ]
     return "\n".join(lines) + "\n"
 

@@ -1,4 +1,5 @@
 import * as fs from "fs";
+import * as path from "path";
 import * as vscode from "vscode";
 
 import { BridgeClient } from "./bridge-client";
@@ -264,16 +265,26 @@ export class BridgeSession {
 /**
  * Make a bundled binary executable. A VSIX is a zip, and the bit does not
  * always survive the round trip (it never does when the zip was produced on
- * Windows), so the first launch on Linux would fail with EACCES.
+ * Windows), so the first launch on Linux would fail with EACCES. The macOS
+ * build is a folder, and its manifest names every file that needs the bit.
  */
 function ensureExecutable(file: string): void {
   if (process.platform === "win32") return;
+  const dir = path.dirname(file);
+  const files = [file];
   try {
-    const mode = fs.statSync(file).mode;
-    if (mode & 0o111) return;
-    fs.chmodSync(file, mode | 0o755);
+    const manifest = JSON.parse(fs.readFileSync(path.join(dir, "code-ai-bundle.json"), "utf8"));
+    for (const name of manifest.executables ?? []) files.push(path.join(dir, name));
   } catch {
-    // Read-only install or a vanished file: let the spawn report the real error.
+    // No manifest: the one-file build.
+  }
+  for (const target of files) {
+    try {
+      const mode = fs.statSync(target).mode;
+      if (!(mode & 0o111)) fs.chmodSync(target, mode | 0o755);
+    } catch {
+      // Read-only install or a vanished file: let the spawn report the real error.
+    }
   }
 }
 
