@@ -196,9 +196,10 @@ def _tools(monkeypatch, *, gh: str = "", git: str = "") -> list[tuple[list[str],
 
 
 def test_a_login_is_kept_under_the_web_host(monkeypatch) -> None:
-    assert updates.login_host() == "github.com"
     monkeypatch.setattr(updates, "RELEASES_API", "https://github.sec.samsung.net/api/v3")
     assert updates.login_host() == "github.sec.samsung.net"
+    monkeypatch.setattr(updates, "RELEASES_API", "https://api.github.com")
+    assert updates.login_host() == "github.com"
 
 
 def test_git_s_credential_manager_is_asked_without_a_prompt(monkeypatch) -> None:

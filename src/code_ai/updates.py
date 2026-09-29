@@ -25,9 +25,9 @@ from urllib.parse import urlsplit
 from code_ai.version import read_version
 
 # --- Where Code-AI looks for updates -----------------------------------------
-# The GitHub API to ask. For GitHub Enterprise it is "https://<host>/api/v3",
-# e.g. "https://github.sec.samsung.net/api/v3".
-RELEASES_API = "https://api.github.com"
+# The GitHub API to ask, and so the host whose login is used. GitHub Enterprise
+# answers on "https://<host>/api/v3"; github.com on "https://api.github.com".
+RELEASES_API = "https://github.sec.samsung.net/api/v3"
 # The "owner/repository" that publishes the releases. Left as the placeholder,
 # nothing is looked up and no update is ever offered.
 RELEASES_REPOSITORY = "owner/repository"

@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 30,
-  "patch": 0,
-  "build": 59,
+  "patch": 1,
+  "build": 60,
   "updated": "2026-09-29",
-  "note": "Update checks use the machine's GitHub login"
+  "note": "Updates default to the company GitHub"
 }
