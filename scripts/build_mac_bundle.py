@@ -126,6 +126,12 @@ while [ -L "$self" ]; do
   esac
 done
 here=$(cd "$(dirname "$self")" && pwd -P)
+# Unpacked from a browser download, the folder carries macOS's quarantine flag
+# and Gatekeeper refuses the Python in it ("could not verify"). Clearing the
+# flag on this folder is what Open Anyway would do, file by file.
+if xattr -p com.apple.quarantine "$here/runtime/bin/python{PYTHON}" >/dev/null 2>&1; then
+  xattr -dr com.apple.quarantine "$here" 2>/dev/null || true
+fi
 CODE_AI_BUNDLE=$here
 export CODE_AI_BUNDLE
 exec "$here/runtime/bin/python{PYTHON}" -I -m code_ai "$@"

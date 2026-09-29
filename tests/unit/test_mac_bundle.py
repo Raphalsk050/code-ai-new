@@ -140,6 +140,8 @@ def test_pip_is_only_ever_offered_wheels_for_that_mac(tmp_path) -> None:
 def test_the_launcher_runs_the_bundled_python_from_wherever_it_is_linked() -> None:
     assert 'exec "$here/runtime/bin/python3.12" -I -m code_ai "$@"' in mac.LAUNCHER
     assert "export CODE_AI_BUNDLE" in mac.LAUNCHER
+    # However it got unpacked, Gatekeeper's quarantine never reaches the Python.
+    assert 'xattr -dr com.apple.quarantine "$here"' in mac.LAUNCHER
     # pwd -P: through a PATH shim, it still finds the version folder it lives in.
     assert "pwd -P" in mac.LAUNCHER
     assert "\r" not in mac.LAUNCHER

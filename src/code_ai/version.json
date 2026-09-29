@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 32,
-  "patch": 0,
-  "build": 62,
+  "patch": 1,
+  "build": 63,
   "updated": "2026-09-29",
-  "note": "macOS build, installer and Mac runner check"
+  "note": "Mac launcher clears Gatekeeper quarantine"
 }
