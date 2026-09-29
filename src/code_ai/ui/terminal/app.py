@@ -2033,6 +2033,9 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                     "extension from its Update button, and this one comes along."
                 )
                 return
+            if not updates.configured():
+                self._append_conversation_line(f"update> {updates.UNSET_MESSAGE}")
+                return
             verify = application.session.config.ssl_verification
             self._show_update_button("⬇ checking…")
             release = await updates.check(verify_ssl=verify)

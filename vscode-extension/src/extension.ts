@@ -49,6 +49,9 @@ interface UpdateInfo {
   current?: string;
   notes?: string;
   url?: string;
+  /** False when no release repository is set; ``message`` says where to set it. */
+  configured?: boolean;
+  message?: string;
 }
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -132,6 +135,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   private resends = 0;
   /** The newer release the backend found, once it has found one. */
   private update?: UpdateInfo;
+  private updatesOff?: string;
   private updateTimer?: ReturnType<typeof setInterval>;
   private updating = false;
   private mode: AppMode = "agent";
@@ -943,11 +947,6 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     this.refreshInlineSettings();
   }
 
-  /**
-   * A new backend process knows nothing of the thread on screen. Point it back
-   * at that thread first, then send what was typed while it was down, in that
-   * order, so the message lands in the conversation it was written for.
-   */
   /** Look for a newer release now, and on a timer from then on. */
   private scheduleUpdateChecks(): void {
     setTimeout(() => void this.checkForUpdate(), UPDATE_FIRST_CHECK_MS);
@@ -961,6 +960,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     if (!client) return undefined;
     try {
       const found = await client.request<UpdateInfo>("checkForUpdate", {}, 60_000);
+      this.updatesOff = found?.configured === false ? found.message || "Updates are off." : undefined;
       // Silent when there is none, or GitHub is out of reach.
       if (found?.version) {
         this.update = found;
@@ -995,7 +995,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     if (!client) return;
     const found = this.update ?? (await this.checkForUpdate());
     if (!found?.version) {
-      void vscode.window.showInformationMessage("Code-AI is up to date.");
+      void vscode.window.showInformationMessage(this.updatesOff ?? "Code-AI is up to date.");
       return;
     }
     const post = (state: string, message = "") =>
@@ -1026,6 +1026,11 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  /**
+   * A new backend process knows nothing of the thread on screen. Point it back
+   * at that thread first, then send what was typed while it was down, in that
+   * order, so the message lands in the conversation it was written for.
+   */
   private async resume(client: BridgeClient, reason: StartReason): Promise<void> {
     this.scheduleUpdateChecks();
     // Taken now: the new backend announces READY as it starts, which would

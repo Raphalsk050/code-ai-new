@@ -528,6 +528,8 @@ class BridgeServer:
 
     async def _h_check_for_update(self, params: dict[str, Any]) -> dict[str, Any]:
         """The newest release when it is newer than this build; {} otherwise."""
+        if not updates.configured():
+            return {"configured": False, "message": updates.UNSET_MESSAGE}
         verify = self._app.session.config.ssl_verification
         release = await updates.check(verify_ssl=verify)
         return release.describe(updates.current_version()) if release else {}
@@ -535,6 +537,8 @@ class BridgeServer:
     async def _h_download_update(self, params: dict[str, Any]) -> dict[str, Any]:
         """Fetch the newest release's VS Code package for ``target``, e.g. win32-x64."""
         target = str(params.get("target") or "")
+        if not updates.configured():
+            raise ValueError(updates.UNSET_MESSAGE)
         verify = self._app.session.config.ssl_verification
         release = await updates.check(verify_ssl=verify)
         if release is None:

@@ -21,10 +21,12 @@ from typing import Any
 from code_ai.version import read_version
 
 # --- Where Code-AI looks for updates -----------------------------------------
-# The GitHub API to ask. For GitHub Enterprise it is "https://<host>/api/v3".
+# The GitHub API to ask. For GitHub Enterprise it is "https://<host>/api/v3",
+# e.g. "https://git.sec.samsung/api/v3".
 RELEASES_API = "https://api.github.com"
-# The "owner/repository" that publishes the releases.
-RELEASES_REPOSITORY = "Raphalsk050/code-ai-new"
+# The "owner/repository" that publishes the releases. Left as the placeholder,
+# nothing is looked up and no update is ever offered.
+RELEASES_REPOSITORY = "owner/repository"
 # Whether builds from other branches (published as pre-releases) count as
 # updates, or only releases from the default branch and tags.
 INCLUDE_PRERELEASES = True
@@ -33,6 +35,11 @@ INCLUDE_PRERELEASES = True
 RELEASES_TOKEN_ENV = "CODE_AI_UPDATE_TOKEN"
 # -----------------------------------------------------------------------------
 
+_UNSET_REPOSITORY = "owner/repository"
+UNSET_MESSAGE = (
+    "Updates are off: set RELEASES_REPOSITORY in code_ai/updates.py to the "
+    "repository that publishes the releases."
+)
 _TAG = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
 _TIMEOUT_S = 30.0
 
@@ -158,8 +165,14 @@ def _client(verify_ssl: bool):
     )
 
 
+def configured() -> bool:
+    return RELEASES_REPOSITORY.strip() not in ("", _UNSET_REPOSITORY)
+
+
 async def newest_release(*, verify_ssl: bool) -> Release | None:
     """The newest release the repository publishes, whatever its version."""
+    if not configured():
+        return None
     url = f"{RELEASES_API.rstrip('/')}/repos/{RELEASES_REPOSITORY}/releases?per_page=30"
     async with _client(verify_ssl) as http:
         response = await http.get(url)

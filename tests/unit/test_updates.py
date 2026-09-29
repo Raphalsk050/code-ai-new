@@ -219,6 +219,20 @@ async def test_the_bridge_reports_and_fetches_the_release(github, tmp_path, monk
         await BridgeServer._h_download_update(_bridge(), {"target": "linux-x64"})
 
 
-async def test_the_bridge_says_nothing_when_up_to_date() -> None:
+async def test_the_bridge_says_nothing_when_up_to_date(monkeypatch) -> None:
+    monkeypatch.setattr(updates, "RELEASES_REPOSITORY", "team/code-ai")
     # conftest's stub: GitHub has nothing to offer.
     assert await BridgeServer._h_check_for_update(_bridge(), {}) == {}
+
+
+async def test_the_placeholder_repository_is_never_asked(github, monkeypatch) -> None:
+    fake = github([_release("v0.29.0", assets=["code-ai-vscode-v0.29.0-win32-x64.vsix"])])
+    monkeypatch.setattr(updates, "RELEASES_REPOSITORY", "owner/repository")
+
+    assert not updates.configured()
+    assert await updates.check(verify_ssl=False) is None
+    info = await BridgeServer._h_check_for_update(_bridge(), {})
+    assert info == {"configured": False, "message": updates.UNSET_MESSAGE}
+    with pytest.raises(ValueError, match="RELEASES_REPOSITORY"):
+        await BridgeServer._h_download_update(_bridge(), {"target": "win32-x64"})
+    assert fake.requests == []

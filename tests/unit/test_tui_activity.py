@@ -221,6 +221,21 @@ async def test_a_newer_release_shows_the_update_button(tmp_path, monkeypatch) ->
         assert any("runs from source" in line for line in terminal_app.vm.conversation)
 
 
+async def test_update_says_where_to_set_the_repository(tmp_path, monkeypatch) -> None:
+    from code_ai import updates
+
+    # A frozen build, so /update gets past "runs from source".
+    monkeypatch.setattr(updates, "running_binary", lambda: tmp_path / "code-ai.exe")
+    terminal_app = create_terminal_app(
+        FakeTerminalApplication(tmp_path), config_path=tmp_path / "config.json"
+    )
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        await terminal_app._install_update()
+        await pilot.pause()
+        assert f"update> {updates.UNSET_MESSAGE}" in terminal_app.vm.conversation
+
+
 async def test_no_release_no_button(tmp_path, monkeypatch) -> None:
     from textual.widgets import Button
 
