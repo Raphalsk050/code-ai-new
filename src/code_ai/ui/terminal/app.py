@@ -10,6 +10,7 @@ from typing import Any
 
 from rich.text import Text
 
+from code_ai import updates
 from code_ai.app.commands import SessionCommands
 from code_ai.bootstrap import build_application
 from code_ai.config.loader import persist_config_updates
@@ -115,6 +116,8 @@ _STREAM_TAIL_MAX_ROWS = 14
 # than covers that on a wide pane, and it caps the per-delta word-wrap cost so a
 # long single-paragraph reasoning block can no longer freeze the terminal.
 _STREAM_TAIL_MAX_CHARS = 4000
+# Seconds after start before looking for a newer release: the screen comes first.
+_UPDATE_CHECK_DELAY_S = 3.0
 
 # Cap on how many committed lines are kept mounted in the scrollback. Each line
 # is a selectable widget, so this bounds widget count the way RichLog.max_lines
@@ -1082,6 +1085,10 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             # per reasoning fragment, which is what made the terminal stop
             # responding while the model was thinking.
             self._painted: dict[str, object] = {}
+            # The newest release, once the background check has found one.
+            self._update_release: updates.Release | None = None
+            self._update_release_installed = False
+            self._updating = False
 
         def compose(self) -> ComposeResult:
             yield Header(show_clock=True)
@@ -1100,6 +1107,10 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                     # markup=False leaves untouched.
                     yield Static("READY", id="statusline", markup=False)
                     yield Static("", id="context-meter")
+                    # Shows itself once a newer release is out.
+                    update_button = Button("", id="update-button")
+                    update_button.display = False
+                    yield update_button
                 with Horizontal(id="main"):
                     with Vertical(id="session"):
                         with Horizontal(id="session-header"):
@@ -1215,6 +1226,10 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             await application.start()
             self._refresh_status()
             self.query_one("#input", MultilineInput).focus()
+            updates.remove_replaced()
+            # A worker, not _spawn: it sleeps through the first turn, and the
+            # held set is how the turns are seen to finish.
+            self.run_worker(self._check_for_update(), group="update", exit_on_error=False)
 
         async def _on_event(self, event) -> None:
             """Fold one runtime event into the view model and onto the screen.
@@ -1504,6 +1519,9 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 return
             if text.strip() == "/clear":
                 await self.action_clear()
+                return
+            if text.strip() == "/update":
+                self._spawn(self._install_update(), "the update")
                 return
             if text.strip() == "/compact":
                 self._append_conversation_line(await self.controller.compact())
@@ -1955,6 +1973,103 @@ def create_terminal_app(application, *, config_path: Path | None = None):
         async def on_button_pressed(self, event: Button.Pressed) -> None:
             if event.button.id == "toggle-session":
                 self.action_toggle_session()
+            elif event.button.id == "update-button":
+                self._spawn(self._install_update(), "the update")
+
+        # --- Updates ---------------------------------------------------------
+
+        def _show_update_button(self, label: str | None) -> None:
+            button = self.query_one("#update-button", Button)
+            button.display = label is not None
+            if label is not None:
+                button.label = label
+
+        async def _check_for_update(self) -> None:
+            """Look for a newer release once the screen has settled.
+
+            Silent when it cannot reach GitHub: an offline machine or a blocked
+            proxy is not something to report on every start.
+            """
+            await asyncio.sleep(_UPDATE_CHECK_DELAY_S)
+            try:
+                release = await updates.check(
+                    verify_ssl=application.session.config.ssl_verification
+                )
+            except Exception:  # noqa: BLE001 - see the docstring
+                logger.debug("Update check failed", exc_info=True)
+                return
+            if release is None:
+                return
+            self._update_release = release
+            self._show_update_button(f"⬆ Update to v{release.version}")
+            self._append_conversation_line(
+                f"update> Code-AI v{release.version} is out (this is "
+                f"v{updates.current_version()}): /update installs it"
+            )
+
+        async def _install_update(self) -> None:
+            if self._updating:
+                return
+            self._updating = True
+            try:
+                await self._run_update()
+            finally:
+                self._updating = False
+                if self._update_release is not None and not self._update_release_installed:
+                    self._show_update_button(f"⬆ Update to v{self._update_release.version}")
+
+        async def _run_update(self) -> None:
+            """Download the newest release's binary and put it where this one runs."""
+            binary = updates.running_binary()
+            if binary is None:
+                self._append_conversation_line(
+                    "update> This Code-AI runs from source: update it with git pull, or "
+                    "reinstall it with pip."
+                )
+                return
+            if updates.bundled_with_extension(binary):
+                self._append_conversation_line(
+                    "update> This copy came with the VS Code extension: update the "
+                    "extension from its Update button, and this one comes along."
+                )
+                return
+            verify = application.session.config.ssl_verification
+            self._show_update_button("⬇ checking…")
+            release = await updates.check(verify_ssl=verify)
+            if release is None:
+                self._update_release = None
+                self._show_update_button(None)
+                self._append_conversation_line(
+                    f"update> Code-AI is up to date (v{updates.current_version()})."
+                )
+                return
+            self._update_release = release
+            asset = updates.asset_for(release, "binary", updates.platform_key())
+            if asset is None:
+                self._append_conversation_line(
+                    f"update> Release v{release.version} has no binary for this system."
+                )
+                return
+            self._append_conversation_line(f"update> Downloading Code-AI v{release.version}...")
+            shown = -1
+
+            def progress(done: int, total: int) -> None:
+                nonlocal shown
+                percent = done * 100 // total if total else -1
+                if percent != shown:
+                    shown = percent
+                    self._show_update_button(
+                        f"⬇ {percent}%" if percent >= 0 else f"⬇ {done // 1_000_000} MB"
+                    )
+
+            new = await updates.download(asset, verify_ssl=verify, progress=progress)
+            await asyncio.to_thread(updates.replace_binary, new, binary)
+            self._update_release_installed = True
+            self._show_update_button(None)
+            self._append_conversation_line(
+                f"update> Code-AI v{release.version} is installed. Restart it to use the new "
+                "version."
+            )
 
         def action_toggle_session(self) -> None:
             """Collapse the left SESSION panel to a thin strip, or restore it.

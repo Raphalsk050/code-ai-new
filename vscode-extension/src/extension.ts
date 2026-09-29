@@ -40,6 +40,16 @@ const MAX_TURN_RESENDS = 20;
 // Backend states that end a turn (synthetic DISCONNECTED does not: that is the
 // crash the turn has to survive).
 const TURN_ENDED = new Set(["READY", "FAILED", "CLOSED"]);
+// A new release is looked for shortly after start, then this often.
+const UPDATE_FIRST_CHECK_MS = 5_000;
+const UPDATE_CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
+
+interface UpdateInfo {
+  version?: string;
+  current?: string;
+  notes?: string;
+  url?: string;
+}
 
 export function activate(context: vscode.ExtensionContext): void {
   // One backend for the window. Both the chat panel and the orchestrator-graph
@@ -120,6 +130,10 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   private inFlight: Record<string, unknown>[] = [];
   /** Times the running turn was sent again since a model response last landed. */
   private resends = 0;
+  /** The newer release the backend found, once it has found one. */
+  private update?: UpdateInfo;
+  private updateTimer?: ReturnType<typeof setInterval>;
+  private updating = false;
   private mode: AppMode = "agent";
   private autoRunRefactor = false;
   // Inline code hints (editor ghost text). Enabled state + model are mirrored
@@ -854,6 +868,12 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         case "openDiff":
           void this.diffs.open(message.path);
           break;
+        case "installUpdate":
+          void this.installUpdate();
+          break;
+        case "reloadWindow":
+          void vscode.commands.executeCommand("workbench.action.reloadWindow");
+          break;
       }
     });
 
@@ -904,6 +924,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       })
     );
     postEditorDiff();
+    this.postUpdate();
 
     view.onDidDispose(() => {
       editorSubs.forEach((d) => d.dispose());
@@ -927,7 +948,86 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
    * at that thread first, then send what was typed while it was down, in that
    * order, so the message lands in the conversation it was written for.
    */
+  /** Look for a newer release now, and on a timer from then on. */
+  private scheduleUpdateChecks(): void {
+    setTimeout(() => void this.checkForUpdate(), UPDATE_FIRST_CHECK_MS);
+    if (!this.updateTimer) {
+      this.updateTimer = setInterval(() => void this.checkForUpdate(), UPDATE_CHECK_EVERY_MS);
+    }
+  }
+
+  private async checkForUpdate(): Promise<UpdateInfo | undefined> {
+    const client = this.client;
+    if (!client) return undefined;
+    try {
+      const found = await client.request<UpdateInfo>("checkForUpdate", {}, 60_000);
+      // Silent when there is none, or GitHub is out of reach.
+      if (found?.version) {
+        this.update = found;
+        this.postUpdate();
+      }
+      return found?.version ? found : undefined;
+    } catch (err) {
+      console.debug("[code-ai] update check failed", err);
+      return undefined;
+    }
+  }
+
+  private postUpdate(): void {
+    const found = this.update;
+    if (!found?.version) return;
+    void this.webview?.postMessage({
+      type: "updateAvailable",
+      version: found.version,
+      current: found.current ?? "",
+      notes: found.notes ?? "",
+      url: found.url ?? "",
+    });
+  }
+
+  /**
+   * Download the release's package for this platform through the backend (which
+   * knows the proxy and where releases live), install it, and offer a reload.
+   */
+  private async installUpdate(): Promise<void> {
+    if (this.updating) return;
+    const client = this.client;
+    if (!client) return;
+    const found = this.update ?? (await this.checkForUpdate());
+    if (!found?.version) {
+      void vscode.window.showInformationMessage("Code-AI is up to date.");
+      return;
+    }
+    const post = (state: string, message = "") =>
+      void this.webview?.postMessage({ type: "updateProgress", state, message });
+    this.updating = true;
+    post("downloading");
+    try {
+      const target = `${process.platform}-${process.arch}`;
+      const { path: vsix } = await client.request<{ path: string }>(
+        "downloadUpdate",
+        { target },
+        15 * 60_000
+      );
+      post("installing");
+      await vscode.commands.executeCommand("workbench.extensions.installExtension", vscode.Uri.file(vsix));
+      post("installed");
+      const choice = await vscode.window.showInformationMessage(
+        `Code-AI v${found.version} is installed. Reload the window to start using it.`,
+        "Reload"
+      );
+      if (choice === "Reload") await vscode.commands.executeCommand("workbench.action.reloadWindow");
+    } catch (err) {
+      const reason = String(err).replace(/^Error: /, "");
+      post("failed", reason);
+      void vscode.window.showErrorMessage(`Code-AI update failed: ${reason}`);
+    } finally {
+      this.updating = false;
+    }
+  }
+
   private async resume(client: BridgeClient, reason: StartReason): Promise<void> {
+    this.scheduleUpdateChecks();
     // Taken now: the new backend announces READY as it starts, which would
     // otherwise clear the turn this is about to send again.
     const interrupted = reason === "crash" ? this.inFlight.splice(0) : [];

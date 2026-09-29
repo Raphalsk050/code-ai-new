@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from code_ai import bootstrap
+from code_ai import bootstrap, updates
 from code_ai.config import models as config_models
 from code_ai.config.defaults import SANDBOX_DIR_ENV
 from code_ai.core import orchestration
@@ -43,6 +43,17 @@ def _isolate_other_agents(tmp_path_factory, monkeypatch):
     monkeypatch.setenv(INTEROP_HOME_ENV, str(tmp_path_factory.mktemp("other_agents_home")))
     for name in ("CODEX_HOME", "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "CODE_AI_CLINE_HOME"):
         monkeypatch.delenv(name, raising=False)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _no_release_lookups(monkeypatch):
+    """No test asks GitHub for releases; the ones about updates stub their own."""
+
+    async def no_release(**_kwargs):
+        return None
+
+    monkeypatch.setattr(updates, "newest_release", no_release)
     yield
 
 

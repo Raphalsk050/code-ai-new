@@ -187,3 +187,50 @@ async def test_the_screen_unmounts_what_a_retry_took_back(tmp_path) -> None:
         # The folded reasoning block is gone from the scrollback.
         assert len(terminal_app.query_one("#conversation").children) == mounted - 1
         assert len(terminal_app.query(".thinking-block")) == 0
+
+
+async def test_a_newer_release_shows_the_update_button(tmp_path, monkeypatch) -> None:
+    from textual.widgets import Button
+
+    from code_ai import updates
+    from code_ai.ui.terminal import app as terminal_module
+
+    release = updates.Release(
+        version="9.9.9", tag="v9.9.9", name="", notes="", url="", prerelease=False, assets=()
+    )
+
+    async def newer(**_kwargs):
+        return release
+
+    monkeypatch.setattr(updates, "check", newer)
+    monkeypatch.setattr(terminal_module, "_UPDATE_CHECK_DELAY_S", 0)
+    terminal_app = create_terminal_app(
+        FakeTerminalApplication(tmp_path), config_path=tmp_path / "config.json"
+    )
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause(0.3)
+        button = terminal_app.query_one("#update-button", Button)
+        assert button.display
+        assert "v9.9.9" in str(button.label)
+        assert any("v9.9.9 is out" in line for line in terminal_app.vm.conversation)
+
+        # Running from source there is no binary to swap: it says how instead.
+        await pilot.click("#update-button")
+        await pilot.pause(0.3)
+        assert any("runs from source" in line for line in terminal_app.vm.conversation)
+
+
+async def test_no_release_no_button(tmp_path, monkeypatch) -> None:
+    from textual.widgets import Button
+
+    from code_ai.ui.terminal import app as terminal_module
+
+    monkeypatch.setattr(terminal_module, "_UPDATE_CHECK_DELAY_S", 0)
+    terminal_app = create_terminal_app(
+        FakeTerminalApplication(tmp_path), config_path=tmp_path / "config.json"
+    )
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause(0.3)
+        assert not terminal_app.query_one("#update-button", Button).display

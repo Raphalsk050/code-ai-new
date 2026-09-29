@@ -946,6 +946,8 @@ def render_conversation_line(
         # A failed request being sent again: not an error yet, but not quiet
         # trace either.
         return Content.styled(line, palette.amber)
+    if line.startswith("update> "):
+        return Content.styled(line, palette.accent)
     if line.startswith(("thinking> ", "working> ")):
         return _BLANK_RUN.sub("\n", line)
     return line

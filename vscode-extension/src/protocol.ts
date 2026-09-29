@@ -80,6 +80,8 @@ export type BridgeMethod =
   | "mcpElicitationAnswer"
   | "mcpSignIn"
   | "mcpSignOut"
+  | "checkForUpdate"
+  | "downloadUpdate"
   | "shutdown";
 
 /** Bridge methods whose whole answer is a listing to show the user. */
@@ -326,7 +328,12 @@ export type HostToWebview =
   | { type: "explainResult"; markdown: string; target: ExplainTarget }
   | { type: "explainError"; message: string }
   /** Whether file edits open in the editor's diff view (so the panel shows none). */
-  | { type: "editorDiff"; enabled: boolean };
+  | { type: "editorDiff"; enabled: boolean }
+  /** A newer release is out (see src/code_ai/updates.py for where it is looked for). */
+  | { type: "updateAvailable"; version: string; current: string; notes: string; url: string }
+  | { type: "updateProgress"; state: UpdateState; message?: string };
+
+export type UpdateState = "available" | "downloading" | "installing" | "installed" | "failed";
 
 export type PermissionMode = "ask" | "auto" | "bypass";
 
@@ -381,4 +388,6 @@ export type WebviewToHost =
   | { type: "setPermissionMode"; mode: PermissionMode }
   | { type: "restartBridge" }
   /** Show what the agent changed in a file, in the editor's diff view. */
-  | { type: "openDiff"; path: string };
+  | { type: "openDiff"; path: string }
+  | { type: "installUpdate" }
+  | { type: "reloadWindow" };

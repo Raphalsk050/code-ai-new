@@ -510,6 +510,12 @@ const PT: Record<string, string> = {
   "in {0}s": "em {0}s",
   "Show the change in the editor": "Mostrar a mudança no editor",
   "Show diff": "Ver diff",
+  "Downloading…": "Baixando…",
+  "Installing…": "Instalando…",
+  "Reload to finish": "Recarregar para concluir",
+  "Update failed · retry": "Falhou · tentar de novo",
+  "Update {0}": "Atualizar {0}",
+  "Code-AI v{0} is out (this is v{1}).": "Saiu o Code-AI v{0} (este é o v{1}).",
   "The change is open in the editor, as a diff.": "A mudança está aberta no editor, como diff.",
   "The backend restarted mid-answer; sending your message again ({0}/{1})":
     "O backend reiniciou no meio da resposta; enviando sua mensagem de novo ({0}/{1})",

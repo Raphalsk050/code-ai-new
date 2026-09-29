@@ -830,3 +830,20 @@ QuestionnaireModal {
   margin: 0 1;
   width: 18;
 }
+
+/* A newer release is out: one click downloads it and puts it in place. */
+#update-button {
+  width: auto;
+  min-width: 12;
+  height: 1;
+  margin-top: 1;
+  padding: 0 1;
+  border: none;
+  background: $ca-accent;
+  color: $ca-chip-text;
+  text-style: bold;
+}
+
+#update-button:hover {
+  background: $ca-highlight;
+}

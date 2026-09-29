@@ -21,6 +21,7 @@ export type CommandAction =
   | { kind: "assets"; which: "skills" | "workflows" }
   | { kind: "report"; method: ReportMethod }
   | { kind: "asset" }
+  | { kind: "update" }
   | { kind: "unsupported" };
 
 export interface SlashCommand extends SlashCommandSpec {
@@ -68,6 +69,7 @@ const ROUTES: { prefix: string; action: CommandAction }[] = [
   // The servers live in the settings panel, with their switches and status.
   { prefix: "/mcp", action: { kind: "settings" } },
   { prefix: "/workflows", action: { kind: "assets", which: "workflows" } },
+  { prefix: "/update", action: { kind: "update" } },
   { prefix: "/doctor", action: { kind: "settings" } },
   { prefix: "/status", action: { kind: "settings" } },
   { prefix: "/config show", action: { kind: "settings" } },

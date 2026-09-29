@@ -8,6 +8,7 @@ import time
 from collections.abc import Coroutine
 from typing import Any, TextIO
 
+from code_ai import updates
 from code_ai.app.commands import SessionCommands
 from code_ai.app.service import CodeAIApplication
 from code_ai.app.slash_catalog import catalog_payload
@@ -525,6 +526,25 @@ class BridgeServer:
         )
         return {"ok": not problem, "message": problem}
 
+    async def _h_check_for_update(self, params: dict[str, Any]) -> dict[str, Any]:
+        """The newest release when it is newer than this build; {} otherwise."""
+        verify = self._app.session.config.ssl_verification
+        release = await updates.check(verify_ssl=verify)
+        return release.describe(updates.current_version()) if release else {}
+
+    async def _h_download_update(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Fetch the newest release's VS Code package for ``target``, e.g. win32-x64."""
+        target = str(params.get("target") or "")
+        verify = self._app.session.config.ssl_verification
+        release = await updates.check(verify_ssl=verify)
+        if release is None:
+            raise ValueError("Code-AI is already up to date.")
+        asset = updates.asset_for(release, "vsix", target)
+        if asset is None:
+            raise ValueError(f"Release v{release.version} has no VS Code package for {target}.")
+        path = await updates.download(asset, verify_ssl=verify)
+        return {"path": str(path), "version": release.version}
+
     async def _h_shutdown(self, params: dict[str, Any]) -> dict[str, Any]:
         self._stop.set()
         return {"status": "closing"}
@@ -584,6 +604,8 @@ class BridgeServer:
         "mcpElicitationAnswer": _h_mcp_elicitation_answer,
         "mcpSignIn": _h_mcp_sign_in,
         "mcpSignOut": _h_mcp_sign_out,
+        "checkForUpdate": _h_check_for_update,
+        "downloadUpdate": _h_download_update,
         "shutdown": _h_shutdown,
     }
 
@@ -620,6 +642,9 @@ class BridgeServer:
             "mcpSave",
             "mcpRemove",
             "mcpSignOut",
+            # Both talk to GitHub; a download can take minutes.
+            "checkForUpdate",
+            "downloadUpdate",
         }
     )
 

@@ -124,6 +124,7 @@ SLASH_COMMANDS = [
         "/mcp logout <name>", "Forget the sign-in of a remote MCP server.", "/mcp logout "
     ),
     SlashCommand("/clear", "Clear the conversation view."),
+    SlashCommand("/update", "Install the newest Code-AI release, when there is one."),
     SlashCommand("/quit", "Close Code-AI."),
     SlashCommand("/config help", "Browse and pick a /config command to run."),
     SlashCommand("/config show", "Show redacted active config."),
@@ -222,6 +223,7 @@ BRIDGE_SUPPORTED_PREFIXES = (
     "/rules",
     "/skills",
     "/term",
+    "/update",
     "/workflows",
 )
 

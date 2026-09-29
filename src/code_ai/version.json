@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 28,
-  "patch": 1,
-  "build": 55,
+  "minor": 29,
+  "patch": 0,
+  "build": 56,
   "updated": "2026-09-29",
-  "note": "Edits show live in the editor's diff in automatic mode too"
+  "note": "Update button installs new GitHub releases"
 }

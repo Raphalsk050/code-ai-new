@@ -46,6 +46,7 @@ import {
   IconStop,
 } from "./icons";
 import { LiveCodePanel } from "./live-code";
+import { UpdateButton, UpdateView } from "./update-button";
 import { mergeStatus } from "./mcp-form";
 import { INITIAL_MCP, McpViewState } from "./mcp-settings";
 import { MentionMenu } from "./mention-menu";
@@ -118,6 +119,8 @@ function App(): JSX.Element {
   const [terminalFocus, setTerminalFocus] = React.useState(0);
   // Edits are shown in the editor's diff view: no live code or diff in here.
   const [editorDiff, setEditorDiff] = React.useState(false);
+  // A newer release, once the backend has found one.
+  const [update, setUpdate] = React.useState<UpdateView | null>(null);
 
   const [rootRef, width] = useContainerWidth<HTMLDivElement>();
   const scrollRef = React.useRef<HTMLDivElement>(null);
@@ -156,6 +159,17 @@ function App(): JSX.Element {
         dispatch(event);
       } else if (data?.type === "editorDiff") {
         setEditorDiff(data.enabled);
+      } else if (data?.type === "updateAvailable") {
+        setUpdate((u) => ({
+          version: data.version,
+          current: data.current,
+          notes: data.notes,
+          // A check that runs again mid-install must not reset the button.
+          state: u && u.version === data.version ? u.state : "available",
+          message: "",
+        }));
+      } else if (data?.type === "updateProgress") {
+        setUpdate((u) => (u ? { ...u, state: data.state, message: data.message ?? "" } : u));
       } else if (data?.type === "mcpServers") {
         setMcp((m) => ({ ...m, list: data.list, error: "", busy: "" }));
       } else if (data?.type === "mcpError") {
@@ -487,6 +501,9 @@ function App(): JSX.Element {
       case "compact":
         send({ type: "compact" });
         break;
+      case "update":
+        send({ type: "installUpdate" });
+        break;
       case "cancel":
         send({ type: "cancel" });
         break;
@@ -758,6 +775,13 @@ function App(): JSX.Element {
           )}
         </div>
         <div className="meta">
+          {update && (
+            <UpdateButton
+              update={update}
+              onInstall={() => send({ type: "installUpdate" })}
+              onReload={() => send({ type: "reloadWindow" })}
+            />
+          )}
           <div className="topbar-actions">
             {busy && (
               <button

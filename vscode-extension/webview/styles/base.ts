@@ -51,6 +51,22 @@ body {
 }
 .typing-clock { color: var(--accent); font-variant-numeric: tabular-nums; }
 .statusbar .meta { margin-left: auto; display: flex; align-items: center; gap: 10px; color: var(--muted); }
+/* A newer release is out. Loud enough to be seen, small enough to ignore. */
+.update-btn {
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
+  padding: 2px 9px; border-radius: 999px; cursor: pointer;
+  font-size: 11px; font-weight: 600; white-space: nowrap;
+  color: var(--vscode-button-foreground, #fff);
+  background: var(--vscode-button-background, var(--accent));
+  border: 1px solid transparent;
+}
+.update-btn:hover:not(:disabled) { background: var(--vscode-button-hoverBackground, var(--accent)); }
+.update-btn:disabled { opacity: .85; cursor: default; }
+.update-btn .spinner { width: 9px; height: 9px; border-width: 1.5px; }
+.update-failed {
+  color: var(--vscode-errorForeground, #f85149); background: transparent;
+  border-color: color-mix(in srgb, var(--vscode-errorForeground, #f85149) 60%, transparent);
+}
 .statusbar .meta .pill {
   padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px;
 }

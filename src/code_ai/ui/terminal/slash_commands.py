@@ -149,7 +149,10 @@ def render_suggestions(prefix: str, *, extra: Sequence[SlashCommand] = ()) -> st
 # section can never capture a command by accident: "/status" claims "/status",
 # not a "/statusline" someone adds later.
 _HELP_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Session", ("/help", "/doctor", "/status", "/compact", "/clear", "/quit", "/cancel")),
+    (
+        "Session",
+        ("/help", "/doctor", "/status", "/compact", "/clear", "/quit", "/cancel", "/update"),
+    ),
     ("Planning", ("/auto", "/plan", "/act", "/mode", "/deep-plan", "/plan-status", "/replan")),
     ("Goals", ("/goal",)),
     ("Terminal", ("/term",)),
