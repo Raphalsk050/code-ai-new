@@ -135,7 +135,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   private resends = 0;
   /** The newer release the backend found, once it has found one. */
   private update?: UpdateInfo;
-  private updatesOff?: string;
+  private updateProblem?: string;
   private updateTimer?: ReturnType<typeof setInterval>;
   private updating = false;
   private mode: AppMode = "agent";
@@ -960,7 +960,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     if (!client) return undefined;
     try {
       const found = await client.request<UpdateInfo>("checkForUpdate", {}, 60_000);
-      this.updatesOff = found?.configured === false ? found.message || "Updates are off." : undefined;
+      this.updateProblem = found?.configured === false ? found.message || "Updates are off." : undefined;
       // Silent when there is none, or GitHub is out of reach.
       if (found?.version) {
         this.update = found;
@@ -968,6 +968,8 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       return found?.version ? found : undefined;
     } catch (err) {
+      // Kept for /update to show; a background check stays quiet.
+      this.updateProblem = String(err).replace(/^Error: /, "");
       console.debug("[code-ai] update check failed", err);
       return undefined;
     }
@@ -995,7 +997,8 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     if (!client) return;
     const found = this.update ?? (await this.checkForUpdate());
     if (!found?.version) {
-      void vscode.window.showInformationMessage(this.updatesOff ?? "Code-AI is up to date.");
+      if (this.updateProblem) void vscode.window.showWarningMessage(this.updateProblem);
+      else void vscode.window.showInformationMessage("Code-AI is up to date.");
       return;
     }
     const post = (state: string, message = "") =>

@@ -2013,10 +2013,14 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self._updating = True
             try:
                 await self._run_update()
+            except updates.UpdateError as exc:
+                self._append_conversation_line(f"update> {exc}")
             finally:
                 self._updating = False
-                if self._update_release is not None and not self._update_release_installed:
-                    self._show_update_button(f"⬆ Update to v{self._update_release.version}")
+                release = self._update_release
+                if not self._update_release_installed:
+                    # Back to what it said before, or gone: never stuck on "checking".
+                    self._show_update_button(f"⬆ Update to v{release.version}" if release else None)
 
         async def _run_update(self) -> None:
             """Download the newest release's binary and put it where this one runs."""

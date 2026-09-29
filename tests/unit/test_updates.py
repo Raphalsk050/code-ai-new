@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import dataclasses
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -71,8 +73,11 @@ def test_asset_names_are_the_ones_ci_publishes() -> None:
 
 
 class _FakeGitHub:
-    def __init__(self, listing: list[dict]) -> None:
+    def __init__(self, listing: list[dict], *, private: bool = False, bad_tokens=()) -> None:
         self.listing = listing
+        # A private repository looks missing to anyone not signed in.
+        self.private = private
+        self.bad_tokens = set(bad_tokens)
         self.requests: list[tuple[str, dict[str, str]]] = []
 
     def __enter__(self) -> str:
@@ -84,15 +89,19 @@ class _FakeGitHub:
 
             def do_GET(self) -> None:  # noqa: N802 - http.server's naming
                 fake.requests.append((self.path, dict(self.headers)))
-                if "/releases" in self.path:
+                signed = self.headers.get("Authorization")
+                status = 200
+                if signed in fake.bad_tokens:
+                    status, body = 401, b'{"message": "Bad credentials"}'
+                elif fake.private and not signed:
+                    status, body = 404, b'{"message": "Not Found"}'
+                elif "/releases" in self.path:
                     body = json.dumps(fake.listing).encode()
                 elif self.path.startswith(("/dl/", "/api/")):
                     body = b"new build " + self.path.encode()
                 else:
-                    self.send_response(404)
-                    self.end_headers()
-                    return
-                self.send_response(200)
+                    status, body = 404, b""
+                self.send_response(status)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -113,8 +122,8 @@ class _FakeGitHub:
 
 @pytest.fixture
 def github(monkeypatch):
-    def serve(listing: list[dict]):
-        fake = _FakeGitHub(listing)
+    def serve(listing: list[dict], **options):
+        fake = _FakeGitHub(listing, **options)
         base = fake.__enter__()
         monkeypatch.setattr(updates, "RELEASES_API", base)
         monkeypatch.setattr(updates, "RELEASES_REPOSITORY", "team/code-ai")
@@ -125,8 +134,8 @@ def github(monkeypatch):
 
     fakes: list[_FakeGitHub] = []
 
-    def start(listing: list[dict]):
-        fake = serve(listing)
+    def start(listing: list[dict], **options):
+        fake = serve(listing, **options)
         fakes.append(fake)
         return fake
 
@@ -172,6 +181,99 @@ async def test_nothing_newer_is_no_update(github) -> None:
     github([_release("v0.28.0"), _release("v0.27.9")])
 
     assert await updates.check(verify_ssl=False) is None
+
+
+def _tools(monkeypatch, *, gh: str = "", git: str = "") -> list[tuple[list[str], str]]:
+    """Stand-ins for gh and git, answering as this machine's logins would."""
+    calls: list[tuple[list[str], str]] = []
+
+    def run(argv: list[str], stdin: str = "") -> str:
+        calls.append((argv, stdin))
+        return {"gh": gh, "git": git}[argv[0]]
+
+    monkeypatch.setattr(updates, "_run_tool", run)
+    return calls
+
+
+def test_a_login_is_kept_under_the_web_host(monkeypatch) -> None:
+    assert updates.login_host() == "github.com"
+    monkeypatch.setattr(updates, "RELEASES_API", "https://github.sec.samsung.net/api/v3")
+    assert updates.login_host() == "github.sec.samsung.net"
+
+
+def test_git_s_credential_manager_is_asked_without_a_prompt(monkeypatch) -> None:
+    monkeypatch.setattr(updates, "RELEASES_API", "https://github.sec.samsung.net/api/v3")
+    calls = _tools(
+        monkeypatch,
+        git="protocol=https\nhost=github.sec.samsung.net\nusername=rafael\npassword=gho_git\n",
+    )
+
+    assert updates.find_credential() == updates.Credential("gho_git", username="rafael")
+    assert calls[0][0] == ["gh", "auth", "token", "--hostname", "github.sec.samsung.net"]
+    argv, stdin = calls[1]
+    assert "credential.interactive=never" in argv and argv[-2:] == ["credential", "fill"]
+    assert stdin == "protocol=https\nhost=github.sec.samsung.net\n\n"
+
+
+def test_the_configured_token_then_the_cli_then_git(monkeypatch) -> None:
+    monkeypatch.setattr(updates, "RELEASES_API", "https://github.sec.samsung.net/api/v3")
+    _tools(monkeypatch, gh="gho_gh\n", git="username=rafael\npassword=gho_git\n")
+    assert updates.find_credential() == updates.Credential("gho_gh")
+
+    # github.com's variable is no login for an Enterprise host.
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_public")
+    assert updates.find_credential() == updates.Credential("gho_gh")
+
+    monkeypatch.setenv("GH_ENTERPRISE_TOKEN", "ghe_env")
+    assert updates.find_credential() == updates.Credential("ghe_env")
+
+    monkeypatch.setenv(updates.RELEASES_TOKEN_ENV, "s3cret")
+    assert updates.find_credential() == updates.Credential("s3cret", explicit=True)
+
+
+async def test_the_machine_s_login_opens_a_private_repository(github, monkeypatch) -> None:
+    fake = github([_release("v0.29.0")], private=True)
+    _tools(monkeypatch, git="username=rafael\npassword=gho_git\n")
+
+    release = await updates.check(verify_ssl=False)
+
+    assert release is not None and release.version == "0.29.0"
+    basic = "Basic " + base64.b64encode(b"rafael:gho_git").decode()
+    assert fake.requests[0][1].get("Authorization") == basic
+
+
+async def test_a_stale_login_gives_way_to_an_anonymous_ask(github, monkeypatch) -> None:
+    fake = github([_release("v0.29.0")], bad_tokens={"Bearer gho_stale"})
+    _tools(monkeypatch, gh="gho_stale\n")
+
+    release = await updates.check(verify_ssl=False)
+
+    assert release is not None
+    sent = [headers.get("Authorization") for _, headers in fake.requests]
+    assert sent == ["Bearer gho_stale", None]
+    # Not offered again this session.
+    assert updates.find_credential() is None
+
+
+async def test_a_private_repository_without_a_login_says_how_to_get_one(github) -> None:
+    github([_release("v0.29.0")], private=True)
+
+    with pytest.raises(updates.UpdateError, match="sign in to 127.0.0.1 with git or gh"):
+        await updates.check(verify_ssl=False)
+
+
+async def test_the_login_never_leaves_the_api_host(github, monkeypatch, tmp_path) -> None:
+    fake = github([_release("v0.29.0", assets=["code-ai-linux-v0.29.0"])])
+    _tools(monkeypatch, gh="gho_gh\n")
+    release = await updates.check(verify_ssl=False)
+    asset = updates.asset_for(release, "binary", "linux")
+    elsewhere = dataclasses.replace(asset, api_url=asset.api_url.replace("127.0.0.1", "localhost"))
+
+    await updates.download(elsewhere, tmp_path, verify_ssl=False)
+
+    path, headers = fake.requests[-1]
+    assert path == "/dl/code-ai-linux-v0.29.0"
+    assert "Authorization" not in headers
 
 
 def test_the_running_binary_steps_aside_for_the_new_one(tmp_path) -> None:

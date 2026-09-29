@@ -236,6 +236,28 @@ async def test_update_says_where_to_set_the_repository(tmp_path, monkeypatch) ->
         assert f"update> {updates.UNSET_MESSAGE}" in terminal_app.vm.conversation
 
 
+async def test_a_refused_lookup_says_why_and_clears_the_button(tmp_path, monkeypatch) -> None:
+    from textual.widgets import Button
+
+    from code_ai import updates
+
+    async def refused(**_kwargs):
+        raise updates.UpdateError("GitHub answered 404: sign in with git or gh")
+
+    monkeypatch.setattr(updates, "running_binary", lambda: tmp_path / "code-ai.exe")
+    monkeypatch.setattr(updates, "RELEASES_REPOSITORY", "team/code-ai")
+    monkeypatch.setattr(updates, "check", refused)
+    terminal_app = create_terminal_app(
+        FakeTerminalApplication(tmp_path), config_path=tmp_path / "config.json"
+    )
+
+    async with terminal_app.run_test(size=(100, 40)) as pilot:
+        await terminal_app._install_update()
+        await pilot.pause()
+        assert "update> GitHub answered 404: sign in with git or gh" in terminal_app.vm.conversation
+        assert not terminal_app.query_one("#update-button", Button).display
+
+
 async def test_no_release_no_button(tmp_path, monkeypatch) -> None:
     from textual.widgets import Button
 
