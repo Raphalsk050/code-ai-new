@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 32,
-  "patch": 1,
-  "build": 63,
+  "patch": 2,
+  "build": 64,
   "updated": "2026-09-29",
-  "note": "Mac launcher clears Gatekeeper quarantine"
+  "note": "Mac runtime ships as one archive"
 }

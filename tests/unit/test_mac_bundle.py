@@ -138,7 +138,8 @@ def test_pip_is_only_ever_offered_wheels_for_that_mac(tmp_path) -> None:
 
 
 def test_the_launcher_runs_the_bundled_python_from_wherever_it_is_linked() -> None:
-    assert 'exec "$here/runtime/bin/python3.12" -I -m code_ai "$@"' in mac.LAUNCHER
+    assert 'python="$here/runtime/bin/python3.12"' in mac.LAUNCHER
+    assert 'exec "$python" -I -m code_ai "$@"' in mac.LAUNCHER
     assert "export CODE_AI_BUNDLE" in mac.LAUNCHER
     # However it got unpacked, Gatekeeper's quarantine never reaches the Python.
     assert 'xattr -dr com.apple.quarantine "$here"' in mac.LAUNCHER
@@ -201,11 +202,17 @@ def test_the_installer_template_ends_on_its_payload_marker() -> None:
 
 def _installer(tmp_path: Path, version: str) -> Path:
     """What package.mjs writes: the template, then a darwin VSIX."""
+    runtime = io.BytesIO()
+    with tarfile.open(fileobj=runtime, mode="w:gz") as tar:
+        python = b'#!/bin/sh\necho "ran $*"\n'
+        info = tarfile.TarInfo("runtime/bin/python3.12")
+        info.size, info.mode = len(python), 0o755
+        tar.addfile(info, io.BytesIO(python))
     payload = io.BytesIO()
     with zipfile.ZipFile(payload, "w") as vsix:
         for name, data, mode in (
             ("extension/bin/code-ai", mac.LAUNCHER, 0o755),
-            ("extension/bin/runtime/bin/python3.12", '#!/bin/sh\necho "ran $*"\n', 0o755),
+            ("extension/bin/runtime.tar.gz", runtime.getvalue(), 0o644),
             ("extension/package.json", "{}", 0o644),
         ):
             info = zipfile.ZipInfo(name)
@@ -248,3 +255,23 @@ def test_the_installer_installs_updates_and_keeps_the_running_version(tmp_path) 
     )
     assert ran.stdout.strip() == "ran -I -m code_ai --help"
     assert (home / ".zprofile").read_text().count(".local/bin") == 1
+
+
+@pytest.mark.skipif(os.name != "posix", reason="needs a POSIX shell")
+def test_the_launcher_unpacks_the_runtime_on_the_first_start(tmp_path) -> None:
+    bundle = tmp_path / "code-ai-mac-arm64"
+    _write(bundle / "code-ai", mac.LAUNCHER).chmod(0o755)
+    runtime = io.BytesIO()
+    with tarfile.open(fileobj=runtime, mode="w:gz") as tar:
+        python = b'#!/bin/sh\necho "ran $*"\n'
+        info = tarfile.TarInfo("runtime/bin/python3.12")
+        info.size, info.mode = len(python), 0o755
+        tar.addfile(info, io.BytesIO(python))
+    _write(bundle / "runtime.tar.gz", runtime.getvalue())
+
+    for _ in range(2):
+        ran = subprocess.run([str(bundle / "code-ai"), "x"], capture_output=True, text=True)
+        assert ran.stdout.strip() == "ran -I -m code_ai x"
+
+    assert not (bundle / "runtime.tar.gz").exists()
+    assert not (bundle / ".unpacking").exists()

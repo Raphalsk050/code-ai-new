@@ -9,7 +9,8 @@ installs the second into it and adds a launcher:
 
     code-ai-mac-arm64/
       code-ai               the command, a shell script
-      runtime/              CPython 3.12, Code-AI in its site-packages
+      runtime.tar.gz        CPython 3.12, Code-AI in its site-packages; the
+                            launcher unpacks it on the first start
       code-ai-bundle.json   what must stay executable, for the VSIX
 
 packed as code-ai-mac-<arch>-v<version>.tar.gz; vscode-extension/scripts/
@@ -126,15 +127,39 @@ while [ -L "$self" ]; do
   esac
 done
 here=$(cd "$(dirname "$self")" && pwd -P)
+python="$here/runtime/bin/python{PYTHON}"
+# The runtime ships as one archive: as 11,000 loose files a VSIX takes minutes
+# to pack and to install. The first start unpacks it beside this script, once;
+# a second start meanwhile waits for it instead of unpacking it again.
+if [ ! -x "$python" ] && [ -f "$here/runtime.tar.gz" ]; then
+  if mkdir "$here/.unpacking" 2>/dev/null; then
+    echo "Code-AI: unpacking its Python, once..." >&2
+    rm -rf "$here/runtime.partial"
+    mkdir "$here/runtime.partial"
+    if tar -xzf "$here/runtime.tar.gz" -C "$here/runtime.partial"; then
+      mv "$here/runtime.partial/runtime" "$here/runtime"
+      rm -f "$here/runtime.tar.gz"
+    fi
+    rm -rf "$here/runtime.partial" "$here/.unpacking"
+  else
+    waited=0
+    while [ -d "$here/.unpacking" ] && [ ! -x "$python" ] && [ "$waited" -lt 180 ]; do
+      sleep 1
+      waited=$((waited + 1))
+    done
+    # An unpack that died leaves its lock: the next start tries again.
+    [ -x "$python" ] || rm -rf "$here/.unpacking"
+  fi
+fi
 # Unpacked from a browser download, the folder carries macOS's quarantine flag
 # and Gatekeeper refuses the Python in it ("could not verify"). Clearing the
 # flag on this folder is what Open Anyway would do, file by file.
-if xattr -p com.apple.quarantine "$here/runtime/bin/python{PYTHON}" >/dev/null 2>&1; then
+if xattr -p com.apple.quarantine "$python" >/dev/null 2>&1; then
   xattr -dr com.apple.quarantine "$here" 2>/dev/null || true
 fi
 CODE_AI_BUNDLE=$here
 export CODE_AI_BUNDLE
-exec "$here/runtime/bin/python{PYTHON}" -I -m code_ai "$@"
+exec "$python" -I -m code_ai "$@"
 """
 
 
@@ -395,16 +420,20 @@ def build(arch_name: str, out_dir: Path, cache: Path, wheel: Path) -> Path:
     problems, executables = check_bundle(bundle, arch)
     if problems:
         raise SystemExit(f"code-ai-mac-{arch.name}:\n  " + "\n  ".join(problems))
+    # One archive for the runtime, which the launcher unpacks on the first start.
+    inside = {name.removeprefix("runtime/") for name in executables if name.startswith("runtime/")}
+    pack(runtime, inside, bundle / "runtime.tar.gz")
+    shutil.rmtree(runtime)
     manifest = {
         "version": version,
         "arch": arch.name,
         "python": PBS_PYTHON,
-        "executables": sorted(executables),
+        "executables": ["code-ai"],
     }
     (bundle / "code-ai-bundle.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
     tarball = out_dir / f"code-ai-mac-{arch.name}-v{version}.tar.gz"
-    pack(bundle, set(executables), tarball)
+    pack(bundle, {"code-ai"}, tarball)
     return tarball
 
 

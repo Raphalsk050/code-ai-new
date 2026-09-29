@@ -116,16 +116,12 @@ const MIN_BINARY_BYTES = 5 * 1024 * 1024;
 /** And of the macOS folder: a Python runtime plus Playwright's Node alone pass it. */
 const MIN_BUNDLE_BYTES = 40 * 1024 * 1024;
 
-/** The macOS build: a launcher script, and a runtime whose programs need the bit too. */
+/** The macOS build: a launcher script, and the runtime it unpacks on the first start. */
 const MAC_BUNDLE = {
   binary: "extension/bin/code-ai",
   forbidden: "extension/bin/code-ai.exe",
   needsExecutableBit: true,
-  bundle: [
-    "extension/bin/code-ai-bundle.json",
-    "extension/bin/runtime/bin/python3.12",
-    "extension/bin/runtime/lib/python3.12/site-packages/playwright/driver/node",
-  ],
+  bundle: ["extension/bin/code-ai-bundle.json", "extension/bin/runtime.tar.gz"],
 };
 
 const EXPECTED = {
@@ -197,8 +193,10 @@ export function verify(file, target) {
     for (const name of expected.bundle) {
       const entry = byName.get(name);
       if (!entry) problems.push(`missing ${name} — the macOS runtime is incomplete`);
-      else if (!name.endsWith(".json")) checkExecutable(entry, problems);
     }
+    // Thousands of loose files make a VSIX that takes minutes to pack and install.
+    const loose = entries.filter((e) => e.name.startsWith("extension/bin/runtime/")).length;
+    if (loose) problems.push(`${loose} runtime files shipped loose instead of in runtime.tar.gz`);
     backendBytes = entries
       .filter((e) => e.name.startsWith("extension/bin/"))
       .reduce((total, e) => total + e.size, 0);

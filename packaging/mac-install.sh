@@ -55,6 +55,9 @@ mkdir -p "$APP"
 dest="$APP/v$VERSION"
 rm -rf "$dest.partial"
 mv "$scratch/extension/bin" "$dest.partial"
+# Unpacked now, so the first start does not have to.
+tar -xzf "$dest.partial/runtime.tar.gz" -C "$dest.partial"
+rm "$dest.partial/runtime.tar.gz"
 xattr -dr com.apple.quarantine "$dest.partial" 2>/dev/null || true
 running=$(readlink "$APP/current" 2>/dev/null || true)
 for old in "$APP"/v*; do

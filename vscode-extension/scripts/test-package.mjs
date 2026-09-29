@@ -46,23 +46,16 @@ const SCRATCH = mkdtempSync(join(tmpdir(), "code-ai-package-tests-"));
 
 process.on("exit", () => rmSync(SCRATCH, { recursive: true, force: true }));
 
-const MAC_PROGRAMS = [
-  "code-ai",
-  "runtime/bin/python3.12",
-  "runtime/lib/python3.12/site-packages/playwright/driver/node",
-];
+const MAC_PROGRAMS = ["code-ai"];
 
 /** A folder shaped like scripts/build_mac_bundle.py's, heavy enough to pass. */
 function fakeMacBundle(arch) {
   const dir = join(SCRATCH, `code-ai-mac-${arch}`);
   rmSync(dir, { recursive: true, force: true });
-  const driver = join(dir, "runtime", "lib", "python3.12", "site-packages", "playwright", "driver");
-  mkdirSync(join(dir, "runtime", "bin"), { recursive: true });
-  mkdirSync(driver, { recursive: true });
+  mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "code-ai"), "#!/bin/sh\nexit 0\n");
-  writeFileSync(join(dir, "runtime", "bin", "python3.12"), Buffer.alloc(1024));
   // A real runtime weighs this much; the verifier refuses a hollow one.
-  writeFileSync(join(driver, "node"), Buffer.alloc(41 * 1024 * 1024));
+  writeFileSync(join(dir, "runtime.tar.gz"), Buffer.alloc(41 * 1024 * 1024));
   const manifest = { version: "0", arch, python: "3.12.14", executables: MAC_PROGRAMS };
   writeFileSync(join(dir, "code-ai-bundle.json"), JSON.stringify(manifest));
   return dir;
@@ -296,7 +289,7 @@ test("a macOS build is staged from its folder, and only for its own arch", () =>
   rmSync(BIN_DIR, { recursive: true, force: true });
 });
 
-test("verify wants the whole macOS runtime, every program executable", () => {
+test("verify wants the macOS runtime whole, and in one archive", () => {
   const file = join(SCRATCH, "hollow-mac.vsix");
   buildZip(file, [
     ["extension/package.json", Buffer.from("{}")],
@@ -307,9 +300,9 @@ test("verify wants the whole macOS runtime, every program executable", () => {
     ["extension/bin/runtime/bin/python3.12", Buffer.alloc(1024), 0o644],
   ]);
   const text = verify(file, "darwin-arm64").problems.join("\n");
-  assert.match(text, /python3\.12 has mode 644/);
+  assert.match(text, /1 runtime files shipped loose instead of in runtime\.tar\.gz/);
   assert.match(text, /missing extension\/bin\/code-ai-bundle\.json/);
-  assert.match(text, /missing .*playwright\/driver\/node/);
+  assert.match(text, /missing extension\/bin\/runtime\.tar\.gz/);
   assert.match(text, /too small to be whole/);
 });
 
