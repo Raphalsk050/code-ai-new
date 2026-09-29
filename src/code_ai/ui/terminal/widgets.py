@@ -11,7 +11,7 @@ from rich.markdown import Markdown
 from rich.text import Text
 from textual.content import Content
 
-from code_ai.ui.terminal.palette import active_palette
+from code_ai.ui.terminal.palette import active_palette, markdown_theme, syntax_theme
 
 try:
     from art import text2art
@@ -232,7 +232,7 @@ def _plan_marker_styles() -> dict[str, str]:
         "done": palette.success,
         "pending": palette.faint,
         "failed": palette.error,
-        "paused": palette.border,
+        "paused": palette.label,
     }
 
 
@@ -291,7 +291,7 @@ def render_plan(
     header = f"{progress}"
     if plan_status:
         header += f" · {plan_status.lower()}"
-    text.append(header + "\n", style=palette.border)
+    text.append(header + "\n", style=palette.label)
 
     for index, step in enumerate(steps):
         status = step.get("status", "pending")
@@ -344,7 +344,7 @@ def render_subagents_summary(agents: list[dict[str, str]]) -> Text:
     header = f"{len(agents)} agent(s)"
     if running:
         header += f" · {running} running"
-    return Text(header, style=active_palette().border)
+    return Text(header, style=active_palette().label)
 
 
 def render_subagent_header(
@@ -463,7 +463,7 @@ def render_terminal_screen(
     palette = active_palette()
     text = Text()
     header = f"{session_id[:8] or '-'} · {cols}x{rows}"
-    text.append(header, style=palette.border)
+    text.append(header, style=palette.label)
     if closed:
         text.append("  encerrado", style=palette.error_soft)
     text.append("\n")
@@ -573,7 +573,7 @@ def render_context_meter(
     """
     palette = active_palette()
     text = Text()
-    text.append("context ", style=palette.border)
+    text.append("context ", style=palette.label)
     if not used or not budget or budget <= 0:
         text.append("tokens unavailable", style=palette.subtle)
         return text
@@ -666,8 +666,11 @@ def markdown_to_content(body: str, width: int) -> Content:
     copyable like the rest of the conversation.
     """
     width = max(20, width)
-    console = Console(width=width)
-    markdown = Markdown(body)
+    palette = active_palette()
+    # Headings, inline code and code blocks in the theme's colours; Rich's
+    # defaults are ANSI names that Textual maps through its monokai table.
+    console = Console(width=width, theme=markdown_theme(palette))
+    markdown = Markdown(body, code_theme=syntax_theme(palette))
     # Re-parse with the HTML-preserving token rewrite; ``parsed`` is what
     # ``Markdown.__rich_console__`` walks, so this is the one override point.
     markdown.parsed = _parse_markdown_keeping_markup_visible(body)

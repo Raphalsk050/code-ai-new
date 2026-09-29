@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 25,
-  "patch": 4,
-  "build": 50,
-  "updated": "2026-09-26",
-  "note": "Open a saved graph without blanking it"
+  "minor": 26,
+  "patch": 0,
+  "build": 51,
+  "updated": "2026-09-29",
+  "note": "Every terminal theme in its own colours, plus GitHub themes"
 }

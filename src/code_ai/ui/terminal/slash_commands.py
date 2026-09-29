@@ -16,6 +16,7 @@ from code_ai.config.models import (
 from code_ai.core.workflows import WorkflowRecord
 from code_ai.providers.factory import PROVIDER_BAKED_SETTINGS
 from code_ai.tools.skills.common import SkillRecord
+from code_ai.ui.terminal.themes import THEME_SPECS
 from code_ai.ui.terminal.widgets import (
     CODE_AI_BANNER_FONT_OPTIONS,
     CODE_AI_SPINNER_OPTIONS,
@@ -61,23 +62,9 @@ REASONING_EFFORT_SUGGESTIONS = tuple(
     for effort in ("none", "minimal", "low", "medium", "high", "xhigh")
     if effort in SUPPORTED_REASONING_EFFORTS
 )
-# "monokai" first because it is Code-AI's own palette (see
-# ui.terminal.palette): the one theme whose colours are declared rather than
-# derived, and the default. Every other entry recolours the whole UI from that
-# theme's own primary/accent/success/error.
-TERMINAL_THEME_SUGGESTIONS = (
-    "monokai",
-    "textual-dark",
-    "textual-light",
-    "tokyo-night",
-    "dracula",
-    "nord",
-    "gruvbox",
-    "catppuccin-mocha",
-    "catppuccin-latte",
-    "solarized-dark",
-    "solarized-light",
-)
+# "monokai" first: it is Code-AI's own palette and the default. The rest are
+# the curated themes (ui.terminal.themes), each painted in its own colours.
+TERMINAL_THEME_SUGGESTIONS = ("monokai", *THEME_SPECS)
 
 
 def config_commands(*, include_help: bool = False) -> list[SlashCommand]:

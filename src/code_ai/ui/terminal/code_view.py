@@ -16,7 +16,7 @@ from rich.style import Style
 from rich.syntax import Syntax
 from rich.text import Text
 
-from code_ai.ui.terminal.palette import active_palette
+from code_ai.ui.terminal.palette import active_palette, syntax_theme
 
 MAX_PREVIEW_CHARS = 40000
 
@@ -147,7 +147,7 @@ def syntax_block(
     return Syntax(
         code or "",
         lexer or guess_lexer(path, code),
-        theme=palette.syntax_theme,
+        theme=syntax_theme(palette),
         line_numbers=True,
         indent_guides=True,
         word_wrap=False,
