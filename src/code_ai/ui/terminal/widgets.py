@@ -174,10 +174,29 @@ CODE_AI_SPINNER_OPTIONS = tuple(style.key for style in _SPINNER_LIST)
 DEFAULT_SPINNER = "ascii"
 
 
-def working_label(status: str, *, waiting: bool = False) -> str:
+def working_label(status: str, *, waiting: bool = False, activity: str = "") -> str:
+    """The indicator's words: the tool in hand or a retry when there is one."""
+    if activity:
+        return activity
     if waiting and status == "CALLING_MODEL":
         return "waiting in the model queue"
     return _WORKING_LABELS.get(status, "working")
+
+
+def render_working_label(label: str) -> Text:
+    """The indicator's words, with the running tool and a retry picked out."""
+    palette = active_palette()
+    if label.startswith("retrying "):
+        return Text(label, style=f"bold {palette.amber}")
+    if not label.startswith("running ") or label == "running tools":
+        return Text(label, style=palette.trace)
+    name, separator, target = label[len("running ") :].partition(" · ")
+    text = Text("running ", style=palette.trace)
+    text.append(name, style=f"bold {palette.info}")
+    if separator:
+        text.append(separator, style=palette.trace)
+        text.append(target, style=palette.foreground)
+    return text
 
 
 def normalize_spinner(spinner: str) -> str:
@@ -724,6 +743,7 @@ _TRACE_PREFIXES = (
 _BLANK_RUN = re.compile(r"\n[ \t]*\n+")
 
 _TOOL_LINE_PREFIX = "tool> "
+_RETRY_LINE_PREFIX = "model> retrying "
 
 
 def _chip(label: str, color: str) -> Content:
@@ -898,8 +918,8 @@ def render_conversation_line(
         chip = _chip("you", palette.success)
         return chip.append(Content.styled(f" {rest}", palette.success)) if rest else chip
     if line.startswith(_TOOL_LINE_PREFIX):
-        # A tool call that ran ("tool> <name>: <result>"): tint only the tool
-        # name, the result summary stays in the dim trace gray.
+        # A tool call that ran ("tool> <name> <target>: <result>"): the name in
+        # the tool colour, what it worked on in full ink, the result dim.
         rest = line[len(_TOOL_LINE_PREFIX) :]
         cut = len(rest)
         for stop in (":", " "):
@@ -910,9 +930,22 @@ def render_conversation_line(
         result = Content.styled(_TOOL_LINE_PREFIX, palette.trace).append(
             Content.styled(name, f"bold {palette.info}")
         )
+        failed = remainder.find(" failed: ")
+        end = failed if failed != -1 else remainder.find(": ")
+        if remainder.startswith(" ") and end != 0:
+            end = len(remainder) if end == -1 else end
+            result = result.append(Content.styled(remainder[:end], palette.foreground))
+            remainder = remainder[end:]
         if remainder:
-            result = result.append(Content.styled(remainder, palette.trace))
+            failure = remainder.startswith(" failed: ")
+            result = result.append(
+                Content.styled(remainder, palette.error_soft if failure else palette.trace)
+            )
         return result
+    if line.startswith(_RETRY_LINE_PREFIX):
+        # A failed request being sent again: not an error yet, but not quiet
+        # trace either.
+        return Content.styled(line, palette.amber)
     if line.startswith(("thinking> ", "working> ")):
         return _BLANK_RUN.sub("\n", line)
     return line

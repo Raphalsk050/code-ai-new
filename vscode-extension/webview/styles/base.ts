@@ -43,6 +43,12 @@ body {
   width: 9px; height: 9px; border-width: 1.5px;
 }
 .heartbeat .heartbeat-clock { opacity: .8; }
+/* The running tool and its target can be long: it shrinks, the clock stays. */
+.statusbar .brand { min-width: 0; }
+.heartbeat { min-width: 0; }
+.heartbeat .heartbeat-label {
+  min-width: 0; max-width: 46vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .typing-clock { color: var(--accent); font-variant-numeric: tabular-nums; }
 .statusbar .meta { margin-left: auto; display: flex; align-items: center; gap: 10px; color: var(--muted); }
 .statusbar .meta .pill {
@@ -171,8 +177,25 @@ body {
 .tool-icon { display: flex; width: 15px; justify-content: center; }
 .tool-done .tool-icon { color: var(--vscode-testing-iconPassed, #2ea043); }
 .tool-failed .tool-icon { color: var(--vscode-errorForeground, #f85149); }
-.tool-wrench { color: var(--muted); }
-.tool-name { font-weight: 600; font-family: var(--vscode-editor-font-family, monospace); font-size: 12.5px; }
+.tool-kind { flex: none; color: var(--accent); }
+.tool-name { flex: none; font-weight: 600; font-family: var(--vscode-editor-font-family, monospace); font-size: 12.5px; }
+.tool-head .tool-badge { margin-left: auto; flex: none; }
+.tool-head .tool-badge + .chev { margin-left: 0; }
+/* What the call works on - the file, the command, the query - under its name,
+   lined up with it, with the result summary after it. */
+.tool-sub {
+  display: flex; align-items: baseline; gap: 8px; min-width: 0;
+  padding: 0 11px 7px 57px; margin-top: -3px;
+}
+.tool-target {
+  min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--vscode-editor-font-family, monospace); font-size: 12px;
+  color: var(--vscode-foreground);
+}
+.tool-sub .tool-detail-inline { flex: 1 1 0; min-width: 40px; margin-left: 0; }
+/* The call in flight is the one the reader is looking for. */
+.tool-running { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
+.tool-running .tool-name { color: var(--accent); }
 .tool-badge { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; text-transform: uppercase; letter-spacing: .04em; }
 .badge-running { color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
 .badge-done { color: var(--vscode-testing-iconPassed, #2ea043); background: color-mix(in srgb, #2ea043 14%, transparent); }

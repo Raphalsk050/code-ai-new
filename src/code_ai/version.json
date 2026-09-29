@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 26,
-  "patch": 1,
-  "build": 52,
+  "minor": 27,
+  "patch": 0,
+  "build": 53,
   "updated": "2026-09-29",
-  "note": "Every build becomes a release with short notes and versioned artifacts"
+  "note": "Failed steps retry on their own, and the running tool is named with its target"
 }

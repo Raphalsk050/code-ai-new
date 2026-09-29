@@ -50,13 +50,13 @@ import { mergeStatus } from "./mcp-form";
 import { INITIAL_MCP, McpViewState } from "./mcp-settings";
 import { MentionMenu } from "./mention-menu";
 import { applyMention, mentionPrefix, rankPaths } from "./mentions";
-import { formatElapsed, ItemView, TypingIndicator } from "./messages";
+import { activityLabel, formatElapsed, ItemView, TypingIndicator } from "./messages";
 import { ModeSwitch } from "./mode-switch";
 import { ripple } from "./motion";
 import { QuestionsCard } from "./questions-card";
 import { INITIAL_REFACTOR, RefactorPanel, RefactorViewState } from "./refactor";
 import { ModelsState, SaveState, SettingsScreen } from "./settings";
-import { applyEvent, initialAppState, isBusy, Item, messagesToItems, workingLabel } from "./store";
+import { applyEvent, initialAppState, isBusy, Item, messagesToItems } from "./store";
 import { STYLE } from "./styles";
 import { RailActions, TaskRail } from "./task-rail";
 import { UsageBar } from "./usage-bar";
@@ -747,9 +747,7 @@ function App(): JSX.Element {
           {busy && (
             <span className="heartbeat" title={t("The agent is working")}>
               <span className="spinner heartbeat-spin" />
-              {state.session.modelWaiting
-                ? t("queued at the provider")
-                : workingLabel(state.session.status)}
+              <span className="heartbeat-label">{activityLabel(state.session)}</span>
               <span className="heartbeat-clock">{formatElapsed(state.session.heartbeat)}</span>
             </span>
           )}
@@ -841,7 +839,7 @@ function App(): JSX.Element {
                   )}
                   {showTyping && (
                     <TypingIndicator
-                      status={state.session.status}
+                      label={activityLabel(state.session)}
                       heartbeat={state.session.heartbeat}
                     />
                   )}

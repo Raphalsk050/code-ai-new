@@ -5,6 +5,7 @@ import pytest
 from code_ai import bootstrap
 from code_ai.config import models as config_models
 from code_ai.config.defaults import SANDBOX_DIR_ENV
+from code_ai.core import orchestration
 from code_ai.interop.paths import HOME_ENV as INTEROP_HOME_ENV
 
 
@@ -42,6 +43,14 @@ def _isolate_other_agents(tmp_path_factory, monkeypatch):
     monkeypatch.setenv(INTEROP_HOME_ENV, str(tmp_path_factory.mktemp("other_agents_home")))
     for name in ("CODEX_HOME", "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "CODE_AI_CLINE_HOME"):
         monkeypatch.delenv(name, raising=False)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _retry_without_waiting(monkeypatch):
+    """Failed model steps retry at once: the real backoff runs to minutes."""
+
+    monkeypatch.setattr(orchestration, "_retry_delay", lambda attempt: 0.0)
     yield
 
 

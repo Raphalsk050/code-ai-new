@@ -82,29 +82,43 @@ from code_ai.tools.base import TOOL_IMAGES_KEY, ToolCapability, ToolContext
 from code_ai.tools.groups import group_named, group_of
 from code_ai.tools.output import bound_text
 from code_ai.tools.registry import ToolRegistry
+from code_ai.tools.summary import call_target
 from code_ai.util.partial_json import PartialObjectDecoder
 
 ToolContextFactory = Callable[[asyncio.Event | None], ToolContext]
 
-_MODEL_STEP_MAX_RETRIES = 200
+# How many times getting one model response may fail - a request that errors, a
+# stream that breaks, a call that arrives mangled or cut off, a step that
+# raises - before the turn gives up on it. Per response, not per turn: every
+# response that lands starts the next one with the full count.
+_MAX_FAILED_ATTEMPTS = 20
 # Provider events that mean the model has started on a request. Usage and
 # warnings can arrive without it.
 _MODEL_OUTPUT_KINDS = frozenset(
     {"text_delta", "reasoning_delta", "tool_call", "tool_call_delta", "completed"}
 )
-# How many times to re-prompt a model that printed a tool call as text but in a
-# shape we could not parse, before giving up and surfacing its best-effort text.
-_MAX_TOOL_FORMAT_RETRIES = 2
-# How many times to re-prompt a model that burned its entire output budget
-# (typically inside the reasoning channel) without emitting a tool call, before
-# giving up. Each retry hands back its own truncated thinking plus a nudge to
-# commit to one concrete action.
-_MAX_BUDGET_RETRIES = 2
-# How many times to re-issue a step whose tool call was cut off mid-stream (a
-# model timeout, a provider failure, arguments the provider could not parse).
-# Bounded so a stream that keeps breaking still terminates the turn instead of
-# re-prompting forever.
-_MAX_INTERRUPTED_CALL_RETRIES = 2
+# Provider events that put something on the user's screen, which a retry has to
+# take back before the next attempt streams its own.
+_VISIBLE_OUTPUT_KINDS = frozenset({"text_delta", "reasoning_delta", "tool_call_delta"})
+
+
+def _retry_delay(attempt: int) -> float:
+    """Seconds before retry ``attempt``: half a second, doubling up to 20.
+
+    Twenty retries span about five minutes, long enough to ride out a model
+    server restarting.
+    """
+    return min(20.0, 0.5 * 2 ** (attempt - 1)) + random.random() * 0.25
+
+
+def _failure_reason(exc: BaseException, *, idle_timeout: float | None = None) -> str:
+    """One short line saying what failed, for the retry notice."""
+    if isinstance(exc, TimeoutError) and not str(exc):
+        if idle_timeout:
+            return f"the model sent nothing for {idle_timeout:g}s"
+        return "the model stopped answering"
+    text = " ".join(str(exc).split()) or type(exc).__name__
+    return text if len(text) <= 180 else text[:177] + "..."
 # What the user gets when every tool is off and the model spent its whole reply
 # on a call that could never run. Saying nothing would look like the turn simply
 # died, which is exactly what the empty tool list makes it look like already.
@@ -405,6 +419,14 @@ class _TurnState:
     stall_nudged: bool = False
     tool_format_retries: int = 0
     budget_overflow_retries: int = 0
+    # Retries spent on the response being worked towards (see
+    # _MAX_FAILED_ATTEMPTS). Zeroed once a response lands.
+    failures: int = 0
+    # Whether the attempt in flight has put output on screen, which a retry has
+    # to tell the front ends to take back.
+    attempt_emitted: bool = False
+    # The model loop picks up here when an unexpected error sends it round again.
+    next_step: int = 0
     no_tool_nudged: bool = False
     seen_call_fingerprints: set[str] = field(default_factory=set)
     # Whether the current model step streamed any visible text on the "answer"
@@ -418,7 +440,6 @@ class _TurnState:
     # response that looks like a plain prose answer but is really a truncated
     # one. See ``_retry_interrupted_tool_call``.
     tool_call_streaming: bool = False
-    interrupted_call_retries: int = 0
     # Whether the current model step was sent any tools at all. Reset per step.
     # With every tool switched off there is no structured channel to correct the
     # model into, so "call it properly" is the wrong nudge - see
@@ -950,7 +971,7 @@ class AgentOrchestrator:
             if early is not None:
                 return early
             state.progress_signature = self._progress_signature()
-            result = await self._run_model_loop(state)
+            result = await self._run_until_answered(state)
             self._maybe_schedule_reflection(state, result)
             return result
         except CancellationError:
@@ -1171,8 +1192,90 @@ class AgentOrchestrator:
     # ------------------------------------------------------------------ #
     # Model loop
     # ------------------------------------------------------------------ #
+    async def _run_until_answered(self, state: _TurnState) -> TurnResult:
+        """The model loop, picked up again when something unexpected breaks it.
+
+        A bug in a planner hook or a tool round used to end the conversation on
+        the spot. It is a failure like any other: retried within the same
+        budget as a failed request, from where the loop was.
+        """
+        while True:
+            try:
+                return await self._run_model_loop(state)
+            except (CancellationError, ProviderError):
+                raise
+            except Exception as exc:
+                if state.failures >= _MAX_FAILED_ATTEMPTS:
+                    raise
+                logger.exception("Model loop failed; retrying the step")
+                self._answer_dangling_calls(exc)
+                await self._retry_after_failure(exc, state, discarded=False)
+
+    def _answer_dangling_calls(self, exc: Exception) -> None:
+        """Close tool calls a broken round left without results.
+
+        An assistant message whose calls have no results is a shape strict
+        providers refuse, so the retry would fail on it forever.
+        """
+        messages = self.conversation.messages
+        for index in range(len(messages) - 1, -1, -1):
+            message = messages[index]
+            if message.role == "assistant":
+                answered = {m.tool_call_id for m in messages[index + 1 :] if m.role == "tool"}
+                for call in message.tool_calls or []:
+                    if call.id not in answered:
+                        self.conversation.add_tool_result(
+                            ToolResult(
+                                tool_call_id=call.id,
+                                name=call.name,
+                                content=f"The call did not complete: {_failure_reason(exc)}",
+                                is_error=True,
+                            )
+                        )
+                return
+            if message.role != "tool":
+                return
+
+    async def _retry_after_failure(
+        self,
+        exc: BaseException,
+        state: _TurnState,
+        *,
+        discarded: bool,
+        idle_timeout: float | None = None,
+    ) -> None:
+        """Count a failure, say so, and wait before the next attempt."""
+        state.failures += 1
+        delay = _retry_delay(state.failures)
+        await self.event_bus.emit(
+            "model.request.retrying",
+            {
+                "attempt": state.failures,
+                "max_attempts": _MAX_FAILED_ATTEMPTS,
+                "reason": _failure_reason(exc, idle_timeout=idle_timeout),
+                "type": type(exc).__name__,
+                "delay_s": round(delay, 1),
+                # What this attempt streamed is being thrown away; the front
+                # ends take it off the screen before the next one arrives.
+                "discarded": discarded,
+            },
+            source="core.orchestrator",
+        )
+        await self.set_state(AgentState.CALLING_MODEL, phase="retrying")
+        await self._wait_or_cancel(delay, state.cancel_event)
+
+    async def _wait_or_cancel(self, delay: float, cancel_event: asyncio.Event | None) -> None:
+        """Sleep before a retry, waking at once if the user cancels."""
+        if cancel_event is None:
+            await asyncio.sleep(delay)
+            return
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(cancel_event.wait(), timeout=delay)
+        self._raise_if_cancelled(cancel_event)
+
     async def _run_model_loop(self, state: _TurnState) -> TurnResult:
-        for step in range(self.config.budgets.max_model_steps):
+        for step in range(state.next_step, self.config.budgets.max_model_steps):
+            state.next_step = step + 1
             self._raise_if_cancelled(state.cancel_event)
             if time.monotonic() > state.deadline:
                 return await self._wind_down(state, reason=WIND_DOWN_TIME_BUDGET)
@@ -1243,6 +1346,10 @@ class AgentOrchestrator:
                     return outcome
                 continue
 
+            # The response landed: the next one starts with a full retry budget.
+            # Not reset on the prose path above, which also receives responses
+            # that ran out of retries - resetting there would re-arm them.
+            state.failures = 0
             if state.tool_calls_executed >= self.config.budgets.max_tool_calls:
                 # Checked here rather than inside the batch so the calls the
                 # ceiling refuses are never written to the transcript: an
@@ -1401,7 +1508,7 @@ class AgentOrchestrator:
         call a tool but botched the format (wrong tool name, broken JSON, a
         truncated block). Rather than surface that markup as the final answer we
         drop it, nudge the model toward the proper format, and let the loop run
-        another step. Bounded by ``_MAX_TOOL_FORMAT_RETRIES`` so a model that
+        another step. Bounded by ``_MAX_FAILED_ATTEMPTS`` so a model that
         cannot comply still terminates with a best-effort reply.
         """
         if response.tool_calls:
@@ -1414,8 +1521,9 @@ class AgentOrchestrator:
         # the standard correction asks for something impossible and the model
         # can only print the markup again. Tell it once that the tools are off
         # and let it answer in prose; a second attempt buys nothing.
-        ceiling = _MAX_TOOL_FORMAT_RETRIES if state.step_offered_tools else 1
-        if state.tool_format_retries >= ceiling:
+        if not state.step_offered_tools and state.tool_format_retries >= 1:
+            return False
+        if state.failures >= _MAX_FAILED_ATTEMPTS:
             return False
         if state.tool_format_retries == 0 and state.step_offered_tools:
             # Learn from the first botched format this turn, not every retry.
@@ -1432,6 +1540,7 @@ class AgentOrchestrator:
                 ),
             )
         state.tool_format_retries += 1
+        state.failures += 1
         # Do not persist the malformed markup as the assistant turn; only keep
         # the correction so the next attempt is not anchored to broken output.
         # Not supplementary: re-issuing the call is the next step, not a detour
@@ -1447,8 +1556,8 @@ class AgentOrchestrator:
         await self.event_bus.emit(
             "tool.call.malformed",
             {
-                "attempt": state.tool_format_retries,
-                "max_attempts": ceiling,
+                "attempt": state.failures,
+                "max_attempts": _MAX_FAILED_ATTEMPTS,
             },
             source="core.orchestrator",
         )
@@ -1498,7 +1607,7 @@ class AgentOrchestrator:
 
         The announcement is kept as the assistant message it was, the model is
         told the call never landed, and the loop runs another step. Bounded by
-        ``_MAX_INTERRUPTED_CALL_RETRIES`` so a stream that keeps breaking still
+        ``_MAX_FAILED_ATTEMPTS`` so a stream that keeps breaking still
         terminates the turn with a best-effort reply instead of spinning.
 
         A response that reports ``STOP`` is left alone: it claims a clean prose
@@ -1512,9 +1621,9 @@ class AgentOrchestrator:
             return False
         if response.finish_reason == FinishReason.STOP:
             return False
-        if state.interrupted_call_retries >= _MAX_INTERRUPTED_CALL_RETRIES:
+        if state.failures >= _MAX_FAILED_ATTEMPTS:
             return False
-        state.interrupted_call_retries += 1
+        state.failures += 1
         state.tool_call_streaming = False
         if response.text:
             self.conversation.add_assistant(
@@ -1528,8 +1637,8 @@ class AgentOrchestrator:
         await self.event_bus.emit(
             "tool.call.interrupted",
             {
-                "attempt": state.interrupted_call_retries,
-                "max_attempts": _MAX_INTERRUPTED_CALL_RETRIES,
+                "attempt": state.failures,
+                "max_attempts": _MAX_FAILED_ATTEMPTS,
             },
             source="core.orchestrator",
         )
@@ -1578,7 +1687,7 @@ class AgentOrchestrator:
         ends — leaving the loop nothing to do, so the turn dies silently. Here we
         detect the truncation, record the lesson, and hand the model back its own
         truncated thinking plus a nudge to commit to one concrete action (and to
-        slice large file writes). Bounded by ``_MAX_BUDGET_RETRIES``.
+        slice large file writes). Bounded by ``_MAX_FAILED_ATTEMPTS``.
         """
         if response.text:
             # It produced a real answer; truncated or not, there is something to
@@ -1603,9 +1712,10 @@ class AgentOrchestrator:
             ),
         )
 
-        if state.budget_overflow_retries >= _MAX_BUDGET_RETRIES:
+        if state.failures >= _MAX_FAILED_ATTEMPTS:
             return False
         state.budget_overflow_retries += 1
+        state.failures += 1
         # It thought too much: the retry is the one step that must not think harder.
         state.think_hard = False
         self.conversation.add_user(
@@ -1617,8 +1727,8 @@ class AgentOrchestrator:
         await self.event_bus.emit(
             "model.budget_overflow",
             {
-                "attempt": state.budget_overflow_retries,
-                "max_attempts": _MAX_BUDGET_RETRIES,
+                "attempt": state.failures,
+                "max_attempts": _MAX_FAILED_ATTEMPTS,
                 "output_token_cap": request.max_output_tokens,
                 "output_tokens": response.usage.output_tokens if response.usage else None,
             },
@@ -2089,16 +2199,24 @@ class AgentOrchestrator:
         )
 
     # ------------------------------------------------------------------ #
-    # Model request with timeout + transient retry
+    # Model request with timeout + retry
     # ------------------------------------------------------------------ #
     async def _run_model_step(self, request: ModelRequest, state: _TurnState) -> ModelResponse:
-        attempts = 0
+        """One model response, retried through whatever goes wrong on the way.
+
+        Any failure - an HTTP error, a timeout, a stream that breaks halfway -
+        sends the request again after a backoff, until _MAX_FAILED_ATTEMPTS
+        retries have been spent on this response. Output a broken attempt
+        already streamed is taken back rather than kept as the answer.
+        """
         model_timeout = float(self.config.budgets.model_timeout())
         # From the first attempt: a retry sends the request again, it does not
         # give the user back the time already spent waiting for it.
         waiting_since = time.monotonic()
         while True:
             streamed: list[str] = []
+            state.attempt_emitted = False
+            state.step_streamed_answer = False
             try:
                 return await self._collect_model_response(
                     request,
@@ -2109,54 +2227,42 @@ class AgentOrchestrator:
                 )
             except CancellationError:
                 raise
-            except (TransientProviderError, TimeoutError) as exc:
-                if streamed:
-                    # Output already reached the user; salvage rather than replay.
-                    return ModelResponse(
-                        text="".join(streamed), finish_reason=FinishReason.UNKNOWN
-                    )
-                if attempts >= _MODEL_STEP_MAX_RETRIES:
-                    await self._emit_request_failed(exc)
-                    raise ProviderError(f"Model step failed after retries: {exc}") from exc
-                attempts += 1
-                await self.event_bus.emit(
-                    "model.request.retrying",
-                    {"attempt": attempts, "reason": type(exc).__name__},
-                    source="core.orchestrator",
-                )
-                await asyncio.sleep(min(2.0, 0.25 * (2**attempts)) + random.random() * 0.1)
-            except ImageLimitError as exc:
-                # The endpoint named its cap while refusing this request. Fit
-                # the conversation to it and send again: the pictures over the
-                # cap are worth losing, the turn is not.
-                if streamed:
-                    return ModelResponse(
-                        text="".join(streamed), finish_reason=FinishReason.UNKNOWN
-                    )
-                if await self._enforce_image_limit(exc.limit) or (
-                    await self._drop_unreadable_images()
-                ):
-                    attempts = 0
-                    continue
-                await self._emit_request_failed(exc)
-                raise
             except ToolCallingUnsupportedError:
                 # Not a failure: the endpoint just told us how it wants to be
                 # talked to. The loop rebuilds the step with the tools in the
                 # prompt instead, so this must not be reported as a dead request.
                 raise
-            except ProviderError as exc:
+            except Exception as exc:  # noqa: BLE001 - every failure gets its retries
+                failure = exc
+            if not state.attempt_emitted:
+                # The endpoint refused the images: fit the conversation to its
+                # cap, or drop the payload it could not read, and send again
+                # without spending a retry. The pictures are worth losing, the
+                # turn is not.
+                if isinstance(failure, ImageLimitError) and await self._enforce_image_limit(
+                    failure.limit
+                ):
+                    continue
+                if (
+                    isinstance(failure, ProviderError)
+                    and not isinstance(failure, TransientProviderError)
+                    and await self._drop_unreadable_images()
+                ):
+                    continue
+            if state.failures >= _MAX_FAILED_ATTEMPTS:
+                await self._emit_request_failed(failure)
                 if streamed:
+                    # Out of retries: what reached the user is the best there is.
                     return ModelResponse(
                         text="".join(streamed), finish_reason=FinishReason.UNKNOWN
                     )
-                if await self._drop_unreadable_images():
-                    # The payload the endpoint refused is gone; the same turn is
-                    # worth one more try as a text-only request.
-                    attempts = 0
-                    continue
-                await self._emit_request_failed(exc)
-                raise
+                reason = _failure_reason(failure, idle_timeout=model_timeout)
+                raise ProviderError(
+                    f"Model step failed after {_MAX_FAILED_ATTEMPTS} retries: {reason}"
+                ) from failure
+            await self._retry_after_failure(
+                failure, state, discarded=state.attempt_emitted, idle_timeout=model_timeout
+            )
 
     async def _enforce_image_limit(self, limit: int | None = None) -> bool:
         """Keep the conversation within the endpoint's images-per-request cap.
@@ -2293,6 +2399,8 @@ class AgentOrchestrator:
                 if idle_timeout is not None:
                     watchdog.reschedule(loop.time() + idle_timeout)
                 self._raise_if_cancelled(cancel_event)
+                if event.kind in _VISIBLE_OUTPUT_KINDS:
+                    state.attempt_emitted = True
                 if notice.pending and event.kind in _MODEL_OUTPUT_KINDS:
                     await notice.answered()
                 if event.kind == "text_delta":
@@ -2527,6 +2635,7 @@ class AgentOrchestrator:
                 {
                     "tool_call_id": call.id,
                     "name": call.name,
+                    "target": call_target(call.name, call.arguments),
                     "message": content,
                     "type": "EnvironmentUnavailableError",
                 },
@@ -2553,6 +2662,7 @@ class AgentOrchestrator:
                 {
                     "tool_call_id": call.id,
                     "name": call.name,
+                    "target": call_target(call.name, call.arguments),
                     "message": precondition_gap,
                     "type": "ToolPreconditionDeferred",
                 },
@@ -2600,6 +2710,7 @@ class AgentOrchestrator:
                 {
                     "tool_call_id": call.id,
                     "name": call.name,
+                    "target": call_target(call.name, call.arguments),
                     "message": authorization.reason,
                     "type": "ToolPolicyDenied" if policy_denied else "ToolApprovalDenied",
                 },
@@ -2632,7 +2743,15 @@ class AgentOrchestrator:
 
         await self.event_bus.emit(
             "tool.call.started",
-            {"tool_call_id": call.id, "name": call.name},
+            {
+                "tool_call_id": call.id,
+                "name": call.name,
+                "target": call_target(call.name, call.arguments),
+                # Whole, where the target may be shortened: the extension opens it.
+                "path": call.arguments.get("path")
+                if isinstance(call.arguments.get("path"), str)
+                else "",
+            },
             source="core.orchestrator",
         )
         try:
@@ -2660,7 +2779,12 @@ class AgentOrchestrator:
             )
             await self.event_bus.emit(
                 "tool.call.completed",
-                {"tool_call_id": call.id, "name": call.name, "result": payload},
+                {
+                    "tool_call_id": call.id,
+                    "name": call.name,
+                    "target": call_target(call.name, call.arguments),
+                    "result": payload,
+                },
                 source="core.orchestrator",
             )
             # The planner sees what the screenshot *was*, not just that there
@@ -2685,6 +2809,7 @@ class AgentOrchestrator:
                 {
                     "tool_call_id": call.id,
                     "name": call.name,
+                    "target": call_target(call.name, call.arguments),
                     "message": str(exc),
                     "type": type(exc).__name__,
                 },
@@ -2771,6 +2896,7 @@ class AgentOrchestrator:
             {
                 "tool_call_id": call.id,
                 "name": call.name,
+                "target": call_target(call.name, call.arguments),
                 "message": "completion rejected",
                 "missing_requirements": list(decision.missing_requirements),
                 "type": "CompletionRejected",

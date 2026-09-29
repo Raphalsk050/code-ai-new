@@ -10,9 +10,20 @@ export interface SessionState {
   heartbeat: number;
   /** True while the model request is queued at the provider. */
   modelWaiting: boolean;
+  /** Tools running right now, in the order they started. */
+  runningTools: RunningTool[];
+  /** "3/20" while a failed model request is being sent again, else "". */
+  retry: string;
   indexPhase: string;
   indexDone: number;
   indexTotal: number;
+}
+
+export interface RunningTool {
+  id: string;
+  name: string;
+  /** What it works on: the file, the command, the query. */
+  target: string;
 }
 
 export const initialSession: SessionState = {
@@ -23,27 +34,56 @@ export const initialSession: SessionState = {
   verification: "unknown",
   heartbeat: 0,
   modelWaiting: false,
+  runningTools: [],
+  retry: "",
   indexPhase: "",
   indexDone: 0,
   indexTotal: 0,
 };
 
-const TURN_OVER = new Set(["READY", "ERROR", "CANCELLED", "IDLE"]);
+const TURN_OVER = new Set(["READY", "ERROR", "FAILED", "CANCELLED", "IDLE", "CLOSED", "DISCONNECTED"]);
+// The model answering again, which ends a run of retries.
+const MODEL_OUTPUT = new Set([
+  "model.stream.delta",
+  "model.thinking.delta",
+  "model.response.completed",
+  "tool.call.progress",
+]);
 
 export function applySession(state: SessionState, event: EventEnvelope): SessionState {
   const p = event.payload ?? {};
+  if (state.retry && MODEL_OUTPUT.has(event.event_type)) state = { ...state, retry: "" };
   switch (event.event_type) {
     case "session.started":
       return { ...state, permissionMode: String(p.permission_mode ?? state.permissionMode) };
     case "status.changed": {
       const status = String(p.state ?? state.status);
+      const over = TURN_OVER.has(status);
       return {
         ...state,
         status,
-        heartbeat: TURN_OVER.has(status) ? 0 : state.heartbeat,
+        heartbeat: over ? 0 : state.heartbeat,
         modelWaiting: status === "CALLING_MODEL" ? state.modelWaiting : false,
+        runningTools: over ? [] : state.runningTools,
+        retry: over ? "" : state.retry,
       };
     }
+    case "tool.call.started":
+      return {
+        ...state,
+        runningTools: [
+          ...state.runningTools,
+          { id: String(p.tool_call_id ?? ""), name: String(p.name ?? "tool"), target: String(p.target ?? "") },
+        ],
+      };
+    case "tool.call.completed":
+    case "tool.call.failed": {
+      const id = String(p.tool_call_id ?? "");
+      const left = state.runningTools.filter((tool) => tool.id !== id);
+      return left.length === state.runningTools.length ? state : { ...state, runningTools: left };
+    }
+    case "model.request.retrying":
+      return { ...state, retry: `${p.attempt ?? "?"}/${p.max_attempts ?? "?"}` };
     case "turn.heartbeat":
       return { ...state, heartbeat: Number(p.elapsed_s ?? 0) };
     case "phase.changed":
@@ -64,7 +104,7 @@ export function applySession(state: SessionState, event: EventEnvelope): Session
     case "model.request.responding":
       return { ...state, modelWaiting: false };
     case "user.message":
-      return { ...state, heartbeat: 0 };
+      return { ...state, heartbeat: 0, runningTools: [], retry: "" };
     case "index.progress":
       return {
         ...state,

@@ -3,17 +3,26 @@ import * as React from "react";
 import { t, tf } from "./i18n";
 
 import {
+  IconAgents,
   IconBrain,
   IconCheck,
   IconChevron,
   IconCI,
+  IconFile,
+  IconGlobe,
+  IconList,
+  IconPencil,
+  IconSearch,
+  IconTerminal,
   IconTool,
   IconUser,
   IconWarn,
   IconX,
 } from "./icons";
 import { Markdown } from "./markdown";
+import type { SessionState } from "./store/session";
 import { Item, ToolStatus, workingLabel } from "./store/transcript";
+import { ToolKind, toolKind } from "./tool-target";
 
 export function ItemView({ item }: { item: Item }): JSX.Element | null {
   switch (item.kind) {
@@ -26,7 +35,9 @@ export function ItemView({ item }: { item: Item }): JSX.Element | null {
     case "thinking":
       return <ThinkingRow text={item.text} streaming={item.streaming} />;
     case "tool":
-      return <ToolRow name={item.name} status={item.status} detail={item.detail} />;
+      return (
+        <ToolRow name={item.name} target={item.target} status={item.status} detail={item.detail} />
+      );
     case "notice":
       return <NoticeRow level={item.level} text={item.text} />;
     default:
@@ -107,26 +118,52 @@ function ThinkingRow({ text, streaming }: { text: string; streaming?: boolean })
 }
 
 const STATUS_LABEL: Record<ToolStatus, string> = {
-  running: "rodando",
+  running: "running",
   done: "ok",
-  failed: "falhou",
+  failed: "failed",
 };
 
-function ToolRow({ name, status, detail }: { name: string; status: ToolStatus; detail: string }) {
+const KIND_ICON: Record<ToolKind, (props: { size?: number; className?: string }) => JSX.Element> = {
+  read: IconFile,
+  write: IconPencil,
+  run: IconTerminal,
+  search: IconSearch,
+  web: IconGlobe,
+  agent: IconAgents,
+  plan: IconList,
+  tool: IconTool,
+};
+
+function ToolRow(props: { name: string; target: string; status: ToolStatus; detail: string }) {
+  const { name, target, status } = props;
   const [open, setOpen] = React.useState(false);
+  // A write reports its path, which the target already shows.
+  const detail = props.detail === target ? "" : props.detail;
   const long = detail.length > 80 || detail.includes("\n");
+  const Kind = KIND_ICON[toolKind(name)];
   return (
     <div className={`tool tool-${status}`}>
       <div className="tool-head" onClick={() => long && setOpen((v) => !v)} style={{ cursor: long ? "pointer" : "default" }}>
         <span className="tool-icon">
           {status === "running" ? <span className="spinner" /> : status === "done" ? <IconCheck /> : <IconX />}
         </span>
-        <IconTool size={13} className="tool-wrench" />
+        <Kind size={13} className="tool-kind" />
         <span className="tool-name">{name}</span>
-        <span className={`tool-badge badge-${status}`}>{STATUS_LABEL[status]}</span>
-        {detail && !long && <span className="tool-detail-inline">{detail}</span>}
+        <span className={`tool-badge badge-${status}`}>{t(STATUS_LABEL[status])}</span>
         {long && <IconChevron size={13} className={`chev ${open ? "chev-open" : ""}`} />}
       </div>
+      {/* Its own row, so the file or command keeps the card's full width
+          instead of being squeezed to a few letters in a narrow panel. */}
+      {(target || (detail && !long)) && (
+        <div className="tool-sub">
+          {target && (
+            <span className="tool-target" title={target}>
+              {target}
+            </span>
+          )}
+          {detail && !long && <span className="tool-detail-inline">{detail}</span>}
+        </div>
+      )}
       {long && open && <pre className="tool-detail-block">{detail}</pre>}
     </div>
   );
@@ -142,14 +179,33 @@ function NoticeRow({ level, text }: { level: string; text: string }) {
   );
 }
 
-export function TypingIndicator({ status, heartbeat }: { status: string; heartbeat?: number }) {
+/**
+ * What the agent is doing, in words: the tool in hand and what it works on, a
+ * retry in progress, or the plain state.
+ */
+export function activityLabel(session: SessionState): string {
+  if (session.modelWaiting) return t("queued at the provider");
+  if (session.retry && session.status === "CALLING_MODEL") return tf("retrying {0}", session.retry);
+  const tools = session.runningTools;
+  if (session.status === "EXECUTING_TOOL" && tools.length === 1) {
+    const [tool] = tools;
+    return tf("running {0}", tool.name) + (tool.target ? ` · ${tool.target}` : "");
+  }
+  if (session.status === "EXECUTING_TOOL" && tools.length > 1) {
+    const names = [...new Set(tools.map((tool) => tool.name))].join(", ");
+    return `${tf("running {0} tools", tools.length)} · ${names}`;
+  }
+  return t(workingLabel(session.status));
+}
+
+export function TypingIndicator({ label, heartbeat }: { label: string; heartbeat?: number }) {
   return (
     <Row role="assistant" name="Code-AI" avatar={<IconCI size={15} />}>
       <div className="typing">
         <span />
         <span />
         <span />
-        <em>{workingLabel(status)}</em>
+        <em>{label}</em>
         {heartbeat ? <em className="typing-clock">· {formatElapsed(heartbeat)}</em> : null}
       </div>
     </Row>

@@ -4,7 +4,13 @@ import * as path from "path";
 import * as vscode from "vscode";
 
 import type { BridgeClient } from "./bridge-client";
-import { BridgeSession, syntheticError, syntheticNotice } from "./bridge-session";
+import {
+  BridgeSession,
+  StartReason,
+  syntheticError,
+  syntheticEvent,
+  syntheticNotice,
+} from "./bridge-session";
 import { createFlowFile, FlowEditorProvider } from "./flow-editor";
 import type {
   AppMode,
@@ -26,6 +32,13 @@ const MCP_REQUEST_TIMEOUT_MS = 60_000;
 // `budgets.model_timeout()` (180s by default). The client must wait at least
 // that long plus network/startup slack, so give these calls a generous ceiling.
 const AI_REQUEST_TIMEOUT_MS = 300_000;
+
+// A turn cut short by a dying backend is sent again, like any failed step: up
+// to 20 times, counted afresh whenever a model response lands.
+const MAX_TURN_RESENDS = 20;
+// Backend states that end a turn (synthetic DISCONNECTED does not: that is the
+// crash the turn has to survive).
+const TURN_ENDED = new Set(["READY", "FAILED", "CLOSED"]);
 
 export function activate(context: vscode.ExtensionContext): void {
   // One backend for the window. Both the chat panel and the orchestrator-graph
@@ -95,6 +108,11 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   private activeConversation?: string;
   /** Messages sent while the backend was down, delivered once it is back. */
   private pendingSubmits: Record<string, unknown>[] = [];
+  /** Messages whose turn has not ended. A backend that dies takes its turn
+   * with it, so these go out again once the replacement is up. */
+  private inFlight: Record<string, unknown>[] = [];
+  /** Times the running turn was sent again since a model response last landed. */
+  private resends = 0;
   private mode: AppMode = "agent";
   private autoRunRefactor = false;
   // Inline code hints (editor ghost text). Enabled state + model are mirrored
@@ -600,6 +618,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
             steer: message.steer === true,
           };
           if (client) {
+            this.inFlight.push(params);
             client.send("submitUserMessage", params);
             break;
           }
@@ -850,6 +869,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     // when the panel is closed and re-attaches when it is reopened.
     const bridgeSub = this.bridge.subscribe({
       onEvent: (event) => {
+        this.trackTurn(event);
         // An MCP sign-in: the page opens in the user's browser, the VS Code way,
         // so a remote window still reaches the machine the user sits at.
         // Web pages only: a command: or file: link here would run in the editor.
@@ -862,7 +882,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         // The restart re-read the config, so the hint state may have changed.
         this.refreshInlineSettings();
       },
-      onStarted: (client) => void this.resume(client),
+      onStarted: (client, reason) => void this.resume(client, reason),
     });
 
     view.onDidDispose(() => {
@@ -887,7 +907,11 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
    * at that thread first, then send what was typed while it was down, in that
    * order, so the message lands in the conversation it was written for.
    */
-  private async resume(client: BridgeClient): Promise<void> {
+  private async resume(client: BridgeClient, reason: StartReason): Promise<void> {
+    // Taken now: the new backend announces READY as it starts, which would
+    // otherwise clear the turn this is about to send again.
+    const interrupted = reason === "crash" ? this.inFlight.splice(0) : [];
+    this.inFlight = [];
     const id = this.activeConversation;
     if (id) {
       try {
@@ -896,8 +920,39 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         console.error("[code-ai] could not resume the conversation", err);
       }
     }
+    if (interrupted.length && this.resends < MAX_TURN_RESENDS) {
+      this.resends += 1;
+      for (const params of interrupted) {
+        void this.webview?.postMessage({
+          type: "event",
+          event: syntheticEvent("turn.resending", {
+            text: params.text,
+            attempt: this.resends,
+            max_attempts: MAX_TURN_RESENDS,
+          }),
+        });
+        this.inFlight.push(params);
+        client.send("submitUserMessage", params);
+      }
+    }
     const pending = this.pendingSubmits.splice(0);
-    for (const params of pending) client.send("submitUserMessage", params);
+    for (const params of pending) {
+      this.inFlight.push(params);
+      client.send("submitUserMessage", params);
+    }
+  }
+
+  /** Follow whether a turn is still running, for {@link resume}. */
+  private trackTurn(event: EventEnvelope): void {
+    if (event.source === "extension") return;
+    if (event.event_type === "model.response.completed") {
+      this.resends = 0;
+    } else if (
+      event.event_type === "status.changed" &&
+      TURN_ENDED.has(String(event.payload?.state ?? ""))
+    ) {
+      this.inFlight = [];
+    }
   }
 
   /**

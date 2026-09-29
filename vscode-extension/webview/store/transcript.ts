@@ -3,6 +3,8 @@
 // nothing else - the panels keep their own slices.
 
 import type { EventEnvelope, StoredMessage } from "../../src/protocol";
+import { tf } from "../i18n";
+import { callTarget } from "../tool-target";
 
 export type ToolStatus = "running" | "done" | "failed";
 export type NoticeLevel = "info" | "warning" | "error" | "plan" | "permission" | "success";
@@ -12,14 +14,26 @@ export type Item =
   | { kind: "assistant"; id: string; text: string; streaming: boolean }
   | { kind: "working"; id: string; text: string }
   | { kind: "thinking"; id: string; text: string; streaming?: boolean }
-  | { kind: "tool"; id: string; toolId: string; name: string; status: ToolStatus; detail: string }
+  | {
+      kind: "tool";
+      id: string;
+      toolId: string;
+      name: string;
+      /** What the call works on: the file, the command, the query. */
+      target: string;
+      status: ToolStatus;
+      detail: string;
+    }
   | { kind: "notice"; id: string; level: NoticeLevel; text: string };
 
 export interface TranscriptState {
   items: Item[];
+  /** Where the running model request's output starts, so a retry can take back
+   * what a broken attempt streamed. -1 when no request is running. */
+  requestStart: number;
 }
 
-export const initialTranscript: TranscriptState = { items: [] };
+export const initialTranscript: TranscriptState = { items: [], requestStart: -1 };
 
 const WORKING_STATES = new Set([
   "CALLING_MODEL",
@@ -154,6 +168,7 @@ export function messagesToItems(messages: StoredMessage[]): Item[] {
           id: nid(),
           toolId: call.id,
           name: call.name,
+          target: callTarget(call.arguments),
           status: "done",
           detail: "",
         });
@@ -174,16 +189,85 @@ export function messagesToItems(messages: StoredMessage[]): Item[] {
 }
 
 export function applyTranscript(state: TranscriptState, event: EventEnvelope): TranscriptState {
+  switch (event.event_type) {
+    case "conversation.reset":
+      return initialTranscript;
+    case "client.load":
+      return { items: (event.payload?.items as Item[]) ?? [], requestStart: -1 };
+    case "model.request.started":
+      return { ...state, requestStart: state.items.length };
+    case "model.request.retrying":
+      return applyRetry(state, event);
+    case "turn.resending":
+      return applyResend(state, event);
+  }
+  const next = applyItems(state, event);
+  return next === state || next.items === state.items ? state : { ...state, items: next.items };
+}
+
+/**
+ * A failed model request is being sent again. Whatever the broken attempt
+ * already streamed is not the answer, so it comes off the transcript, and the
+ * retries share one notice that counts up instead of stacking twenty.
+ */
+function applyRetry(state: TranscriptState, event: EventEnvelope): TranscriptState {
+  const p = event.payload ?? {};
+  let items = state.items;
+  if (p.discarded && state.requestStart >= 0 && state.requestStart <= items.length) {
+    items = items.slice(0, state.requestStart);
+  }
+  const delay = Number(p.delay_s ?? 0);
+  const wait = delay >= 1 ? " " + tf("in {0}s", Math.round(delay)) : "";
+  const reason = String(p.reason ?? "").trim();
+  const text =
+    tf("retrying {0}/{1}", Number(p.attempt ?? 0), Number(p.max_attempts ?? 0)) +
+    wait +
+    (reason ? ` — ${reason}` : "");
+  const notice: Item = { kind: "notice", id: "retry-" + event.event_id, level: "warning", text };
+  const last = items[items.length - 1];
+  items =
+    last && last.kind === "notice" && last.id.startsWith("retry-")
+      ? [...items.slice(0, -1), notice]
+      : [...items, notice];
+  return { ...state, items };
+}
+
+/**
+ * The backend died mid-turn and the extension is sending the message again.
+ * The cut-short turn comes off the transcript - the backend replays the
+ * message, bubble and all - and a notice says why the answer starts over.
+ */
+function applyResend(state: TranscriptState, event: EventEnvelope): TranscriptState {
+  const p = event.payload ?? {};
+  const text = String(p.text ?? "");
+  const items = state.items;
+  let cut = items.length;
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (it.kind === "user" && it.text === text) {
+      cut = i;
+      break;
+    }
+  }
+  const notice: Item = {
+    kind: "notice",
+    id: event.event_id,
+    level: "warning",
+    text: tf(
+      "The backend restarted mid-answer; sending your message again ({0}/{1})",
+      Number(p.attempt ?? 1),
+      Number(p.max_attempts ?? 1)
+    ),
+  };
+  return { items: [...items.slice(0, cut), notice], requestStart: -1 };
+}
+
+function applyItems(state: TranscriptState, event: EventEnvelope): Pick<TranscriptState, "items"> {
   const p = event.payload ?? {};
   const id = event.event_id;
   const items = state.items;
 
   switch (event.event_type) {
-    case "conversation.reset":
-      return { items: [] };
-    case "client.load":
-      return { items: (p.items as Item[]) ?? [] };
-
     case "user.message":
       return { items: push(items, { kind: "user", id, text: String(p.text ?? "") }) };
     case "user.message.queued":
@@ -288,6 +372,7 @@ export function applyTranscript(state: TranscriptState, event: EventEnvelope): T
           id,
           toolId: String(p.tool_call_id ?? id),
           name: String(p.name ?? "tool"),
+          target: String(p.target ?? ""),
           status: "running",
           detail: "",
         }),

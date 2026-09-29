@@ -34,6 +34,9 @@ export function applyCode(state: CodeStreamState, event: EventEnvelope): CodeStr
     case "conversation.reset":
     case "tool.call.interrupted":
       return state.visible ? initialCode : state;
+    case "model.request.retrying":
+      // The write it was showing belonged to the attempt that broke.
+      return p.discarded && state.visible ? initialCode : state;
     case "status.changed":
       // The turn ended, so nothing is being written any more: a finished file
       // left up would park over the answer the user is waiting for.

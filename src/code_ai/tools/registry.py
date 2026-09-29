@@ -4,7 +4,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
-from code_ai.core.errors import ToolArgumentError, ToolExecutionError
+from code_ai.core.errors import CodeAIError, ToolArgumentError, ToolExecutionError
 from code_ai.providers.models import ToolDefinition
 from code_ai.tools.base import BaseTool, ToolCapability, ToolContext
 from code_ai.util.fileio import describe_os_error
@@ -129,3 +129,9 @@ class ToolRegistry:
             raise ToolExecutionError(
                 f"{name} could not use the filesystem: {describe_os_error(exc)}{location}"
             ) from exc
+        except CodeAIError:
+            raise
+        except Exception as exc:
+            # Same for a bug inside the tool: the model reads what broke and can
+            # try another way, where a raw exception would end the conversation.
+            raise ToolExecutionError(f"{name} failed: {type(exc).__name__}: {exc}") from exc

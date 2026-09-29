@@ -20,9 +20,12 @@ export interface BridgeSubscriber {
   onEvent(event: EventEnvelope): void;
   /** The bridge was replaced; a view holding per-session state should drop it. */
   onRestart?(): void;
-  /** A backend process was just spawned, the first one or a replacement. */
-  onStarted?(client: BridgeClient): void;
+  /** A backend process was just spawned: the first one, one the user asked
+   * for, or one replacing a backend that died. */
+  onStarted?(client: BridgeClient, reason: StartReason): void;
 }
+
+export type StartReason = "first" | "restart" | "crash";
 
 /** How many stderr lines to keep, so a traceback survives whole. */
 const STDERR_TAIL = 40;
@@ -44,6 +47,8 @@ export class BridgeSession {
   /** When the backend died unasked, recently: what bounds the automatic restarts. */
   private crashes: number[] = [];
   private pendingRestart?: ReturnType<typeof setTimeout>;
+  /** Why the next backend is being started. */
+  private startReason: StartReason = "first";
 
   /** The live client, or `undefined` while the backend is down. */
   get client(): BridgeClient | undefined {
@@ -122,6 +127,7 @@ export class BridgeSession {
     // Asked for by the user: whatever crashed before starts from a clean slate.
     this.crashes = [];
     previous?.dispose();
+    this.startReason = "restart";
     this.broadcast(syntheticStatus("RECONNECTING"));
     this.broadcast(syntheticNotice("Restarting Code-AI to apply your settings…"));
     for (const subscriber of this.subscribers) subscriber.onRestart?.();
@@ -227,6 +233,7 @@ export class BridgeSession {
           this.pendingRestart = undefined;
           if (this.bridge) return;
           for (const subscriber of this.subscribers) subscriber.onRestart?.();
+          this.startReason = "crash";
           this.spawn();
         }, AUTO_RESTART_DELAY_MS);
         return;
@@ -242,9 +249,11 @@ export class BridgeSession {
           if (choice === "Show log") this.log?.show(true);
         });
     });
+    const reason = this.startReason;
+    this.startReason = "first";
     for (const subscriber of this.subscribers) {
       try {
-        subscriber.onStarted?.(client);
+        subscriber.onStarted?.(client, reason);
       } catch (err) {
         console.error("[code-ai] bridge subscriber failed on start", err);
       }
@@ -266,6 +275,10 @@ function ensureExecutable(file: string): void {
   } catch {
     // Read-only install or a vanished file: let the spawn report the real error.
   }
+}
+
+export function syntheticEvent(event_type: string, payload: Record<string, unknown>): EventEnvelope {
+  return { ...syntheticError(""), event_type, payload };
 }
 
 export function syntheticStatus(state: string): EventEnvelope {

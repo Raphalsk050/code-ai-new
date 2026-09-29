@@ -244,3 +244,24 @@ export const IconMap = ({ size = 16, className }: IconProps) => (
     <rect x="12" y="11" width="6" height="5" rx="1" />
   </svg>
 );
+
+export const IconSearch = ({ size = 16, className }: IconProps) => (
+  <svg {...base(size)} className={className}>
+    <circle cx="11" cy="11" r="7" />
+    <path d="M20 20l-3.5-3.5" />
+  </svg>
+);
+
+export const IconGlobe = ({ size = 16, className }: IconProps) => (
+  <svg {...base(size)} className={className}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" />
+  </svg>
+);
+
+export const IconPencil = ({ size = 16, className }: IconProps) => (
+  <svg {...base(size)} className={className}>
+    <path d="M17 3l4 4L8 20H4v-4z" />
+    <path d="M14 6l4 4" />
+  </svg>
+);

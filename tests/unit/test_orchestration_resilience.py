@@ -101,17 +101,30 @@ class PartialThenHangProvider(_BaseProvider):
         )
 
 
-async def test_model_timeout_salvages_streamed_text(tmp_path) -> None:
-    # Tight model timeout so the hang trips the guard quickly.
+async def test_a_stream_that_keeps_dying_is_retried_then_salvaged(
+    tmp_path, monkeypatch
+) -> None:
+    # Tight model timeout so the hang trips the guard quickly, and a short
+    # retry budget so the test does not sit through twenty of them.
+    monkeypatch.setattr(orchestration, "_MAX_FAILED_ATTEMPTS", 2)
     config = _config(tmp_path, budgets={"max_model_call_s": 1, "max_model_step_seconds": 1})
     provider = PartialThenHangProvider()
     app = build_application(config=config, provider=provider)
+    retries: list[dict] = []
+    app.subscribe(
+        lambda event: retries.append(event.payload)
+        if event.event_type == "model.request.retrying"
+        else None
+    )
 
     await app.start()
     result = await app.submit_user_message("Hello")
     await app.close()
 
-    # The turn must not crash; whatever streamed is salvaged.
+    # Each broken attempt is taken back and asked again; once the retries are
+    # spent, what streamed is the best there is.
+    assert [r["attempt"] for r in retries] == [1, 2]
+    assert all(r["discarded"] for r in retries)
     assert result.cancelled is False
     assert "partial answer" in result.text
 
@@ -378,6 +391,253 @@ async def test_provider_error_degrades_gracefully(tmp_path) -> None:
 
     assert result.error is not None
     assert "error" in events
+
+
+class FailsThenAnswersProvider(_BaseProvider):
+    """Refuses ``failures`` requests with a plain provider error, then answers."""
+
+    def __init__(self, failures: int) -> None:
+        self.failures = failures
+        self.attempts = 0
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.attempts += 1
+        if self.attempts <= self.failures:
+            raise ProviderError("Chat Completions request failed: Error code: 502")
+        yield ProviderEvent(kind="text_delta", text_delta="back")
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text="back", finish_reason=FinishReason.STOP),
+        )
+
+
+def _retries(app) -> list[dict]:
+    seen: list[dict] = []
+    app.subscribe(
+        lambda event: seen.append(event.payload)
+        if event.event_type == "model.request.retrying"
+        else None
+    )
+    return seen
+
+
+async def test_any_request_failure_is_retried_until_the_model_answers(tmp_path) -> None:
+    provider = FailsThenAnswersProvider(failures=5)
+    app = build_application(config=_config(tmp_path), provider=provider)
+    retries = _retries(app)
+
+    await app.start()
+    result = await app.submit_user_message("Hello")
+    await app.close()
+
+    assert result.text == "back"
+    assert result.error is None
+    assert provider.attempts == 6
+    assert [r["attempt"] for r in retries] == [1, 2, 3, 4, 5]
+    assert {r["max_attempts"] for r in retries} == {orchestration._MAX_FAILED_ATTEMPTS}
+    assert "502" in retries[0]["reason"]
+    assert not any(r["discarded"] for r in retries)
+
+
+async def test_a_turn_gives_up_on_a_response_after_twenty_retries(tmp_path) -> None:
+    limit = orchestration._MAX_FAILED_ATTEMPTS
+    provider = FailsThenAnswersProvider(failures=limit + 1)
+    app = build_application(config=_config(tmp_path), provider=provider)
+    events: list[str] = []
+    app.subscribe(lambda event: events.append(event.event_type))
+
+    await app.start()
+    result = await app.submit_user_message("Hello")
+    await app.close()
+
+    assert limit == 20
+    assert provider.attempts == limit + 1
+    assert events.count("model.request.retrying") == limit
+    assert "model.request.failed" in events
+    assert result.error is not None
+
+
+class FlakyBeforeEveryResponseProvider(_BaseProvider):
+    """Fails fifteen times before each response: a tool call, then an answer."""
+
+    def __init__(self) -> None:
+        self.attempts = 0
+        self.responses = 0
+        self.failures_left = 15
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.attempts += 1
+        if self.failures_left:
+            self.failures_left -= 1
+            raise ProviderError("backend is down")
+        self.failures_left = 15
+        self.responses += 1
+        if self.responses == 1:
+            yield ProviderEvent(
+                kind="completed",
+                response=ModelResponse(
+                    tool_calls=[
+                        ToolCall(id="r1", name="read_file", arguments={"path": "note.txt"})
+                    ],
+                    finish_reason=FinishReason.TOOL_CALLS,
+                ),
+            )
+            return
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text="read it", finish_reason=FinishReason.STOP),
+        )
+
+
+async def test_the_retry_budget_is_per_response_not_per_turn(tmp_path) -> None:
+    # Thirty failures in the turn, never twenty on one response: both land.
+    (tmp_path / "note.txt").write_text("hi\n", encoding="utf-8")
+    provider = FlakyBeforeEveryResponseProvider()
+    app = build_application(
+        config=_config(tmp_path, planner={"enabled": False}), provider=provider
+    )
+    retries = _retries(app)
+
+    await app.start()
+    result = await app.submit_user_message("read the note")
+    await app.close()
+
+    assert result.error is None
+    assert result.text == "read it"
+    assert provider.attempts == 32
+    # The count starts over for the second response.
+    assert [r["attempt"] for r in retries] == list(range(1, 16)) * 2
+
+
+class HalfAnswerThenDropProvider(_BaseProvider):
+    """The first stream dies halfway through the answer; the second completes."""
+
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.attempts += 1
+        if self.attempts == 1:
+            yield ProviderEvent(kind="text_delta", text_delta="Half an ans")
+            raise ProviderError("peer closed connection without sending complete body")
+        yield ProviderEvent(kind="text_delta", text_delta="The whole answer.")
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text="The whole answer.", finish_reason=FinishReason.STOP),
+        )
+
+
+async def test_a_broken_stream_is_asked_again_instead_of_kept(tmp_path) -> None:
+    provider = HalfAnswerThenDropProvider()
+    app = build_application(config=_config(tmp_path), provider=provider)
+    retries = _retries(app)
+
+    await app.start()
+    result = await app.submit_user_message("Hello")
+    await app.close()
+
+    assert result.text == "The whole answer."
+    # The half answer already on screen is taken back before the retry.
+    assert [r["discarded"] for r in retries] == [True]
+
+
+class BrokenTool:
+    name = "broken"
+    description = "A tool with a bug in it."
+    capabilities = frozenset({ToolCapability.LOCAL_READ})
+    input_schema = {"type": "object", "properties": {}, "additionalProperties": True}
+
+    async def execute(self, arguments: dict, context) -> dict:
+        raise KeyError("missing")
+
+
+class CallBrokenThenAnswerProvider(_BaseProvider):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        if self.calls == 1:
+            yield ProviderEvent(
+                kind="completed",
+                response=ModelResponse(
+                    tool_calls=[ToolCall(id="b1", name="broken", arguments={})],
+                    finish_reason=FinishReason.TOOL_CALLS,
+                ),
+            )
+            return
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text="worked around it", finish_reason=FinishReason.STOP),
+        )
+
+
+async def test_a_tool_that_crashes_fails_the_call_not_the_conversation(tmp_path) -> None:
+    provider = CallBrokenThenAnswerProvider()
+    app = build_application(
+        config=_config(tmp_path, planner={"enabled": False}), provider=provider
+    )
+    registry = ToolRegistry()
+    registry.register(BrokenTool())
+    app.orchestrator.tool_registry = registry
+
+    await app.start()
+    result = await app.submit_user_message("use the broken tool")
+    await app.close()
+
+    assert result.error is None
+    assert result.text == "worked around it"
+    # The model was handed the error as the call's result.
+    results = [m.content for m in app.orchestrator.conversation.messages if m.role == "tool"]
+    assert any("KeyError" in content for content in results)
+
+
+async def test_a_bug_mid_turn_is_retried_not_fatal(tmp_path, monkeypatch) -> None:
+    provider = FailsThenAnswersProvider(failures=0)
+    app = build_application(config=_config(tmp_path), provider=provider)
+    orchestrator = app.orchestrator
+    original = orchestrator._emit_response_completed
+    broken = {"left": 1}
+
+    async def flaky(response):
+        if broken["left"]:
+            broken["left"] -= 1
+            raise RuntimeError("bug in a hook")
+        await original(response)
+
+    monkeypatch.setattr(orchestrator, "_emit_response_completed", flaky)
+    retries = _retries(app)
+
+    await app.start()
+    result = await app.submit_user_message("Hello")
+    await app.close()
+
+    assert result.error is None
+    assert result.text == "back"
+    assert provider.attempts == 2
+    assert retries and "bug in a hook" in retries[0]["reason"]
+
+
+async def test_cancelling_during_a_retry_wait_ends_the_turn_at_once(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(orchestration, "_retry_delay", lambda attempt: 30.0)
+    provider = FailsThenAnswersProvider(failures=3)
+    app = build_application(config=_config(tmp_path), provider=provider)
+    waiting = asyncio.Event()
+    app.subscribe(
+        lambda event: waiting.set() if event.event_type == "model.request.retrying" else None
+    )
+
+    await app.start()
+    turn = asyncio.create_task(app.submit_user_message("Hello"))
+    await asyncio.wait_for(waiting.wait(), timeout=5)
+    await app.cancel_current_turn()
+    result = await asyncio.wait_for(turn, timeout=5)
+    await app.close()
+
+    assert result.cancelled is True
+    assert provider.attempts == 1
 
 
 class AlwaysReadsProvider(_BaseProvider):
@@ -1195,7 +1455,8 @@ async def test_tool_call_cut_off_mid_stream_is_reissued(tmp_path) -> None:
     result = await app.submit_user_message("implement app.py")
     await app.close()
 
-    assert "tool.call.interrupted" in events
+    # The broken stream is sent again from scratch rather than salvaged.
+    assert "model.request.retrying" in events
     assert provider.calls == 3
     # The write actually happened, and the announcement is not the answer.
     assert (tmp_path / "app.py").read_text() == "x = 1\n"
@@ -1291,8 +1552,9 @@ async def test_repeatedly_lost_tool_call_stops_re_prompting(tmp_path) -> None:
     result = await app.submit_user_message("write app.py")
     await app.close()
 
-    assert events.count("tool.call.interrupted") == 2
-    assert provider.calls == 3
+    limit = orchestration._MAX_FAILED_ATTEMPTS
+    assert events.count("tool.call.interrupted") == limit
+    assert provider.calls == limit + 1
     assert result.text == "Writing it now."
 
 

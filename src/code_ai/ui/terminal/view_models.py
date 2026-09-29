@@ -25,6 +25,11 @@ _INDEX_BAR_CELLS = 24
 _STREAMING_EVENTS = frozenset({"model.stream.delta", "model.thinking.delta"})
 # Server log levels loud enough for the transcript; the rest stay on /mcp.
 _LOUD_MCP_LOGS = frozenset({"warning", "error", "critical", "alert", "emergency"})
+# Events that mean the model is answering again, so a retry is over.
+_MODEL_OUTPUT_EVENTS = frozenset(
+    {"model.stream.delta", "model.thinking.delta", "model.response.completed", "tool.call.progress"}
+)
+_RETRY_PREFIX = "model> retrying "
 
 
 def _elicitation_text(payload: dict[str, Any]) -> str:
@@ -106,6 +111,11 @@ class TerminalViewModel:
     # The server has not started on the current model request past the notice
     # threshold; the working indicator says so instead of "calling model".
     model_waiting: bool = False
+    # Tools running right now, by call id: the name and what it works on, so
+    # the working indicator can say which tool rather than "running tools".
+    running_tools: dict[str, tuple[str, str]] = field(default_factory=dict)
+    # "retrying 3/20" while a failed model request is being sent again.
+    retry_note: str = ""
     # Live sub-agent activity, keyed by agent_id and kept in dispatch order, so
     # the AGENTS panel can show what each delegated agent is doing right now.
     # Reset at the start of every user turn so a prior turn's agents never linger.
@@ -151,6 +161,12 @@ class TerminalViewModel:
     # The line the current model request opened, so a queue wait can be noted
     # on it instead of costing a line of its own.
     _model_line: str = ""
+    # Where the output of the model request in flight starts, so a retry can
+    # take back what a broken attempt streamed.
+    _request_start: int = -1
+    # The lowest line the transcript was cut back to since the screen last
+    # caught up (see ``take_rewind``).
+    _rewound_to: int | None = None
     _stream_parts: list[str] = field(default_factory=list, repr=False)
     _stream_chars: int = 0
 
@@ -177,11 +193,16 @@ class TerminalViewModel:
     def apply(self, event: EventEnvelope) -> None:
         if event.event_type not in _STREAMING_EVENTS:
             self.flush_stream()
+        if self.retry_note and event.event_type in _MODEL_OUTPUT_EVENTS:
+            self.retry_note = ""
         if event.event_type == "status.changed":
             self.status = str(event.payload.get("state", self.status))
             if self.status != "CALLING_MODEL":
                 self.model_waiting = False
             if self.status in _TURN_OVER_STATES:
+                self.running_tools.clear()
+                self.retry_note = ""
+                self._request_start = -1
                 # The turn is over, so nothing is being written any more. Leaving
                 # the window up parked a finished file over the conversation
                 # until the next prompt, pushing the answer the user was waiting
@@ -289,6 +310,9 @@ class TerminalViewModel:
             self.plan_visible = False
             self.plan_steps = []
             self.clear_code_stream()
+            self.running_tools.clear()
+            self.retry_note = ""
+            self._request_start = -1
             # A question from a previous turn that was never answered is stale:
             # this message is the user moving on, whatever it says.
             self.pending_questions = []
@@ -314,6 +338,9 @@ class TerminalViewModel:
             self._model_line = f"model> thinking{suffix}..."
             self.model_waiting = False
             self.conversation.append(self._model_line)
+            self._request_start = len(self.conversation)
+        elif event.event_type == "model.request.retrying":
+            self._apply_retry(event.payload)
         elif event.event_type == "model.request.waiting":
             self.model_waiting = True
             waited = _format_wait(event.payload.get("waited_s"))
@@ -356,12 +383,22 @@ class TerminalViewModel:
             self.conversation.append(
                 f"tool> call was cut off mid-stream, asking again ({attempt}/{total})"
             )
+        elif event.event_type == "tool.call.started":
+            # No line yet: the working indicator names the running tool, and
+            # the one line per call is written when it lands.
+            name = str(event.payload.get("name") or "")
+            self.running_tools[_call_key(event.payload)] = (
+                name,
+                str(event.payload.get("target") or ""),
+            )
         elif event.event_type == "tool.call.completed":
             # One line per tool call, written when it lands. The request and
             # the start used to get a line each, so every call read as three
             # lines of the same name; the status bar already says a tool is
             # running, and the result is the part worth a line.
             name = str(event.payload.get("name") or "")
+            self.running_tools.pop(_call_key(event.payload), None)
+            target = str(event.payload.get("target") or "")
             result = event.payload.get("result")
             detail = ""
             if isinstance(result, dict):
@@ -383,13 +420,17 @@ class TerminalViewModel:
                 # The write landed: stop the live window claiming it is still
                 # being typed, even if the stream never marked it complete.
                 self.code_stream_complete = True
-            self.conversation.append(f"tool> {name}{detail}")
+            if target and detail.removeprefix(": ") == target:
+                detail = ""
+            self.conversation.append(f"tool> {name}{_with_target(target)}{detail}")
         elif event.event_type == "tool.call.failed":
             name = event.payload.get("name")
             message = event.payload.get("message", "")
+            self.running_tools.pop(_call_key(event.payload), None)
+            target = _with_target(str(event.payload.get("target") or ""))
             if name == self.code_stream_tool:
                 self.code_stream_complete = True
-            self.conversation.append(f"tool> {name} failed: {message}")
+            self.conversation.append(f"tool> {name}{target} failed: {message}")
         elif event.event_type.startswith("subagent."):
             self._apply_subagent_event(event)
         elif event.event_type == "model.request.failed":
@@ -641,6 +682,64 @@ class TerminalViewModel:
             self.conversation.append(self._bound_command_tail(merged, prefix))
         else:
             self.conversation.append(self._bound_command_tail(prefix + text, prefix))
+
+    def _apply_retry(self, payload: dict[str, Any]) -> None:
+        """A failed model request is being sent again: say so, on one line.
+
+        A broken attempt may already have streamed part of an answer or of its
+        reasoning. That is not the answer, so it comes off the transcript
+        before the next attempt streams its own.
+        """
+
+        if payload.get("discarded") and 0 <= self._request_start <= len(self.conversation):
+            if self._request_start < len(self.conversation):
+                del self.conversation[self._request_start :]
+                self._mark_rewound(self._request_start)
+            self.clear_code_stream()
+        attempt = payload.get("attempt")
+        total = payload.get("max_attempts")
+        self.retry_note = f"retrying {attempt}/{total}"
+        delay = payload.get("delay_s")
+        wait = f" in {delay:g}s" if isinstance(delay, int | float) and delay >= 1 else ""
+        reason = str(payload.get("reason") or "").strip()
+        line = f"{_RETRY_PREFIX}{attempt}/{total}{wait}" + (f": {reason}" if reason else "")
+        # One line for the whole run of retries, rewritten in place: it is the
+        # last line while the retries go on, so it is still in the live tail.
+        if self.conversation and self.conversation[-1].startswith(_RETRY_PREFIX):
+            self.conversation[-1] = line
+        else:
+            self.conversation.append(line)
+
+    def _mark_rewound(self, index: int) -> None:
+        self._rewound_to = index if self._rewound_to is None else min(self._rewound_to, index)
+
+    def take_rewind(self) -> int | None:
+        """The line the transcript was cut back to since last asked, if any.
+
+        The screen mounts transcript lines once and never looks at them again,
+        so a cut has to be handed over explicitly: everything mounted from this
+        index on is gone from the transcript.
+        """
+
+        rewound, self._rewound_to = self._rewound_to, None
+        return rewound
+
+    def working_activity(self) -> str:
+        """What the working indicator says beyond the state: a retry, or the
+        tool running and what it works on. "" when the state says it all."""
+
+        if self.retry_note and self.status == "CALLING_MODEL":
+            return self.retry_note
+        if self.status != "EXECUTING_TOOL":
+            return ""
+        tools = list(self.running_tools.values())
+        if not tools:
+            return ""
+        if len(tools) == 1:
+            name, target = tools[0]
+            return f"running {name}" + (f" · {target}" if target else "")
+        names = ", ".join(dict.fromkeys(name for name, _ in tools))
+        return f"running {len(tools)} tools · {names}"
 
     def _note_model_wait(self, note: str) -> None:
         # On the request's own line while it is still the last one: the live
@@ -910,6 +1009,15 @@ def _subagent_progress_detail(payload: dict[object, object]) -> str:
     if event == "model.response.completed":
         return "thinking"
     return tool or "working"
+
+
+def _call_key(payload: dict[str, Any]) -> str:
+    return str(payload.get("tool_call_id") or payload.get("name") or "")
+
+
+def _with_target(target: str) -> str:
+    """The call's target as it follows the tool name on its line."""
+    return f" {target}" if target else ""
 
 
 def _web_search_detail(result: dict[object, object]) -> str:

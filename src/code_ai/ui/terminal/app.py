@@ -72,6 +72,7 @@ from code_ai.ui.terminal.widgets import (
     render_subagent_task,
     render_subagents_summary,
     render_terminal_screen,
+    render_working_label,
     resolve_spinner,
     spinner_color,
     subagent_task_preview,
@@ -606,10 +607,9 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             seconds = int(now - self._start)
             text = Text()
             text.append(glyph, style=f"bold {color}")
-            text.append(
-                f"  {self._label} ({seconds}s · ctrl+c to interrupt)",
-                style=working_label_style(),
-            )
+            text.append("  ")
+            text.append_text(render_working_label(self._label))
+            text.append(f" ({seconds}s · ctrl+c to interrupt)", style=working_label_style())
             self.update(text)
 
         def _render_idle(self) -> None:
@@ -1381,6 +1381,16 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             convo = self.vm.conversation
             log = self.query_one("#conversation", VerticalScroll)
             tail = self.query_one("#stream-tail", Static)
+
+            rewound = self.vm.take_rewind()
+            if rewound is not None and rewound < self._committed:
+                # A retry took back what a broken attempt streamed: unmount the
+                # newest lines, the ones no longer in the transcript.
+                gone = self._committed - rewound
+                children = list(log.children)
+                for child in children[max(0, len(children) - gone) :]:
+                    child.remove()
+                self._committed = rewound
 
             if self._committed > len(convo):
                 # The buffer shrank (only happens on clear, which also resets the
@@ -2460,7 +2470,12 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 self.query_one("#session-info", Static).update(session_text)
             working = self.vm.status in WORKING_STATES
             self.query_one("#working-indicator", WorkingIndicator).set_running(
-                working, working_label(self.vm.status, waiting=self.vm.model_waiting)
+                working,
+                working_label(
+                    self.vm.status,
+                    waiting=self.vm.model_waiting,
+                    activity=self.vm.working_activity(),
+                ),
             )
             # The right sidebar shows only while there is a plan and/or live
             # sub-agents; each panel toggles on its own so one can show without
