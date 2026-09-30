@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 33,
-  "patch": 2,
-  "build": 67,
+  "patch": 3,
+  "build": 68,
   "updated": "2026-09-29",
-  "note": "Sandbox bytecode test ignores the shell"
+  "note": "New activity bar icon"
 }
