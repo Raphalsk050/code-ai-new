@@ -44,6 +44,20 @@ export function groupBlocks(items: readonly Item[]): Block[] {
   return blocks;
 }
 
+/**
+ * Whether an agent block ends on a finished answer: the model had the last
+ * word, with at most quiet notes after it. A tool, more reasoning or a warning
+ * after the answer means the turn went on, or went wrong.
+ */
+export function endsOnAnswer(block: Block): boolean {
+  let answered = false;
+  for (const item of block.items) {
+    if (item.kind === "assistant") answered = !item.streaming;
+    else if (item.kind !== "notice" || item.level === "error" || item.level === "warning") answered = false;
+  }
+  return answered;
+}
+
 /** Where a user block sits, in the same coordinates as the viewport's top. */
 export interface Span {
   top: number;

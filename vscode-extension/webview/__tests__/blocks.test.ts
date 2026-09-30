@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { agentKey, blockToPin, groupBlocks } from "../blocks";
+import { agentKey, blockToPin, endsOnAnswer, groupBlocks } from "../blocks";
 import type { Item } from "../store/transcript";
 
 const user = (id: string): Item => ({ kind: "user", id, text: id });
@@ -9,7 +9,10 @@ const said = (id: string): Item => ({ kind: "assistant", id, text: id, streaming
 const tool = (id: string): Item => ({
   kind: "tool", id, toolId: id, name: "read_file", target: "", path: "", status: "done", detail: "",
 });
-const notice = (id: string): Item => ({ kind: "notice", id, level: "info", text: id });
+const notice = (id: string, level: "info" | "success" | "warning" | "error" = "info"): Item => ({
+  kind: "notice", id, level, text: id,
+});
+const agentBlock = (...items: Item[]) => groupBlocks(items)[0];
 
 test("a run from one side is one block, and everything the agent does is its side", () => {
   const blocks = groupBlocks([user("u1"), user("u2"), tool("t1"), said("a1"), notice("n1"), user("u3")]);
@@ -61,4 +64,14 @@ test("the next request coming up to the top takes over from the pin", () => {
   ];
   assert.equal(blockToPin(spans, 860, 56), -1, "request 2 is 40px from the top");
   assert.equal(blockToPin(spans, 830, 56), 0, "request 2 is 70px down: still request 1's answer");
+});
+
+test("a turn is done when the model had the last word, quiet notes aside", () => {
+  assert.equal(endsOnAnswer(agentBlock(tool("t1"), said("a1"))), true);
+  assert.equal(endsOnAnswer(agentBlock(said("a1"), notice("n1", "success"))), true, "an index note after");
+  assert.equal(endsOnAnswer(agentBlock(said("a1"), tool("t2"))), false, "a tool after: it went on");
+  assert.equal(endsOnAnswer(agentBlock(said("a1"), notice("n1", "error"))), false, "an error after");
+  assert.equal(endsOnAnswer(agentBlock(tool("t1"))), false, "no answer at all");
+  const streaming: Item = { kind: "assistant", id: "a2", text: "still typ", streaming: true };
+  assert.equal(endsOnAnswer(agentBlock(streaming)), false, "the answer is still coming");
 });

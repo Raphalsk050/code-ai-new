@@ -52,7 +52,7 @@ import { mergeStatus } from "./mcp-form";
 import { INITIAL_MCP, McpViewState } from "./mcp-settings";
 import { MentionMenu } from "./mention-menu";
 import { applyMention, mentionPrefix, rankPaths } from "./mentions";
-import { agentKey, Block, groupBlocks } from "./blocks";
+import { agentKey, Block, endsOnAnswer, groupBlocks } from "./blocks";
 import { activityLabel, BlockView, formatElapsed, TypingIndicator } from "./messages";
 import { PromptPin, usePromptPin } from "./prompt-pin";
 import { ModeSwitch } from "./mode-switch";
@@ -89,6 +89,10 @@ function clientEvent(event_type: string, payload: Record<string, any> = {}): Eve
 }
 
 type Screen = "home" | "chat" | "settings";
+
+// Backend states a turn ends well in; ERROR, FAILED and CANCELLED end it too,
+// but not with an answer worth marking done.
+const SETTLED = new Set(["READY", "IDLE"]);
 
 function App(): JSX.Element {
   const [state, dispatch] = React.useReducer(applyEvent, initialAppState);
@@ -824,6 +828,10 @@ function App(): JSX.Element {
       </>
     ) : null;
   const lastBlock = blocks[blocks.length - 1];
+  // All over, and well: the backend is idle again, nothing waits on the user,
+  // and the agent's last box ends on its answer. That box goes green.
+  const settled = SETTLED.has(state.session.status) && !live;
+  const done = settled && lastBlock?.speaker === "agent" && endsOnAnswer(lastBlock);
   const shownBlocks: Block[] =
     live && lastBlock?.speaker !== "agent"
       ? [...blocks, { speaker: "agent", key: agentKey(lastBlock?.key ?? ""), items: [] }]
@@ -950,6 +958,7 @@ function App(): JSX.Element {
                         block={block}
                         avatar={avatar.src}
                         avatarProblem={avatar.problem}
+                        done={done && block === lastBlock}
                         onOpenDiff={editorDiff ? openDiff : undefined}
                       >
                         {i === shownBlocks.length - 1 && block.speaker === "agent" ? live : null}

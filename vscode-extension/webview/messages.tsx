@@ -37,6 +37,7 @@ export function BlockView({
   block,
   avatar,
   avatarProblem,
+  done,
   onOpenDiff,
   children,
 }: {
@@ -45,6 +46,8 @@ export function BlockView({
   avatar?: string;
   /** Why there is no picture, shown on the icon's hover. */
   avatarProblem?: string;
+  /** The turn is over and this box holds its answer: it turns green. */
+  done?: boolean;
   onOpenDiff?: (path: string) => void;
   children?: React.ReactNode;
 }): JSX.Element {
@@ -52,7 +55,7 @@ export function BlockView({
   const last = block.items[block.items.length - 1];
   return (
     <section
-      className={`block block-${block.speaker}`}
+      className={`block block-${block.speaker}${done ? " block-done" : ""}`}
       data-user-block={user ? block.key : undefined}
       data-last-message={user ? last?.id : undefined}
     >

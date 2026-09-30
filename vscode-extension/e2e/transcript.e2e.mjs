@@ -262,6 +262,58 @@ export const tests = {
     assert(seen[seen.length - 1] === "Request 2", `ends on ${seen[seen.length - 1]}: ${seen.join(" -> ")}`);
   },
 
+  async "the last box turns green once the turn is over, and only then"(ui, assert) {
+    await openChat(ui);
+    await ui.fromHost(envelope("client.load", { items: exchange(1, 1) }));
+    const green = () => ui.page.$$eval(".block", (all) => all.map((b) => b.classList.contains("block-done")));
+    assert(!(await green()).some(Boolean), "green before the backend said the turn was over");
+
+    await ui.fromHost(envelope("status.changed", { state: "READY" }));
+    let marks = await green();
+    assert(marks[marks.length - 1] && marks.filter(Boolean).length === 1, `after READY: ${marks}`);
+    await settle(ui, 400); // past the colour transition
+    const rgb = await ui.page.$eval(".block-done", (b) => getComputedStyle(b).borderTopColor);
+    // color-mix answers color(srgb r g b) in 0-1; rgb() in 0-255.
+    const scale = rgb.startsWith("color(") ? 255 : 1;
+    const [r, g, b] = rgb.match(/[\d.]+/g).map((n) => Number(n) * scale);
+    assert(g > r + 30 && g > b, `the done box is not green: ${rgb}`);
+    await ui.shot("transcript-done");
+
+    // The next request takes the green away; the new answer earns it back.
+    await ui.fromHost(envelope("user.message", { text: "Request 2: and the tests?" }));
+    await ui.fromHost(envelope("status.changed", { state: "CALLING_MODEL" }));
+    await ui.fromHost(envelope("model.stream.delta", { channel: "answer", text: "Running them." }));
+    assert(!(await green()).some(Boolean), "green while the agent is still working");
+    await ui.fromHost(envelope("assistant.final", { text: "All 12 tests pass." }));
+    await ui.fromHost(envelope("status.changed", { state: "READY" }));
+    marks = await green();
+    assert(marks.length === 4 && marks[3] && !marks[1], `after the second turn: ${marks}`);
+
+    await ui.page.addStyleTag({
+      content: `:root {
+        --vscode-foreground: #3b3b3b; --vscode-editor-background: #ffffff;
+        --vscode-editorWidget-background: #f8f8f8; --vscode-panel-border: #e5e5e5;
+        --vscode-descriptionForeground: #616161; --vscode-textLink-foreground: #005fb8;
+        --vscode-input-background: #ffffff; --vscode-input-border: #cecece;
+        --vscode-testing-iconPassed: #388a34;
+      }`,
+    });
+    await settle(ui, 400);
+    await ui.shot("transcript-done-light");
+  },
+
+  async "a turn that ends in an error or a cancel is not marked done"(ui, assert) {
+    await openChat(ui);
+    const failed = { kind: "notice", id: "e1", level: "error", text: "model request failed: 502" };
+    await ui.fromHost(envelope("client.load", { items: [...exchange(1, 1), failed] }));
+    await ui.fromHost(envelope("status.changed", { state: "READY" }));
+    assert(!(await ui.page.$(".block-done")), "an answer followed by an error is not done");
+
+    await ui.fromHost(envelope("client.load", { items: exchange(2, 1) }));
+    await ui.fromHost(envelope("status.changed", { state: "CANCELLED" }));
+    assert(!(await ui.page.$(".block-done")), "a cancelled turn is not done");
+  },
+
   async "the user's GitHub picture stands in for the icon, and a broken one falls back"(ui, assert) {
     await openChat(ui);
     await ui.fromHost(envelope("client.load", { items: exchange(1, 1) }));

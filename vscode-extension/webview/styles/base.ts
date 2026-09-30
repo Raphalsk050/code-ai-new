@@ -7,6 +7,8 @@ export const STYLE = `
   --surface: var(--vscode-editorWidget-background, rgba(127,127,127,0.08));
   --border: var(--vscode-panel-border, rgba(127,127,127,0.25));
   --muted: var(--vscode-descriptionForeground, rgba(127,127,127,0.9));
+  /* The green the tool cards already use for "ok", from the user's theme. */
+  --success: var(--vscode-testing-iconPassed, #2ea043);
   --radius: 10px;
 }
 
@@ -114,6 +116,14 @@ body {
 .block {
   margin: 0 0 12px; padding: 9px 12px 11px; min-width: 0;
   border: 1px solid var(--border); border-radius: var(--radius);
+  transition: border-color var(--dur-slow) var(--ease-out), background-color var(--dur-slow) var(--ease-out);
+}
+/* The turn is over and ended on an answer: its box turns green, so "it is all
+   done" needs no reading. Only the last one - the next request takes it away. */
+.block-agent.block-done {
+  border-color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 65%, var(--border));
+  background-color: color-mix(in srgb, var(--success) 7%, transparent);
 }
 .block-user {
   width: fit-content; max-width: min(85%, 620px); margin-left: auto;
