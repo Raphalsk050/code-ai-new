@@ -198,11 +198,13 @@ jobs:
             python:3.12-bullseye \
             python scripts/build_mac_bundle.py --out out
 
+      # Only for the vsix job, which packs it into the Mac downloads.
       - uses: actions/upload-artifact@v3
         with:
-          name: code-ai-mac-bundle-v${{ env.CODE_AI_VERSION }}
+          name: internal-mac-bundle-v${{ env.CODE_AI_VERSION }}
           path: out/code-ai-mac-*.tar.gz
           if-no-files-found: error
+          retention-days: 1
 
   # ---- the same two binaries, on a GitHub-hosted runner --------------------
   # Only these mention v4, and they are skipped unless the dropdown asks for
@@ -315,11 +317,13 @@ jobs:
             python:3.12-bullseye \
             python scripts/build_mac_bundle.py --out out
 
+      # Only for the vsix job, which packs it into the Mac downloads.
       - uses: actions/upload-artifact@v4
         with:
-          name: code-ai-mac-bundle-v${{ env.CODE_AI_VERSION }}
+          name: internal-mac-bundle-v${{ env.CODE_AI_VERSION }}
           path: out/code-ai-mac-*.tar.gz
           if-no-files-found: error
+          retention-days: 1
 
   # ---- the VSCode extension ------------------------------------------------
   # One VSIX per platform, each carrying the binary built above, so installing
@@ -362,7 +366,7 @@ jobs:
       - uses: actions/download-artifact@v3
         if: needs.macos.result == 'success'
         with:
-          name: code-ai-mac-bundle-v${{ env.CODE_AI_VERSION }}
+          name: internal-mac-bundle-v${{ env.CODE_AI_VERSION }}
           path: out
 
       # Node comes from the same container pattern as the binaries: the runner
@@ -397,27 +401,63 @@ jobs:
                 $CODE_AI_MAC_ARGS
             '
 
-      - name: Stage artifact
+      # One artifact per platform, so a download holds only what it is for.
+      - name: Stage artifacts
         run: |
           mkdir -p out/vsix out/mac
           for vsix in vscode-extension/vsix/*.vsix; do
             target="${vsix##*-$CODE_AI_VERSION-}"
-            cp "$vsix" "out/vsix/code-ai-vscode-v$CODE_AI_VERSION-$target"
+            target="${target%.vsix}"
+            mkdir -p "out/vsix/$target"
+            cp "$vsix" "out/vsix/$target/code-ai-vscode-v$CODE_AI_VERSION-$target.vsix"
           done
-          cp vscode-extension/vsix/code-ai-mac-*.sh out/mac/ 2>/dev/null || true
-          ls -l out/vsix out/mac
+          for arch in arm64 x64; do
+            installer="vscode-extension/vsix/code-ai-mac-$arch-v$CODE_AI_VERSION.sh"
+            if [ -f "$installer" ]; then
+              mkdir -p "out/mac/$arch"
+              cp "$installer" "out/mac/$arch/"
+            fi
+          done
+          find out/vsix out/mac -type f | sort
 
       - uses: actions/upload-artifact@v3
         with:
-          name: code-ai-vscode-v${{ env.CODE_AI_VERSION }}
-          path: out/vsix/*.vsix
+          name: code-ai-vscode-v${{ env.CODE_AI_VERSION }}-win32-x64
+          path: out/vsix/win32-x64/*.vsix
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: code-ai-vscode-v${{ env.CODE_AI_VERSION }}-linux-x64
+          path: out/vsix/linux-x64/*.vsix
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v3
         if: steps.package.outputs.mac == 'true'
         with:
-          name: code-ai-mac-v${{ env.CODE_AI_VERSION }}
-          path: out/mac/*.sh
+          name: code-ai-vscode-v${{ env.CODE_AI_VERSION }}-darwin-arm64
+          path: out/vsix/darwin-arm64/*.vsix
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v3
+        if: steps.package.outputs.mac == 'true'
+        with:
+          name: code-ai-vscode-v${{ env.CODE_AI_VERSION }}-darwin-x64
+          path: out/vsix/darwin-x64/*.vsix
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v3
+        if: steps.package.outputs.mac == 'true'
+        with:
+          name: code-ai-mac-arm64-v${{ env.CODE_AI_VERSION }}
+          path: out/mac/arm64/*.sh
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v3
+        if: steps.package.outputs.mac == 'true'
+        with:
+          name: code-ai-mac-x64-v${{ env.CODE_AI_VERSION }}
+          path: out/mac/x64/*.sh
           if-no-files-found: error
 
   vsix-public:
@@ -453,7 +493,7 @@ jobs:
       - uses: actions/download-artifact@v4
         if: needs.macos-public.result == 'success'
         with:
-          name: code-ai-mac-bundle-v${{ env.CODE_AI_VERSION }}
+          name: internal-mac-bundle-v${{ env.CODE_AI_VERSION }}
           path: out
 
       - uses: actions/setup-node@v4
@@ -480,27 +520,63 @@ jobs:
             --win "../out/code-ai-win-v$CODE_AI_VERSION.exe" \
             $mac_args
 
-      - name: Stage artifact
+      # One artifact per platform, so a download holds only what it is for.
+      - name: Stage artifacts
         run: |
           mkdir -p out/vsix out/mac
           for vsix in vscode-extension/vsix/*.vsix; do
             target="${vsix##*-$CODE_AI_VERSION-}"
-            cp "$vsix" "out/vsix/code-ai-vscode-v$CODE_AI_VERSION-$target"
+            target="${target%.vsix}"
+            mkdir -p "out/vsix/$target"
+            cp "$vsix" "out/vsix/$target/code-ai-vscode-v$CODE_AI_VERSION-$target.vsix"
           done
-          cp vscode-extension/vsix/code-ai-mac-*.sh out/mac/ 2>/dev/null || true
-          ls -l out/vsix out/mac
+          for arch in arm64 x64; do
+            installer="vscode-extension/vsix/code-ai-mac-$arch-v$CODE_AI_VERSION.sh"
+            if [ -f "$installer" ]; then
+              mkdir -p "out/mac/$arch"
+              cp "$installer" "out/mac/$arch/"
+            fi
+          done
+          find out/vsix out/mac -type f | sort
 
       - uses: actions/upload-artifact@v4
         with:
-          name: code-ai-vscode-v${{ env.CODE_AI_VERSION }}
-          path: out/vsix/*.vsix
+          name: code-ai-vscode-v${{ env.CODE_AI_VERSION }}-win32-x64
+          path: out/vsix/win32-x64/*.vsix
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: code-ai-vscode-v${{ env.CODE_AI_VERSION }}-linux-x64
+          path: out/vsix/linux-x64/*.vsix
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
         if: steps.package.outputs.mac == 'true'
         with:
-          name: code-ai-mac-v${{ env.CODE_AI_VERSION }}
-          path: out/mac/*.sh
+          name: code-ai-vscode-v${{ env.CODE_AI_VERSION }}-darwin-arm64
+          path: out/vsix/darwin-arm64/*.vsix
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: steps.package.outputs.mac == 'true'
+        with:
+          name: code-ai-vscode-v${{ env.CODE_AI_VERSION }}-darwin-x64
+          path: out/vsix/darwin-x64/*.vsix
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: steps.package.outputs.mac == 'true'
+        with:
+          name: code-ai-mac-arm64-v${{ env.CODE_AI_VERSION }}
+          path: out/mac/arm64/*.sh
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: steps.package.outputs.mac == 'true'
+        with:
+          name: code-ai-mac-x64-v${{ env.CODE_AI_VERSION }}
+          path: out/mac/x64/*.sh
           if-no-files-found: error
 
   # ---- the Mac check -----------------------------------------------------------
@@ -524,7 +600,12 @@ jobs:
 
       - uses: actions/download-artifact@v3
         with:
-          name: code-ai-mac-v${{ needs.vsix.outputs.version }}
+          name: code-ai-mac-arm64-v${{ needs.vsix.outputs.version }}
+          path: out
+
+      - uses: actions/download-artifact@v3
+        with:
+          name: code-ai-mac-x64-v${{ needs.vsix.outputs.version }}
           path: out
 
       - name: Install and start each build
@@ -541,7 +622,12 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: code-ai-mac-v${{ needs.vsix-public.outputs.version }}
+          name: code-ai-mac-arm64-v${{ needs.vsix-public.outputs.version }}
+          path: out
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: code-ai-mac-x64-v${{ needs.vsix-public.outputs.version }}
           path: out
 
       - name: Install and start each build
@@ -586,13 +672,36 @@ jobs:
 
       - uses: actions/download-artifact@v3
         with:
-          name: code-ai-vscode-v${{ env.CODE_AI_VERSION }}
+          name: code-ai-vscode-v${{ env.CODE_AI_VERSION }}-win32-x64
+          path: out
+
+      - uses: actions/download-artifact@v3
+        with:
+          name: code-ai-vscode-v${{ env.CODE_AI_VERSION }}-linux-x64
           path: out
 
       - uses: actions/download-artifact@v3
         if: needs.vsix.outputs.mac == 'true'
         with:
-          name: code-ai-mac-v${{ env.CODE_AI_VERSION }}
+          name: code-ai-vscode-v${{ env.CODE_AI_VERSION }}-darwin-arm64
+          path: out
+
+      - uses: actions/download-artifact@v3
+        if: needs.vsix.outputs.mac == 'true'
+        with:
+          name: code-ai-vscode-v${{ env.CODE_AI_VERSION }}-darwin-x64
+          path: out
+
+      - uses: actions/download-artifact@v3
+        if: needs.vsix.outputs.mac == 'true'
+        with:
+          name: code-ai-mac-arm64-v${{ env.CODE_AI_VERSION }}
+          path: out
+
+      - uses: actions/download-artifact@v3
+        if: needs.vsix.outputs.mac == 'true'
+        with:
+          name: code-ai-mac-x64-v${{ env.CODE_AI_VERSION }}
           path: out
 
       - name: Leave out a macOS build the Mac turned down
@@ -652,13 +761,36 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: code-ai-vscode-v${{ env.CODE_AI_VERSION }}
+          name: code-ai-vscode-v${{ env.CODE_AI_VERSION }}-win32-x64
+          path: out
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: code-ai-vscode-v${{ env.CODE_AI_VERSION }}-linux-x64
           path: out
 
       - uses: actions/download-artifact@v4
         if: needs.vsix-public.outputs.mac == 'true'
         with:
-          name: code-ai-mac-v${{ env.CODE_AI_VERSION }}
+          name: code-ai-vscode-v${{ env.CODE_AI_VERSION }}-darwin-arm64
+          path: out
+
+      - uses: actions/download-artifact@v4
+        if: needs.vsix-public.outputs.mac == 'true'
+        with:
+          name: code-ai-vscode-v${{ env.CODE_AI_VERSION }}-darwin-x64
+          path: out
+
+      - uses: actions/download-artifact@v4
+        if: needs.vsix-public.outputs.mac == 'true'
+        with:
+          name: code-ai-mac-arm64-v${{ env.CODE_AI_VERSION }}
+          path: out
+
+      - uses: actions/download-artifact@v4
+        if: needs.vsix-public.outputs.mac == 'true'
+        with:
+          name: code-ai-mac-x64-v${{ env.CODE_AI_VERSION }}
           path: out
 
       - name: Leave out a macOS build the Mac turned down

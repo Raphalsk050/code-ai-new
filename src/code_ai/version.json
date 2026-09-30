@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 33,
-  "patch": 0,
-  "build": 65,
+  "patch": 1,
+  "build": 66,
   "updated": "2026-09-29",
-  "note": "Git branch shown in the TUI and VS Code"
+  "note": "One CI artifact per platform"
 }
