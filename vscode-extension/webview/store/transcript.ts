@@ -347,6 +347,16 @@ function applyItems(state: TranscriptState, event: EventEnvelope): Pick<Transcri
       return state;
     }
 
+    // The reply began inside a think block the prompt opened: what streamed as
+    // the answer was thinking, and streams again as such.
+    case "model.reasoning.recovered": {
+      const last = items[items.length - 1];
+      if (last && (last.kind === "assistant" || last.kind === "working")) {
+        return { items: items.slice(0, -1) };
+      }
+      return state;
+    }
+
     // Reasoning is over the moment the model answers or asks for a tool.
     case "model.response.completed":
       return { items: settleThinking(items) };

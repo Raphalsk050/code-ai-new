@@ -2576,6 +2576,29 @@ async def test_reasoning_streams_into_its_own_panel_not_loose_on_screen(tmp_path
         assert "here is the answer" in str(terminal_app.query_one("#stream-tail", Static).render())
 
 
+async def test_thinking_that_streamed_as_the_answer_moves_into_the_panel(tmp_path) -> None:
+    # Qwen3.8's template opens the think block in the prompt: without a server
+    # reasoning parser the thinking streams as the answer until a bare </think>,
+    # and the orchestrator then takes it back and sends it again as thinking.
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async with terminal_app.run_test(size=(120, 40)) as pilot:
+        await fake_app.emit("user.message", {"text": "go"})
+        await fake_app.emit("status.changed", {"state": "CALLING_MODEL"})
+        await fake_app.emit("model.stream.delta", {"text": "weighing the options"})
+        await pilot.pause(0.2)
+        await fake_app.emit("model.reasoning.recovered", {})
+        await fake_app.emit("model.thinking.delta", {"text": "weighing the options"})
+        await pilot.pause(0.2)
+
+        panel = terminal_app.query_one("#thinking-panel", Static)
+        assert panel.display is True
+        assert "weighing the options" in str(panel.render())
+        assert str(terminal_app.query_one("#stream-tail", Static).render()) == ""
+        assert not any(line.startswith("ai> ") for line in terminal_app.vm.conversation)
+
+
 async def test_thinking_panel_shows_only_the_rows_it_can_fit(tmp_path) -> None:
     # A reasoning block has no natural length. The panel is a fixed-height box,
     # so it renders only its newest rows however long the model reasons — that

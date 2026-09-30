@@ -371,6 +371,12 @@ class TerminalViewModel:
                     self.conversation[-1] = f"ai> {cleaned}"
                 else:
                     self.conversation.pop()
+        elif event.event_type == "model.reasoning.recovered":
+            # The reply began inside a think block the prompt opened, so what
+            # streamed as the answer was thinking; it streams again as such.
+            if self.conversation and self.conversation[-1].startswith(("ai> ", "working> ")):
+                self.conversation.pop()
+                self._mark_rewound(len(self.conversation))
         elif event.event_type == "tool.call.progress":
             self._apply_tool_progress(event.payload)
         elif event.event_type == "command.output":

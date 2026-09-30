@@ -252,6 +252,24 @@ test("reasoning streams into one open block while the model thinks", () => {
   assert.equal((last as { streaming?: boolean }).streaming, true);
 });
 
+test("an answer that turns out to be thinking moves into the reasoning block", () => {
+  // Qwen3.8's template opens the think block in the prompt: without a server
+  // reasoning parser the thinking streams as the answer until a bare </think>.
+  const state = feed([
+    ["user.message", { text: "oi" }],
+    ["model.stream.delta", { text: "O usuario quer um oi." }],
+    ["model.reasoning.recovered", {}],
+    ["model.thinking.delta", { text: "O usuario quer um oi." }],
+    ["model.stream.delta", { text: "Oi!" }],
+  ]);
+  const items = state.transcript.items;
+  assert.deepEqual(
+    items.map((item) => item.kind),
+    ["user", "thinking", "assistant"],
+  );
+  assert.equal((items[2] as { text: string }).text, "Oi!");
+});
+
 test("the reasoning block closes itself when the model answers", () => {
   const state = feed([
     ["model.thinking.delta", { text: "hmm" }],

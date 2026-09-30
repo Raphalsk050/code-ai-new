@@ -23,9 +23,21 @@ the answer channel, where the normal tool-call recovery picks it up.
 References:
 - https://allanchan339.github.io/bug-fixes/2026/05/02/Qwen36-27B-updated-jinja.html
 - https://github.com/vllm-project/vllm/issues/31871
+
+A block the prompt opened
+-------------------------
+Qwen3.6+ templates end the prompt with ``<think>\n``, so the reply starts
+mid-thought and only ever *closes* the block. Without a reasoning parser on the
+server the text arrives as plain content: ``reasoning</think>answer``. A close
+tag with no open before it means exactly that, so the filter reads everything
+up to it again as reasoning (see ``rerouted``). A caller that knows the server
+does this passes ``opened=True`` and the reasoning is routed right from the
+first token.
 """
 
 from __future__ import annotations
+
+from code_ai.providers.models import ModelResponse
 
 # Open/close tag pairs we recognise. ``<thinking>`` is a common variant.
 _THINK_OPEN = ("<think>", "<thinking>")
@@ -36,21 +48,42 @@ _TOOL_OPEN = ("<tool_call>", "<function=", "```tool_call")
 
 
 class ReasoningTagFilter:
-    """Stateful splitter for inline ``<think>`` reasoning in a token stream."""
+    """Stateful splitter for inline ``<think>`` reasoning in a token stream.
 
-    __slots__ = ("_in_think", "_held")
+    ``opened`` starts it inside a think block, for a template that opened one
+    in the prompt.
+    """
 
-    def __init__(self) -> None:
-        self._in_think = False
+    __slots__ = ("_in_think", "_held", "_unsettled", "_rerouted")
+
+    def __init__(self, *, opened: bool = False) -> None:
+        self._in_think = opened
         self._held = ""
+        # The raw text read before any think tag, while a close tag can still
+        # turn all of it into reasoning. None once a tag settles it.
+        self._unsettled: list[str] | None = None if opened else []
+        self._rerouted = False
 
     @property
     def in_think(self) -> bool:
         """Whether the stream is currently inside a ``<think>`` block."""
         return self._in_think
 
+    @property
+    def rerouted(self) -> bool:
+        """Whether the last ``feed`` met a close tag nothing had opened.
+
+        The reply began inside a block the prompt opened, so that call's output
+        covers the whole reply again from its first token: the answer text the
+        earlier calls returned was reasoning, and is void.
+        """
+        return self._rerouted
+
     def feed(self, delta: str) -> tuple[str, str]:
         """Consume ``delta``; return ``(answer_text, reasoning_text)``."""
+        self._rerouted = False
+        if self._unsettled is not None:
+            self._unsettled.append(delta)
         buffer = self._held + delta
         self._held = ""
         answer: list[str] = []
@@ -67,8 +100,11 @@ class ReasoningTagFilter:
             action, marker = self._classify(candidate)
             if action == "enter":
                 self._in_think = True
+                self._unsettled = None
                 buffer = candidate[len(marker):]
             elif action == "close":
+                if self._unsettled is not None:
+                    return self._reread_as_opened()
                 # A real </think> (or a stray one seen outside a block): drop it.
                 self._in_think = False
                 buffer = candidate[len(marker):]
@@ -95,6 +131,7 @@ class ReasoningTagFilter:
         happened to end the stream) is ordinary answer text and dropping it
         visibly truncates the reply.
         """
+        self._rerouted = False
         held = self._held
         self._held = ""
         if held and self._in_think:
@@ -102,6 +139,14 @@ class ReasoningTagFilter:
         if held and len(held) <= 2:
             return held, ""
         return "", ""
+
+    def _reread_as_opened(self) -> tuple[str, str]:
+        again = ReasoningTagFilter(opened=True)
+        answer, reasoning = again.feed("".join(self._unsettled or ()))
+        self._in_think, self._held = again._in_think, again._held
+        self._unsettled = None
+        self._rerouted = True
+        return answer, reasoning
 
     def _classify(self, candidate: str) -> tuple[str, str]:
         """Classify text starting at '<'/'`' into an action and the marker hit."""
@@ -134,15 +179,31 @@ def _is_prefix(candidate: str, markers: tuple[str, ...]) -> bool:
     return any(marker.startswith(candidate) for marker in markers)
 
 
-def split_reasoning_tags(text: str) -> tuple[str, str]:
+def split_reasoning_tags(text: str, *, opened: bool = False) -> tuple[str, str]:
     """Split a complete ``text`` into ``(answer, reasoning)``.
 
-    A cheap no-op when the text holds no ``<think>`` markup, so it is safe to run
-    on every finished response regardless of provider.
+    A cheap no-op when the text holds no think markup and nothing opened a
+    block before it, so it is safe to run on every finished response
+    regardless of provider.
     """
-    if not text or "<think" not in text.lower():
+    lowered = text.lower() if text else ""
+    if not opened and "<think" not in lowered and "</think" not in lowered:
         return text, ""
-    flt = ReasoningTagFilter()
+    flt = ReasoningTagFilter(opened=opened)
     answer, reasoning = flt.feed(text)
     answer_tail, reasoning_tail = flt.flush()
     return answer + answer_tail, reasoning + reasoning_tail
+
+
+def settle_reasoning(response: ModelResponse) -> ModelResponse:
+    """Move reasoning a finished response carried inline out of its text.
+
+    For the callers of ``complete()``: from a template that opens the think
+    block, a summary or a commit message was the model's thinking, with the
+    answer somewhere after a stray ``</think>``.
+    """
+    answer, reasoning = split_reasoning_tags(response.text)
+    response.text = answer
+    if reasoning and not response.reasoning:
+        response.reasoning = reasoning
+    return response

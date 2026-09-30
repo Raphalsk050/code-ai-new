@@ -622,6 +622,11 @@ class AgentOrchestrator:
         # not of the request, so probing again every step would just buy
         # the same 400 over and over.
         self._text_tools_forced = False
+        # Models whose template opens the think block in the prompt, learned
+        # from a reply that closed a block it never opened (see
+        # ReasoningTagFilter). Their next replies route reasoning from the
+        # first token instead of streaming it as the answer first.
+        self._thinking_opened: set[str] = set()
         # Groups the host cannot serve (backend missing, wrong platform), with
         # the reason. Withdrawn from the request for the session: the same
         # error came back four times running when the model was left to retry.
@@ -2350,6 +2355,12 @@ class AgentOrchestrator:
             )
         return dropped
 
+    def _thinking_opens_in_prompt(self, request: ModelRequest) -> bool:
+        # With thinking switched off the template closes the block itself.
+        return request.model in self._thinking_opened and not self.config.sampling.thinking_off(
+            request.reasoning_effort
+        )
+
     async def _collect_model_response(
         self,
         request: ModelRequest,
@@ -2365,13 +2376,17 @@ class AgentOrchestrator:
         # Two streaming guards on the visible text: peel inline <think> reasoning
         # off into the thinking channel, then hold any embedded tool-call markup
         # back from the chat. Both keep the full text flowing for recovery.
-        reasoning_filter = ReasoningTagFilter()
+        opened = self._thinking_opens_in_prompt(request)
+        reasoning_filter = ReasoningTagFilter(opened=opened)
         text_filter = ToolCallStreamFilter()
+        text_seen = shown = False
 
         async def _emit_visible_answer(answer: str) -> None:
+            nonlocal shown
             streamed_sink.append(answer)
             visible = text_filter.feed(answer)
             if visible:
+                shown = True
                 await self._emit_text_delta(visible, state)
 
         # Per-index decoding/throttling state, so a streaming tool call reports
@@ -2409,7 +2424,22 @@ class AgentOrchestrator:
                 if notice.pending and event.kind in _MODEL_OUTPUT_KINDS:
                     await notice.answered()
                 if event.kind == "text_delta":
+                    text_seen = True
                     answer, thought = reasoning_filter.feed(event.text_delta)
+                    if reasoning_filter.rerouted:
+                        # The template opened the think block in the prompt, so
+                        # what streamed as the answer so far was thinking: take it
+                        # back, and route this model's next replies from the start.
+                        opened = True
+                        self._thinking_opened.add(request.model)
+                        streamed_sink.clear()
+                        text_filter = ToolCallStreamFilter()
+                        state.step_streamed_answer = False
+                        if shown:
+                            shown = False
+                            await self.event_bus.emit(
+                                "model.reasoning.recovered", {}, source="core.orchestrator"
+                            )
                     if thought:
                         reasoning_parts.append(thought)
                         await self._emit_reasoning_delta(thought)
@@ -2429,6 +2459,12 @@ class AgentOrchestrator:
                 await self._emit_provider_event(event)
                 if event.kind == "reasoning_delta":
                     reasoning_parts.append(event.reasoning_delta)
+                    if opened and not text_seen:
+                        # The server splits the reasoning out itself after all,
+                        # so the text is all answer.
+                        opened = False
+                        self._thinking_opened.discard(request.model)
+                        reasoning_filter = ReasoningTagFilter()
                 elif event.kind == "completed" and event.response:
                     completed = event.response
 
@@ -2461,7 +2497,20 @@ class AgentOrchestrator:
             state.tool_call_streaming = False
         # Strip any <think> block the provider left inline so reasoning never
         # pollutes the answer, conversation history, or tool-call recovery.
-        answer, inline_reasoning = split_reasoning_tags(completed.text)
+        answer, inline_reasoning = split_reasoning_tags(completed.text, opened=opened)
+        if (
+            opened
+            and not answer
+            and reasoning_filter.in_think
+            and not completed.tool_calls
+            and completed.finish_reason is not FinishReason.LENGTH
+        ):
+            # Never closed, no call, not cut short: this reply did not think at
+            # all (thinking switched off somewhere this side cannot see), so
+            # what went to the thinking channel was the answer.
+            self._thinking_opened.discard(request.model)
+            answer, inline_reasoning = completed.text, ""
+            reasoning_parts.clear()
         completed.text = answer
         if inline_reasoning and not completed.reasoning:
             completed.reasoning = inline_reasoning

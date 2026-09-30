@@ -26,6 +26,7 @@ from code_ai.providers.openai_completions import (
     _looks_like_sampling_error,
     _usage_from_object,
 )
+from code_ai.providers.reasoning import settle_reasoning
 from code_ai.providers.translation import object_get, parse_arguments, tools_to_responses
 
 
@@ -188,7 +189,7 @@ class OpenAIResponsesProvider:
             )
         elif not completed.text:
             completed.text = "".join(text_parts)
-        return completed
+        return settle_reasoning(completed)
 
     async def _stream_with_retry(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
         attempts = 0

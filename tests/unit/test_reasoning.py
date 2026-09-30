@@ -103,11 +103,13 @@ def test_self_heal_marker_split_across_deltas() -> None:
     assert reasoning == "plan "
 
 
-def test_stray_close_tag_outside_block_is_dropped() -> None:
+def test_a_close_tag_nothing_opened_ends_the_thinking_before_it() -> None:
+    # A template that opens the block in the prompt (Qwen3.6+) sends the
+    # thinking as plain text up to a bare </think>.
     answer, reasoning = _stream(["leftover </think> text"])
 
-    assert answer == "leftover  text"
-    assert reasoning == ""
+    assert answer == " text"
+    assert reasoning == "leftover "
 
 
 def test_split_reasoning_tags_whole_text() -> None:

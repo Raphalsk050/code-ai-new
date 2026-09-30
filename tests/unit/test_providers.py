@@ -893,6 +893,21 @@ def _reasoning_chunk(field: str) -> dict[str, object]:
     return {"usage": None, "choices": [{"finish_reason": None, "delta": {field: "hmm"}}]}
 
 
+async def test_chat_completions_complete_takes_the_thinking_out_of_the_text() -> None:
+    # Qwen3.8's template opens the think block in the prompt: without a server
+    # reasoning parser a summary came back as thinking, </think>, then summary.
+    chunks = [
+        {"usage": None, "choices": [{"finish_reason": None, "delta": {"content": piece}}]}
+        for piece in ("Vou resumir ", "o que importa.\n", "</think>\n\n", "# Resumo")
+    ]
+    provider = _chat_provider(chunks)
+
+    response = await provider.complete(_chat_request())
+
+    assert response.text.strip() == "# Resumo"
+    assert response.reasoning == "Vou resumir o que importa.\n"
+
+
 async def test_chat_completions_replays_reasoning_under_the_field_it_streamed() -> None:
     provider = _chat_provider([_reasoning_chunk("reasoning")])
     sent = _record_create(provider._client.chat.completions)

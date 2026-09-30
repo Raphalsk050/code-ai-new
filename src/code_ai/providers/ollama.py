@@ -18,6 +18,7 @@ from code_ai.providers.models import (
     TokenUsage,
     ToolCall,
 )
+from code_ai.providers.reasoning import settle_reasoning
 from code_ai.providers.translation import (
     normalize_chat_messages,
     parse_arguments,
@@ -247,7 +248,7 @@ class NativeOllamaProvider:
             completed = ModelResponse(text="".join(text_parts), raw_provider_name="ollama")
         elif not completed.text:
             completed.text = "".join(text_parts)
-        return completed
+        return settle_reasoning(completed)
 
     async def close(self) -> None:
         await self._client.aclose()
