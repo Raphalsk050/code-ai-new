@@ -321,18 +321,33 @@ export const tests = {
 
     // No picture: the icon stays, and says why on hover.
     const why = "no login for github.sec.samsung.net on this machine";
-    await ui.fromHost({ type: "profile", login: "", name: "", avatar: "", problem: why });
+    await ui.fromHost({ type: "profile", login: "", name: "", avatar: "", problem: why, signIn: false });
     const title = await ui.page.getAttribute(".block-user .avatar-user", "title");
     assert(title && title.includes(why), `the icon's hover says ${title}`);
+    assert(!(await ui.page.$(".block-user .avatar-sign-in")), "no button when a sign-in cannot help");
 
-    await ui.fromHost({ type: "profile", login: "rafael", name: "Rafael", avatar: PNG, problem: "" });
+    // Private mode: only a browser session sees the picture, and a click opens one.
+    const browserOnly = "the picture at https://ghe/avatars/u/7 led to the sign-in page";
+    await ui.fromHost({
+      type: "profile", login: "rafael", name: "Rafael", avatar: "", problem: browserOnly, signIn: true,
+    });
+    const button = await ui.page.waitForSelector(".block-user button.avatar-sign-in");
+    assert((await button.getAttribute("title")).includes(browserOnly), "the hover still says why");
+    await ui.shot("transcript-avatar-sign-in");
+    await button.click();
+    assert((await ui.toHost("avatarSignIn")).length === 1, "the click asks the host to open the browser");
+    await ui.page.waitForSelector(".block-user .avatar-sign-in.avatar-pending:disabled");
+    await ui.fromHost({ type: "profile", login: "rafael", name: "Rafael", avatar: PNG, problem: "", signIn: false });
+    await ui.page.waitForSelector(".block-user img.avatar-photo");
+
+    await ui.fromHost({ type: "profile", login: "rafael", name: "Rafael", avatar: PNG, problem: "", signIn: false });
     await ui.page.waitForSelector(".block-user img.avatar-photo");
     await ui.shot("transcript-avatar");
 
-    await ui.fromHost({ type: "profile", login: "rafael", name: "Rafael", avatar: "https://example.com/a.png", problem: "" });
+    await ui.fromHost({ type: "profile", login: "rafael", name: "Rafael", avatar: "https://example.com/a.png", problem: "", signIn: false });
     assert(await ui.page.$(".block-user .avatar-user svg"), "only a data: image is taken");
 
-    await ui.fromHost({ type: "profile", login: "rafael", name: "Rafael", avatar: "data:image/png;base64,AAAA", problem: "" });
+    await ui.fromHost({ type: "profile", login: "rafael", name: "Rafael", avatar: "data:image/png;base64,AAAA", problem: "", signIn: false });
     await ui.page.waitForSelector(".block-user .avatar-user svg");
   },
 };

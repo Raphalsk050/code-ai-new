@@ -84,6 +84,7 @@ export type BridgeMethod =
   | "signInForUpdates"
   | "downloadUpdate"
   | "getProfile"
+  | "signInForPicture"
   | "shutdown";
 
 /** Bridge methods whose whole answer is a listing to show the user. */
@@ -341,8 +342,15 @@ export type HostToWebview =
   /** Signed in and nothing newer: the button goes away. */
   | { type: "updateCleared" }
   /** Who is signed in on the releases host; `avatar` is a data: URI, and
-   * `problem` says why there is none. */
-  | { type: "profile"; login: string; name: string; avatar: string; problem: string };
+   * `problem` says why there is none. `signIn`: a browser sign-in can fetch it. */
+  | {
+      type: "profile";
+      login: string;
+      name: string;
+      avatar: string;
+      problem: string;
+      signIn: boolean;
+    };
 
 export type UpdateState =
   | "available"
@@ -409,4 +417,6 @@ export type WebviewToHost =
   | { type: "openDiff"; path: string }
   | { type: "installUpdate" }
   | { type: "signInForUpdates" }
+  /** Open the browser window that fetches the GitHub picture after a sign-in. */
+  | { type: "avatarSignIn" }
   | { type: "reloadWindow" };

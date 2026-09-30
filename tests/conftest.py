@@ -47,11 +47,12 @@ def _isolate_other_agents(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _no_release_lookups(monkeypatch):
+def _no_release_lookups(monkeypatch, tmp_path):
     """No test asks GitHub for releases or profiles; the ones about updates stub
     their own.
 
-    Nor does any read the developer's own logins: no gh, no git credentials.
+    Nor does any read the developer's own logins: no gh, no git credentials -
+    nor open a browser for a picture, nor keep one in the real home.
     """
 
     async def nothing(**_kwargs):
@@ -59,6 +60,10 @@ def _no_release_lookups(monkeypatch):
 
     monkeypatch.setattr(updates, "newest_release", nothing)
     monkeypatch.setattr(updates, "profile", nothing)
+    monkeypatch.setattr(updates, "sign_in_for_picture", nothing)
+    pictures = tmp_path / "code-ai-pictures"
+    monkeypatch.setattr(updates, "picture_profile_dir", lambda: pictures / "browser" / "github")
+    monkeypatch.setattr(updates, "_kept_path", lambda: pictures / "avatars" / "github.json")
     monkeypatch.setattr(updates, "_run_tool", lambda *_args, **_kwargs: "")
     monkeypatch.setattr(updates, "_refused", set())
     for name in (

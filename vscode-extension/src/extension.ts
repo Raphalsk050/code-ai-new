@@ -44,6 +44,15 @@ const TURN_ENDED = new Set(["READY", "FAILED", "CLOSED"]);
 const UPDATE_FIRST_CHECK_MS = 5_000;
 const UPDATE_CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
 
+/** What getProfile and signInForPicture answer (see updates.Profile.describe). */
+interface ProfileAnswer {
+  login?: string;
+  name?: string;
+  avatar?: string;
+  problem?: string;
+  signIn?: boolean;
+}
+
 interface UpdateInfo {
   version?: string;
   current?: string;
@@ -145,7 +154,9 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Set while the releases host wants a login; the button offers it. */
   private loginHost?: string;
   /** Who is signed in on the releases host: the chat's user avatar. */
-  private profile?: { login: string; name: string; avatar: string; problem: string };
+  private profile?: Required<ProfileAnswer>;
+  /** A picture sign-in window is open; a second click waits for it. */
+  private pictureSignIn = false;
   private mode: AppMode = "agent";
   private autoRunRefactor = false;
   // Inline code hints (editor ghost text). Enabled state + model are mirrored
@@ -886,6 +897,9 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         case "signInForUpdates":
           void this.signInForUpdates();
           break;
+        case "avatarSignIn":
+          void this.signInForPicture();
+          break;
         case "reloadWindow":
           void vscode.commands.executeCommand("workbench.action.reloadWindow");
           break;
@@ -1000,26 +1014,44 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     const client = this.client;
     if (!client) return;
     try {
-      const found = await client.request<{
-        login?: string;
-        name?: string;
-        avatar?: string;
-        problem?: string;
-      }>("getProfile", {}, 60_000);
-      if (!found) return;
-      this.profile = {
-        login: found.login ?? "",
-        name: found.name ?? "",
-        avatar: found.avatar ?? "",
-        problem: found.problem ?? "",
-      };
-      // The backend log has it too; this is for whoever opens the dev tools.
-      if (this.profile.problem) console.warn(`[code-ai] no GitHub picture: ${this.profile.problem}`);
-      this.postProfile();
+      this.takeProfile(await client.request<ProfileAnswer>("getProfile", {}, 60_000));
     } catch (err) {
       // An older backend has no getProfile: the icon stays, and that is all.
       console.warn("[code-ai] profile lookup failed", err);
     }
+  }
+
+  /**
+   * A host in private mode shows the picture to browser sessions only: open a
+   * browser window the user signs in to. On a click, never on its own.
+   */
+  private async signInForPicture(): Promise<void> {
+    const client = this.client;
+    if (!client || this.pictureSignIn) return;
+    this.pictureSignIn = true;
+    try {
+      // Long enough to get through a company sign-in by hand.
+      this.takeProfile(await client.request<ProfileAnswer>("signInForPicture", {}, 6 * 60_000));
+    } catch (err) {
+      const reason = String(err).replace(/^Error: /, "");
+      this.takeProfile({ ...this.profile, problem: reason, signIn: true });
+    } finally {
+      this.pictureSignIn = false;
+    }
+  }
+
+  private takeProfile(found?: ProfileAnswer): void {
+    if (!found) return;
+    this.profile = {
+      login: found.login ?? "",
+      name: found.name ?? "",
+      avatar: found.avatar ?? "",
+      problem: found.problem ?? "",
+      signIn: found.signIn ?? false,
+    };
+    // The backend log has it too; this is for whoever opens the dev tools.
+    if (this.profile.problem) console.warn(`[code-ai] no GitHub picture: ${this.profile.problem}`);
+    this.postProfile();
   }
 
   private postProfile(): void {

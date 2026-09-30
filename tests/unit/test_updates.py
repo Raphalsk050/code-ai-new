@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import dataclasses
 import json
@@ -208,6 +209,7 @@ def github(monkeypatch):
         # conftest keeps every test off GitHub; these talk to the fake one.
         monkeypatch.setattr(updates, "newest_release", _REAL_NEWEST)
         monkeypatch.setattr(updates, "profile", _REAL_PROFILE)
+        monkeypatch.setattr(updates, "sign_in_for_picture", _REAL_SIGN_IN)
         monkeypatch.setattr(updates, "current_version", lambda: "0.28.0")
         return fake
 
@@ -225,6 +227,7 @@ def github(monkeypatch):
 
 _REAL_NEWEST = updates.newest_release
 _REAL_PROFILE = updates.profile
+_REAL_SIGN_IN = updates.sign_in_for_picture
 
 
 async def test_a_newer_release_is_found_and_its_file_downloaded(github, tmp_path) -> None:
@@ -478,7 +481,7 @@ def test_a_backend_bundled_with_the_extension_is_left_to_the_extension() -> None
 
 
 def _bridge() -> SimpleNamespace:
-    config = SimpleNamespace(ssl_verification=False)
+    config = SimpleNamespace(ssl_verification=False, browser=SimpleNamespace(enabled=False))
     return SimpleNamespace(_app=SimpleNamespace(session=SimpleNamespace(config=config)))
 
 
@@ -618,6 +621,7 @@ async def test_the_bridge_hands_over_the_profile_or_says_why_not(monkeypatch, ca
         "name": "Rafael",
         "avatar": "data:image/png;base64,AA==",
         "problem": "",
+        "signIn": False,
     }
     monkeypatch.setattr(updates, "profile", unreachable)
     with caplog.at_level("WARNING"):
@@ -626,3 +630,139 @@ async def test_the_bridge_hands_over_the_profile_or_says_why_not(monkeypatch, ca
     assert answer["problem"] == "the lookup failed: OSError: the proxy said no"
     # The reason reaches the backend log, which the extension shows.
     assert "the proxy said no" in caplog.text
+
+
+class _Answer:
+    def __init__(self, kind: str, body: bytes) -> None:
+        self.status = 200
+        self.headers = {"content-type": kind}
+        self._body = body
+
+    async def body(self) -> bytes:
+        return self._body
+
+
+class _Page:
+    """A browser tab on the fake GitHub: signed in or not, and able to sign in."""
+
+    def __init__(self, *, signed_in: bool, signs_in_after: float | None = None) -> None:
+        self.signed_in = signed_in
+        self.signs_in_after = signs_in_after
+        self.url = "about:blank"
+        self.closed = False
+        self.fetched: list[str] = []
+        self.context = SimpleNamespace(request=SimpleNamespace(get=self._get))
+
+    def is_closed(self) -> bool:
+        return self.closed
+
+    async def goto(self, url: str) -> None:
+        if self.signed_in:
+            self.url = url
+            return
+        self.url = f"{updates.RELEASES_API}/login?return_to=/avatars/u/7"
+        if self.signs_in_after is not None:
+            asyncio.get_running_loop().call_later(self.signs_in_after, self._sign_in)
+
+    def _sign_in(self) -> None:
+        # GitHub sends a fresh sign-in to the dashboard, not back to the picture.
+        self.signed_in = True
+        self.url = f"{updates.RELEASES_API}/"
+
+    async def _get(self, url: str, headers=None) -> _Answer:
+        self.fetched.append(url)
+        if self.signed_in:
+            return _Answer("image/png", _PNG)
+        return _Answer("text/html", b"<html>Sign in</html>")
+
+
+class _Browser:
+    def __init__(self, tab: _Page) -> None:
+        self.tab = tab
+        self.closed = False
+
+    async def page(self) -> _Page:
+        return self.tab
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def _browsers(tab: _Page) -> tuple[list[bool], _Browser, object]:
+    """A browser factory handing out ``tab``, and the headless flags it was asked for."""
+    asked: list[bool] = []
+    browser = _Browser(tab)
+
+    def factory(headless: bool) -> _Browser:
+        asked.append(headless)
+        return browser
+
+    return asked, browser, factory
+
+
+async def _private_github(github, monkeypatch):
+    fake = github([], user={}, avatars="browser")
+    fake.user.update(_user())
+    monkeypatch.setenv(updates.RELEASES_TOKEN_ENV, "s3cret")
+    return fake
+
+
+async def test_a_browser_only_picture_comes_through_a_browser_signed_in_before(
+    github, monkeypatch
+) -> None:
+    await _private_github(github, monkeypatch)
+    updates.picture_profile_dir().mkdir(parents=True)
+    asked, browser, factory = _browsers(_Page(signed_in=True))
+
+    found = await updates.profile(verify_ssl=False, browser=factory)
+
+    assert found.avatar.startswith("data:image/png;base64,") and found.problem == ""
+    assert asked == [True], "headless: nothing may pop up on start"
+    assert browser.closed and browser.tab.fetched[0].endswith("/avatars/u/7?v=4&s=64")
+
+    # Kept on disk: the next start shows it without a browser.
+    again = await updates.profile(verify_ssl=False, browser=factory)
+    assert again.avatar == found.avatar and asked == [True]
+
+
+async def test_without_a_session_a_click_opens_the_window_and_brings_the_picture(
+    github, monkeypatch
+) -> None:
+    await _private_github(github, monkeypatch)
+    asked, browser, factory = _browsers(_Page(signed_in=False, signs_in_after=0.1))
+
+    first = await updates.profile(verify_ssl=False, browser=factory)
+    assert first.avatar == "" and first.sign_in and "browser sessions only" in first.problem
+    assert asked == [], "never signed in here: no browser on start"
+
+    found = await updates.sign_in_for_picture(verify_ssl=False, browser=factory)
+
+    assert found.avatar.startswith("data:image/png;base64,") and not found.sign_in
+    assert asked == [False], "the window is the one the user signs in to"
+    assert browser.closed
+    assert (await updates.profile(verify_ssl=False, browser=factory)).avatar == found.avatar
+
+
+async def test_a_kept_picture_stands_in_when_the_session_has_gone(github, monkeypatch) -> None:
+    await _private_github(github, monkeypatch)
+    updates.picture_profile_dir().mkdir(parents=True)
+    updates._keep_picture("rafael", "data:image/png;base64,S0VQVA==")
+    monkeypatch.setattr(updates, "_KEPT_FRESH_S", 0)  # stale: the browser is asked first
+    asked, _, factory = _browsers(_Page(signed_in=False))
+
+    found = await updates.profile(verify_ssl=False, browser=factory)
+
+    assert asked == [True]
+    assert found.avatar == "data:image/png;base64,S0VQVA==" and found.problem == ""
+
+
+async def test_a_sign_in_window_closed_early_says_so(github, monkeypatch) -> None:
+    await _private_github(github, monkeypatch)
+    tab = _Page(signed_in=False)
+    _, browser, factory = _browsers(tab)
+    asyncio.get_running_loop().call_later(0.1, lambda: setattr(tab, "closed", True))
+
+    found = await updates.sign_in_for_picture(verify_ssl=False, browser=factory)
+
+    assert found.avatar == "" and "closed" in found.problem
+    assert browser.closed

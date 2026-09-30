@@ -37,6 +37,8 @@ export function BlockView({
   block,
   avatar,
   avatarProblem,
+  avatarPending,
+  onAvatarSignIn,
   done,
   onOpenDiff,
   children,
@@ -46,6 +48,10 @@ export function BlockView({
   avatar?: string;
   /** Why there is no picture, shown on the icon's hover. */
   avatarProblem?: string;
+  /** A browser window to sign in is up, fetching the picture. */
+  avatarPending?: boolean;
+  /** Set when a sign-in in a browser can fetch the picture: the icon's click. */
+  onAvatarSignIn?: () => void;
   /** The turn is over and this box holds its answer: it turns green. */
   done?: boolean;
   onOpenDiff?: (path: string) => void;
@@ -61,7 +67,12 @@ export function BlockView({
     >
       <div className="block-head">
         {user ? (
-          <UserAvatar src={avatar} problem={avatarProblem} />
+          <UserAvatar
+            src={avatar}
+            problem={avatarProblem}
+            pending={avatarPending}
+            onSignIn={onAvatarSignIn}
+          />
         ) : (
           <span className="avatar avatar-assistant">
             <IconBrand size={14} />
@@ -87,10 +98,14 @@ export function BlockView({
 export function UserAvatar({
   src,
   problem,
+  pending,
+  onSignIn,
   size = 20,
 }: {
   src?: string;
   problem?: string;
+  pending?: boolean;
+  onSignIn?: () => void;
   size?: number;
 }): JSX.Element {
   const [broken, setBroken] = React.useState(false);
@@ -108,13 +123,33 @@ export function UserAvatar({
     );
   }
   const why = broken ? t("the picture did not decode") : problem;
+  const icon = <IconUser size={Math.round(size * 0.6)} />;
+  if (onSignIn && !broken) {
+    // Only a browser session may see the picture: one click opens that browser.
+    return (
+      <button
+        type="button"
+        className={`avatar avatar-user avatar-sign-in${pending ? " avatar-pending" : ""}`}
+        style={style}
+        disabled={pending}
+        title={
+          pending
+            ? t("Signing in to GitHub in the browser window...")
+            : `${tf("No GitHub picture: {0}", why ?? "")}. ${t("Click to sign in to GitHub and show it.")}`
+        }
+        onClick={onSignIn}
+      >
+        {icon}
+      </button>
+    );
+  }
   return (
     <span
       className="avatar avatar-user"
       style={style}
       title={why ? tf("No GitHub picture: {0}", why) : undefined}
     >
-      <IconUser size={Math.round(size * 0.6)} />
+      {icon}
     </span>
   );
 }

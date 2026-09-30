@@ -11,18 +11,21 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from code_ai.config.defaults import DEFAULT_CONFIG_DIRNAME
 from code_ai.version import read_version
 
 # --- Where Code-AI looks for updates -----------------------------------------
@@ -389,6 +392,18 @@ async def sign_in(*, verify_ssl: bool) -> Release | None:
 _AVATAR_SIZE = 64
 _AVATAR_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
 _AVATAR_MAX_BYTES = 512 * 1024
+# A picture only a browser session can fetch is kept on disk; this old, the next
+# start refreshes it through a headless browser before showing it.
+_KEPT_FRESH_S = 7 * 24 * 3600
+# How long a headless browser gets to show a picture it holds a session for,
+# and how long a person gets to sign in in the window.
+_BROWSER_QUIET_S = 20.0
+_BROWSER_SIGN_IN_S = 300.0
+# Where a sign-in happens: the host's own pages, or an identity provider's.
+_SIGN_IN_STEPS = ("/login", "/session", "/saml", "/sso", "/cas", "/auth")
+
+# A browser to fetch the picture with: headless or not, to a BrowserSession.
+BrowserFactory = Callable[[bool], Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -399,6 +414,10 @@ class Profile:
     avatar: str
     # Why there is no avatar, in one line; "" when there is one.
     problem: str = ""
+    # Only a browser session may see the picture, and a click can open one.
+    sign_in: bool = False
+    # Where the picture is, as the host gave it.
+    picture: str = ""
 
     def describe(self) -> dict[str, Any]:
         return {
@@ -406,15 +425,18 @@ class Profile:
             "name": self.name,
             "avatar": self.avatar,
             "problem": self.problem,
+            "signIn": self.sign_in,
         }
 
 
-async def profile(*, verify_ssl: bool) -> Profile:
+async def profile(*, verify_ssl: bool, browser: BrowserFactory | None = None) -> Profile:
     """Who this machine's login is on the releases host, with their picture.
 
-    The host and the login the update check uses, nothing of its own. Without a
-    picture, ``problem`` says why: no login here, the host turning it down, or a
-    picture only a browser session may see.
+    The host and the login the update check uses, nothing of its own. A host in
+    private mode shows pictures to browser sessions only, whatever the token:
+    then the copy kept from the last browser fetch, or a headless browser that
+    has signed in before, or - on a click, see :func:`sign_in_for_picture` - a
+    window to sign in. Without a picture, ``problem`` says why.
     """
     host = login_host()
     url = f"{RELEASES_API.rstrip('/')}/user"
@@ -432,15 +454,48 @@ async def profile(*, verify_ssl: bool) -> Profile:
         picture = str(data.get("avatar_url") or "")
         if not picture:
             return Profile(login, name, "", f"{host} has no picture for {login}")
-        avatar, problem = await _avatar(http, picture, credential)
-    return Profile(login, name, avatar, problem)
+        avatar, problem, browser_only = await _avatar(http, picture, credential)
+    found = Profile(login, name, avatar, problem, picture=picture)
+    if avatar or not browser_only:
+        return found
+    kept, fresh = _kept_picture(login)
+    if kept and fresh:
+        return replace(found, avatar=kept, problem="")
+    if browser is not None and _signed_in_before():
+        seen, _ = await _picture_in_browser(browser(True), picture, _BROWSER_QUIET_S)
+        if seen:
+            _keep_picture(login, seen)
+            return replace(found, avatar=seen, problem="")
+    if kept:
+        # Out of date beats the icon; the next sign-in brings a fresh one.
+        return replace(found, avatar=kept, problem="")
+    return replace(found, sign_in=browser is not None)
 
 
-async def _avatar(http: Any, url: str, credential: Credential) -> tuple[str, str]:
-    """The picture at ``url`` as a data: URI, or "" and why not."""
-    parts = urlsplit(url)
-    query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k != "s"]
-    sized = urlunsplit(parts._replace(query=urlencode([*query, ("s", str(_AVATAR_SIZE))])))
+async def sign_in_for_picture(*, verify_ssl: bool, browser: BrowserFactory) -> Profile:
+    """Open the picture in a browser window and let the user sign in there.
+
+    The one path here that shows a window, so it only runs on a click. The
+    session stays in the picture's own profile (:func:`picture_profile_dir`):
+    later starts refresh the picture headless, and the copy on disk covers the
+    rest.
+    """
+    found = await profile(verify_ssl=verify_ssl, browser=browser)
+    if found.avatar or not found.sign_in:
+        return found
+    seen, why = await _picture_in_browser(
+        browser(False), found.picture, _BROWSER_SIGN_IN_S, sign_in=True
+    )
+    if not seen:
+        return replace(found, problem=why or "the picture did not come through the sign-in")
+    _keep_picture(found.login, seen)
+    return replace(found, avatar=seen, problem="", sign_in=False)
+
+
+async def _avatar(http: Any, url: str, credential: Credential) -> tuple[str, str, bool]:
+    """The picture at ``url`` as a data: URI, or "" and why not - and whether
+    it is only shown to browser sessions."""
+    sized = _sized(url)
     # Unsigned first: a public picture needs no login. A private-mode instance
     # shows pictures to signed-in users only, so on the releases host and its
     # subdomains - never anywhere else - the login follows, in both of the ways
@@ -450,24 +505,123 @@ async def _avatar(http: Any, url: str, credential: Credential) -> tuple[str, str
         tries.append({"Authorization": f"token {credential.secret}"})
         if credential.header() != tries[-1]["Authorization"]:
             tries.append({"Authorization": credential.header()})
-    answer = ""
+    answer, browser_only = "", False
     for signed in tries:
         response = await http.get(sized, headers={"Accept": "image/*", **signed})
         kind = response.headers.get("content-type", "").split(";")[0].strip().lower()
-        body = response.content
-        if response.status_code == 200 and kind in _AVATAR_TYPES and len(body) <= _AVATAR_MAX_BYTES:
-            return f"data:{kind};base64,{base64.b64encode(body).decode('ascii')}", ""
-        answer = _no_picture(response, kind)
-    return "", f"the picture at {urlunsplit(parts._replace(query=''))} {answer}"
+        uri = _data_uri(response.status_code, kind, response.content)
+        if uri:
+            return uri, "", False
+        # A private-mode GitHub sends anything without a browser session to
+        # sign in, and that page comes back as a 200.
+        browser_only = bool(response.history) and _signing_in(str(response.url))
+        answer = (
+            "led to the sign-in page: this GitHub shows pictures to browser sessions only"
+            if browser_only
+            else f"answered {response.status_code} with {kind or 'no content type'}"
+        )
+    where = urlunsplit(urlsplit(url)._replace(query=""))
+    return "", f"the picture at {where} {answer}", browser_only
 
 
-def _no_picture(response: Any, kind: str) -> str:
-    """What a picture request got instead, in words."""
-    # A private-mode GitHub sends anything without a browser session to sign in,
-    # and that page comes back as a 200.
-    if response.history and any(step in response.url.path for step in ("/login", "/session")):
-        return "led to the sign-in page: this GitHub shows pictures to browser sessions only"
-    return f"answered {response.status_code} with {kind or 'no content type'}"
+def _sized(url: str) -> str:
+    """``url`` asking for the chat's size (GitHub's ``s`` parameter)."""
+    parts = urlsplit(url)
+    query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k != "s"]
+    return urlunsplit(parts._replace(query=urlencode([*query, ("s", str(_AVATAR_SIZE))])))
+
+
+def _data_uri(status: int, kind: str, body: bytes) -> str:
+    if status != 200 or kind not in _AVATAR_TYPES or not body or len(body) > _AVATAR_MAX_BYTES:
+        return ""
+    return f"data:{kind};base64,{base64.b64encode(body).decode('ascii')}"
+
+
+def _signing_in(url: str) -> bool:
+    """Whether ``url`` is a step of a sign-in rather than the page asked for."""
+    parts = urlsplit(url)
+    return not _same_site(url) or any(step in parts.path for step in _SIGN_IN_STEPS)
+
+
+async def _picture_in_browser(
+    session: Any, url: str, wait_s: float, *, sign_in: bool = False
+) -> tuple[str, str]:
+    """The picture at ``url`` through a browser's own session: the data: URI,
+    or "" and why not.
+
+    Without ``sign_in`` a browser that lands on a sign-in page gives up at
+    once; with it the window waits for the user to get through. The browser is
+    closed either way.
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        page = await session.page()
+        await page.goto(_sized(url))
+        deadline = loop.time() + wait_s
+        while loop.time() < deadline:
+            if page.is_closed():
+                return "", "the sign-in window was closed before the picture came through"
+            if not _signing_in(page.url):
+                # Signed in: the context's own request carries its cookies.
+                request = page.context.request
+                response = await request.get(_sized(url), headers={"Accept": "image/*"})
+                kind = str(response.headers.get("content-type", "")).split(";")[0].strip().lower()
+                uri = _data_uri(response.status, kind, await response.body())
+                return (uri, "") if uri else ("", f"the browser got {response.status} {kind}")
+            if not sign_in:
+                return "", "the browser has no session there"
+            await asyncio.sleep(0.5)
+        return "", "the sign-in took too long"
+    except Exception as exc:  # noqa: BLE001 - a window closed, no browser here, ...
+        said = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+        return "", f"the browser could not fetch it: {said}"
+    finally:
+        try:
+            await session.close()
+        except Exception:  # noqa: BLE001 - already gone
+            pass
+
+
+def picture_profile_dir() -> Path:
+    """The browser profile the picture is fetched with: one per host, apart
+    from the workspaces' own, where the agent keeps its logins."""
+    host = login_host().replace(":", "_") or "github"
+    return Path.home() / DEFAULT_CONFIG_DIRNAME / "browser" / f"github-{host}"
+
+
+def _signed_in_before() -> bool:
+    """Whether a sign-in window was ever opened here; the session may outlive it."""
+    from code_ai.tools.browser.install import FALLBACK_CHANNELS
+
+    profile = picture_profile_dir()
+    variants = [profile, *(profile.with_name(f"{profile.name}-{c}") for c in FALLBACK_CHANNELS)]
+    return any(variant.exists() for variant in variants)
+
+
+def _kept_path() -> Path:
+    host = login_host().replace(":", "_") or "github"
+    return Path.home() / DEFAULT_CONFIG_DIRNAME / "avatars" / f"{host}.json"
+
+
+def _kept_picture(login: str) -> tuple[str, bool]:
+    """The picture kept from the last browser fetch, and whether it is recent."""
+    try:
+        data = json.loads(_kept_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "", False
+    avatar = str(data.get("avatar") or "") if isinstance(data, dict) else ""
+    if data.get("login") != login or not avatar.startswith("data:image/"):
+        return "", False
+    return avatar, time.time() - float(data.get("at") or 0) < _KEPT_FRESH_S
+
+
+def _keep_picture(login: str, avatar: str) -> None:
+    path = _kept_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"login": login, "avatar": avatar, "at": time.time()}))
+    except OSError:
+        pass  # the copy only saves a browser launch
 
 
 def _same_site(url: str) -> bool:

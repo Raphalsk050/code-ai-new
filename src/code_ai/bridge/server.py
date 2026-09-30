@@ -562,17 +562,12 @@ class BridgeServer:
     async def _h_get_profile(self, params: dict[str, Any]) -> dict[str, Any]:
         """Who is signed in on the releases host, for the chat's avatar. Without
         a picture the icon stays, and ``problem`` says why."""
-        verify = self._app.session.config.ssl_verification
-        try:
-            found = await updates.profile(verify_ssl=verify)
-        except Exception as exc:  # a picture is never worth an error on screen
-            found = updates.Profile("", "", "", f"the lookup failed: {type(exc).__name__}: {exc}")
-        if found is None:
-            return {}
-        if found.problem:
-            # Nothing below WARNING reaches the Code-AI Backend output channel.
-            logger.warning("No GitHub picture for the chat avatar: %s", found.problem)
-        return found.describe()
+        return await _profile_answer(updates.profile, self._app.session.config)
+
+    async def _h_sign_in_for_picture(self, params: dict[str, Any]) -> dict[str, Any]:
+        """The picture through a browser window the user signs in to: for a
+        host that shows pictures to browser sessions only. Only on a click."""
+        return await _profile_answer(updates.sign_in_for_picture, self._app.session.config)
 
     async def _h_shutdown(self, params: dict[str, Any]) -> dict[str, Any]:
         self._stop.set()
@@ -637,6 +632,7 @@ class BridgeServer:
         "signInForUpdates": _h_sign_in_for_updates,
         "downloadUpdate": _h_download_update,
         "getProfile": _h_get_profile,
+        "signInForPicture": _h_sign_in_for_picture,
         "shutdown": _h_shutdown,
     }
 
@@ -678,8 +674,44 @@ class BridgeServer:
             "signInForUpdates",
             "downloadUpdate",
             "getProfile",
+            "signInForPicture",
         }
     )
+
+
+async def _profile_answer(lookup: Any, config: Any) -> dict[str, Any]:
+    """Run a profile lookup for the chat's avatar and put it on the wire."""
+    browser = _picture_browser(config) if config.browser.enabled else None
+    try:
+        found = await lookup(verify_ssl=config.ssl_verification, browser=browser)
+    except Exception as exc:  # a picture is never worth an error on screen
+        found = updates.Profile("", "", "", f"the lookup failed: {type(exc).__name__}: {exc}")
+    if found is None:
+        return {}
+    if found.problem:
+        # Nothing below WARNING reaches the Code-AI Backend output channel.
+        logger.warning("No GitHub picture for the chat avatar: %s", found.problem)
+    return found.describe()
+
+
+def _picture_browser(config: Any) -> updates.BrowserFactory:
+    """Browsers to fetch the picture with: set up like the agent's, in a profile
+    of their own (updates.picture_profile_dir)."""
+
+    def make(headless: bool) -> Any:
+        from code_ai.tools.browser.session import BrowserSession
+
+        return BrowserSession(
+            profile_dir=updates.picture_profile_dir(),
+            headless=headless,
+            timeout_ms=config.browser.timeout_ms,
+            channel=config.browser.channel,
+            # A window the user asked for may fetch Chromium; a start may not.
+            auto_install=config.browser.auto_install and not headless,
+            ssl_verification=config.ssl_verification,
+        )
+
+    return make
 
 
 def _parse_images(raw: Any) -> list[ImageContent]:

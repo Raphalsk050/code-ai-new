@@ -412,6 +412,8 @@ const PT: Record<string, string> = {
   "Go to this message": "Ir para esta mensagem",
   "No GitHub picture: {0}": "Sem foto do GitHub: {0}",
   "the picture did not decode": "a imagem não abriu",
+  "Click to sign in to GitHub and show it.": "Clique para entrar no GitHub e mostrá-la.",
+  "Signing in to GitHub in the browser window...": "Entrando no GitHub pela janela do navegador...",
   "History": "Histórico",
   "How the extension behaves in the editor.": "Como a extensão se comporta no editor.",
   "In refactor mode, analyses the snippet as soon as you select it.":

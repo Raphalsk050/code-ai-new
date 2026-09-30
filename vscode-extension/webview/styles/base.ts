@@ -149,6 +149,11 @@ body {
   background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 40%, #a855f7));
 }
 .avatar-photo { object-fit: cover; }
+/* No picture, but a sign-in can fetch it: the icon is the button. */
+.avatar-sign-in { border: none; padding: 0; font: inherit; cursor: pointer; }
+.avatar-sign-in:hover:not(:disabled) { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent); }
+.avatar-sign-in:disabled { cursor: progress; }
+.avatar-pending { animation: pulse 1.1s ease-in-out infinite; }
 /* One line per send: each is what went to the model in one go. */
 .user-text { white-space: pre-wrap; word-wrap: break-word; }
 .user-text + .user-text {

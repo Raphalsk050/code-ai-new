@@ -129,8 +129,9 @@ function App(): JSX.Element {
   // A newer release, once the backend has found one.
   const [update, setUpdate] = React.useState<UpdateView | null>(null);
   // The user's picture on the releases host; the icon stands in until then,
-  // with the reason there is none on hover.
-  const [avatar, setAvatar] = React.useState({ src: "", problem: "" });
+  // with the reason there is none on hover - and, when a browser sign-in can
+  // fetch it, a click that opens one (pending while that window is up).
+  const [avatar, setAvatar] = React.useState({ src: "", problem: "", signIn: false, pending: false });
 
   const [rootRef, width] = useContainerWidth<HTMLDivElement>();
   const scrollRef = React.useRef<HTMLDivElement>(null);
@@ -191,6 +192,8 @@ function App(): JSX.Element {
         setAvatar({
           src: picture.startsWith("data:image/") ? picture : "",
           problem: String(data.problem ?? ""),
+          signIn: !!data.signIn,
+          pending: false,
         });
       } else if (data?.type === "updateProgress") {
         setUpdate((u) => (u ? { ...u, state: data.state, message: data.message ?? "" } : u));
@@ -827,6 +830,10 @@ function App(): JSX.Element {
         )}
       </>
     ) : null;
+  const signInForPicture = () => {
+    setAvatar((a) => ({ ...a, pending: true }));
+    send({ type: "avatarSignIn" });
+  };
   const lastBlock = blocks[blocks.length - 1];
   // All over, and well: the backend is idle again, nothing waits on the user,
   // and the agent's last box ends on its answer. That box goes green.
@@ -958,6 +965,8 @@ function App(): JSX.Element {
                         block={block}
                         avatar={avatar.src}
                         avatarProblem={avatar.problem}
+                        avatarPending={avatar.pending}
+                        onAvatarSignIn={avatar.signIn && !avatar.src ? signInForPicture : undefined}
                         done={done && block === lastBlock}
                         onOpenDiff={editorDiff ? openDiff : undefined}
                       >
