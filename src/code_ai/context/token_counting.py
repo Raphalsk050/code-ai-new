@@ -12,6 +12,12 @@ from code_ai.providers.models import Message, ToolDefinition
 # of magnitude: a 4MB screenshot is ~5MB of base64, "worth" ~600k text tokens,
 # which instantly (and wrongly) overflows the context budget.
 _IMAGE_TOKEN_ESTIMATE = 1500
+# What a chat template wraps around one message and one tool call, measured on
+# Qwen3.8's: <|im_start|>role, the empty <think></think> every assistant turn
+# keeps, <tool_response> around a result, <tool_call><function=...> around a
+# call. The server's own count corrects the rest (ContextCompressor.observe).
+_MESSAGE_OVERHEAD = 9
+_TOOL_CALL_OVERHEAD = 18
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,24 +57,32 @@ class TokenCounter:
         )
 
     def count_request(self, messages: list[Message], tools: list[ToolDefinition]) -> TokenCount:
-        payload = {
-            "messages": [_countable_message(message) for message in messages],
-            "tools": [tool.to_dict() for tool in tools],
-        }
-        counted = self.count_text(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+        """The request as the model reads it: each message's text, each call's
+        arguments and each tool's schema - not the JSON the wire carries them
+        in. Counting the wire form escaped every newline and quote, and every
+        accented letter as \\uXXXX: Portuguese text came out 70% over, and
+        compaction fired that much early."""
+        parts: list[str] = []
+        calls = 0
+        for message in messages:
+            parts.append(message.content or "")
+            if message.reasoning:
+                parts.append(message.reasoning)
+            for call in message.tool_calls:
+                calls += 1
+                parts.append(call.name)
+                parts.append(_compact_json(call.arguments))
+        # Spaced, the way chat templates print a schema into the prompt.
+        parts.extend(json.dumps(tool.to_dict(), ensure_ascii=False, default=str) for tool in tools)
+        counted = self.count_text("\n".join(parts))
         image_count = sum(len(message.images) for message in messages)
+        overhead = len(messages) * _MESSAGE_OVERHEAD + calls * _TOOL_CALL_OVERHEAD
         return TokenCount(
-            tokens=counted.tokens + image_count * _IMAGE_TOKEN_ESTIMATE,
+            tokens=counted.tokens + overhead + image_count * _IMAGE_TOKEN_ESTIMATE,
             estimated=counted.estimated or image_count > 0,
             source=counted.source,
         )
 
 
-def _countable_message(message: Message) -> dict:
-    """Wire dict with image payloads excluded from the text token count."""
-    record = message.to_dict()
-    if message.images:
-        record["content"] = message.content
-    if message.reasoning:
-        record["reasoning"] = message.reasoning
-    return record
+def _compact_json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)

@@ -145,7 +145,7 @@ async def test_parent_delegates_to_parallel_subagents_end_to_end(tmp_path) -> No
     # Their reports were fed back to the parent for synthesis.
     assert "Report for: Locate the config loader." in provider.last_tool_text
     assert "Report for: Locate the event bus." in provider.last_tool_text
-    assert '"status": "completed"' in provider.last_tool_text
+    assert '"status":"completed"' in provider.last_tool_text
 
     # Lifecycle events reached the application bus.
     assert "subagent.dispatch.requested" in events
@@ -204,5 +204,5 @@ async def test_unknown_agent_type_degrades_without_crashing(tmp_path) -> None:
     # the turn completed normally rather than raising.
     assert result.error is None
     assert result.text == "I'll handle it myself."
-    assert '"status": "rejected"' in provider.last_tool_text
+    assert '"status":"rejected"' in provider.last_tool_text
     assert "Unknown sub-agent type" in provider.last_tool_text

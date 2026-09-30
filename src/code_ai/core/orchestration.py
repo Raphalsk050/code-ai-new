@@ -1333,6 +1333,7 @@ class AgentOrchestrator:
             
             state.last_response = response
             self.usage.add(response.usage)
+            self._calibrate_count(request, response)
             if response.response_id:
                 self.conversation.previous_response_id = response.response_id
             await self._recover_text_tool_calls(response, tool_definitions)
@@ -2777,8 +2778,13 @@ class AgentOrchestrator:
             # would cost the whole budget on the way. They are lifted out here
             # and delivered as an attachment instead.
             images = _take_tool_images(payload)
+            # Compact, and in UTF-8: indentation was a quarter of a search
+            # result, and \uXXXX for each accented letter a tenth of a file -
+            # tokens the model paid for on every request after.
             content = bound_text(
-                json.dumps(payload, indent=2, sort_keys=True, default=str),
+                json.dumps(
+                    payload, sort_keys=True, default=str, ensure_ascii=False, separators=(",", ":")
+                ),
                 self.config.budgets.max_tool_output_chars,
             )
             await self.event_bus.emit(
@@ -3360,14 +3366,18 @@ class AgentOrchestrator:
         )
         if runtime_context:
             messages = _attach_runtime_context(messages, runtime_context)
+        # Withheld on purpose in text mode: carrying them is what the endpoint
+        # refuses. The definitions still reach the recovery path, which is what
+        # turns a printed call into a real one.
+        tools = [] if text_tools else tool_definitions
+        # Counted as sent - runtime context and all - so the output room fits
+        # what the window leaves, and the server's answer can teach the count.
+        prompt_tokens, counted = self.compressor.measure(messages, tools)
         return ModelRequest(
             model=self.config.model,
             messages=messages,
-            # Withheld on purpose in text mode: carrying them is what the
-            # endpoint refuses. The definitions still reach the recovery path,
-            # which is what turns a printed call into a real one.
-            tools=[] if text_tools else tool_definitions,
-            max_output_tokens=self.config.output_token_reserve,
+            tools=tools,
+            max_output_tokens=self.compressor.output_room(prompt_tokens),
             previous_response_id=self.conversation.previous_response_id,
             use_remote_conversation_state=(
                 self.config.use_remote_conversation_state
@@ -3379,9 +3389,25 @@ class AgentOrchestrator:
                 "planning_phase": self.planner.phase.value
                 if self.planner and self.planner.enabled
                 else None,
+                "counted_tokens": counted.tokens,
             },
             reasoning_effort=None if state.think_hard else self.config.sampling.followup_effort(),
         )
+
+    def _calibrate_count(self, request: ModelRequest, response: ModelResponse) -> None:
+        """Teach the compressor the server's count of the request just answered.
+
+        Only a count of the whole prompt teaches anything: Ollama's leaves out
+        the prefix its cache reused, and with remote conversation state the
+        server counted history this request never carried.
+        """
+        usage = response.usage
+        counted = int(request.metadata.get("counted_tokens") or 0)
+        if usage is None or not usage.exact or not usage.input_tokens or not counted:
+            return
+        if usage.source == "ollama" or request.use_remote_conversation_state:
+            return
+        self.compressor.observe(counted, usage.input_tokens)
 
     def _policy_decision_for(self, name: str) -> PolicyDecision:
         if not (self.planner and self.planner.enabled):
