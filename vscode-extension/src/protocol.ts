@@ -113,6 +113,8 @@ export interface Settings {
   inline_model: string;
   max_context_tokens: number;
   workspace: string;
+  /** The workspace's git branch; "" outside a repository. */
+  branch?: string;
   /** Doctor: tools switched off, sub-agent models, concurrency, sampling. */
   disabled_tools: string[];
   subagent_models: string[];

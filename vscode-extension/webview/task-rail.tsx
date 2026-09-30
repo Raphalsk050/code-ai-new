@@ -56,6 +56,7 @@ interface RailProps {
   state: AppState;
   model: string;
   workspace: string;
+  branch: string;
   history: HistoryEntry[];
   activeId: string | null;
   connected: boolean;
@@ -456,6 +457,7 @@ function SectionBody(props: RailProps & { id: SectionId }): JSX.Element {
           usage={state.usage}
           model={props.model}
           workspace={props.workspace}
+          branch={props.branch}
           onIndex={actions.onIndex}
           onCompact={actions.onCompact}
         />

@@ -120,6 +120,7 @@ export const PANELS_STYLE = `
 .kv { display: flex; gap: 8px; font-size: 11.5px; line-height: 1.7; }
 .kv .k { width: 82px; flex-shrink: 0; color: var(--muted); }
 .kv .v { font-family: var(--mono); overflow-wrap: anywhere; }
+.kv .v.one-line { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kv .v.warn { color: var(--warn); }
 .kv .v.ok { color: var(--ok); }
 .mini-track { height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; margin-top: 6px; }

@@ -113,6 +113,15 @@ export const IconHistory = ({ size = 16, className }: IconProps) => (
   </svg>
 );
 
+export const IconBranch = ({ size = 14, className }: IconProps) => (
+  <svg {...base(size)} className={className}>
+    <path d="M6 3v12" />
+    <circle cx="18" cy="6" r="3" />
+    <circle cx="6" cy="18" r="3" />
+    <path d="M18 9a9 9 0 0 1-9 9" />
+  </svg>
+);
+
 export const IconFile = ({ size = 14, className }: IconProps) => (
   <svg {...base(size)} className={className}>
     <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />

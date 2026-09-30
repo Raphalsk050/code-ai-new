@@ -45,8 +45,12 @@ from code_ai.sandbox.session import SessionSandbox
 from code_ai.tools.skills.common import SkillSource
 from code_ai.tools.terminal.manager import PersistentTerminalManager
 from code_ai.util.environment import command_environment, describe_environment
+from code_ai.util.git_branch import current_branch
 
 logger = logging.getLogger(__name__)
+
+# How often the workspace's git branch is read again (see _watch_branch).
+_BRANCH_POLL_S = 2.0
 
 # How long a cancelled turn gets to actually stop before whatever asked for the
 # cancellation (a reset, a conversation load, shutdown) goes ahead without it.
@@ -161,6 +165,9 @@ class CodeAIApplication:
         # Background drain of interactive terminal sessions (see
         # _poll_terminal_screens); exists only while the app is running.
         self._terminal_poll_task: asyncio.Task[None] | None = None
+        # Watches the workspace's git branch (see _watch_branch).
+        self._branch_task: asyncio.Task[None] | None = None
+        self.branch = ""
         # Background pass that gives the indexed chunks vectors after the
         # embedding model changes; exists only while that work is running.
         self._index_warmup_task: asyncio.Task[None] | None = None
@@ -186,9 +193,25 @@ class CodeAIApplication:
         await self.event_bus.emit("session.ready", {}, source="app")
         if self.terminal_manager is not None and self._terminal_poll_task is None:
             self._terminal_poll_task = asyncio.create_task(self._poll_terminal_screens())
+        if self._branch_task is None:
+            self._branch_task = asyncio.create_task(self._watch_branch())
         self.start_index_warmup()
         if self.mcp is not None:
             await self.mcp.start()
+
+    async def _watch_branch(self) -> None:
+        """Say which git branch the workspace is on, and again when it changes.
+
+        Polled rather than watched: a checkout in the user's own terminal or
+        IDE has to show too, and reading .git/HEAD costs next to nothing.
+        """
+        while True:
+            workspace = Path(self.session.config.workspace)
+            branch = await asyncio.to_thread(current_branch, workspace)
+            if branch != self.branch:
+                self.branch = branch
+                await self.event_bus.emit("workspace.branch", {"branch": branch}, source="app")
+            await asyncio.sleep(_BRANCH_POLL_S)
 
     def start_index_warmup(self) -> bool:
         """Build the index in the background, once, at the start of a session.
@@ -808,6 +831,7 @@ class CodeAIApplication:
             "vision_model": config.vision_model,
             "max_context_tokens": config.budgets.max_context_tokens,
             "workspace": str(config.workspace),
+            "branch": self.branch,
             # What the terminal's /doctor edits, so a second front end does not
             # have to send the user back to the terminal to turn a tool off.
             "disabled_tools": list(config.disabled_tools),
@@ -1666,13 +1690,14 @@ class CodeAIApplication:
         # Let a pending post-turn learning pass finish (bounded) while the
         # provider is still alive; after provider.close() it could not run.
         await self.orchestrator.drain_learning()
-        if self._terminal_poll_task is not None:
-            self._terminal_poll_task.cancel()
-            try:
-                await self._terminal_poll_task
-            except BaseException:  # noqa: BLE001 - shutdown must not propagate
-                pass
-            self._terminal_poll_task = None
+        for poll in (self._terminal_poll_task, self._branch_task):
+            if poll is not None:
+                poll.cancel()
+                try:
+                    await poll
+                except BaseException:  # noqa: BLE001 - shutdown must not propagate
+                    pass
+        self._terminal_poll_task = self._branch_task = None
         if self.terminal_manager:
             self.terminal_manager.close_all()
         self._cleanup_sandbox()

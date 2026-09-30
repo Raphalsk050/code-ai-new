@@ -96,6 +96,8 @@ class TerminalViewModel:
     cumulative_usage: str = "0"
     planner_mode: str = "auto"
     permission_mode: str = "ask"
+    # The workspace's git branch; "" outside a repository.
+    branch: str = ""
     plan_progress: str = "-"
     current_step: str = "-"
     latest_verification_status: str = "unknown"
@@ -266,6 +268,8 @@ class TerminalViewModel:
             self.pending_questions.append(dict(event.payload))
         elif event.event_type == "interaction.question.answered":
             self.pending_questions = []
+        elif event.event_type == "workspace.branch":
+            self.branch = str(event.payload.get("branch") or "")
         elif event.event_type == "permission.mode.changed":
             self.permission_mode = str(event.payload.get("mode", self.permission_mode))
             self.conversation.append(f"permission> mode set to {self.permission_mode}")

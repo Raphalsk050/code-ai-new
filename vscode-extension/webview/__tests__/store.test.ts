@@ -297,3 +297,10 @@ test("the queue position only shows once there is a queue", () => {
   const third = feed([["user.message.enqueued", { text: "c", position: 3 }]]);
   assert.match((third.transcript.items[1] as { text: string }).text, /#3 in the queue\)/);
 });
+
+test("the workspace branch lands in the session, not in the transcript", () => {
+  const state = feed([["workspace.branch", { branch: "feature/mac" }]]);
+  assert.equal(state.session.branch, "feature/mac");
+  assert.equal(state.transcript.items.length, initialAppState.transcript.items.length);
+  assert.equal(feed([["workspace.branch", { branch: "" }]]).session.branch, "");
+});

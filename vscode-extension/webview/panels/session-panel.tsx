@@ -11,6 +11,7 @@ export function SessionPanel({
   usage,
   model,
   workspace,
+  branch,
   onIndex,
   onCompact,
 }: {
@@ -18,6 +19,7 @@ export function SessionPanel({
   usage: UsageState;
   model: string;
   workspace: string;
+  branch: string;
   onIndex: (full: boolean) => void;
   onCompact: () => void;
 }): JSX.Element {
@@ -32,6 +34,12 @@ export function SessionPanel({
       <div className="kv">
         <span className="k">workspace</span>
         <span className="v">{workspace ? workspace.split(/[\\/]/).pop() : "-"}</span>
+      </div>
+      <div className="kv">
+        <span className="k">branch</span>
+        <span className="v one-line" title={branch}>
+          {branch || "-"}
+        </span>
       </div>
       <div className="kv">
         <span className="k">estado</span>

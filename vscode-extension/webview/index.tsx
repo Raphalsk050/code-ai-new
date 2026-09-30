@@ -36,6 +36,7 @@ import {
 } from "./history";
 import {
   IconBack,
+  IconBranch,
   IconBroom,
   IconCI,
   IconFile,
@@ -716,6 +717,9 @@ function App(): JSX.Element {
 
   const history = mergeHistory(persisted.conversations, serverConvos);
 
+  // Live from the bridge; the settings snapshot covers a panel opened later.
+  const branch = state.session.branch || settings?.branch || "";
+
   const updateButton = update && (
     <UpdateButton
       update={update}
@@ -784,6 +788,12 @@ function App(): JSX.Element {
           </button>
           <span className={`dot ${busy ? "busy" : ""}`} />
           Code-AI
+          {branch && (
+            <span className="branch-chip" title={tf("On the {0} branch", branch)}>
+              <IconBranch size={12} />
+              <span>{branch}</span>
+            </span>
+          )}
           {busy && (
             <span className="heartbeat" title={t("The agent is working")}>
               <span className="spinner heartbeat-spin" />
@@ -1048,6 +1058,7 @@ function App(): JSX.Element {
           state={state}
           model={settings?.model ?? ""}
           workspace={settings?.workspace ?? ""}
+          branch={branch}
           history={history}
           activeId={activeId}
           connected={state.session.status !== "STARTING"}

@@ -45,6 +45,14 @@ body {
 .heartbeat .heartbeat-clock { opacity: .8; }
 /* The running tool and its target can be long: it shrinks, the clock stays. */
 .statusbar .brand { min-width: 0; }
+/* The workspace's git branch, beside the title: quiet, and cut short when narrow. */
+.branch-chip {
+  display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 32vw;
+  padding: 1px 7px; border: 1px solid var(--border); border-radius: 999px;
+  font-size: 11px; font-weight: 400; color: var(--muted);
+}
+.branch-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.branch-chip svg { flex: none; }
 .heartbeat { min-width: 0; }
 .heartbeat .heartbeat-label {
   min-width: 0; max-width: 46vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

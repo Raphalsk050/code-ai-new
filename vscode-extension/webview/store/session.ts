@@ -6,6 +6,8 @@ export interface SessionState {
   plannerMode: string;
   permissionMode: string;
   verification: string;
+  /** The workspace's git branch; "" outside a repository. */
+  branch: string;
   /** Seconds elapsed in the current turn, from the bridge heartbeat (0 = idle). */
   heartbeat: number;
   /** True while the model request is queued at the provider. */
@@ -32,6 +34,7 @@ export const initialSession: SessionState = {
   plannerMode: "auto",
   permissionMode: "ask",
   verification: "unknown",
+  branch: "",
   heartbeat: 0,
   modelWaiting: false,
   runningTools: [],
@@ -54,6 +57,8 @@ export function applySession(state: SessionState, event: EventEnvelope): Session
   const p = event.payload ?? {};
   if (state.retry && MODEL_OUTPUT.has(event.event_type)) state = { ...state, retry: "" };
   switch (event.event_type) {
+    case "workspace.branch":
+      return { ...state, branch: String(p.branch ?? "") };
     case "session.started":
       return { ...state, permissionMode: String(p.permission_mode ?? state.permissionMode) };
     case "status.changed": {

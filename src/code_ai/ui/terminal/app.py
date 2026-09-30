@@ -2632,10 +2632,12 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             return True
 
         def _refresh_status(self) -> None:
+            workspace = application.session.config.workspace.name
+            if self.vm.branch:
+                workspace = f"{workspace} @ {self.vm.branch}"
             status_line = (
                 f"{self.vm.status} | {self.vm.phase} | {application.session.config.model} | "
-                f"{application.session.config.workspace.name} | perm {self.vm.permission_mode} | "
-                f"plan {self.vm.plan_progress}"
+                f"{workspace} | perm {self.vm.permission_mode} | plan {self.vm.plan_progress}"
             )
             if self._changed("statusline", status_line):
                 self.query_one("#statusline", Static).update(status_line)
@@ -2732,6 +2734,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 f"status: {self.vm.status}\n"
                 f"phase: {self.vm.phase}\n"
                 f"workspace: {config.workspace}\n"
+                f"branch: {self.vm.branch or '-'}\n"
                 f"provider: {config.base_url}\n"
                 f"model: {config.model}\n"
                 f"api mode: {config.api_mode}\n"

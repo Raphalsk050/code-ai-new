@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 32,
-  "patch": 2,
-  "build": 64,
+  "minor": 33,
+  "patch": 0,
+  "build": 65,
   "updated": "2026-09-29",
-  "note": "Mac runtime ships as one archive"
+  "note": "Git branch shown in the TUI and VS Code"
 }

@@ -362,6 +362,28 @@ async def test_update_on_a_mac_runs_the_new_installer(tmp_path, monkeypatch) -> 
         assert any("v9.9.9 is installed" in line for line in terminal_app.vm.conversation)
 
 
+async def test_the_branch_shows_in_the_status_line_and_the_session_panel(tmp_path) -> None:
+    from textual.widgets import Static
+
+    terminal_app = create_terminal_app(
+        FakeTerminalApplication(tmp_path), config_path=tmp_path / "config.json"
+    )
+
+    async with terminal_app.run_test(size=(160, 40)) as pilot:
+        await terminal_app._on_event(_event("workspace.branch", {"branch": "feature/mac"}))
+        await pilot.pause()
+        status = str(terminal_app.query_one("#statusline", Static).render())
+        session = str(terminal_app.query_one("#session-info", Static).render())
+        assert f"{tmp_path.name} @ feature/mac" in status
+        assert "branch: feature/mac" in session
+
+        # Outside a repository: no "@", and a dash in the panel.
+        await terminal_app._on_event(_event("workspace.branch", {"branch": ""}, sequence=2))
+        await pilot.pause()
+        assert " @ " not in str(terminal_app.query_one("#statusline", Static).render())
+        assert "branch: -" in str(terminal_app.query_one("#session-info", Static).render())
+
+
 async def test_no_release_no_button(tmp_path, monkeypatch) -> None:
     from textual.widgets import Button
 

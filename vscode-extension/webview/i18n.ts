@@ -518,6 +518,7 @@ const PT: Record<string, string> = {
   "Update failed · retry": "Falhou · tentar de novo",
   "Update {0}": "Atualizar {0}",
   "Code-AI v{0} is out (this is v{1}).": "Saiu o Code-AI v{0} (este é o v{1}).",
+  "On the {0} branch": "Na branch {0}",
   "Sign in to update": "Entrar para atualizar",
   "Signing in…": "Entrando…",
   "Finish signing in in the window that opened.": "Termine o login na janela que abriu.",
