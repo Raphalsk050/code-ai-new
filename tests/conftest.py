@@ -48,15 +48,17 @@ def _isolate_other_agents(tmp_path_factory, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _no_release_lookups(monkeypatch):
-    """No test asks GitHub for releases; the ones about updates stub their own.
+    """No test asks GitHub for releases or profiles; the ones about updates stub
+    their own.
 
     Nor does any read the developer's own logins: no gh, no git credentials.
     """
 
-    async def no_release(**_kwargs):
+    async def nothing(**_kwargs):
         return None
 
-    monkeypatch.setattr(updates, "newest_release", no_release)
+    monkeypatch.setattr(updates, "newest_release", nothing)
+    monkeypatch.setattr(updates, "profile", nothing)
     monkeypatch.setattr(updates, "_run_tool", lambda *_args, **_kwargs: "")
     monkeypatch.setattr(updates, "_refused", set())
     for name in (

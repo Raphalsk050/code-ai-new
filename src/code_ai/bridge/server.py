@@ -559,6 +559,17 @@ class BridgeServer:
         path = await updates.download(asset, verify_ssl=verify)
         return {"path": str(path), "version": release.version}
 
+    async def _h_get_profile(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Who is signed in on the releases host, for the chat's avatar. {} when
+        no one is or the host is out of reach: the icon stays."""
+        verify = self._app.session.config.ssl_verification
+        try:
+            found = await updates.profile(verify_ssl=verify)
+        except Exception as exc:  # a picture is never worth an error on screen
+            logger.debug("Profile lookup failed: %s", exc)
+            return {}
+        return found.describe() if found else {}
+
     async def _h_shutdown(self, params: dict[str, Any]) -> dict[str, Any]:
         self._stop.set()
         return {"status": "closing"}
@@ -621,6 +632,7 @@ class BridgeServer:
         "checkForUpdate": _h_check_for_update,
         "signInForUpdates": _h_sign_in_for_updates,
         "downloadUpdate": _h_download_update,
+        "getProfile": _h_get_profile,
         "shutdown": _h_shutdown,
     }
 
@@ -661,6 +673,7 @@ class BridgeServer:
             "checkForUpdate",
             "signInForUpdates",
             "downloadUpdate",
+            "getProfile",
         }
     )
 

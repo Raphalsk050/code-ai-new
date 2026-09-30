@@ -3,10 +3,10 @@ import * as React from "react";
 import { t } from "./i18n";
 
 import type { AppMode } from "../src/protocol";
-import { IconBook, IconCI, IconWand } from "./icons";
+import { IconBook, IconBrand, IconWand } from "./icons";
 
 const MODES: { mode: AppMode; label: string; icon: JSX.Element; title: string }[] = [
-  { mode: "agent", label: "Agent", icon: <IconCI size={13} />, title: "Talk to the agent" },
+  { mode: "agent", label: "Agent", icon: <IconBrand size={13} />, title: "Talk to the agent" },
   {
     mode: "refactor",
     label: "Refactor",

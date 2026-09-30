@@ -409,6 +409,7 @@ const PT: Record<string, string> = {
   "Follow-up effort": "Esforço nos passos seguintes",
   "Ghost text in the editor, from the same provider.":
     "Ghost text no editor, pelo mesmo provedor.",
+  "Go to this message": "Ir para esta mensagem",
   "History": "Histórico",
   "How the extension behaves in the editor.": "Como a extensão se comporta no editor.",
   "In refactor mode, analyses the snippet as soon as you select it.":

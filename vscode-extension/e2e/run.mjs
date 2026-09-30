@@ -14,6 +14,7 @@ import { tests as settings } from "./settings.e2e.mjs";
 import { tests as mcp } from "./mcp.e2e.mjs";
 import { tests as update } from "./update.e2e.mjs";
 import { tests as branch } from "./branch.e2e.mjs";
+import { tests as transcript } from "./transcript.e2e.mjs";
 import { tests as flow } from "./flow.e2e.mjs";
 
 const GROUPS = [
@@ -23,7 +24,7 @@ const GROUPS = [
     ready: "#root .app",
     // The chat panel is a sidebar: its specs assume the width one has.
     viewport: { width: 900, height: 900 },
-    specs: { settings, mcp, update, branch },
+    specs: { settings, mcp, update, branch, transcript },
   },
   {
     name: "flow",

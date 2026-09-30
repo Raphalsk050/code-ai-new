@@ -54,13 +54,27 @@ button:focus-visible, .pressable:focus-visible, [tabindex]:focus-visible {
 }
 
 /* ---- entrances ---- */
-.row, .notice, .tool, .thinking { animation: rise-in var(--dur-base) var(--ease-out) both; }
+.block, .notice, .tool, .thinking { animation: rise-in var(--dur-base) var(--ease-out) both; }
+/* A new block rises with its first item already in it; that item rising again
+   inside would double the motion. */
+.block-body > :first-child { animation: none; }
+
+/* Where a click on the pinned request landed. A shadow, not padding, so the
+   highlight reaches past the text without moving it. */
+@keyframes landed {
+  from {
+    background-color: color-mix(in srgb, var(--accent) 26%, transparent);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 26%, transparent);
+  }
+  to { background-color: transparent; box-shadow: 0 0 0 4px transparent; }
+}
+.user-text.flash { border-radius: 3px; animation: landed 1.1s var(--ease-out); }
 .panel-card { animation: slide-in-right var(--dur-base) var(--ease-out) both; }
 .fade-in { animation: fade-in var(--dur-base) var(--ease-out) both; }
 
 /* Streaming text should not restage on every delta: only the first paint of a
    bubble animates, and the caret rides the last line. */
-.row-assistant .markdown > *:last-child::after {
+.assistant-text .markdown > *:last-child::after {
   content: "";
   display: none;
 }

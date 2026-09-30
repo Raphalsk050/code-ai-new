@@ -37,8 +37,8 @@ import {
 import {
   IconBack,
   IconBranch,
+  IconBrand,
   IconBroom,
-  IconCI,
   IconFile,
   IconPlus,
   IconRefresh,
@@ -52,7 +52,9 @@ import { mergeStatus } from "./mcp-form";
 import { INITIAL_MCP, McpViewState } from "./mcp-settings";
 import { MentionMenu } from "./mention-menu";
 import { applyMention, mentionPrefix, rankPaths } from "./mentions";
-import { activityLabel, formatElapsed, ItemView, TypingIndicator } from "./messages";
+import { agentKey, Block, groupBlocks } from "./blocks";
+import { activityLabel, BlockView, formatElapsed, TypingIndicator } from "./messages";
+import { PromptPin, usePromptPin } from "./prompt-pin";
 import { ModeSwitch } from "./mode-switch";
 import { ripple } from "./motion";
 import { QuestionsCard } from "./questions-card";
@@ -122,6 +124,8 @@ function App(): JSX.Element {
   const [editorDiff, setEditorDiff] = React.useState(false);
   // A newer release, once the backend has found one.
   const [update, setUpdate] = React.useState<UpdateView | null>(null);
+  // The user's picture on the releases host; the icon stands in until then.
+  const [avatar, setAvatar] = React.useState("");
 
   const [rootRef, width] = useContainerWidth<HTMLDivElement>();
   const scrollRef = React.useRef<HTMLDivElement>(null);
@@ -177,6 +181,9 @@ function App(): JSX.Element {
         );
       } else if (data?.type === "updateCleared") {
         setUpdate(null);
+      } else if (data?.type === "profile") {
+        const picture = String(data.avatar ?? "");
+        setAvatar(picture.startsWith("data:image/") ? picture : "");
       } else if (data?.type === "updateProgress") {
         setUpdate((u) => (u ? { ...u, state: data.state, message: data.message ?? "" } : u));
       } else if (data?.type === "mcpServers") {
@@ -321,10 +328,12 @@ function App(): JSX.Element {
   }, []);
 
   // -- autoscroll / auto-grow ---------------------------------------------
+  const pin = usePromptPin(scrollRef, pinnedRef);
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
     pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    pin.onScroll();
   };
   React.useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -341,6 +350,11 @@ function App(): JSX.Element {
   const items = state.transcript.items;
   const lastItem = items[items.length - 1];
   const showTyping = busy && lastItem?.kind !== "assistant";
+  const blocks = React.useMemo(() => groupBlocks(items), [items]);
+  const pinText = React.useMemo(() => {
+    const found = pin.target && items.find((item) => item.id === pin.target?.message);
+    return found && found.kind === "user" ? found.text : "";
+  }, [items, pin.target]);
 
   const updateMention = (text: string, caret: number) => {
     const prefix = mentionPrefix(text, caret);
@@ -772,6 +786,45 @@ function App(): JSX.Element {
     );
   }
 
+  // What is still live at the end of the agent's turn. It goes in the agent's
+  // box, which it opens itself when the user spoke last.
+  const elicitation = state.elicitations.pending[0];
+  const live =
+    showTyping || state.approvals.pending || state.questions.pending.length > 0 || elicitation ? (
+      <>
+        {showTyping && (
+          <TypingIndicator label={activityLabel(state.session)} heartbeat={state.session.heartbeat} />
+        )}
+        {state.approvals.pending && (
+          <ApprovalCard
+            approval={state.approvals.pending}
+            onResolve={resolveApproval}
+            onOpenDiff={editorDiff ? openDiff : undefined}
+          />
+        )}
+        {state.questions.pending.length > 0 && (
+          <QuestionsCard
+            questions={state.questions.pending}
+            onAnswer={(text) => send({ type: "answerQuestions", text })}
+          />
+        )}
+        {elicitation && (
+          <ElicitationCard
+            request={elicitation}
+            error={elicitErrors[elicitation.id] ?? ""}
+            onAnswer={(action, content) =>
+              send({ type: "mcpElicitation", id: elicitation.id, action, content })
+            }
+          />
+        )}
+      </>
+    ) : null;
+  const lastBlock = blocks[blocks.length - 1];
+  const shownBlocks: Block[] =
+    live && lastBlock?.speaker !== "agent"
+      ? [...blocks, { speaker: "agent", key: agentKey(lastBlock?.key ?? ""), items: [] }]
+      : blocks;
+
   const ctxChip = editorContext && includeContext;
   const ctxLabel = editorContext
     ? editorContext.selection && editorContext.startLine && editorContext.endLine
@@ -873,11 +926,12 @@ function App(): JSX.Element {
           {mode === "agent" ? (
             <>
               <div className="transcript" ref={scrollRef} onScroll={onScroll}>
+                <PromptPin target={pin.target} text={pinText} avatar={avatar} onGo={pin.go} />
                 <div className="transcript-inner">
-                  {items.length === 0 && !state.approvals.pending ? (
+                  {shownBlocks.length === 0 ? (
                     <div className="empty">
                       <div className="spark">
-                        <IconCI size={30} />
+                        <IconBrand size={30} />
                       </div>
                       <h2>Code-AI</h2>
                       <div>
@@ -886,42 +940,16 @@ function App(): JSX.Element {
                       </div>
                     </div>
                   ) : (
-                    items.map((item) => (
-                      <ItemView key={item.id} item={item} onOpenDiff={editorDiff ? openDiff : undefined} />
+                    shownBlocks.map((block, i) => (
+                      <BlockView
+                        key={block.key}
+                        block={block}
+                        avatar={avatar}
+                        onOpenDiff={editorDiff ? openDiff : undefined}
+                      >
+                        {i === shownBlocks.length - 1 && block.speaker === "agent" ? live : null}
+                      </BlockView>
                     ))
-                  )}
-                  {showTyping && (
-                    <TypingIndicator
-                      label={activityLabel(state.session)}
-                      heartbeat={state.session.heartbeat}
-                    />
-                  )}
-                  {state.approvals.pending && (
-                    <ApprovalCard
-                      approval={state.approvals.pending}
-                      onResolve={resolveApproval}
-                      onOpenDiff={editorDiff ? openDiff : undefined}
-                    />
-                  )}
-                  {state.questions.pending.length > 0 && (
-                    <QuestionsCard
-                      questions={state.questions.pending}
-                      onAnswer={(text) => send({ type: "answerQuestions", text })}
-                    />
-                  )}
-                  {state.elicitations.pending.length > 0 && (
-                    <ElicitationCard
-                      request={state.elicitations.pending[0]}
-                      error={elicitErrors[state.elicitations.pending[0].id] ?? ""}
-                      onAnswer={(action, content) =>
-                        send({
-                          type: "mcpElicitation",
-                          id: state.elicitations.pending[0].id,
-                          action,
-                          content,
-                        })
-                      }
-                    />
                   )}
                 </div>
               </div>

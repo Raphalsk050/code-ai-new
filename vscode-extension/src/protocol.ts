@@ -83,6 +83,7 @@ export type BridgeMethod =
   | "checkForUpdate"
   | "signInForUpdates"
   | "downloadUpdate"
+  | "getProfile"
   | "shutdown";
 
 /** Bridge methods whose whole answer is a listing to show the user. */
@@ -338,7 +339,9 @@ export type HostToWebview =
   | { type: "updateLogin"; host: string }
   | { type: "updateProgress"; state: UpdateState; message?: string }
   /** Signed in and nothing newer: the button goes away. */
-  | { type: "updateCleared" };
+  | { type: "updateCleared" }
+  /** Who is signed in on the releases host; `avatar` is a data: URI. */
+  | { type: "profile"; login: string; name: string; avatar: string };
 
 export type UpdateState =
   | "available"

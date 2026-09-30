@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 33,
-  "patch": 3,
-  "build": 68,
-  "updated": "2026-09-29",
-  "note": "New activity bar icon"
+  "minor": 34,
+  "patch": 0,
+  "build": 69,
+  "updated": "2026-09-30",
+  "note": "Chat boxes by speaker, pinned request, GitHub avatar"
 }

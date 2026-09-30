@@ -3,7 +3,8 @@
 Every CI build publishes a release tagged ``vX.Y.Z`` with the binaries and the
 VS Code packages named after the version (see .github/workflows and
 scripts/release.py). This module finds the newest one and downloads the asset
-that fits the machine; the front ends decide what installing it means.
+that fits the machine; the front ends decide what installing it means. With the
+same login it also says who is signed in there, for the chat's avatar.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from code_ai.version import read_version
 
@@ -305,19 +306,32 @@ def configured() -> bool:
     return RELEASES_REPOSITORY.strip() not in ("", _UNSET_REPOSITORY)
 
 
+async def _signed_get(
+    http: Any, url: str, *, anonymous: bool = True
+) -> tuple[Any, Credential | None]:
+    """GET ``url`` with this machine's login, moving past one the API refuses.
+
+    Without ``anonymous``, a machine with no login gets no request at all:
+    (None, None).
+    """
+    while True:
+        credential = await asyncio.to_thread(find_credential)
+        if credential is None and not anonymous:
+            return None, None
+        response = await http.get(url, headers=_signed(credential, url))
+        if response.status_code != 401 or credential is None or credential.explicit:
+            return response, credential
+        # A stale login; the next one, or none, gets the same question.
+        _refused.add(credential.secret)
+
+
 async def newest_release(*, verify_ssl: bool) -> Release | None:
     """The newest release the repository publishes, whatever its version."""
     if not configured():
         return None
     url = f"{RELEASES_API.rstrip('/')}/repos/{RELEASES_REPOSITORY}/releases?per_page=30"
     async with _client(verify_ssl) as http:
-        while True:
-            credential = await asyncio.to_thread(find_credential)
-            response = await http.get(url, headers=_signed(credential, url))
-            if response.status_code != 401 or credential is None or credential.explicit:
-                break
-            # A stale login; the next one, or none, gets the same question.
-            _refused.add(credential.secret)
+        response, credential = await _signed_get(http, url)
         if response.status_code in (401, 403, 404):
             where = f"{RELEASES_REPOSITORY} on {login_host()}"
             if credential is None:
@@ -367,6 +381,73 @@ async def sign_in(*, verify_ssl: bool) -> Release | None:
         # Turned down: dropped, as git drops a login a push was refused with.
         await asyncio.to_thread(_git_credential, "reject", login)
         raise
+
+
+# --- Who is signed in -----------------------------------------------------------
+
+# The chat shows it at 20px; 64 keeps it sharp on a HiDPI screen.
+_AVATAR_SIZE = 64
+_AVATAR_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
+_AVATAR_MAX_BYTES = 512 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class Profile:
+    login: str
+    name: str
+    # A data: URI, so the webview shows it without a network of its own.
+    avatar: str
+
+    def describe(self) -> dict[str, Any]:
+        return {"login": self.login, "name": self.name, "avatar": self.avatar}
+
+
+async def profile(*, verify_ssl: bool) -> Profile | None:
+    """Who this machine's login is on the releases host, with their picture.
+
+    The host and the login the update check uses, nothing of its own: None on a
+    machine with no login there, or when the host turns it down.
+    """
+    url = f"{RELEASES_API.rstrip('/')}/user"
+    async with _client(verify_ssl) as http:
+        response, credential = await _signed_get(http, url, anonymous=False)
+        if response is None or credential is None or response.status_code != 200:
+            return None
+        data = response.json()
+        if not isinstance(data, dict):
+            return None
+        picture = str(data.get("avatar_url") or "")
+        avatar = await _avatar(http, picture, credential) if picture else ""
+    return Profile(
+        login=str(data.get("login") or ""), name=str(data.get("name") or ""), avatar=avatar
+    )
+
+
+async def _avatar(http: Any, url: str, credential: Credential) -> str:
+    """The picture at ``url`` as a data: URI; "" when it cannot be had."""
+    parts = urlsplit(url)
+    query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k != "s"]
+    sized = urlunsplit(parts._replace(query=urlencode([*query, ("s", str(_AVATAR_SIZE))])))
+    headers = {"Accept": "image/*"}
+    response = await http.get(sized, headers=headers)
+    if response.status_code in (401, 403, 404) and _same_site(sized):
+        # A private-mode instance shows pictures to signed-in users only. The
+        # login goes to the releases host and its subdomains, never elsewhere.
+        response = await http.get(sized, headers={**headers, "Authorization": credential.header()})
+    kind = response.headers.get("content-type", "").split(";")[0].strip().lower()
+    body = response.content
+    if response.status_code != 200 or kind not in _AVATAR_TYPES or len(body) > _AVATAR_MAX_BYTES:
+        return ""
+    return f"data:{kind};base64,{base64.b64encode(body).decode('ascii')}"
+
+
+def _same_site(url: str) -> bool:
+    """Whether ``url`` is on the releases host or under it: GitHub Enterprise
+    serves pictures from avatars.<host>."""
+    host = (urlsplit(url).hostname or "").lower()
+    api = (urlsplit(RELEASES_API).hostname or "").lower()
+    site = login_host().split(":")[0]
+    return bool(host) and (host in (api, site) or host.endswith("." + site))
 
 
 async def download(

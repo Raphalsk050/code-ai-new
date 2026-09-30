@@ -97,19 +97,40 @@ body {
 .perm select:focus { outline: 1px solid var(--accent); }
 
 /* ---- transcript ---- */
-.transcript { flex: 1; overflow-y: auto; padding: 18px 0 8px; }
-.transcript-inner { max-width: 820px; margin: 0 auto; padding: 0 18px; }
+.transcript { flex: 1; overflow-y: auto; padding: 0 0 8px; }
+/* The top padding lives here, not on the scroller, so the pin's sticky anchor
+   sits flush with the scroller's top edge from the first pixel. */
+.transcript-inner { max-width: 820px; margin: 0 auto; padding: 18px 18px 0; }
 .empty {
   margin: 64px auto; max-width: 420px; text-align: center; color: var(--muted);
 }
 .empty .spark { color: var(--accent); margin-bottom: 10px; }
 .empty h2 { font-size: 15px; margin: 0 0 6px; color: var(--vscode-foreground); }
 
-/* ---- message rows ---- */
-.row { display: flex; gap: 12px; padding: 12px 0; }
-.row + .row { border-top: 1px solid color-mix(in srgb, var(--border) 50%, transparent); }
+/* ---- message blocks ---- */
+/* A run of messages from one side shares one quiet box, so where a request
+   ends and the agent's work on it begins is never in doubt. The user's hug the
+   right edge like a chat; the agent's take the width their work needs. */
+.block {
+  margin: 0 0 12px; padding: 9px 12px 11px; min-width: 0;
+  border: 1px solid var(--border); border-radius: var(--radius);
+}
+.block-user {
+  width: fit-content; max-width: min(85%, 620px); margin-left: auto;
+  background: rgba(127,127,127,.06);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+}
+.block-head {
+  display: flex; align-items: center; gap: 7px; margin-bottom: 6px;
+  font-size: 12px; font-weight: 600; opacity: .9;
+}
+.block-user .block-head { flex-direction: row-reverse; }
+.block-body { min-width: 0; }
+.block-body > :first-child { margin-top: 0; }
+.block-body > :last-child { margin-bottom: 0; }
 .avatar {
-  flex: none; width: 26px; height: 26px; border-radius: 7px;
+  flex: none; width: 20px; height: 20px; border-radius: 6px;
   display: flex; align-items: center; justify-content: center;
   color: #fff;
 }
@@ -117,10 +138,47 @@ body {
 .avatar-assistant {
   background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 40%, #a855f7));
 }
-.row-body { flex: 1; min-width: 0; }
-.row-name { font-weight: 600; font-size: 12px; margin-bottom: 2px; opacity: 0.9; }
-.row-content { min-width: 0; }
+.avatar-photo { object-fit: cover; }
+/* One line per send: each is what went to the model in one go. */
 .user-text { white-space: pre-wrap; word-wrap: break-word; }
+.user-text + .user-text {
+  margin-top: 7px; padding-top: 7px;
+  border-top: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.assistant-text { margin: 6px 0; }
+
+/* ---- pinned request ---- */
+/* Sticky with no height at the top of the scroller: the pin lies over the
+   transcript instead of taking room, so showing or hiding it never moves a
+   line under the reader. */
+.prompt-pin-anchor { position: sticky; top: 0; height: 0; z-index: 4; }
+/* Hung from the top edge over the content column: flush, so no cut-off line
+   peeks above it, and the side gutters it leaves are empty anyway. */
+.prompt-pin-anchor > .prompt-pin {
+  position: absolute; top: 0; left: 18px; right: 18px; max-width: 784px; margin: 0 auto;
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 11px 7px; border-radius: 0 0 8px 8px;
+  font: inherit; font-size: 12px; line-height: 1.45; text-align: left;
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+  border: 1px solid var(--border); border-top: none;
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+  box-shadow: 0 6px 12px -6px var(--vscode-widget-shadow, rgba(0,0,0,.35));
+  cursor: pointer;
+  opacity: 0; transform: translateY(-6px); visibility: hidden; pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out),
+    visibility 0s linear var(--dur-fast);
+}
+.prompt-pin-anchor > .prompt-pin.shown {
+  opacity: 1; transform: none; visibility: visible; pointer-events: auto;
+  transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+}
+.prompt-pin-anchor > .prompt-pin:hover { border-color: color-mix(in srgb, var(--accent) 60%, var(--border)); }
+.prompt-pin .avatar { border-radius: 5px; }
+.prompt-pin-text {
+  flex: 1; min-width: 0; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
 
 /* ---- markdown ---- */
 .markdown { word-wrap: break-word; }
@@ -167,11 +225,11 @@ body {
 /* ---- working note ---- */
 .working-note {
   color: var(--muted); font-style: italic; font-size: 12px;
-  padding: 2px 0 2px 38px; white-space: pre-wrap;
+  padding: 2px 0; white-space: pre-wrap;
 }
 
 /* ---- thinking ---- */
-.thinking { margin: 4px 0 4px 38px; }
+.thinking { margin: 4px 0; }
 .thinking-head {
   display: inline-flex; align-items: center; gap: 6px;
   background: none; border: none; color: var(--muted); cursor: pointer;
@@ -202,7 +260,7 @@ body {
 
 /* ---- tool cards ---- */
 .tool {
-  margin: 6px 0 6px 38px; border: 1px solid var(--border); border-radius: 8px;
+  margin: 6px 0; border: 1px solid var(--border); border-radius: 8px;
   background: var(--surface); overflow: hidden;
 }
 .tool-head { display: flex; align-items: center; gap: 8px; padding: 7px 11px; }
@@ -265,7 +323,7 @@ body {
 
 /* ---- notices ---- */
 .notice {
-  display: flex; align-items: center; gap: 7px; margin: 5px 0 5px 38px;
+  display: flex; align-items: center; gap: 7px; margin: 5px 0;
   font-size: 12px; color: var(--muted);
 }
 /* A listing (/rules, /agents) keeps its lines; long paths wrap. */

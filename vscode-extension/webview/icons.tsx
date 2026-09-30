@@ -20,13 +20,15 @@ export const IconUser = ({ size = 16, className }: IconProps) => (
   </svg>
 );
 
-// "CI" lettermark — the Code-AI brand glyph (matches media/icon.svg).
-export const IconCI = ({ size = 16, className }: IconProps) => (
-  <svg {...base(size)} className={className}>
-    <path d="M12.4 7.6 A5 5 0 1 0 12.4 16.4" />
-    <path d="M15.6 7 H19.4" />
-    <path d="M15.6 17 H19.4" />
-    <path d="M17.5 7 V17" />
+// The Code-AI glyph, the same drawing and frame as media/icon.svg. Filled,
+// unlike the stroked set above; evenodd cuts the eyes out.
+export const IconBrand = ({ size = 16, className }: IconProps) => (
+  <svg width={size} height={size} viewBox="1.34 -0.03 21.32 21.32" fill="currentColor" className={className}>
+    <path
+      fillRule="evenodd"
+      d="M12 3.6c5.3 0 8.6 3.1 8.6 8.2 0 5.4-3.4 8.6-8.6 8.6s-8.6-3.2-8.6-8.6c0-5.1 3.3-8.2 8.6-8.2zM9.45 9.6a1.25 1.25 0 0 0-1.25 1.25v2.3a1.25 1.25 0 0 0 2.5 0v-2.3A1.25 1.25 0 0 0 9.45 9.6zm5.1 0a1.25 1.25 0 0 0-1.25 1.25v2.3a1.25 1.25 0 0 0 2.5 0v-2.3a1.25 1.25 0 0 0-1.25-1.25z"
+    />
+    <path d="M12.4 3.9C12 2 13.6.6 16.1.9c.1 2-1.4 3.4-3.7 3z" />
   </svg>
 );
 

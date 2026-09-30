@@ -2,12 +2,13 @@ import * as React from "react";
 
 import { t, tf } from "./i18n";
 
+import type { Block } from "./blocks";
 import {
   IconAgents,
   IconBrain,
+  IconBrand,
   IconCheck,
   IconChevron,
-  IconCI,
   IconFile,
   IconGlobe,
   IconList,
@@ -27,6 +28,74 @@ import { ToolKind, toolKind } from "./tool-target";
 /** The tools whose change the editor can show as a diff. */
 const DIFF_TOOLS = new Set(["write_file", "edit_code"]);
 
+/**
+ * One box per run of messages from the same side: the user's hug the right edge
+ * like a chat, the agent's take the width its work needs. `children` is what is
+ * still live at the end of the agent's turn - the typing line, an approval.
+ */
+export function BlockView({
+  block,
+  avatar,
+  onOpenDiff,
+  children,
+}: {
+  block: Block;
+  /** The user's picture, as a data: URI; the icon stands in without one. */
+  avatar?: string;
+  onOpenDiff?: (path: string) => void;
+  children?: React.ReactNode;
+}): JSX.Element {
+  const user = block.speaker === "user";
+  const last = block.items[block.items.length - 1];
+  return (
+    <section
+      className={`block block-${block.speaker}`}
+      data-user-block={user ? block.key : undefined}
+      data-last-message={user ? last?.id : undefined}
+    >
+      <div className="block-head">
+        {user ? (
+          <UserAvatar src={avatar} />
+        ) : (
+          <span className="avatar avatar-assistant">
+            <IconBrand size={14} />
+          </span>
+        )}
+        <span className="block-name">{user ? t("You") : "Code-AI"}</span>
+      </div>
+      <div className="block-body">
+        {block.items.map((item) => (
+          <ItemView key={item.id} item={item} onOpenDiff={onOpenDiff} />
+        ))}
+        {children}
+      </div>
+    </section>
+  );
+}
+
+/** The user's GitHub picture when the backend found one, the icon otherwise. */
+export function UserAvatar({ src, size = 20 }: { src?: string; size?: number }): JSX.Element {
+  const [broken, setBroken] = React.useState(false);
+  React.useEffect(() => setBroken(false), [src]);
+  const style = { width: size, height: size };
+  if (src && !broken) {
+    return (
+      <img
+        className="avatar avatar-user avatar-photo"
+        style={style}
+        src={src}
+        alt=""
+        onError={() => setBroken(true)}
+      />
+    );
+  }
+  return (
+    <span className="avatar avatar-user" style={style}>
+      <IconUser size={Math.round(size * 0.6)} />
+    </span>
+  );
+}
+
 export function ItemView({
   item,
   onOpenDiff,
@@ -37,9 +106,18 @@ export function ItemView({
 }): JSX.Element | null {
   switch (item.kind) {
     case "user":
-      return <UserRow text={item.text} />;
+      // Each send keeps its own line: the pin finds it, and a click lands on it.
+      return (
+        <div className="user-text" data-user-msg={item.id}>
+          {item.text}
+        </div>
+      );
     case "assistant":
-      return <AssistantRow text={item.text} streaming={item.streaming} />;
+      return (
+        <div className="assistant-text">
+          <Markdown text={item.text} />
+        </div>
+      );
     case "working":
       return <WorkingRow text={item.text} />;
     case "thinking":
@@ -63,34 +141,6 @@ export function ItemView({
     default:
       return null;
   }
-}
-
-function Row(props: { role: string; avatar: React.ReactNode; name: string; children: React.ReactNode }) {
-  return (
-    <div className={`row row-${props.role}`}>
-      <div className={`avatar avatar-${props.role}`}>{props.avatar}</div>
-      <div className="row-body">
-        <div className="row-name">{props.name}</div>
-        <div className="row-content">{props.children}</div>
-      </div>
-    </div>
-  );
-}
-
-function UserRow({ text }: { text: string }) {
-  return (
-    <Row role="user" name={t("You")} avatar={<IconUser size={15} />}>
-      <div className="user-text">{text}</div>
-    </Row>
-  );
-}
-
-function AssistantRow({ text }: { text: string; streaming: boolean }) {
-  return (
-    <Row role="assistant" name="Code-AI" avatar={<IconCI size={15} />}>
-      <Markdown text={text} />
-    </Row>
-  );
 }
 
 function WorkingRow({ text }: { text: string }) {
@@ -231,15 +281,13 @@ export function activityLabel(session: SessionState): string {
 
 export function TypingIndicator({ label, heartbeat }: { label: string; heartbeat?: number }) {
   return (
-    <Row role="assistant" name="Code-AI" avatar={<IconCI size={15} />}>
-      <div className="typing">
-        <span />
-        <span />
-        <span />
-        <em>{label}</em>
-        {heartbeat ? <em className="typing-clock">· {formatElapsed(heartbeat)}</em> : null}
-      </div>
-    </Row>
+    <div className="typing">
+      <span />
+      <span />
+      <span />
+      <em>{label}</em>
+      {heartbeat ? <em className="typing-clock">· {formatElapsed(heartbeat)}</em> : null}
+    </div>
   );
 }
 

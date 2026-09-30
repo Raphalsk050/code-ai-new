@@ -16,6 +16,10 @@ from code_ai import updates
 from code_ai.bridge.server import BridgeServer
 
 _WORKFLOW = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "build-binaries.yml"
+# A 1x1 PNG, standing in for a GitHub avatar.
+_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
 
 
 def _release(tag: str, *, prerelease: bool = False, draft: bool = False, assets=()) -> dict:
@@ -108,11 +112,23 @@ def test_the_mac_build_says_where_it_lives_and_its_installer_is_run(
 
 
 class _FakeGitHub:
-    def __init__(self, listing: list[dict], *, private: bool = False, bad_tokens=()) -> None:
+    def __init__(
+        self,
+        listing: list[dict],
+        *,
+        private: bool = False,
+        bad_tokens=(),
+        user: dict | None = None,
+        private_avatars: bool = False,
+    ) -> None:
         self.listing = listing
         # A private repository looks missing to anyone not signed in.
         self.private = private
         self.bad_tokens = set(bad_tokens)
+        # GET /user, for whoever is signed in; its avatar_url is served here.
+        self.user = user
+        # A private-mode instance: pictures for signed-in users only.
+        self.private_avatars = private_avatars
         self.requests: list[tuple[str, dict[str, str]]] = []
 
     def __enter__(self) -> str:
@@ -125,9 +141,19 @@ class _FakeGitHub:
             def do_GET(self) -> None:  # noqa: N802 - http.server's naming
                 fake.requests.append((self.path, dict(self.headers)))
                 signed = self.headers.get("Authorization")
-                status = 200
+                status, kind = 200, "application/json"
                 if signed in fake.bad_tokens:
                     status, body = 401, b'{"message": "Bad credentials"}'
+                elif self.path.startswith("/avatars/"):
+                    if fake.private_avatars and not signed:
+                        status, body = 404, b""
+                    else:
+                        kind, body = "image/png", _PNG
+                elif self.path == "/user":
+                    if fake.user is None or not signed:
+                        status, body = 401, b'{"message": "Requires authentication"}'
+                    else:
+                        body = json.dumps(fake.user).encode()
                 elif fake.private and not signed:
                     status, body = 404, b'{"message": "Not Found"}'
                 elif "/releases" in self.path:
@@ -137,6 +163,7 @@ class _FakeGitHub:
                 else:
                     status, body = 404, b""
                 self.send_response(status)
+                self.send_header("Content-Type", kind)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -164,6 +191,7 @@ def github(monkeypatch):
         monkeypatch.setattr(updates, "RELEASES_REPOSITORY", "team/code-ai")
         # conftest keeps every test off GitHub; these talk to the fake one.
         monkeypatch.setattr(updates, "newest_release", _REAL_NEWEST)
+        monkeypatch.setattr(updates, "profile", _REAL_PROFILE)
         monkeypatch.setattr(updates, "current_version", lambda: "0.28.0")
         return fake
 
@@ -180,6 +208,7 @@ def github(monkeypatch):
 
 
 _REAL_NEWEST = updates.newest_release
+_REAL_PROFILE = updates.profile
 
 
 async def test_a_newer_release_is_found_and_its_file_downloaded(github, tmp_path) -> None:
@@ -470,3 +499,77 @@ async def test_the_placeholder_repository_is_never_asked(github, monkeypatch) ->
     with pytest.raises(ValueError, match="RELEASES_REPOSITORY"):
         await BridgeServer._h_download_update(_bridge(), {"target": "win32-x64"})
     assert fake.requests == []
+
+
+def _user(*, picture_host: str = "") -> dict:
+    """GET /user's answer, its picture on ``picture_host`` (the fake itself by default)."""
+    host = picture_host or updates.RELEASES_API
+    return {"login": "rafael", "name": "Rafael Morais", "avatar_url": f"{host}/avatars/u/7?v=4"}
+
+
+async def test_the_signed_in_user_and_their_picture_come_from_the_releases_host(
+    github, monkeypatch
+) -> None:
+    fake = github([], user={})
+    fake.user.update(_user())
+    monkeypatch.setenv(updates.RELEASES_TOKEN_ENV, "s3cret")
+
+    found = await updates.profile(verify_ssl=False)
+
+    assert found is not None and (found.login, found.name) == ("rafael", "Rafael Morais")
+    assert found.avatar == "data:image/png;base64," + base64.b64encode(_PNG).decode()
+    (user_path, user_headers), (picture_path, picture_headers) = fake.requests
+    assert user_path == "/user" and user_headers.get("Authorization") == "Bearer s3cret"
+    # A public picture goes unsigned, sized for the chat.
+    assert picture_path == "/avatars/u/7?v=4&s=64"
+    assert "Authorization" not in picture_headers
+
+
+async def test_no_login_means_no_profile_and_no_request(github) -> None:
+    fake = github([], user={"login": "rafael"})
+
+    assert await updates.profile(verify_ssl=False) is None
+    assert fake.requests == []
+
+
+async def test_a_private_instance_gets_the_login_for_its_pictures_and_no_other_host_does(
+    github, monkeypatch
+) -> None:
+    fake = github([], user={}, private_avatars=True)
+    fake.user.update(_user())
+    monkeypatch.setenv(updates.RELEASES_TOKEN_ENV, "s3cret")
+
+    found = await updates.profile(verify_ssl=False)
+
+    assert found is not None and found.avatar.startswith("data:image/png;base64,")
+    retry_path, retry_headers = fake.requests[-1]
+    assert retry_path.startswith("/avatars/")
+    assert retry_headers.get("Authorization") == "Bearer s3cret"
+
+    # The same picture under another host name: the login does not follow it.
+    fake.requests.clear()
+    fake.user.update(_user(picture_host=updates.RELEASES_API.replace("127.0.0.1", "localhost")))
+    found = await updates.profile(verify_ssl=False)
+
+    assert found is not None and found.login == "rafael" and found.avatar == ""
+    pictures = [headers for path, headers in fake.requests if path.startswith("/avatars/")]
+    assert pictures and all("Authorization" not in headers for headers in pictures)
+
+
+async def test_the_bridge_hands_over_the_profile_or_nothing(monkeypatch) -> None:
+    async def found(**_kwargs):
+        return updates.Profile(login="rafael", name="Rafael", avatar="data:image/png;base64,AA==")
+
+    async def unreachable(**_kwargs):
+        raise OSError("the proxy said no")
+
+    # conftest's stub: no login on this machine.
+    assert await BridgeServer._h_get_profile(_bridge(), {}) == {}
+    monkeypatch.setattr(updates, "profile", found)
+    assert await BridgeServer._h_get_profile(_bridge(), {}) == {
+        "login": "rafael",
+        "name": "Rafael",
+        "avatar": "data:image/png;base64,AA==",
+    }
+    monkeypatch.setattr(updates, "profile", unreachable)
+    assert await BridgeServer._h_get_profile(_bridge(), {}) == {}
