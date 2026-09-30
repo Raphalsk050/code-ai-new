@@ -182,7 +182,9 @@ async def test_a_project_command_writes_its_temp_files_into_the_sandbox(tmp_path
     assert result["stdout"].strip() == str(context.sandbox.layout.tmp)
 
 
-async def test_bytecode_from_a_project_run_lands_in_the_sandbox(tmp_path) -> None:
+async def test_bytecode_from_a_project_run_lands_in_the_sandbox(tmp_path, monkeypatch) -> None:
+    # A shell that turns bytecode off would leave nothing to find anywhere.
+    monkeypatch.delenv("PYTHONDONTWRITEBYTECODE", raising=False)
     context = make_context(tmp_path)
     (context.workspace.root / "module_under_test.py").write_text("VALUE = 1\n", encoding="utf-8")
     script = "import module_under_test; print(module_under_test.VALUE)"
