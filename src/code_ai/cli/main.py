@@ -215,6 +215,14 @@ def main(argv: list[str] | None = None) -> int:
 
         config = load_config(explicit_path=args.config, cli_overrides=_overrides(args))
         if args.headless or not config.show_ui:
+            if sys.stdin.isatty():
+                # Reading a terminal waits for Ctrl+D with nothing on screen,
+                # which is indistinguishable from a hang.
+                raise ConfigurationError(
+                    "Headless mode reads the task from stdin, and nothing is piped in: "
+                    'run `code-ai run "task"`, pipe it in, or set show_ui to true '
+                    "for the terminal UI."
+                )
             task = sys.stdin.read().strip()
             if not task:
                 raise ConfigurationError("No task provided on stdin for headless mode.")

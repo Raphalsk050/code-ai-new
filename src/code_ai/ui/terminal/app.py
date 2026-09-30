@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
+import faulthandler
 import logging
+import os
+import signal
+import sys
+import threading
+from collections.abc import Iterator
 from functools import partial
 from pathlib import Path
 from time import monotonic
@@ -2765,6 +2772,44 @@ def run_terminal_ui(
         print(f"Textual UI is unavailable: {exc}")
         return 2
 
-    application = build_application(config_path=config_path, cli_overrides=cli_overrides)
+    with _startup_watch():
+        application = build_application(config_path=config_path, cli_overrides=cli_overrides)
     create_terminal_app(application, config_path=config_path).run()
     return 0
+
+
+# Before the UI draws, nothing on screen says Code-AI is alive: past this, a
+# line does. CODE_AI_TRACE=1 dumps where it waits instead.
+_SLOW_START_S = 10.0
+
+
+@contextlib.contextmanager
+def _startup_watch() -> Iterator[None]:
+    """Say so when the session takes long to build, and make a stall locatable.
+
+    While it builds, Ctrl+\\ (SIGQUIT) prints where every thread is without
+    stopping anything, so a start that looks frozen can say what it waits on.
+    """
+    quit_signal = getattr(signal, "SIGQUIT", None)
+    if quit_signal is not None:
+        faulthandler.register(quit_signal, file=sys.stderr, all_threads=True, chain=False)
+    if os.environ.get("CODE_AI_TRACE"):
+        faulthandler.dump_traceback_later(_SLOW_START_S, repeat=True, file=sys.stderr)
+    hint = (
+        "press Ctrl+\\ to show where it waits"
+        if quit_signal is not None
+        else "set CODE_AI_TRACE=1 to show where it waits"
+    )
+    timer = threading.Timer(
+        _SLOW_START_S,
+        lambda: print(f"Code-AI is still starting ({hint})...", file=sys.stderr, flush=True),
+    )
+    timer.daemon = True
+    timer.start()
+    try:
+        yield
+    finally:
+        timer.cancel()
+        faulthandler.cancel_dump_traceback_later()
+        if quit_signal is not None:
+            faulthandler.unregister(quit_signal)

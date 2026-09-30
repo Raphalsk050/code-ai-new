@@ -275,3 +275,43 @@ def test_the_launcher_unpacks_the_runtime_on_the_first_start(tmp_path) -> None:
 
     assert not (bundle / "runtime.tar.gz").exists()
     assert not (bundle / ".unpacking").exists()
+
+
+def _runtime_archive() -> bytes:
+    """A runtime.tar.gz whose Python echoes how it was started."""
+    runtime = io.BytesIO()
+    with tarfile.open(fileobj=runtime, mode="w:gz") as tar:
+        python = b'#!/bin/sh\necho "ran $*"\n'
+        info = tarfile.TarInfo("runtime/bin/python3.12")
+        info.size, info.mode = len(python), 0o755
+        tar.addfile(info, io.BytesIO(python))
+    return runtime.getvalue()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="needs a POSIX shell")
+def test_a_lock_left_by_an_unpack_cut_off_is_taken_over_not_waited_on(tmp_path) -> None:
+    bundle = tmp_path / "code-ai-mac-arm64"
+    _write(bundle / "code-ai", mac.LAUNCHER).chmod(0o755)
+    _write(bundle / "runtime.tar.gz", _runtime_archive())
+    # What a Ctrl+C or a VS Code reload mid-unpack used to leave: a lock whose
+    # owner is gone, which the next start waited three silent minutes on.
+    _write(bundle / ".unpacking" / "pid", "999999")
+
+    ran = subprocess.run(
+        [str(bundle / "code-ai"), "x"], capture_output=True, text=True, timeout=30
+    )
+
+    assert ran.stdout.strip() == "ran -I -m code_ai x"
+    assert "unpacking its Python" in ran.stderr
+    assert not (bundle / ".unpacking").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="needs a POSIX shell")
+def test_a_bundle_without_its_python_says_so(tmp_path) -> None:
+    bundle = tmp_path / "code-ai-mac-arm64"
+    _write(bundle / "code-ai", mac.LAUNCHER).chmod(0o755)
+
+    ran = subprocess.run([str(bundle / "code-ai"), "x"], capture_output=True, text=True, timeout=30)
+
+    assert ran.returncode == 1
+    assert "install Code-AI again" in ran.stderr

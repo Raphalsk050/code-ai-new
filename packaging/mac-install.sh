@@ -42,6 +42,7 @@ if [ "$ARCH" = x64 ] && [ "$(uname -m)" = arm64 ]; then
   say "This Mac has an Apple chip: code-ai-mac-arm64-v$VERSION.sh runs faster than this one."
 fi
 
+say "Installing Code-AI v$VERSION ($ARCH)..."
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 line=$(awk '/^__CODE_AI_PAYLOAD__$/ { print NR + 1; exit }' "$0")
@@ -55,8 +56,20 @@ mkdir -p "$APP"
 dest="$APP/v$VERSION"
 rm -rf "$dest.partial"
 mv "$scratch/extension/bin" "$dest.partial"
-# Unpacked now, so the first start does not have to.
-tar -xzf "$dest.partial/runtime.tar.gz" -C "$dest.partial"
+# Unpacked now, so the first start does not have to. Thousands of files, each
+# one scanned by whatever antivirus the Mac runs: minutes on a company machine,
+# so it counts out loud instead of looking frozen.
+if [ "$quiet" = 1 ]; then
+  tar -xzf "$dest.partial/runtime.tar.gz" -C "$dest.partial"
+else
+  say "Unpacking its Python: a few thousand files, a minute or more."
+  { tar -xzvf "$dest.partial/runtime.tar.gz" -C "$dest.partial" 2>&1; echo $? > "$scratch/tar.status"; } |
+    awk 'NR % 1000 == 0 { printf "  %d files...\n", NR; fflush() }'
+  if [ "$(cat "$scratch/tar.status")" != 0 ]; then
+    echo "Unpacking Code-AI's Python failed: see the files above, or free up disk space." >&2
+    exit 1
+  fi
+fi
 rm "$dest.partial/runtime.tar.gz"
 xattr -dr com.apple.quarantine "$dest.partial" 2>/dev/null || true
 running=$(readlink "$APP/current" 2>/dev/null || true)
@@ -95,10 +108,14 @@ if [ "$vscode" = 1 ]; then
   done
   if [ -z "$code" ]; then
     say "VS Code was not found, so only the command was installed."
-  elif "$code" --install-extension "$scratch/code-ai.vsix" --force >/dev/null 2>&1; then
-    say "VS Code: the Code-AI extension is installed; reload VS Code to start it."
   else
-    say "VS Code refused the extension; install it from the release's .vsix instead."
+    say "Installing the VS Code extension..."
+    if "$code" --install-extension "$scratch/code-ai.vsix" --force > "$scratch/vscode.log" 2>&1; then
+      say "VS Code: the Code-AI extension is installed; reload VS Code to start it."
+    else
+      say "VS Code refused the extension; install it from the release's .vsix instead:"
+      [ "$quiet" = 1 ] || tail -n 5 "$scratch/vscode.log"
+    fi
   fi
 fi
 

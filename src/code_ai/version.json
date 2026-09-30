@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 34,
-  "patch": 3,
-  "build": 72,
+  "patch": 4,
+  "build": 73,
   "updated": "2026-09-30",
-  "note": "Private GitHub avatar through a signed-in browser"
+  "note": "macOS start says what it is doing"
 }

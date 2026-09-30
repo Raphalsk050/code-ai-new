@@ -128,28 +128,48 @@ while [ -L "$self" ]; do
 done
 here=$(cd "$(dirname "$self")" && pwd -P)
 python="$here/runtime/bin/python{PYTHON}"
+# CODE_AI_TRACE=1 shows every step here, and where Python is if it stalls.
+[ -z "${{CODE_AI_TRACE:-}}" ] || set -x
 # The runtime ships as one archive: as 11,000 loose files a VSIX takes minutes
 # to pack and to install. The first start unpacks it beside this script, once;
 # a second start meanwhile waits for it instead of unpacking it again.
+unpack() {{
+  echo "Code-AI: unpacking its Python, once (a minute or more)..." >&2
+  echo $$ > "$here/.unpacking/pid"
+  # Cut off halfway, it must not leave a lock the next start waits on.
+  trap 'rm -rf "$here/runtime.partial" "$here/.unpacking"; exit 130' INT TERM HUP
+  rm -rf "$here/runtime.partial"
+  mkdir "$here/runtime.partial"
+  if tar -xzf "$here/runtime.tar.gz" -C "$here/runtime.partial"; then
+    mv "$here/runtime.partial/runtime" "$here/runtime"
+    rm -f "$here/runtime.tar.gz"
+  fi
+  rm -rf "$here/runtime.partial" "$here/.unpacking"
+  trap - INT TERM HUP
+}}
 if [ ! -x "$python" ] && [ -f "$here/runtime.tar.gz" ]; then
   if mkdir "$here/.unpacking" 2>/dev/null; then
-    echo "Code-AI: unpacking its Python, once..." >&2
-    rm -rf "$here/runtime.partial"
-    mkdir "$here/runtime.partial"
-    if tar -xzf "$here/runtime.tar.gz" -C "$here/runtime.partial"; then
-      mv "$here/runtime.partial/runtime" "$here/runtime"
-      rm -f "$here/runtime.tar.gz"
-    fi
-    rm -rf "$here/runtime.partial" "$here/.unpacking"
+    unpack
   else
-    waited=0
-    while [ -d "$here/.unpacking" ] && [ ! -x "$python" ] && [ "$waited" -lt 180 ]; do
-      sleep 1
-      waited=$((waited + 1))
-    done
-    # An unpack that died leaves its lock: the next start tries again.
-    [ -x "$python" ] || rm -rf "$here/.unpacking"
+    owner=$(cat "$here/.unpacking/pid" 2>/dev/null || true)
+    if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
+      echo "Code-AI: another start is unpacking its Python; waiting for it..." >&2
+      waited=0
+      while [ -d "$here/.unpacking" ] && [ ! -x "$python" ] && [ "$waited" -lt 600 ]; do
+        sleep 1
+        waited=$((waited + 1))
+      done
+    else
+      # A lock with no live owner is an unpack that was cut off: nobody is
+      # coming to finish it, so this start does.
+      rm -rf "$here/.unpacking"
+      if mkdir "$here/.unpacking" 2>/dev/null; then unpack; fi
+    fi
   fi
+fi
+if [ ! -x "$python" ]; then
+  echo "Code-AI: its Python is missing from $here - install Code-AI again." >&2
+  exit 1
 fi
 # Unpacked from a browser download, the folder carries macOS's quarantine flag
 # and Gatekeeper refuses the Python in it ("could not verify"). Clearing the
