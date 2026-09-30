@@ -9,7 +9,7 @@ from code_ai.context.token_counting import TokenCount, TokenCounter
 from code_ai.core.errors import ContextCapacityError
 from code_ai.events.bus import AsyncEventBus
 from code_ai.providers.base import ModelProvider
-from code_ai.providers.models import Message, ModelRequest, ToolDefinition
+from code_ai.providers.models import FinishReason, Message, ModelRequest, ToolDefinition
 
 # How many of the most recent turns are always kept verbatim (never summarized).
 _RECENT_TURNS_KEPT = 8
@@ -27,24 +27,50 @@ _SUMMARY_INSTRUCTION = (
     "- Commands & tool results: important commands run and their key outcomes/errors.\n"
     "- Current state: what is done, what works, what is still broken.\n"
     "- Next steps: what remains to be done.\n"
-    "When the excerpt opens with an earlier compressed summary, the new summary "
-    "replaces it: carry every fact in it forward, then add what came after. "
-    "Keep file paths, identifiers, and error messages verbatim. Do not invent "
-    "anything. Output only the summary."
+    "{earlier}"
+    "Keep file paths, identifiers, numbers and error messages verbatim, and every "
+    "requirement the user stated, in their words where they are short. It is the "
+    "only record of this part of the session: use up to about {words} words, and "
+    "keep a fact rather than save the words. Do not invent anything. Output only "
+    "the summary."
 )
+# Summaries grow by appending: a compaction writes up what it folds and leaves
+# the earlier summary as it was. Asking the model to carry it forward rewrote it
+# every time, and each rewrite wore the oldest facts - the original request
+# among them - a little further away.
+_EARLIER_KEPT = (
+    "The excerpt opens with the summary of what came before it. That summary is "
+    "kept as it is: do not repeat it, summarize only what follows it, and use it "
+    "to make sense of that.\n"
+)
+# Past this share of the budget the summary itself is folded again, once.
+_EARLIER_FOLDED = (
+    "The excerpt opens with the summary of what came before it, and the new "
+    "summary replaces it: carry every fact in it forward, then add what came after.\n"
+)
+_SUMMARY_BUDGET_SHARE = 0.15
 _SUMMARY_HEADER = (
     "Compressed context summary. Requirements, decisions, file edits, and prior "
     "tool results retained:\n"
 )
-# Per-message cap when rendering the older excerpt for the summary request, so a
-# single huge tool result cannot blow past the window before we even summarize.
-# Head and tail both survive the cut: a test run or a traceback says what went
-# wrong at its end. An earlier summary is never cut - it is everything already
-# compressed, and cutting it lost most of it at the second compaction.
-_EXCERPT_MESSAGE_CHARS = 2000
-_EXCERPT_TAIL_CHARS = 800
-# The share of the input budget the summary request's excerpt may fill; the
-# oldest messages give way first, and the earlier summary never does.
+_LATER_HEADER = "\n\nLater in the session:\n"
+# The summary's length: a share of the excerpt it covers, within bounds. Fixed at
+# 4096 tokens, it had to hold whatever a compaction folded, at any window size.
+_SUMMARY_SHARE = 0.1
+_SUMMARY_MIN_TOKENS = 1024
+_SUMMARY_MAX_TOKENS = 8000
+# Output room for the thinking a reasoning model does before the summary, which
+# comes out of the same max_tokens.
+_THINKING_ROOM = 8192
+# Per-message caps when rendering the older excerpt for the summary request, the
+# largest that fits: short sessions go whole, long ones are cut until they fit.
+# Head and tail both survive a cut, since a test run or a traceback says what
+# went wrong at its end. The user's own messages are the requirements and are
+# cut only past their own, far larger cap; an earlier summary is never cut.
+_EXCERPT_CAPS = (16_000, 8_000, 4_000, 2_000)
+_EXCERPT_USER_CHARS = 24_000
+_EXCERPT_TAIL_SHARE = 0.4
+# The share of the input budget the summary request's excerpt may fill.
 _EXCERPT_BUDGET_SHARE = 0.6
 # Output room a request always keeps. Past it the reserve is only held back
 # when the prompt leaves room for it anyway: at 128k, holding the default 32k
@@ -61,7 +87,7 @@ _CARRIED_REQUEST_HEADER = (
     "Standing user request (restated after context compression; work already in "
     "progress, do not start over):\n"
 )
-_CARRIED_REQUEST_CHARS = 2000
+_CARRIED_REQUEST_CHARS = 12_000
 
 
 @dataclass(slots=True)
@@ -185,8 +211,9 @@ class ContextCompressor:
             {"active_tokens": tokens, "estimated": estimated},
             source="context",
         )
-        await self._compress_in_place(conversation)
-        conversation.reset_remote_state()
+        changed = await self._compress_in_place(conversation)
+        if changed:
+            conversation.reset_remote_state()
         recounted, _ = self.measure(conversation.messages, tools)
         if recounted > int(budget * self.target) and recounted > budget:
             await self.event_bus.emit(
@@ -202,12 +229,14 @@ class ContextCompressor:
             {"active_tokens": recounted, "estimated": estimated},
             source="context",
         )
-        return CompressionResult(True, recounted, estimated, tokens)
+        return CompressionResult(changed, recounted, estimated, tokens)
 
-    async def _compress_in_place(self, conversation: ConversationState) -> None:
+    async def _compress_in_place(self, conversation: ConversationState) -> bool:
+        """Fold the older messages into the summary; False when there were
+        none to fold."""
         messages = conversation.messages
         if len(messages) <= _RECENT_TURNS_KEPT:
-            return
+            return False
         system_messages = [message for message in messages if message.role == "system"]
         non_system = [message for message in messages if message.role != "system"]
 
@@ -221,11 +250,24 @@ class ContextCompressor:
         older = non_system[:split]
         recent = non_system[split:]
         if not older:
-            return
+            return False
 
+        earlier = "\n\n".join(
+            message.content.removeprefix(_SUMMARY_HEADER).strip()
+            for message in older
+            if _is_summary(message)
+        )
+        # A request restated at the last compaction is not news: its words went
+        # into that summary, and it is restated again below if still needed.
+        fresh = [message for message in older if not _is_carried(message)]
+        earlier_tokens = self.counter.count_text(earlier).tokens if earlier else 0
+        refold = earlier_tokens > self.budget * _SUMMARY_BUDGET_SHARE
+        if not fresh and not refold:
+            # Only the earlier summary is old enough to fold, and it has room.
+            return False
         summary_text: str | None = None
         try:
-            summary_text = await self._summarize(older)
+            summary_text = await self._summarize(fresh, earlier, earlier_tokens, refold=refold)
         except Exception as exc:  # pragma: no cover - provider/runtime failures.
             await self.event_bus.emit(
                 "context.compression.degraded",
@@ -234,7 +276,11 @@ class ContextCompressor:
             )
             summary_text = None
         if not summary_text:
-            summary_text = self._heuristic_summary(older)
+            summary_text = self._heuristic_summary(fresh)
+            # Nothing folded the earlier summary in: it goes on whole.
+            refold = False
+        if earlier and not refold:
+            summary_text = f"{earlier}{_LATER_HEADER}{summary_text}" if summary_text else earlier
 
         # The summary re-enters as a *conversation* turn, never as a second
         # ``system`` message. Chat templates render system content only at the
@@ -252,6 +298,7 @@ class ContextCompressor:
         if carried is not None:
             rebuilt.append(carried)
         conversation.messages = rebuilt + recent
+        return True
 
     @staticmethod
     def _carried_user_request(older: list[Message], recent: list[Message]) -> Message | None:
@@ -270,9 +317,11 @@ class ContextCompressor:
         if any(message.role == "user" for message in recent):
             return None
         for message in reversed(older):
-            if message.role != "user":
+            if message.role != "user" or _is_summary(message):
                 continue
-            text = (message.content or "").strip()
+            # A request restated at an earlier compaction is restated again as
+            # the user said it, not wrapped in a second header.
+            text = (message.content or "").removeprefix(_CARRIED_REQUEST_HEADER).strip()
             if not text:
                 continue
             return Message(
@@ -281,64 +330,117 @@ class ContextCompressor:
             )
         return None
 
-    async def _summarize(self, older: list[Message]) -> str | None:
+    async def _summarize(
+        self, fresh: list[Message], earlier: str, earlier_tokens: int, *, refold: bool
+    ) -> str | None:
         if self.provider is None:
             return None
-        excerpt = self._render_excerpt(older)
-        if not excerpt.strip():
+        excerpt, covered = self._render_excerpt(fresh, earlier)
+        if not covered and not refold:
             return None
+        # Folded again, the earlier summary keeps half its length: it is already
+        # dense, and a tenth of it would be a second summary of a summary.
+        wanted_size = covered * _SUMMARY_SHARE + (earlier_tokens * 0.5 if refold else 0)
+        size = min(
+            max(_SUMMARY_MIN_TOKENS, round(wanted_size)),
+            _SUMMARY_MAX_TOKENS,
+            max(_SUMMARY_MIN_TOKENS, round(self.budget * 0.1)),
+        )
+        effort = self.summary_effort() if self.summary_effort else None
+        # Unless the request switches thinking off, a reasoning model thinks
+        # first, and that comes out of the same max_tokens.
+        thinking = effort != "none"
+        guide = (_EARLIER_FOLDED if refold else _EARLIER_KEPT) if earlier else ""
+        instruction = _SUMMARY_INSTRUCTION.format(earlier=guide, words=round(size * 0.7))
+        messages = [
+            Message(role="system", content=instruction),
+            Message(role="user", content=excerpt),
+        ]
+        wanted = max(self.summary_max_tokens, size + (_THINKING_ROOM if thinking else 0))
+        # Never more than the window has left once the excerpt is in.
+        prompt, _ = self.measure(messages, [])
+        left = self.max_context_tokens - prompt - int(self.max_context_tokens * _WINDOW_SLACK)
         request = ModelRequest(
             model=self.model,
-            messages=[
-                Message(role="system", content=_SUMMARY_INSTRUCTION),
-                Message(role="user", content=excerpt),
-            ],
+            messages=messages,
             tools=[],
-            max_output_tokens=self.summary_max_tokens,
+            max_output_tokens=max(_SUMMARY_MIN_TOKENS, min(wanted, left)),
             use_remote_conversation_state=False,
-            reasoning_effort=self.summary_effort() if self.summary_effort else None,
+            reasoning_effort=effort,
         )
         response = await self.provider.complete(request)
         text = (response.text or "").strip()
+        if response.finish_reason is FinishReason.LENGTH:
+            if thinking and not response.reasoning:
+                # Cut off with nothing told apart from the thinking: the text may
+                # be all thinking, and stored as a summary it would be the record.
+                return None
+            if text:
+                text += "\n[summary cut short]"
         return text or None
 
-    def _render_excerpt(self, messages: list[Message]) -> str:
-        """The older messages as the summary request reads them: an earlier
-        summary whole, the rest clipped head and tail - and when even that is
-        more than the request has room for, the oldest of them left out."""
-        carried = [_excerpt_line(message) for message in messages if _is_carried(message)]
-        rest = [
-            line
-            for message in messages
-            if not _is_carried(message) and (line := _excerpt_line(message))
-        ]
+    def _render_excerpt(self, fresh: list[Message], earlier: str) -> tuple[str, int]:
+        """The messages being folded as the summary request reads them, and
+        how many tokens of them it holds.
+
+        Each is cut to the largest cap that lets them all fit. When even the
+        smallest is not enough, the user's own words still go in - they are
+        the requirements - and the rest follows newest first while there is
+        room. An earlier summary opens the excerpt whole.
+        """
         room = int(self.budget * _EXCERPT_BUDGET_SHARE)
-        room -= sum(self.counter.count_text(line).tokens for line in carried)
-        chosen: list[str] = []
-        for line in reversed(rest):
-            cost = self.counter.count_text(line).tokens
-            if cost > room:
+        parts: list[str] = []
+        if earlier:
+            parts.append(f"[earlier summary] {earlier}")
+            room -= self.counter.count_text(parts[0]).tokens
+        entries: list[tuple[bool, str, int]] = []
+        for cap in _EXCERPT_CAPS:
+            entries = [
+                (message.role == "user", line, self.counter.count_text(line).tokens)
+                for message in fresh
+                if (line := _excerpt_line(message, cap))
+            ]
+            if sum(cost for _, _, cost in entries) <= room:
                 break
-            chosen.append(line)
-            room -= cost
-        left_out = len(rest) - len(chosen)
-        gap = [f"[... {left_out} earlier messages left out to fit ...]"] if left_out else []
-        return "\n".join([*carried, *gap, *reversed(chosen)])
+        kept = [False] * len(entries)
+        for users_first in (True, False):
+            for index in reversed(range(len(entries))):
+                said, _, cost = entries[index]
+                if kept[index] or said is not users_first:
+                    continue
+                if cost > room:
+                    if users_first:
+                        continue
+                    break
+                kept[index] = True
+                room -= cost
+        covered = 0
+        skipped = 0
+        for (_, line, cost), keep in zip(entries, kept, strict=True):
+            if not keep:
+                skipped += 1
+                continue
+            if skipped:
+                parts.append(f"[... {skipped} earlier messages left out to fit ...]")
+                skipped = 0
+            parts.append(line)
+            covered += cost
+        if skipped:
+            parts.append(f"[... {skipped} later messages left out to fit ...]")
+        return "\n".join(parts), covered
 
     @staticmethod
-    def _heuristic_summary(older: list[Message]) -> str:
-        # An earlier summary goes on whole: it is all that is left of what it covers.
-        earlier = [
-            message.content.removeprefix(_SUMMARY_HEADER)
-            for message in older
-            if _is_carried(message)
-        ]
+    def _heuristic_summary(fresh: list[Message]) -> str:
         summary_lines = [
             f"- {message.role}: {message.content[:240].replace(chr(10), ' ')}"
-            for message in older
-            if message.content and not _is_carried(message)
+            for message in fresh
+            if message.content
         ]
-        return "\n".join([*earlier, *summary_lines[-80:]])
+        return "\n".join(summary_lines[-80:])
+
+
+def _is_summary(message: Message) -> bool:
+    return message.role == "user" and (message.content or "").startswith(_SUMMARY_HEADER)
 
 
 def _is_carried(message: Message) -> bool:
@@ -348,7 +450,7 @@ def _is_carried(message: Message) -> bool:
     )
 
 
-def _excerpt_line(message: Message) -> str:
+def _excerpt_line(message: Message, cap: int) -> str:
     if message.role == "tool":
         head = f"[tool:{message.name or 'tool'}]"
     elif message.role == "assistant" and message.tool_calls:
@@ -363,10 +465,14 @@ def _excerpt_line(message: Message) -> str:
     content = (message.content or "").strip()
     if not content:
         return head if message.tool_calls else ""
-    return f"{head} {content if _is_carried(message) else _clip(content)}"
+    if _is_carried(message):
+        return f"{head} {content}"
+    if message.role == "user":
+        cap = max(cap, _EXCERPT_USER_CHARS)
+    return f"{head} {_clip(content, cap, round(cap * _EXCERPT_TAIL_SHARE))}"
 
 
-def _clip(text: str, limit: int = _EXCERPT_MESSAGE_CHARS, tail: int = _EXCERPT_TAIL_CHARS) -> str:
+def _clip(text: str, limit: int, tail: int) -> str:
     """``text`` cut to ``limit`` characters, keeping its end as well as its start."""
     if len(text) <= limit:
         return text

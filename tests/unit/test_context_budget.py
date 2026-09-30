@@ -35,14 +35,18 @@ class _Summarizer:
 
     def __init__(self, summary: str = "") -> None:
         self.excerpts: list[str] = []
+        self.requests: list[ModelRequest] = []
         self.summary = summary
 
     async def complete(self, request: ModelRequest) -> ModelResponse:
+        self.requests.append(request)
         self.excerpts.append(request.messages[-1].content)
         return ModelResponse(text=self.summary or f"summary #{len(self.excerpts)}")
 
 
-def _compressor(provider=None, *, window: int = 20_000, reserve: int = 8_192) -> ContextCompressor:
+def _compressor(
+    provider=None, *, window: int = 20_000, reserve: int = 8_192, effort: str | None = None
+) -> ContextCompressor:
     return ContextCompressor(
         counter=TokenCounter(model="qwen3.8-27b"),
         max_context_tokens=window,
@@ -52,7 +56,12 @@ def _compressor(provider=None, *, window: int = 20_000, reserve: int = 8_192) ->
         event_bus=AsyncEventBus(),
         provider=provider,
         model="m",
+        summary_effort=(lambda: effort) if effort else None,
     )
+
+
+def _summary_of(conversation: ConversationState) -> str:
+    return next(m.content for m in conversation.messages if m.content.startswith(_SUMMARY_HEADER))
 
 
 def test_the_count_is_the_text_the_model_reads_not_its_json() -> None:
@@ -178,6 +187,137 @@ async def test_without_the_model_the_fallback_keeps_the_earlier_summary() -> Non
         m.content for m in conversation.messages if m.content.startswith(_SUMMARY_HEADER)
     )
     assert kept.strip() in summary
+
+
+async def test_a_later_compaction_leaves_the_earlier_summary_as_it_was() -> None:
+    first = "Task: fix the parser timeout; the default is 45 seconds."
+    provider = _Summarizer(summary=first)
+    compressor = _compressor(provider)
+    conversation = _long_session(12)
+
+    await compressor.ensure_capacity(conversation, [], force=True)
+    provider.summary = "The tokenizer replaced the regex."
+    conversation.messages.extend(_long_session(12).messages[2:])
+    await compressor.ensure_capacity(conversation, [], force=True)
+
+    # Written once and appended to: rewriting it every time is what wore the
+    # oldest facts away. The model is asked only for what came after it.
+    summary = _summary_of(conversation)
+    assert summary.index(first) < summary.index("The tokenizer replaced the regex.")
+    assert "do not repeat it" in provider.requests[1].messages[0].content
+
+
+async def test_a_summary_past_its_share_of_the_window_is_folded_again() -> None:
+    first = "Decisions: " + "; ".join(f"fact {i} about src/m{i}.py" for i in range(400))
+    provider = _Summarizer(summary=first)
+    compressor = _compressor(provider)
+    conversation = _long_session(12)
+
+    await compressor.ensure_capacity(conversation, [], force=True)
+    provider.summary = "merged"
+    conversation.messages.extend(_long_session(12).messages[2:])
+    await compressor.ensure_capacity(conversation, [], force=True)
+
+    assert _summary_of(conversation) == _SUMMARY_HEADER + "merged"
+    assert "carry every fact in it forward" in provider.requests[1].messages[0].content
+
+
+async def test_the_users_own_words_reach_the_summary_whole() -> None:
+    provider = _Summarizer()
+    compressor = _compressor(provider)
+    conversation = _long_session(12)
+    rules = "Regra do parser numero tal. " * 150
+    spec = rules + "O timeout padrao deve ser 45 segundos. " + rules
+    conversation.messages[1] = Message(role="user", content=spec)
+
+    await compressor.ensure_capacity(conversation, [], force=True)
+
+    # It was cut to its first 1200 and last 800 characters.
+    assert "O timeout padrao deve ser 45 segundos." in provider.excerpts[0]
+
+
+async def test_a_decision_mid_answer_reaches_the_summary_when_there_is_room() -> None:
+    provider = _Summarizer()
+    compressor = _compressor(provider, window=64_000)
+    conversation = _long_session(12)
+    reasoning = "Analisei o fluxo do parser. " * 60
+    answer = reasoning + "Decidi trocar o regex por um tokenizer manual. " + reasoning
+    conversation.messages.insert(2, Message(role="assistant", content=answer))
+
+    await compressor.ensure_capacity(conversation, [], force=True)
+
+    assert "Decidi trocar o regex por um tokenizer manual." in provider.excerpts[0]
+
+
+async def test_when_the_excerpt_must_shrink_the_users_words_are_the_last_to_go() -> None:
+    provider = _Summarizer()
+    compressor = _compressor(provider)
+    conversation = _long_session(200)
+
+    await compressor.ensure_capacity(conversation, [], force=True)
+
+    excerpt = provider.excerpts[0]
+    assert "earlier messages left out to fit" in excerpt
+    # The oldest message, and the one that says what the whole session is for.
+    assert "Verifique a precisão da compactação" in excerpt
+
+
+@pytest.mark.parametrize("effort,thinks", [("none", False), ("low", True), (None, True)])
+async def test_the_summary_has_room_to_think_unless_thinking_is_off(effort, thinks) -> None:
+    provider = _Summarizer()
+    compressor = _compressor(provider, window=128_000, effort=effort)
+
+    await compressor.ensure_capacity(_long_session(12), [], force=True)
+
+    room = provider.requests[0].max_output_tokens
+    assert (room > 8192) is thinks
+
+
+async def test_a_summary_cut_off_mid_thought_is_not_kept_as_the_record() -> None:
+    class CutOff:
+        async def complete(self, request: ModelRequest) -> ModelResponse:
+            return ModelResponse(
+                text="Hmm, let me think about which files matter here",
+                finish_reason=FinishReason.LENGTH,
+            )
+
+    compressor = _compressor(CutOff(), effort="low")
+    conversation = _long_session(12)
+
+    await compressor.ensure_capacity(conversation, [], force=True)
+
+    summary = _summary_of(conversation)
+    assert "let me think" not in summary
+    # The plain record of the messages stands in, as when the model fails.
+    assert "- tool:" in summary
+
+
+async def test_a_restated_request_is_restated_once_and_never_from_the_summary() -> None:
+    compressor = _compressor(_Summarizer())
+    conversation = _long_session(12)
+
+    await compressor.ensure_capacity(conversation, [], force=True)
+    conversation.messages.extend(_long_session(12).messages[2:])
+    await compressor.ensure_capacity(conversation, [], force=True)
+
+    restated = [m.content for m in conversation.messages if "Standing user request" in m.content]
+    assert len(restated) == 1
+    assert restated[0].count("Standing user request") == 1
+    assert "Verifique a precisão da compactação" in restated[0]
+
+
+async def test_compacting_with_nothing_new_to_fold_changes_nothing() -> None:
+    provider = _Summarizer()
+    compressor = _compressor(provider)
+    conversation = _long_session(12)
+    await compressor.ensure_capacity(conversation, [], force=True)
+    before = list(conversation.messages)
+
+    result = await compressor.ensure_capacity(conversation, [], force=True)
+
+    assert not result.compressed
+    assert conversation.messages == before
+    assert len(provider.requests) == 1
 
 
 # --- through the orchestrator ------------------------------------------------------

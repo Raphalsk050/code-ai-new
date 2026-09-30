@@ -265,11 +265,13 @@ async def test_compression_summary_thinks_at_the_light_effort_read_per_call() ->
 
     await compressor.ensure_capacity(conversation, [], force=True)
     effort["value"] = "minimal"
+    for index in range(10):
+        conversation.messages.append(Message(role="user", content=f"new message {index}"))
     await compressor.ensure_capacity(conversation, [], force=True)
 
     assert [request.reasoning_effort for request in provider.requests] == ["low", "minimal"]
-    # Room for the thinking that comes before the summary itself.
-    assert provider.requests[0].max_output_tokens == 4096
+    # Never more output than the 4096 window has left once the excerpt is in.
+    assert all(request.max_output_tokens < 4096 for request in provider.requests)
 
 
 async def test_compression_falls_back_to_heuristic_when_summary_call_fails() -> None:
