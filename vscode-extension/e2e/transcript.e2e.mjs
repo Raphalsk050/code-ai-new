@@ -267,14 +267,20 @@ export const tests = {
     await ui.fromHost(envelope("client.load", { items: exchange(1, 1) }));
     assert(await ui.page.$(".block-user .avatar-user svg"), "the icon without a profile");
 
-    await ui.fromHost({ type: "profile", login: "rafael", name: "Rafael", avatar: PNG });
+    // No picture: the icon stays, and says why on hover.
+    const why = "no login for github.sec.samsung.net on this machine";
+    await ui.fromHost({ type: "profile", login: "", name: "", avatar: "", problem: why });
+    const title = await ui.page.getAttribute(".block-user .avatar-user", "title");
+    assert(title && title.includes(why), `the icon's hover says ${title}`);
+
+    await ui.fromHost({ type: "profile", login: "rafael", name: "Rafael", avatar: PNG, problem: "" });
     await ui.page.waitForSelector(".block-user img.avatar-photo");
     await ui.shot("transcript-avatar");
 
-    await ui.fromHost({ type: "profile", login: "rafael", name: "Rafael", avatar: "https://example.com/a.png" });
+    await ui.fromHost({ type: "profile", login: "rafael", name: "Rafael", avatar: "https://example.com/a.png", problem: "" });
     assert(await ui.page.$(".block-user .avatar-user svg"), "only a data: image is taken");
 
-    await ui.fromHost({ type: "profile", login: "rafael", name: "Rafael", avatar: "data:image/png;base64,AAAA" });
+    await ui.fromHost({ type: "profile", login: "rafael", name: "Rafael", avatar: "data:image/png;base64,AAAA", problem: "" });
     await ui.page.waitForSelector(".block-user .avatar-user svg");
   },
 };

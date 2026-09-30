@@ -124,8 +124,9 @@ function App(): JSX.Element {
   const [editorDiff, setEditorDiff] = React.useState(false);
   // A newer release, once the backend has found one.
   const [update, setUpdate] = React.useState<UpdateView | null>(null);
-  // The user's picture on the releases host; the icon stands in until then.
-  const [avatar, setAvatar] = React.useState("");
+  // The user's picture on the releases host; the icon stands in until then,
+  // with the reason there is none on hover.
+  const [avatar, setAvatar] = React.useState({ src: "", problem: "" });
 
   const [rootRef, width] = useContainerWidth<HTMLDivElement>();
   const scrollRef = React.useRef<HTMLDivElement>(null);
@@ -183,7 +184,10 @@ function App(): JSX.Element {
         setUpdate(null);
       } else if (data?.type === "profile") {
         const picture = String(data.avatar ?? "");
-        setAvatar(picture.startsWith("data:image/") ? picture : "");
+        setAvatar({
+          src: picture.startsWith("data:image/") ? picture : "",
+          problem: String(data.problem ?? ""),
+        });
       } else if (data?.type === "updateProgress") {
         setUpdate((u) => (u ? { ...u, state: data.state, message: data.message ?? "" } : u));
       } else if (data?.type === "mcpServers") {
@@ -926,7 +930,7 @@ function App(): JSX.Element {
           {mode === "agent" ? (
             <>
               <div className="transcript" ref={scrollRef} onScroll={onScroll}>
-                <PromptPin target={pin.target} text={pinText} avatar={avatar} onGo={pin.go} />
+                <PromptPin target={pin.target} text={pinText} avatar={avatar.src} onGo={pin.go} />
                 <div className="transcript-inner">
                   {shownBlocks.length === 0 ? (
                     <div className="empty">
@@ -944,7 +948,8 @@ function App(): JSX.Element {
                       <BlockView
                         key={block.key}
                         block={block}
-                        avatar={avatar}
+                        avatar={avatar.src}
+                        avatarProblem={avatar.problem}
                         onOpenDiff={editorDiff ? openDiff : undefined}
                       >
                         {i === shownBlocks.length - 1 && block.speaker === "agent" ? live : null}

@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 34,
-  "patch": 0,
-  "build": 69,
+  "patch": 1,
+  "build": 70,
   "updated": "2026-09-30",
-  "note": "Chat boxes by speaker, pinned request, GitHub avatar"
+  "note": "Say why the GitHub avatar is missing"
 }

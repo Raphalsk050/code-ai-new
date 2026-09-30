@@ -145,7 +145,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Set while the releases host wants a login; the button offers it. */
   private loginHost?: string;
   /** Who is signed in on the releases host: the chat's user avatar. */
-  private profile?: { login: string; name: string; avatar: string };
+  private profile?: { login: string; name: string; avatar: string; problem: string };
   private mode: AppMode = "agent";
   private autoRunRefactor = false;
   // Inline code hints (editor ghost text). Enabled state + model are mirrored
@@ -1000,16 +1000,25 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     const client = this.client;
     if (!client) return;
     try {
-      const found = await client.request<{ login?: string; name?: string; avatar?: string }>(
-        "getProfile",
-        {},
-        60_000
-      );
-      if (!found?.avatar) return;
-      this.profile = { login: found.login ?? "", name: found.name ?? "", avatar: found.avatar };
+      const found = await client.request<{
+        login?: string;
+        name?: string;
+        avatar?: string;
+        problem?: string;
+      }>("getProfile", {}, 60_000);
+      if (!found) return;
+      this.profile = {
+        login: found.login ?? "",
+        name: found.name ?? "",
+        avatar: found.avatar ?? "",
+        problem: found.problem ?? "",
+      };
+      // The backend log has it too; this is for whoever opens the dev tools.
+      if (this.profile.problem) console.warn(`[code-ai] no GitHub picture: ${this.profile.problem}`);
       this.postProfile();
     } catch (err) {
-      console.debug("[code-ai] profile lookup failed", err);
+      // An older backend has no getProfile: the icon stays, and that is all.
+      console.warn("[code-ai] profile lookup failed", err);
     }
   }
 
@@ -1048,7 +1057,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       this.loginHost = undefined;
       this.updateProblem = undefined;
       // A first login on this machine: the picture can be had now.
-      if (!this.profile) void this.loadProfile();
+      if (!this.profile?.avatar) void this.loadProfile();
       if (found?.version) {
         this.update = found;
         this.postUpdate();
@@ -1122,7 +1131,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   private async resume(client: BridgeClient, reason: StartReason): Promise<void> {
     this.scheduleUpdateChecks();
     // Alongside the first update check, not ahead of the conversation's reload.
-    if (!this.profile) setTimeout(() => void this.loadProfile(), UPDATE_FIRST_CHECK_MS);
+    if (!this.profile?.avatar) setTimeout(() => void this.loadProfile(), UPDATE_FIRST_CHECK_MS);
     // Taken now: the new backend announces READY as it starts, which would
     // otherwise clear the turn this is about to send again.
     const interrupted = reason === "crash" ? this.inFlight.splice(0) : [];

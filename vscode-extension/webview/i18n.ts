@@ -410,6 +410,8 @@ const PT: Record<string, string> = {
   "Ghost text in the editor, from the same provider.":
     "Ghost text no editor, pelo mesmo provedor.",
   "Go to this message": "Ir para esta mensagem",
+  "No GitHub picture: {0}": "Sem foto do GitHub: {0}",
+  "the picture did not decode": "a imagem não abriu",
   "History": "Histórico",
   "How the extension behaves in the editor.": "Como a extensão se comporta no editor.",
   "In refactor mode, analyses the snippet as soon as you select it.":

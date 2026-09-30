@@ -560,15 +560,19 @@ class BridgeServer:
         return {"path": str(path), "version": release.version}
 
     async def _h_get_profile(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Who is signed in on the releases host, for the chat's avatar. {} when
-        no one is or the host is out of reach: the icon stays."""
+        """Who is signed in on the releases host, for the chat's avatar. Without
+        a picture the icon stays, and ``problem`` says why."""
         verify = self._app.session.config.ssl_verification
         try:
             found = await updates.profile(verify_ssl=verify)
         except Exception as exc:  # a picture is never worth an error on screen
-            logger.debug("Profile lookup failed: %s", exc)
+            found = updates.Profile("", "", "", f"the lookup failed: {type(exc).__name__}: {exc}")
+        if found is None:
             return {}
-        return found.describe() if found else {}
+        if found.problem:
+            # Nothing below WARNING reaches the Code-AI Backend output channel.
+            logger.warning("No GitHub picture for the chat avatar: %s", found.problem)
+        return found.describe()
 
     async def _h_shutdown(self, params: dict[str, Any]) -> dict[str, Any]:
         self._stop.set()

@@ -36,12 +36,15 @@ const DIFF_TOOLS = new Set(["write_file", "edit_code"]);
 export function BlockView({
   block,
   avatar,
+  avatarProblem,
   onOpenDiff,
   children,
 }: {
   block: Block;
   /** The user's picture, as a data: URI; the icon stands in without one. */
   avatar?: string;
+  /** Why there is no picture, shown on the icon's hover. */
+  avatarProblem?: string;
   onOpenDiff?: (path: string) => void;
   children?: React.ReactNode;
 }): JSX.Element {
@@ -55,7 +58,7 @@ export function BlockView({
     >
       <div className="block-head">
         {user ? (
-          <UserAvatar src={avatar} />
+          <UserAvatar src={avatar} problem={avatarProblem} />
         ) : (
           <span className="avatar avatar-assistant">
             <IconBrand size={14} />
@@ -73,8 +76,20 @@ export function BlockView({
   );
 }
 
-/** The user's GitHub picture when the backend found one, the icon otherwise. */
-export function UserAvatar({ src, size = 20 }: { src?: string; size?: number }): JSX.Element {
+/**
+ * The user's GitHub picture when the backend found one, the icon otherwise -
+ * and then the icon says why on hover, since a missing picture is otherwise
+ * indistinguishable from one never asked for.
+ */
+export function UserAvatar({
+  src,
+  problem,
+  size = 20,
+}: {
+  src?: string;
+  problem?: string;
+  size?: number;
+}): JSX.Element {
   const [broken, setBroken] = React.useState(false);
   React.useEffect(() => setBroken(false), [src]);
   const style = { width: size, height: size };
@@ -89,8 +104,13 @@ export function UserAvatar({ src, size = 20 }: { src?: string; size?: number }):
       />
     );
   }
+  const why = broken ? t("the picture did not decode") : problem;
   return (
-    <span className="avatar avatar-user" style={style}>
+    <span
+      className="avatar avatar-user"
+      style={style}
+      title={why ? tf("No GitHub picture: {0}", why) : undefined}
+    >
       <IconUser size={Math.round(size * 0.6)} />
     </span>
   );

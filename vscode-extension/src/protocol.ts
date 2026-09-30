@@ -340,8 +340,9 @@ export type HostToWebview =
   | { type: "updateProgress"; state: UpdateState; message?: string }
   /** Signed in and nothing newer: the button goes away. */
   | { type: "updateCleared" }
-  /** Who is signed in on the releases host; `avatar` is a data: URI. */
-  | { type: "profile"; login: string; name: string; avatar: string };
+  /** Who is signed in on the releases host; `avatar` is a data: URI, and
+   * `problem` says why there is none. */
+  | { type: "profile"; login: string; name: string; avatar: string; problem: string };
 
 export type UpdateState =
   | "available"

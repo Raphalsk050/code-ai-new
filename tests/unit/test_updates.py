@@ -119,7 +119,7 @@ class _FakeGitHub:
         private: bool = False,
         bad_tokens=(),
         user: dict | None = None,
-        private_avatars: bool = False,
+        avatars: str = "public",
     ) -> None:
         self.listing = listing
         # A private repository looks missing to anyone not signed in.
@@ -127,8 +127,10 @@ class _FakeGitHub:
         self.bad_tokens = set(bad_tokens)
         # GET /user, for whoever is signed in; its avatar_url is served here.
         self.user = user
-        # A private-mode instance: pictures for signed-in users only.
-        self.private_avatars = private_avatars
+        # Who may see a picture: "public", "signed" (any login), "token" (a
+        # login sent as `token ...` only), or "browser" (private mode: anything
+        # without a browser session is sent to sign in).
+        self.avatars = avatars
         self.requests: list[tuple[str, dict[str, str]]] = []
 
     def __enter__(self) -> str:
@@ -145,10 +147,24 @@ class _FakeGitHub:
                 if signed in fake.bad_tokens:
                     status, body = 401, b'{"message": "Bad credentials"}'
                 elif self.path.startswith("/avatars/"):
-                    if fake.private_avatars and not signed:
-                        status, body = 404, b""
-                    else:
+                    allowed = {
+                        "public": True,
+                        "signed": bool(signed),
+                        "token": (signed or "").startswith("token "),
+                        "browser": False,
+                    }[fake.avatars]
+                    if fake.avatars == "browser":
+                        self.send_response(302)
+                        self.send_header("Location", "/login?return_to=" + self.path)
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                        return
+                    if allowed:
                         kind, body = "image/png", _PNG
+                    else:
+                        status, body = 404, b""
+                elif self.path.startswith("/login"):
+                    kind, body = "text/html", b"<html>Sign in</html>"
                 elif self.path == "/user":
                     if fake.user is None or not signed:
                         status, body = 401, b'{"message": "Requires authentication"}'
@@ -525,17 +541,20 @@ async def test_the_signed_in_user_and_their_picture_come_from_the_releases_host(
     assert "Authorization" not in picture_headers
 
 
-async def test_no_login_means_no_profile_and_no_request(github) -> None:
+async def test_no_login_means_no_request_and_says_so(github) -> None:
     fake = github([], user={"login": "rafael"})
 
-    assert await updates.profile(verify_ssl=False) is None
+    found = await updates.profile(verify_ssl=False)
+
+    assert (found.login, found.avatar) == ("", "")
+    assert found.problem == f"no login for {updates.login_host()} on this machine"
     assert fake.requests == []
 
 
 async def test_a_private_instance_gets_the_login_for_its_pictures_and_no_other_host_does(
     github, monkeypatch
 ) -> None:
-    fake = github([], user={}, private_avatars=True)
+    fake = github([], user={}, avatars="signed")
     fake.user.update(_user())
     monkeypatch.setenv(updates.RELEASES_TOKEN_ENV, "s3cret")
 
@@ -544,7 +563,7 @@ async def test_a_private_instance_gets_the_login_for_its_pictures_and_no_other_h
     assert found is not None and found.avatar.startswith("data:image/png;base64,")
     retry_path, retry_headers = fake.requests[-1]
     assert retry_path.startswith("/avatars/")
-    assert retry_headers.get("Authorization") == "Bearer s3cret"
+    assert retry_headers.get("Authorization") == "token s3cret"
 
     # The same picture under another host name: the login does not follow it.
     fake.requests.clear()
@@ -552,24 +571,58 @@ async def test_a_private_instance_gets_the_login_for_its_pictures_and_no_other_h
     found = await updates.profile(verify_ssl=False)
 
     assert found is not None and found.login == "rafael" and found.avatar == ""
+    assert found.problem.endswith("answered 404 with application/json")
     pictures = [headers for path, headers in fake.requests if path.startswith("/avatars/")]
     assert pictures and all("Authorization" not in headers for headers in pictures)
 
 
-async def test_the_bridge_hands_over_the_profile_or_nothing(monkeypatch) -> None:
+async def test_a_host_that_takes_the_login_only_as_token_still_shows_the_picture(
+    github, monkeypatch
+) -> None:
+    fake = github([], user={}, avatars="token")
+    fake.user.update(_user())
+    monkeypatch.setenv(updates.RELEASES_TOKEN_ENV, "s3cret")
+
+    found = await updates.profile(verify_ssl=False)
+
+    assert found.avatar.startswith("data:image/png;base64,") and found.problem == ""
+    assert fake.requests[-1][1].get("Authorization") == "token s3cret"
+
+
+async def test_a_picture_behind_the_sign_in_page_says_so(github, monkeypatch) -> None:
+    fake = github([], user={}, avatars="browser")
+    fake.user.update(_user())
+    monkeypatch.setenv(updates.RELEASES_TOKEN_ENV, "s3cret")
+
+    found = await updates.profile(verify_ssl=False)
+
+    assert found.login == "rafael" and found.avatar == ""
+    assert "sign-in page" in found.problem and "/avatars/u/7" in found.problem
+    # Unsigned, then the login both ways, before giving up.
+    tries = [h.get("Authorization") for path, h in fake.requests if path.startswith("/avatars/")]
+    assert tries == [None, "token s3cret", "Bearer s3cret"]
+
+
+async def test_the_bridge_hands_over_the_profile_or_says_why_not(monkeypatch, caplog) -> None:
     async def found(**_kwargs):
         return updates.Profile(login="rafael", name="Rafael", avatar="data:image/png;base64,AA==")
 
     async def unreachable(**_kwargs):
         raise OSError("the proxy said no")
 
-    # conftest's stub: no login on this machine.
+    # conftest's stub answers nothing at all.
     assert await BridgeServer._h_get_profile(_bridge(), {}) == {}
     monkeypatch.setattr(updates, "profile", found)
     assert await BridgeServer._h_get_profile(_bridge(), {}) == {
         "login": "rafael",
         "name": "Rafael",
         "avatar": "data:image/png;base64,AA==",
+        "problem": "",
     }
     monkeypatch.setattr(updates, "profile", unreachable)
-    assert await BridgeServer._h_get_profile(_bridge(), {}) == {}
+    with caplog.at_level("WARNING"):
+        answer = await BridgeServer._h_get_profile(_bridge(), {})
+    assert answer["avatar"] == ""
+    assert answer["problem"] == "the lookup failed: OSError: the proxy said no"
+    # The reason reaches the backend log, which the extension shows.
+    assert "the proxy said no" in caplog.text

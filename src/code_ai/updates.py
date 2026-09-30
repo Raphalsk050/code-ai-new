@@ -397,48 +397,77 @@ class Profile:
     name: str
     # A data: URI, so the webview shows it without a network of its own.
     avatar: str
+    # Why there is no avatar, in one line; "" when there is one.
+    problem: str = ""
 
     def describe(self) -> dict[str, Any]:
-        return {"login": self.login, "name": self.name, "avatar": self.avatar}
+        return {
+            "login": self.login,
+            "name": self.name,
+            "avatar": self.avatar,
+            "problem": self.problem,
+        }
 
 
-async def profile(*, verify_ssl: bool) -> Profile | None:
+async def profile(*, verify_ssl: bool) -> Profile:
     """Who this machine's login is on the releases host, with their picture.
 
-    The host and the login the update check uses, nothing of its own: None on a
-    machine with no login there, or when the host turns it down.
+    The host and the login the update check uses, nothing of its own. Without a
+    picture, ``problem`` says why: no login here, the host turning it down, or a
+    picture only a browser session may see.
     """
+    host = login_host()
     url = f"{RELEASES_API.rstrip('/')}/user"
     async with _client(verify_ssl) as http:
         response, credential = await _signed_get(http, url, anonymous=False)
-        if response is None or credential is None or response.status_code != 200:
-            return None
+        if response is None or credential is None:
+            return Profile("", "", "", f"no login for {host} on this machine")
+        if response.status_code != 200:
+            return Profile("", "", "", f"{host} answered {response.status_code} for the login")
         data = response.json()
         if not isinstance(data, dict):
-            return None
+            return Profile("", "", "", f"{host} did not say who the login is")
+        login = str(data.get("login") or "")
+        name = str(data.get("name") or "")
         picture = str(data.get("avatar_url") or "")
-        avatar = await _avatar(http, picture, credential) if picture else ""
-    return Profile(
-        login=str(data.get("login") or ""), name=str(data.get("name") or ""), avatar=avatar
-    )
+        if not picture:
+            return Profile(login, name, "", f"{host} has no picture for {login}")
+        avatar, problem = await _avatar(http, picture, credential)
+    return Profile(login, name, avatar, problem)
 
 
-async def _avatar(http: Any, url: str, credential: Credential) -> str:
-    """The picture at ``url`` as a data: URI; "" when it cannot be had."""
+async def _avatar(http: Any, url: str, credential: Credential) -> tuple[str, str]:
+    """The picture at ``url`` as a data: URI, or "" and why not."""
     parts = urlsplit(url)
     query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k != "s"]
     sized = urlunsplit(parts._replace(query=urlencode([*query, ("s", str(_AVATAR_SIZE))])))
-    headers = {"Accept": "image/*"}
-    response = await http.get(sized, headers=headers)
-    if response.status_code in (401, 403, 404) and _same_site(sized):
-        # A private-mode instance shows pictures to signed-in users only. The
-        # login goes to the releases host and its subdomains, never elsewhere.
-        response = await http.get(sized, headers={**headers, "Authorization": credential.header()})
-    kind = response.headers.get("content-type", "").split(";")[0].strip().lower()
-    body = response.content
-    if response.status_code != 200 or kind not in _AVATAR_TYPES or len(body) > _AVATAR_MAX_BYTES:
-        return ""
-    return f"data:{kind};base64,{base64.b64encode(body).decode('ascii')}"
+    # Unsigned first: a public picture needs no login. A private-mode instance
+    # shows pictures to signed-in users only, so on the releases host and its
+    # subdomains - never anywhere else - the login follows, in both of the ways
+    # GitHub takes a token.
+    tries: list[dict[str, str]] = [{}]
+    if _same_site(sized):
+        tries.append({"Authorization": f"token {credential.secret}"})
+        if credential.header() != tries[-1]["Authorization"]:
+            tries.append({"Authorization": credential.header()})
+    answer = ""
+    for signed in tries:
+        response = await http.get(sized, headers={"Accept": "image/*", **signed})
+        kind = response.headers.get("content-type", "").split(";")[0].strip().lower()
+        body = response.content
+        if response.status_code == 200 and kind in _AVATAR_TYPES and len(body) <= _AVATAR_MAX_BYTES:
+            return f"data:{kind};base64,{base64.b64encode(body).decode('ascii')}", ""
+        answer = _no_picture(response, kind)
+    return "", f"the picture at {urlunsplit(parts._replace(query=''))} {answer}"
+
+
+def _no_picture(response: Any, kind: str) -> str:
+    """What a picture request got instead, in words."""
+    # A private-mode GitHub sends anything without a browser session to sign in,
+    # and that page comes back as a 200.
+    if response.history and any(step in response.url.path for step in ("/login", "/session")):
+        return "led to the sign-in page: this GitHub shows pictures to browser sessions only"
+    return f"answered {response.status_code} with {kind or 'no content type'}"
 
 
 def _same_site(url: str) -> bool:
