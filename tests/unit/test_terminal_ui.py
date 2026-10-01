@@ -3133,3 +3133,29 @@ async def test_working_indicator_says_the_model_queue_is_the_wait(tmp_path) -> N
         assert indicator._label == "calling model"
         tail = str(terminal_app.query_one("#stream-tail", Static).render())
         assert "waited 21s in the model queue" in tail
+
+
+def test_the_context_meter_moving_mid_stream_leaves_the_line_streaming() -> None:
+    # The meter moves a few times a second while the model streams; closing
+    # the line on each of those would join it over and over.
+    from code_ai.ui.terminal.view_models import TerminalViewModel
+
+    view_model = TerminalViewModel()
+    view_model.apply(_event("model.stream.delta", {"text": "Lendo", "channel": "answer"}, 1))
+    view_model.apply(_event("usage.updated", {"active_context_tokens": 1234}, 2))
+    view_model.apply(_event("model.stream.delta", {"text": " o arquivo", "channel": "answer"}, 3))
+
+    assert view_model.context_used == 1234
+    assert view_model.conversation == ["ai> "]
+    assert view_model.live_line(100) == "ai> Lendo o arquivo"
+
+
+def test_cleared_tool_output_says_how_much_it_freed() -> None:
+    from code_ai.ui.terminal.view_models import TerminalViewModel
+
+    view_model = TerminalViewModel()
+    view_model.apply(_event("context.results.cleared", {"freed_tokens": 18_250}, 1))
+
+    assert view_model.conversation == [
+        "context> old tool output cleared to free context (-18.2k tokens)"
+    ]

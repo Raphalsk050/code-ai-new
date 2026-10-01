@@ -5,6 +5,7 @@
 import type { EventEnvelope, StoredMessage } from "../../src/protocol";
 import { tf } from "../i18n";
 import { callTarget } from "../tool-target";
+import { formatTokens } from "./usage";
 
 export type ToolStatus = "running" | "done" | "failed";
 export type NoticeLevel = "info" | "warning" | "error" | "plan" | "permission" | "success";
@@ -412,6 +413,17 @@ function applyItems(state: TranscriptState, event: EventEnvelope): Pick<Transcri
           id,
           level: "warning",
           text: `call cut off mid-stream, asking again (${p.attempt ?? "?"}/${p.max_attempts ?? "?"})`,
+        }),
+      };
+
+    // Old tool output gave way before anything had to be summarized.
+    case "context.results.cleared":
+      return {
+        items: push(items, {
+          kind: "notice",
+          id,
+          level: "info",
+          text: `old tool output cleared to free context (-${formatTokens(Number(p.freed_tokens ?? 0))} tokens)`,
         }),
       };
 

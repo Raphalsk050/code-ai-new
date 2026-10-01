@@ -100,6 +100,9 @@ _MODEL_OUTPUT_KINDS = frozenset(
 # Provider events that put something on the user's screen, which a retry has to
 # take back before the next attempt streams its own.
 _VISIBLE_OUTPUT_KINDS = frozenset({"text_delta", "reasoning_delta", "tool_call_delta"})
+# How often the context meter moves while the model streams: live, without an
+# event per token.
+_METER_INTERVAL_S = 0.25
 
 
 def _retry_delay(attempt: int) -> float:
@@ -627,6 +630,10 @@ class AgentOrchestrator:
         # ReasoningTagFilter). Their next replies route reasoning from the
         # first token instead of streaming it as the answer first.
         self._thinking_opened: set[str] = set()
+        # The context meter between the counts taken before each request: the
+        # tokens the model is generating and each tool result move it live.
+        self._context_now = 0
+        self._context_shown = 0.0
         # Groups the host cannot serve (backend missing, wrong platform), with
         # the reason. Withdrawn from the request for the session: the same
         # error came back four times running when the model was left to retry.
@@ -1339,6 +1346,7 @@ class AgentOrchestrator:
             state.last_response = response
             self.usage.add(response.usage)
             self._calibrate_count(request, response)
+            await self._show_answered_context(request, response)
             if response.response_id:
                 self.conversation.previous_response_id = response.response_id
             await self._recover_text_tool_calls(response, tool_definitions)
@@ -2380,6 +2388,19 @@ class AgentOrchestrator:
         reasoning_filter = ReasoningTagFilter(opened=opened)
         text_filter = ToolCallStreamFilter()
         text_seen = shown = False
+        # The meter grows from the prompt by what the model generates.
+        prompt_tokens = self._context_now
+        generated = 0
+        call_chars: dict[int, int] = {}
+
+        async def _generated(text: str) -> None:
+            nonlocal generated
+            if not text:
+                return
+            generated += self.compressor.counter.count_text(text).tokens
+            await self._show_context(
+                prompt_tokens + self.compressor.scaled(generated), estimated=True
+            )
 
         async def _emit_visible_answer(answer: str) -> None:
             nonlocal shown
@@ -2425,6 +2446,7 @@ class AgentOrchestrator:
                     await notice.answered()
                 if event.kind == "text_delta":
                     text_seen = True
+                    await _generated(event.text_delta)
                     answer, thought = reasoning_filter.feed(event.text_delta)
                     if reasoning_filter.rerouted:
                         # The template opened the think block in the prompt, so
@@ -2447,6 +2469,11 @@ class AgentOrchestrator:
                         await _emit_visible_answer(answer)
                     continue
                 if event.kind == "tool_call_delta":
+                    # Arguments arrive whole so far, not as the new piece.
+                    arguments = event.tool_call_arguments or ""
+                    seen = call_chars.get(event.tool_call_index, 0)
+                    call_chars[event.tool_call_index] = len(arguments)
+                    await _generated(arguments[seen:])
                     if event.tool_call_name:
                         # A call has begun arriving. Until the assembled response
                         # carries it, losing this stream means losing the call - not
@@ -2459,6 +2486,7 @@ class AgentOrchestrator:
                 await self._emit_provider_event(event)
                 if event.kind == "reasoning_delta":
                     reasoning_parts.append(event.reasoning_delta)
+                    await _generated(event.reasoning_delta)
                     if opened and not text_seen:
                         # The server splits the reasoning out itself after all,
                         # so the text is all answer.
@@ -2579,6 +2607,10 @@ class AgentOrchestrator:
                 self._action_line(call.name, call.arguments, outcome.result.is_error)
             )
             self.conversation.add_tool_result(outcome.result)
+            added = self.compressor.counter.count_request([outcome.result.to_message()], [])
+            await self._show_context(
+                self._context_now + self.compressor.scaled(added.tokens), estimated=True, force=True
+            )
             await self._deliver_tool_images(call.name, outcome.result)
             if (
                 self.planner
@@ -3173,6 +3205,8 @@ class AgentOrchestrator:
         the UI's context bar reflects the post-compaction token count right
         away instead of waiting for the next turn.
         """
+        self._context_now = compression.active_tokens
+        self._context_shown = time.monotonic()
         await self.event_bus.emit(
             "usage.updated",
             {
@@ -3184,6 +3218,42 @@ class AgentOrchestrator:
             },
             source="context",
         )
+
+    async def _show_context(self, tokens: int, *, estimated: bool, force: bool = False) -> None:
+        """Move the UI's context meter to ``tokens``: every time when forced,
+        otherwise a few times a second, since it rides on the token stream."""
+        self._context_now = tokens
+        now = time.monotonic()
+        if not force and now - self._context_shown < _METER_INTERVAL_S:
+            return
+        self._context_shown = now
+        await self.event_bus.emit(
+            "usage.updated",
+            {
+                "active_context_tokens": tokens,
+                "active_context_estimated": estimated,
+                "context_budget": self.compressor.budget,
+                "context_threshold": self.compressor.threshold,
+            },
+            source="context",
+        )
+
+    async def _show_answered_context(self, request: ModelRequest, response: ModelResponse) -> None:
+        """The meter once the reply is in: the server's own count when it gave
+        the whole prompt (see _calibrate_count), the running estimate if not."""
+        usage = response.usage
+        whole = (
+            usage is not None
+            and usage.exact
+            and bool(usage.input_tokens)
+            and usage.source != "ollama"
+            and not request.use_remote_conversation_state
+        )
+        if whole:
+            tokens = usage.input_tokens + (usage.output_tokens or 0)
+            await self._show_context(tokens, estimated=False, force=True)
+        else:
+            await self._show_context(self._context_now, estimated=True, force=True)
 
     async def _emit_response_completed(self, response: ModelResponse) -> None:
         await self.event_bus.emit(

@@ -2,14 +2,20 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from code_ai.context.conversation import ConversationState
 from code_ai.context.token_counting import TokenCount, TokenCounter
 from code_ai.core.errors import ContextCapacityError
 from code_ai.events.bus import AsyncEventBus
 from code_ai.providers.base import ModelProvider
-from code_ai.providers.models import FinishReason, Message, ModelRequest, ToolDefinition
+from code_ai.providers.models import (
+    FinishReason,
+    Message,
+    ModelRequest,
+    ToolCall,
+    ToolDefinition,
+)
 
 # How many of the most recent turns are always kept verbatim (never summarized).
 _RECENT_TURNS_KEPT = 8
@@ -72,6 +78,66 @@ _EXCERPT_USER_CHARS = 24_000
 _EXCERPT_TAIL_SHARE = 0.4
 # The share of the input budget the summary request's excerpt may fill.
 _EXCERPT_BUDGET_SHARE = 0.6
+# Old tool output goes first. Past this share of the budget, results older than
+# the protected tail become a line naming the call: no model call, the turn
+# keeps its shape, and the model can run the call again. Only when that is not
+# enough does compaction summarize.
+_CLEAR_TRIGGER = 0.5
+# The newest output stays whole: this share of the budget, and never fewer than
+# the last few results.
+_CLEAR_PROTECT = 0.25
+_CLEAR_KEEP_RESULTS = 5
+# Clearing rewrites the history, and the server's prompt cache with it from the
+# first cleared message on, so it only runs when it frees at least this share.
+_CLEAR_AT_LEAST = 0.15
+# The user's answers, instructions the model is following, a sub-agent's report:
+# none of these can be had again by calling the tool.
+_KEEP_RESULTS_OF = frozenset(
+    {
+        "ask_user",
+        "complete_plan_step",
+        "complete_task",
+        "create_rule",
+        "create_skill",
+        "dispatch_agent",
+        "finish_discovery",
+        "load_tool",
+        "load_tools",
+        "remember",
+        "request_external_gap",
+        "submit_plan",
+        "use_skill",
+        "use_workflow",
+    }
+)
+# Output the model can have again by asking - a file, a search, a page - goes
+# whole. Anything else keeps how it ended (exit code, the last lines), which is
+# where a test run or a build says what happened.
+_REREADABLE = frozenset(
+    {
+        "browser_inspect",
+        "browser_page",
+        "browser_read",
+        "document_inspect",
+        "list_files",
+        "pdf_inspect",
+        "read_file",
+        "read_screen",
+        "screen_info",
+        "search_code",
+        "search_index",
+        "slides_inspect",
+        "system_information",
+        "web_search",
+    }
+)
+_OUTCOME_LINES = 3
+_OUTCOME_CHARS = 300
+# An old call's argument longer than this (a file written whole) is cleared too:
+# what it wrote is on disk.
+_CLEAR_ARGUMENT_CHARS = 1000
+_CLEARED_MARK = "[Old result cleared to free context"
+_CALL_HINT_KEYS = ("path", "command", "query", "pattern", "url", "name", "start_line", "end_line")
 # Output room a request always keeps. Past it the reserve is only held back
 # when the prompt leaves room for it anyway: at 128k, holding the default 32k
 # whatever the prompt made compaction fire with the window 58% full.
@@ -199,6 +265,17 @@ class ContextCompressor:
         budget = self.budget
         if budget <= 0:
             raise ContextCapacityError("output_token_reserve leaves no input context capacity.")
+        if not force and tokens > int(budget * _CLEAR_TRIGGER) and self.clear_old_results(
+            conversation
+        ):
+            conversation.reset_remote_state()
+            cleared, counted = self.measure(conversation.messages, tools)
+            await self.event_bus.emit(
+                "context.results.cleared",
+                {"freed_tokens": tokens - cleared, "active_tokens": cleared},
+                source="context",
+            )
+            tokens = cleared
         has_summarizable_history = len(conversation.messages) > _RECENT_TURNS_KEPT
         below_threshold = tokens <= int(budget * self.threshold)
         if not force and below_threshold:
@@ -230,6 +307,70 @@ class ContextCompressor:
             source="context",
         )
         return CompressionResult(changed, recounted, estimated, tokens)
+
+    def scaled(self, tokens: int) -> int:
+        """``tokens`` counted here, in the server's units."""
+        return round(tokens * self._scale)
+
+    def clear_old_results(self, conversation: ConversationState) -> bool:
+        """Replace tool output older than the protected tail with a line that
+        names the call. False, and nothing touched, when that would not free
+        enough to be worth the prompt cache it costs."""
+        messages = conversation.messages
+        protect = int(self.budget * _CLEAR_PROTECT)
+        boundary = len(messages)
+        kept = results = 0
+        for index in range(len(messages) - 1, -1, -1):
+            cost = self.counter.count_request([messages[index]], []).tokens
+            if kept + cost > protect and results >= _CLEAR_KEEP_RESULTS:
+                break
+            kept += cost
+            results += messages[index].role == "tool"
+            boundary = index
+        calls = {
+            call.id: call
+            for message in messages[:boundary]
+            if message.role == "assistant"
+            for call in message.tool_calls
+        }
+        edits: list[tuple[int, Message]] = []
+        freed = 0
+        for index, message in enumerate(messages[:boundary]):
+            if message.role == "tool":
+                content = message.content or ""
+                if message.name in _KEEP_RESULTS_OF or content.startswith(_CLEARED_MARK):
+                    continue
+                line = _cleared_line(
+                    message.name, calls.get(message.tool_call_id or ""), content
+                )
+                count = self.counter.count_text
+                saved = count(content).tokens - count(line).tokens
+                if saved > 0:
+                    edits.append((index, replace(message, content=line)))
+                    freed += saved
+            elif message.role == "assistant" and message.tool_calls:
+                thinned, saved = self._thin_calls(message.tool_calls)
+                if saved > 0:
+                    edits.append((index, replace(message, tool_calls=thinned)))
+                    freed += saved
+        if freed < self.budget * _CLEAR_AT_LEAST:
+            return False
+        for index, message in edits:
+            messages[index] = message
+        return True
+
+    def _thin_calls(self, calls: list[ToolCall]) -> tuple[list[ToolCall], int]:
+        thinned: list[ToolCall] = []
+        saved = 0
+        for call in calls:
+            arguments = dict(call.arguments)
+            for key, value in call.arguments.items():
+                if isinstance(value, str) and len(value) > _CLEAR_ARGUMENT_CHARS:
+                    arguments[key] = f"[{len(value)} characters cleared to free context]"
+                    saved += self.counter.count_text(value).tokens - 10
+            changed = arguments != call.arguments
+            thinned.append(replace(call, arguments=arguments) if changed else call)
+        return thinned, saved
 
     async def _compress_in_place(self, conversation: ConversationState) -> bool:
         """Fold the older messages into the summary; False when there were
@@ -482,3 +623,48 @@ def _clip(text: str, limit: int, tail: int) -> str:
 
 def _arguments(arguments: object) -> str:
     return json.dumps(arguments, ensure_ascii=False, default=str)
+
+
+def _cleared_line(name: str | None, call: ToolCall | None, content: str) -> str:
+    """What stands in for a cleared result: enough to know what it was, how it
+    ended, and to ask for it again."""
+    hint = ""
+    if call is not None:
+        hint = " ".join(
+            f"{key}={_clip(str(call.arguments[key]), 120, 40)}"
+            for key in _CALL_HINT_KEYS
+            if call.arguments.get(key) not in (None, "")
+        )
+    what = f"{name or 'tool'} {hint}".strip()
+    ended = "" if name in _REREADABLE else _outcome(content)
+    ended = f" It ended: {ended}" if ended else ""
+    return f"{_CLEARED_MARK}: {what}.{ended} Call it again if you need it.]"
+
+
+def _outcome(content: str) -> str:
+    """How a result ended: its exit code and the last lines it printed. Runtime
+    notes the result carried for its own step are left behind."""
+    try:
+        data, _ = json.JSONDecoder().raw_decode(content.strip())
+    except ValueError:
+        return _last_lines(content)
+    if not isinstance(data, dict):
+        return ""
+    parts = [
+        f"{key}={data[key]}"
+        for key in ("exit_code", "status", "error", "timed_out")
+        if data.get(key) not in (None, "", False)
+    ]
+    streams = ("stderr", "stdout") if data.get("exit_code") not in (None, 0) else ("stdout",)
+    for key in (*streams, "output", "diff"):
+        text = data.get(key)
+        if isinstance(text, str) and text.strip():
+            parts.append(f"{key} ended with {_last_lines(text)!r}")
+            if key != "stderr":
+                break
+    return "; ".join(parts)
+
+
+def _last_lines(text: str) -> str:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return " | ".join(lines[-_OUTCOME_LINES:])[-_OUTCOME_CHARS:]

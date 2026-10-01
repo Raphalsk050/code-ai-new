@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 34,
-  "patch": 8,
-  "build": 77,
+  "minor": 35,
+  "patch": 0,
+  "build": 78,
   "updated": "2026-10-01",
-  "note": "Reasoning none switches thinking off after a refused control"
+  "note": "Old tool output cleared before summarizing; context meter moves live"
 }

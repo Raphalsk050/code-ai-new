@@ -3,6 +3,7 @@ compaction keeps."""
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 
 import pytest
@@ -320,6 +321,120 @@ async def test_compacting_with_nothing_new_to_fold_changes_nothing() -> None:
     assert len(provider.requests) == 1
 
 
+# --- clearing old tool output ------------------------------------------------------
+
+
+class _Bus:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict]] = []
+
+    async def emit(self, event_type: str, payload: dict | None = None, *, source: str = "") -> None:
+        self.events.append((event_type, payload or {}))
+
+
+def _output(i: int) -> str:
+    return "\n".join(f"line {j} of the output of step {i}" for j in range(160))
+
+
+def _busy_session(steps: int, name: str = "read_file") -> ConversationState:
+    messages = [Message(role="system", content="You are Code-AI."), Message(role="user", content=_PT)]
+    for i in range(steps):
+        call = ToolCall(id=f"c{i}", name=name, arguments={"path": f"src/m{i}.py"})
+        messages.append(Message(role="assistant", content="", tool_calls=[call]))
+        messages.append(Message(role="tool", content=_output(i), tool_call_id=f"c{i}", name=name))
+    return ConversationState(messages=messages)
+
+
+def _clearing(provider=None) -> tuple[ContextCompressor, _Bus]:
+    bus = _Bus()
+    compressor = ContextCompressor(
+        counter=TokenCounter(model="qwen3.8-27b"),
+        max_context_tokens=64_000,
+        threshold=0.82,
+        target=0.55,
+        output_reserve=8_192,
+        event_bus=bus,
+        provider=provider,
+        model="m",
+    )
+    return compressor, bus
+
+
+async def test_old_tool_output_goes_before_anything_is_summarized() -> None:
+    provider = _Summarizer()
+    compressor, bus = _clearing(provider)
+    conversation = _busy_session(30)
+
+    result = await compressor.ensure_capacity(conversation, [])
+
+    results = [m for m in conversation.messages if m.role == "tool"]
+    cleared = [m for m in results if m.content.startswith("[Old result cleared")]
+    # No model call: the old output became a line each, the newest stayed whole.
+    assert not result.compressed and provider.requests == []
+    assert cleared and all(m.content == _output(int(m.tool_call_id[1:])) for m in results[-5:])
+    assert "path=src/m0.py" in cleared[0].content
+    assert any(name == "context.results.cleared" for name, _ in bus.events)
+
+
+async def test_a_cleared_command_keeps_how_it_ended() -> None:
+    compressor, _ = _clearing()
+    conversation = _busy_session(30)
+    run = json.dumps(
+        {"exit_code": 1, "stdout": _output(0) + "\nFAILED tests/test_parser.py::test_quotes"}
+    )
+    conversation.messages[3] = Message(
+        role="tool", content=run, tool_call_id="c0", name="execute_command"
+    )
+
+    await compressor.ensure_capacity(conversation, [])
+
+    line = conversation.messages[3].content
+    assert line.startswith("[Old result cleared")
+    assert "exit_code=1" in line and "FAILED tests/test_parser.py::test_quotes" in line
+
+
+async def test_the_users_answers_and_loaded_skills_are_never_cleared() -> None:
+    compressor, _ = _clearing()
+    conversation = _busy_session(30)
+    conversation.messages[3] = Message(
+        role="tool", content=_output(0), tool_call_id="c0", name="ask_user"
+    )
+    conversation.messages[5] = Message(
+        role="tool", content=_output(1), tool_call_id="c1", name="use_skill"
+    )
+
+    await compressor.ensure_capacity(conversation, [])
+
+    assert conversation.messages[3].content == _output(0)
+    assert conversation.messages[5].content == _output(1)
+
+
+async def test_clearing_waits_until_it_frees_enough_to_be_worth_the_cache() -> None:
+    compressor, bus = _clearing()
+    conversation = _busy_session(12)
+    before = [m.content for m in conversation.messages]
+
+    await compressor.ensure_capacity(conversation, [])
+
+    assert [m.content for m in conversation.messages] == before
+    assert not any(name == "context.results.cleared" for name, _ in bus.events)
+
+
+async def test_an_old_file_written_whole_keeps_its_path_not_its_text() -> None:
+    compressor, _ = _clearing()
+    conversation = _busy_session(30)
+    written = ToolCall(
+        id="c0", name="write_file", arguments={"path": "src/new.py", "content": _output(0)}
+    )
+    conversation.messages[2] = Message(role="assistant", content="", tool_calls=[written])
+
+    await compressor.ensure_capacity(conversation, [])
+
+    arguments = conversation.messages[2].tool_calls[0].arguments
+    assert arguments["path"] == "src/new.py"
+    assert arguments["content"].endswith("characters cleared to free context]")
+
+
 # --- through the orchestrator ------------------------------------------------------
 
 
@@ -388,3 +503,75 @@ async def test_a_turn_teaches_the_count_only_from_a_whole_prompt_count(
     assert compressor._calibrated is learns
     if learns:
         assert compressor._scale == pytest.approx(1.1, rel=0.01)
+
+
+class _ReadsThenAnswers:
+    """Calls read_file, then answers in pieces; reports usage as vLLM does."""
+
+    def __init__(self) -> None:
+        self.requests: list[ModelRequest] = []
+
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        return ProviderCapabilities(streaming=True, tool_calling=True)
+
+    async def complete(self, request: ModelRequest) -> ModelResponse:
+        return ModelResponse(text="summary")
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            arguments = '{"path": "a.py"}'
+            yield ProviderEvent(
+                kind="tool_call_delta",
+                tool_call_name="read_file",
+                tool_call_arguments=arguments,
+                tool_call_index=0,
+            )
+            call = ToolCall(id="c1", name="read_file", arguments={"path": "a.py"})
+            usage = TokenUsage.from_counts(
+                input_tokens=5_000, output_tokens=20, exact=True, source="openai"
+            )
+            done = ModelResponse(tool_calls=[call], finish_reason=FinishReason.TOOL_CALLS, usage=usage)
+            yield ProviderEvent(kind="completed", response=done)
+            return
+        for piece in ("Li o arquivo. ", "Ele define a funcao parse. " * 30, "Pronto."):
+            yield ProviderEvent(kind="text_delta", text_delta=piece)
+        usage = TokenUsage.from_counts(
+            input_tokens=7_000, output_tokens=300, exact=True, source="openai"
+        )
+        done = ModelResponse(text="Pronto.", finish_reason=FinishReason.STOP, usage=usage)
+        yield ProviderEvent(kind="completed", response=done)
+
+    async def close(self) -> None:
+        return None
+
+
+async def test_the_context_meter_moves_while_the_model_streams_and_tools_land(
+    tmp_path, monkeypatch
+) -> None:
+    from code_ai.core import orchestration
+
+    monkeypatch.setattr(orchestration, "_METER_INTERVAL_S", 0.0)
+    (tmp_path / "a.py").write_text("def parse(text):\n    return text\n" * 200, encoding="utf-8")
+    app = _app(tmp_path, _ReadsThenAnswers())
+    meter: list[tuple[int, bool]] = []
+    app.subscribe(
+        lambda event: meter.append(
+            (event.payload["active_context_tokens"], event.payload["active_context_estimated"])
+        )
+        if event.event_type == "usage.updated" and "active_context_tokens" in event.payload
+        else None
+    )
+    await app.start()
+    await app.submit_user_message("Leia a.py")
+    await app.close()
+
+    values = [tokens for tokens, _ in meter]
+    first = meter.index((5_020, False))
+    # The server's count once the call is in, then the file it read on top.
+    assert values[first + 1] > 5_020
+    # The answer streams the meter up, and the server's count closes it.
+    answered = meter.index((7_300, False))
+    streamed = values[first + 2 : answered]
+    assert len(streamed) >= 2 and streamed == sorted(streamed)

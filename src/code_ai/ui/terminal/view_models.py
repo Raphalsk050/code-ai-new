@@ -23,6 +23,10 @@ _INDEX_BAR_CELLS = 24
 # (see ``flush_stream``), so every other handler finds a whole line at the end
 # of the transcript.
 _STREAMING_EVENTS = frozenset({"model.stream.delta", "model.thinking.delta"})
+# Events that neither grow the streaming line nor end it. The context meter
+# moves a few times a second while the model streams; closing the line each
+# time would join it again and again.
+_PASSING_EVENTS = frozenset({"usage.updated"})
 # Server log levels loud enough for the transcript; the rest stay on /mcp.
 _LOUD_MCP_LOGS = frozenset({"warning", "error", "critical", "alert", "emergency"})
 # Events that mean the model is answering again, so a retry is over.
@@ -193,7 +197,7 @@ class TerminalViewModel:
         return list(self.subagents.values())
 
     def apply(self, event: EventEnvelope) -> None:
-        if event.event_type not in _STREAMING_EVENTS:
+        if event.event_type not in _STREAMING_EVENTS | _PASSING_EVENTS:
             self.flush_stream()
         if self.retry_note and event.event_type in _MODEL_OUTPUT_EVENTS:
             self.retry_note = ""
@@ -371,6 +375,12 @@ class TerminalViewModel:
                     self.conversation[-1] = f"ai> {cleaned}"
                 else:
                     self.conversation.pop()
+        elif event.event_type == "context.results.cleared":
+            # Old tool output gave way before anything had to be summarized.
+            freed = int(event.payload.get("freed_tokens") or 0)
+            self.conversation.append(
+                f"context> old tool output cleared to free context (-{freed / 1000:.1f}k tokens)"
+            )
         elif event.event_type == "model.reasoning.recovered":
             # The reply began inside a think block the prompt opened, so what
             # streamed as the answer was thinking; it streams again as such.

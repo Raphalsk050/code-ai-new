@@ -270,6 +270,24 @@ test("an answer that turns out to be thinking moves into the reasoning block", (
   assert.equal((items[2] as { text: string }).text, "Oi!");
 });
 
+test("cleared tool output shows up as a notice with what it freed", () => {
+  const state = feed([["context.results.cleared", { freed_tokens: 18250, active_tokens: 70000 }]]);
+  const last = state.transcript.items[state.transcript.items.length - 1];
+  assert.equal(last.kind, "notice");
+  assert.match((last as { text: string }).text, /-18k tokens/);
+});
+
+test("the context meter follows every update, not just the one before a request", () => {
+  const state = feed([
+    ["usage.updated", { active_context_tokens: 40000, context_budget: 120000 }],
+    ["usage.updated", { active_context_tokens: 40250, active_context_estimated: true }],
+    ["usage.updated", { active_context_tokens: 41000, active_context_estimated: false }],
+  ]);
+  assert.equal(state.usage.used, 41000);
+  assert.equal(state.usage.estimated, false);
+  assert.equal(state.usage.budget, 120000);
+});
+
 test("the reasoning block closes itself when the model answers", () => {
   const state = feed([
     ["model.thinking.delta", { text: "hmm" }],

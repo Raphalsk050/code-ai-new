@@ -735,6 +735,8 @@ _TRACE_PREFIXES = (
     "queued>",
     # Background learning yielding the model to the turn (learning.cancelled).
     "memory>",
+    # Old tool output cleared to free context (context.results.cleared).
+    "context>",
     # The live execute_command output line (see view_models._apply_command_output).
     "cmd~",
 )
