@@ -125,6 +125,21 @@ async def test_none_is_thinking_off_but_no_follow_up_of_its_own(app: CodeAIAppli
     assert sampling.followup_reasoning_effort is None
 
 
+async def test_a_new_effort_reaches_a_provider_that_gave_up_on_sampling(
+    app: CodeAIApplication,
+) -> None:
+    # A provider whose endpoint once refused a sampling control stops sending
+    # them; switching back to "none" then never reached the server and the
+    # model kept thinking.
+    retried: list[bool] = []
+    app.provider = SimpleNamespace(retry_sampling=lambda: retried.append(True))
+
+    await app.update_settings({"reasoning_effort": "none"})
+    await app.update_settings({"temperature": 0.6})
+
+    assert retried == [True, True]
+
+
 async def test_subagent_models_keep_the_user_s_order(app: CodeAIApplication) -> None:
     await app.update_settings({"subagent_models": ["zeta", "alpha", "zeta", ""]})
 

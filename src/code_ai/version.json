@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 34,
-  "patch": 7,
-  "build": 76,
-  "updated": "2026-09-30",
-  "note": "Compaction appends summaries and keeps the user's words"
+  "patch": 8,
+  "build": 77,
+  "updated": "2026-10-01",
+  "note": "Reasoning none switches thinking off after a refused control"
 }

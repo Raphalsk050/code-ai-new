@@ -322,6 +322,9 @@ def handle_config_command(application: Any, command_text: str, *, config_path: P
         except Exception as exc:
             return f"command> Config not changed: {exc}"
         config.sampling = validated.sampling
+        retry = getattr(application, "retry_sampling", None)
+        if retry is not None:
+            retry()
         return f"command> Updated reasoning_effort={effort}. Applied now."
     if action == "theme":
         if len(parts) != 3:

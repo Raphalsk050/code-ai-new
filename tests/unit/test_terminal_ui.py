@@ -1498,6 +1498,18 @@ def test_config_effort_command_persists_and_updates_active_config(tmp_path) -> N
     assert saved["sampling"]["reasoning_effort"] == "high"
 
 
+def test_config_effort_command_sends_the_controls_again(tmp_path) -> None:
+    # After an endpoint refused one, the provider stopped sending them, and an
+    # effort switched back to "none" never reached the server.
+    fake_app = FakeTerminalApplication(tmp_path)
+    retried: list[bool] = []
+    fake_app.retry_sampling = lambda: retried.append(True)
+
+    handle_config_command(fake_app, "/config effort none", config_path=tmp_path / "config.json")
+
+    assert retried == [True]
+
+
 def test_config_effort_command_rejects_unknown_value(tmp_path) -> None:
     fake_app = FakeTerminalApplication(tmp_path)
     config_path = tmp_path / "config.json"

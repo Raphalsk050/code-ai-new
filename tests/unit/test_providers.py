@@ -104,6 +104,7 @@ def _chat_provider(chunks: list[dict[str, object]]) -> OpenAIChatCompletionsProv
     provider._config = AppConfig()
     provider._stream_options_supported = False
     provider._sampling_supported = False
+    provider._refused_sampling = set()
     provider._capabilities = ProviderCapabilities()
     provider._reasoning_field = None
     provider._reasoning_replay = True
@@ -918,6 +919,78 @@ async def test_chat_completions_replays_reasoning_under_the_field_it_streamed() 
 
     assert sent["messages"][1]["reasoning"] == "Read a.py before touching it."
     assert "reasoning_content" not in sent["messages"][1]
+
+
+class _EffortRefusal(Exception):
+    status_code = 400
+
+
+def _strict_about_effort(provider) -> list[dict[str, object]]:
+    """vLLM's own wording when reasoning_effort is not low/medium/high."""
+    original = provider._client.chat.completions.create
+    sent: list[dict[str, object]] = []
+
+    async def _create(**kwargs: object):
+        sent.append(kwargs)
+        if kwargs.get("reasoning_effort") not in (None, "low", "medium", "high"):
+            raise _EffortRefusal(
+                "1 validation error: reasoning_effort Input should be 'low', 'medium' or 'high'"
+            )
+        return await original(**kwargs)
+
+    provider._client.chat.completions.create = _create
+    return sent
+
+
+async def test_switching_back_to_none_still_turns_thinking_off_after_a_refusal() -> None:
+    provider = _chat_provider([_reasoning_chunk("reasoning")])
+    provider._sampling_supported = True
+    provider._config = AppConfig(sampling=SamplingConfig(temperature=0.6, reasoning_effort="xhigh"))
+    sent = _strict_about_effort(provider)
+
+    events = [event async for event in provider.stream(_chat_request())]
+    provider._config.sampling.reasoning_effort = "none"
+    [event async for event in provider.stream(_chat_request())]
+
+    # Only the refused control went. It used to take every one with it, and
+    # with them the enable_thinking=false that "none" relies on.
+    assert any("reasoning_effort" in (event.warning or "") for event in events)
+    assert sent[1]["temperature"] == 0.6 and "reasoning_effort" not in sent[1]
+    assert sent[-1]["extra_body"]["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+async def test_a_changed_setting_is_sent_again_after_a_refusal() -> None:
+    provider = _chat_provider([_reasoning_chunk("reasoning")])
+    provider._sampling_supported = True
+    provider._config = AppConfig(sampling=SamplingConfig(reasoning_effort="xhigh"))
+    sent = _strict_about_effort(provider)
+    [event async for event in provider.stream(_chat_request())]
+
+    provider._config.sampling.reasoning_effort = "high"
+    provider.retry_sampling()
+    [event async for event in provider.stream(_chat_request())]
+
+    assert sent[-1]["reasoning_effort"] == "high"
+
+
+async def test_a_refusal_that_names_no_control_still_drops_them_all() -> None:
+    provider = _chat_provider([_reasoning_chunk("reasoning")])
+    provider._sampling_supported = True
+    provider._config = AppConfig(sampling=SamplingConfig(temperature=0.6))
+    original = provider._client.chat.completions.create
+    sent: list[dict[str, object]] = []
+
+    async def _create(**kwargs: object):
+        sent.append(kwargs)
+        if "temperature" in kwargs:
+            raise _EffortRefusal("unsupported parameter")
+        return await original(**kwargs)
+
+    provider._client.chat.completions.create = _create
+    [event async for event in provider.stream(_chat_request())]
+
+    assert provider._sampling_supported is False
+    assert "temperature" not in sent[-1]
 
 
 class _FieldRefusal(Exception):

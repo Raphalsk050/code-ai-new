@@ -122,6 +122,7 @@ async def test_the_chat_provider_reports_the_limit_it_was_told() -> None:
     provider._config = AppConfig()
     provider._stream_options_supported = False
     provider._sampling_supported = False
+    provider._refused_sampling = set()
     provider._capabilities = ProviderCapabilities(image_support=True)
     provider._reasoning_field = None
     provider._reasoning_replay = True

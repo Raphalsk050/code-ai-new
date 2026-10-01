@@ -137,6 +137,42 @@ def _looks_like_tool_support_error(exc: Exception) -> bool:
     return any(hint in text for hint in _TOOL_SUPPORT_ERROR_HINTS)
 
 
+def _controls(sampling: dict[str, Any]) -> set[str]:
+    """Every sampling control a request carries, extra_body's included."""
+    extra = sampling.get("extra_body") or {}
+    return {key for key in sampling if key != "extra_body"} | set(extra)
+
+
+def _named_controls(error: str, sampling: dict[str, Any]) -> set[str]:
+    """The controls a refusal names. "reasoning_effort" holds "reasoning", so
+    the longest names are matched first and their text taken out."""
+    text = error.lower()
+    named: set[str] = set()
+    for key in sorted(_controls(sampling), key=len, reverse=True):
+        if key.lower() in text:
+            named.add(key)
+            text = text.replace(key.lower(), " ")
+    return named
+
+
+def _without(sampling: dict[str, Any], refused: set[str]) -> dict[str, Any]:
+    if not refused:
+        return sampling
+    kept = {
+        key: value
+        for key, value in sampling.items()
+        if key not in refused and key != "extra_body"
+    }
+    extra = {
+        key: value
+        for key, value in (sampling.get("extra_body") or {}).items()
+        if key not in refused
+    }
+    if extra:
+        kept["extra_body"] = extra
+    return kept
+
+
 _REASONING_KEYS = ("reasoning_content", "reasoning", "thinking")
 
 
@@ -214,6 +250,10 @@ class OpenAIChatCompletionsProvider:
         )
         self._stream_options_supported = True
         self._sampling_supported = True
+        # Sampling controls the endpoint refused by name. Only those are left
+        # out: vLLM refusing reasoning_effort "xhigh" took enable_thinking=false
+        # down with it, and "none" could no longer switch thinking off.
+        self._refused_sampling: set[str] = set()
         # Cleared the first time the endpoint refuses a request for carrying
         # tools. It is a property of how the server was started, so it stays
         # cleared for the session rather than being probed again every step.
@@ -237,6 +277,7 @@ class OpenAIChatCompletionsProvider:
         """
 
         self._sampling_supported = True
+        self._refused_sampling.clear()
 
     async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
         # Every layer needs closing, not just the innermost one: leaving an
@@ -301,8 +342,13 @@ class OpenAIChatCompletionsProvider:
             kwargs["tool_choice"] = "auto"
         if self._stream_options_supported:
             kwargs["stream_options"] = {"include_usage": True}
+        sampling: dict[str, Any] = {}
         if self._sampling_supported:
-            kwargs.update(self._config.sampling.chat_completion_kwargs(request.reasoning_effort))
+            sampling = _without(
+                self._config.sampling.chat_completion_kwargs(request.reasoning_effort),
+                self._refused_sampling,
+            )
+            kwargs.update(sampling)
 
         debug = ModelDebugLogger.for_request(self._config, provider="openai_chat_completions")
         if debug:
@@ -349,11 +395,16 @@ class OpenAIChatCompletionsProvider:
                         yield event
                 return
             if self._sampling_supported and _looks_like_sampling_error(exc):
-                self._sampling_supported = False
-                yield ProviderEvent(
-                    kind="warning",
-                    warning="Endpoint rejected sampling parameters; retrying without them.",
-                )
+                named = _named_controls(str(exc), sampling) - self._refused_sampling
+                if named:
+                    self._refused_sampling |= named
+                    warning = (
+                        f"Endpoint refused {', '.join(sorted(named))}; retrying without it."
+                    )
+                else:
+                    self._sampling_supported = False
+                    warning = "Endpoint rejected sampling parameters; retrying without them."
+                yield ProviderEvent(kind="warning", warning=warning)
                 async with aclosing(self._stream_once(request)) as events:
                     async for event in events:
                         yield event

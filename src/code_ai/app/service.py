@@ -970,6 +970,7 @@ class CodeAIApplication:
                     sampling[key] = None if unset else value
                     validated = persist_config_updates(config, {"sampling": sampling})
                     config.sampling = validated.sampling
+                    self.retry_sampling()
                     applied.append(key)
                 elif key == "disabled_tools":
                     names = sorted({str(name).strip() for name in value or ()} - {""})
@@ -1022,6 +1023,7 @@ class CodeAIApplication:
                         sampling[key] = int(value) if key == "top_k" else float(value)
                     validated = persist_config_updates(config, {"sampling": sampling})
                     config.sampling = validated.sampling
+                    self.retry_sampling()
                     applied.append(key)
                 elif key == "max_context_tokens":
                     budgets = asdict(config.budgets)
@@ -1053,6 +1055,18 @@ class CodeAIApplication:
             "errors": errors,
             "settings": self.get_settings(),
         }
+
+    def retry_sampling(self) -> None:
+        """Send the sampling controls again after the user changed them.
+
+        A provider that had an endpoint refuse them stops sending them for the
+        session, so a reasoning effort switched back to "none" never reached the
+        server and the model kept thinking.
+        """
+
+        retry = getattr(self.provider, "retry_sampling", None)
+        if retry is not None:
+            retry()
 
     def refresh_environment_note(self) -> None:
         """Say again, in the prompt, what commands see - after a setting changed it."""
