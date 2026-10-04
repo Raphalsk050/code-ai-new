@@ -276,6 +276,9 @@ class BridgeServer:
         models = await self._app.list_models()
         return {"models": models}
 
+    async def _h_test_jev(self, params: dict[str, Any]) -> dict[str, Any]:
+        return await self._app.test_decision_engine(str(params.get("base_url") or ""))
+
     async def _h_update_settings(self, params: dict[str, Any]) -> dict[str, Any]:
         updates = params.get("updates")
         if not isinstance(updates, dict):
@@ -582,6 +585,7 @@ class BridgeServer:
         "getSettings": _h_get_settings,
         "listModels": _h_list_models,
         "updateSettings": _h_update_settings,
+        "testJev": _h_test_jev,
         "explainCode": _h_explain_code,
         "inlineComplete": _h_inline_complete,
         "analyzeRefactor": _h_analyze_refactor,

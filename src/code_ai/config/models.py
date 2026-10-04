@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 from code_ai.config.defaults import (
     DEFAULT_BROWSER,
     DEFAULT_BUDGETS,
+    DEFAULT_DECISIONS,
     DEFAULT_FILE_IO,
     DEFAULT_GOAL,
     DEFAULT_GRAPH,
@@ -527,6 +528,69 @@ class GoalConfig:
             raise ConfigurationError("goal.max_iterations must be 500 or lower.")
 
 
+SUPPORTED_DECISION_ENGINES = {"", "openjev"}
+SUPPORTED_DECISION_APIS = {"auto", "systemone", "llamacpp"}
+
+
+@dataclass(slots=True)
+class DecisionConfig:
+    """The local engine that answers the runtime's questions about a turn."""
+
+    engine: str = str(DEFAULT_DECISIONS["engine"])
+    base_url: str = str(DEFAULT_DECISIONS["base_url"])
+    api: str = str(DEFAULT_DECISIONS["api"])
+    api_key: str = str(DEFAULT_DECISIONS["api_key"])
+    timeout_s: float = float(DEFAULT_DECISIONS["timeout_s"])
+    retry_after_s: float = float(DEFAULT_DECISIONS["retry_after_s"])
+    confidence: float = float(DEFAULT_DECISIONS["confidence"])
+    nudge_confidence: float = float(DEFAULT_DECISIONS["nudge_confidence"])
+    max_final_answer_nudges: int = int(DEFAULT_DECISIONS["max_final_answer_nudges"])
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any] | None) -> DecisionConfig:
+        values = dict(DEFAULT_DECISIONS)
+        if data:
+            values.update(data)
+        return cls(
+            engine=str(values["engine"] or "").strip().lower(),
+            base_url=str(values["base_url"] or "").strip(),
+            api=str(values["api"] or "auto").strip().lower(),
+            api_key=str(values["api_key"] or "").strip(),
+            timeout_s=float(values["timeout_s"]),
+            retry_after_s=float(values["retry_after_s"]),
+            confidence=float(values["confidence"]),
+            nudge_confidence=float(values["nudge_confidence"]),
+            max_final_answer_nudges=int(values["max_final_answer_nudges"]),
+        )
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.engine)
+
+    def validate(self) -> None:
+        if self.engine not in SUPPORTED_DECISION_ENGINES:
+            raise ConfigurationError(
+                f"Unsupported decisions.engine: {self.engine}. Choose 'openjev' or leave it empty."
+            )
+        if self.engine and urlparse(self.base_url).scheme not in {"http", "https"}:
+            raise ConfigurationError("decisions.base_url must be an http or https URL.")
+        if self.api not in SUPPORTED_DECISION_APIS:
+            raise ConfigurationError(
+                f"Unsupported decisions.api: {self.api}. "
+                f"Choose one of {sorted(SUPPORTED_DECISION_APIS)}."
+            )
+        if self.timeout_s <= 0:
+            raise ConfigurationError("decisions.timeout_s must be positive.")
+        if self.retry_after_s < 0:
+            raise ConfigurationError("decisions.retry_after_s must be zero or positive.")
+        # Below one half a "yes" would also be a "no".
+        for key in ("confidence", "nudge_confidence"):
+            if not 0.5 <= getattr(self, key) < 1.0:
+                raise ConfigurationError(f"decisions.{key} must be at least 0.5 and below 1.")
+        if self.max_final_answer_nudges < 0:
+            raise ConfigurationError("decisions.max_final_answer_nudges must be zero or positive.")
+
+
 @dataclass(slots=True)
 class GraphConfig:
     """Limits for one orchestrator-graph run (the Blueprint-style editor)."""
@@ -808,6 +872,7 @@ class AppConfig:
     base_url: str = "http://localhost:11434/v1"
     permission_mode: str = "ask"
     budgets: BudgetConfig = field(default_factory=BudgetConfig)
+    decisions: DecisionConfig = field(default_factory=DecisionConfig)
     experimental: ExperimentalConfig = field(default_factory=ExperimentalConfig)
     goal: GoalConfig = field(default_factory=GoalConfig)
     graph: GraphConfig = field(default_factory=GraphConfig)
@@ -899,6 +964,9 @@ class AppConfig:
         experimental = ExperimentalConfig.from_mapping(
             data.get("experimental") if isinstance(data.get("experimental"), dict) else None
         )
+        decisions = DecisionConfig.from_mapping(
+            data.get("decisions") if isinstance(data.get("decisions"), dict) else None
+        )
         goal = GoalConfig.from_mapping(
             data.get("goal") if isinstance(data.get("goal"), dict) else None
         )
@@ -933,6 +1001,7 @@ class AppConfig:
             base_url=str(data.get("base_url", "http://localhost:11434/v1")),
             permission_mode=str(data.get("permission_mode", "ask")).strip().lower(),
             budgets=budgets,
+            decisions=decisions,
             experimental=experimental,
             goal=goal,
             graph=graph,
@@ -1003,6 +1072,7 @@ class AppConfig:
             raise ConfigurationError(f"workspace must exist and be a directory: {self.workspace}")
         self.workspace = self.workspace.resolve()
         self.budgets.validate()
+        self.decisions.validate()
         self.goal.validate()
         self.graph.validate()
         self.memory.validate()

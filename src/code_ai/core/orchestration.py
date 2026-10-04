@@ -1447,6 +1447,29 @@ class AgentOrchestrator:
             await self.set_state(AgentState.CALLING_MODEL, phase="correcting_no_tool_response")
             return None
 
+        # Last, and only when nothing above fired: the two checks before this
+        # read the ledger, this one reads the reply. A weak model that says
+        # "now I will write the file" and stops has nothing wrong on record.
+        if (
+            response.text
+            and self.planner
+            and self.planner.enabled
+            and self.tool_registry.names()
+        ):
+            gap = await self.planner.note_final_answer_gap(
+                response.text, tool_calls_executed=state.tool_calls_executed
+            )
+            if gap:
+                state.think_hard = True
+                self.conversation.add_assistant(
+                    bound_text(response.text, self.config.budgets.max_tool_output_chars), []
+                )
+                self.conversation.add_user(build_runtime_note(gap))
+                await self.set_state(
+                    AgentState.CALLING_MODEL, phase="correcting_unfinished_answer"
+                )
+                return None
+
         if response.text:
             self.conversation.add_assistant(response.text, response.tool_calls)
             if self.planner and self.planner.enabled:

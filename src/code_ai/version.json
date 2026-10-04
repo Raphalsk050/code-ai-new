@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 35,
+  "minor": 36,
   "patch": 0,
-  "build": 78,
-  "updated": "2026-10-01",
-  "note": "Old tool output cleared before summarizing; context meter moves live"
+  "build": 79,
+  "updated": "2026-10-04",
+  "note": "Add the OpenJev decision layer"
 }

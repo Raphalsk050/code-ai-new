@@ -40,6 +40,7 @@ from code_ai.core.subagents import (
 )
 from code_ai.core.verification import ProjectVerification
 from code_ai.core.workflows import WorkflowService
+from code_ai.decisions import build_decision_engine
 from code_ai.events.bus import AsyncEventBus
 from code_ai.index import CodeIndexService, build_code_index
 from code_ai.interop import (
@@ -470,6 +471,7 @@ def build_application(
     profile_registry = SubagentProfileRegistry(
         [*built_in.all(), *subagent_profiles(config.workspace, reserved=built_in.names())]
     )
+    task_classifier, final_answer_judge = build_decision_engine(config)
     planner = PlannerService(
         config=config.planner,
         event_bus=event_bus,
@@ -487,6 +489,9 @@ def build_application(
             ToolCapability.REVIEW in registry.capabilities(name)
             for name in registry.names()
         ),
+        task_classifier=task_classifier,
+        final_answer_judge=final_answer_judge,
+        max_final_answer_nudges=config.decisions.max_final_answer_nudges,
     )
     subagent_runtime = SubagentRuntime(
         config=config,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from dataclasses import dataclass
 from enum import StrEnum
 from uuid import uuid4
 
@@ -100,6 +101,72 @@ class EvidenceType(StrEnum):
     SURFACE_OBSERVED = "SURFACE_OBSERVED"
 
 
+@dataclass(frozen=True, slots=True)
+class TaskSignals:
+    """What a first message says about the task, before any profile is built.
+
+    Read off keywords by default; a decision engine can answer the same
+    questions instead (see PlannerService's ``task_classifier``).
+    """
+
+    mutation: bool = False
+    command: bool = False
+    local_reference: bool = False
+    local_inspection: bool = False
+    explicit_web: bool = False
+    external: bool = False
+    current_info: bool = False
+    bug_fix: bool = False
+    refactoring: bool = False
+
+    @classmethod
+    def from_keywords(cls, text: str) -> TaskSignals:
+        normalized = _normalize(text.strip())
+        return cls(
+            mutation=_is_mutation_request(normalized),
+            command=_is_command_request(normalized),
+            local_reference=_mentions_workspace(normalized),
+            local_inspection=_is_local_inspection_request(normalized),
+            explicit_web=_is_explicit_web_request(normalized),
+            external=_is_external_research_request(normalized),
+            current_info=requires_current_web_search(text.strip()),
+            bug_fix=_contains_any(normalized, {"fix", "bug", "corrija", "conserte"}),
+            refactoring=_contains_any(normalized, {"refactor", "refatore", "reorganize"}),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TaskDecision:
+    """A decision engine's reading of one user message."""
+
+    signals: TaskSignals
+    # The message only asks to carry on with the task already in progress.
+    continuation: bool = False
+
+
+class FinalAnswerVerdict(StrEnum):
+    """What the answer a turn stopped on does to the request."""
+
+    DONE = "done"
+    # Says what it is going to do, and the turn ends before it does.
+    ANNOUNCED = "announced"
+    # A change was asked for and it is in the chat, not in the files.
+    UNAPPLIED = "unapplied"
+    # Part of the request is still open.
+    INCOMPLETE = "incomplete"
+    # Waits on the user: nothing to send the model back for.
+    ASKS_USER = "asks_user"
+
+
+@dataclass(frozen=True, slots=True)
+class FinalAnswerQuery:
+    objective: str
+    # One line per recorded action this turn; empty when no tool ran.
+    actions: str
+    answer: str
+    changed_files: bool
+
+
 class TaskProfile(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -135,16 +202,19 @@ class TaskProfile(BaseModel):
 
     @classmethod
     def from_user_text(cls, text: str) -> TaskProfile:
+        return cls.from_signals(text, TaskSignals.from_keywords(text))
+
+    @classmethod
+    def from_signals(cls, text: str, signals: TaskSignals) -> TaskProfile:
         objective = text.strip()
-        normalized = _normalize(objective)
-        mutation = _is_mutation_request(normalized)
-        command = _is_command_request(normalized)
-        local_reference = _mentions_workspace(normalized)
-        local_inspection = _is_local_inspection_request(normalized)
+        mutation = signals.mutation
+        command = signals.command
+        local_reference = signals.local_reference
+        local_inspection = signals.local_inspection
         requires_local = mutation or command or local_reference or local_inspection
-        explicit_web = _is_explicit_web_request(normalized)
-        external = _is_external_research_request(normalized)
-        current_info = requires_current_web_search(objective)
+        explicit_web = signals.explicit_web
+        external = signals.external
+        current_info = signals.current_info
         current_external_info = current_info and not (requires_local and not explicit_web)
         requires_external = (
             not mutation
@@ -155,9 +225,9 @@ class TaskProfile(BaseModel):
             )
         )
 
-        if mutation and _contains_any(normalized, {"fix", "bug", "corrija", "conserte"}):
+        if mutation and signals.bug_fix:
             intent = TaskIntent.BUG_FIX
-        elif mutation and _contains_any(normalized, {"refactor", "refatore", "reorganize"}):
+        elif mutation and signals.refactoring:
             intent = TaskIntent.REFACTORING
         elif mutation:
             intent = TaskIntent.IMPLEMENTATION

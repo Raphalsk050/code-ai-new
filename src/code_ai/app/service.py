@@ -843,6 +843,9 @@ class CodeAIApplication:
             "presence_penalty": config.sampling.presence_penalty,
             "mcp_enabled": config.mcp_enabled,
             "commands_see_secrets": config.commands_see_secrets,
+            "jev_enabled": config.decisions.enabled,
+            "jev_base_url": config.decisions.base_url,
+            "jev_api_key_set": bool(config.decisions.api_key),
             "supported": {
                 "api_mode": sorted(SUPPORTED_API_MODES),
                 "permission_mode": sorted(SUPPORTED_PERMISSION_MODES),
@@ -1025,6 +1028,23 @@ class CodeAIApplication:
                     config.sampling = validated.sampling
                     self.retry_sampling()
                     applied.append(key)
+                elif key in {"jev_enabled", "jev_base_url", "jev_api_key"}:
+                    decisions = asdict(config.decisions)
+                    if key == "jev_enabled":
+                        decisions["engine"] = "openjev" if value else ""
+                    elif key == "jev_base_url":
+                        decisions["base_url"] = str(value).strip()
+                    elif str(value).strip():
+                        # A blank token means "keep the stored one", as with api_key.
+                        decisions["api_key"] = str(value).strip()
+                    # The panel posts every field on save; an untouched engine
+                    # keeps its client and what it knows about the server.
+                    changed = decisions != asdict(config.decisions)
+                    validated = persist_config_updates(config, {"decisions": decisions})
+                    config.decisions = validated.decisions
+                    if changed:
+                        self.reload_decision_engine()
+                    applied.append(key)
                 elif key == "max_context_tokens":
                     budgets = asdict(config.budgets)
                     budgets["max_context_tokens"] = int(value)
@@ -1055,6 +1075,35 @@ class CodeAIApplication:
             "errors": errors,
             "settings": self.get_settings(),
         }
+
+    def reload_decision_engine(self) -> None:
+        """Rebuild the decision engine from the configuration in force."""
+        from code_ai.decisions import build_decision_engine
+
+        planner = getattr(self.orchestrator, "planner", None)
+        if planner is None:
+            return
+        classifier, judge = build_decision_engine(self.session.config)
+        planner.set_decision_engine(
+            task_classifier=classifier,
+            final_answer_judge=judge,
+            max_final_answer_nudges=self.session.config.decisions.max_final_answer_nudges,
+        )
+
+    async def test_decision_engine(self, base_url: str = "") -> dict[str, Any]:
+        """Ask the decision engine one question, at ``base_url`` or the saved one.
+
+        Takes the URL so a panel can test what is typed before saving it.
+        """
+        from code_ai.decisions import probe_decision_engine
+
+        config = self.session.config
+        return await probe_decision_engine(
+            base_url.strip() or config.decisions.base_url,
+            api=config.decisions.api,
+            api_key=config.decisions.api_key,
+            ssl_verification=config.ssl_verification,
+        )
 
     def retry_sampling(self) -> None:
         """Send the sampling controls again after the user changed them.
