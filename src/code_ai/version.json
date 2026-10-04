@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 36,
-  "patch": 1,
-  "build": 80,
+  "patch": 2,
+  "build": 81,
   "updated": "2026-10-04",
-  "note": "Remove the decision layer"
+  "note": "Static glyph in place of the animated avatar"
 }

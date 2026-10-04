@@ -3,8 +3,7 @@ import * as React from "react";
 import { Codicon } from "./codicon";
 import { ContextMeter } from "./context-meter";
 import { t, tf } from "./i18n";
-import { AgentAvatar } from "./agent-avatar";
-import type { AvatarPose } from "./avatar-pose";
+import { IconBrand } from "./icons";
 import { ripple } from "./motion";
 import type { UsageState } from "./store";
 
@@ -17,7 +16,6 @@ export function ChatHeader({
   title,
   branch,
   busy,
-  pose,
   offline = false,
   activity,
   narrow,
@@ -34,7 +32,6 @@ export function ChatHeader({
   title: string;
   branch: string;
   busy: boolean;
-  pose: AvatarPose | null;
   /** No backend: the glyph turns red. */
   offline?: boolean;
   /** What the agent is doing, with the elapsed time; empty when idle. */
@@ -55,8 +52,8 @@ export function ChatHeader({
       <button className="icon-btn" title={t("Back to the history")} onPointerDown={ripple} onClick={onBack}>
         <Codicon name="arrow-left" />
       </button>
-      <span className="brand-mark brand-live" title="Code-AI">
-        <AgentAvatar pose={pose} size={26} fx />
+      <span className="brand-mark" title="Code-AI">
+        <IconBrand size={20} />
       </span>
       <span className="chat-title" title={title}>
         {title}
