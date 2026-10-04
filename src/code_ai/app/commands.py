@@ -216,9 +216,10 @@ class SessionCommands:
 
     async def terminal_write(self, text: str, *, enter: bool = True) -> CommandResult:
         def action(manager: Any, session_id: str) -> None:
-            manager.send_text(session_id, text)
+            # Typed in a UI: the command block is the user's, not the agent's.
+            manager.send_text(session_id, text, author="user")
             if enter:
-                manager.send_enter(session_id)
+                manager.send_enter(session_id, author="user")
 
         return await self._terminal_action(action)
 

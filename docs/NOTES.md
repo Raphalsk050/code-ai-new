@@ -3,6 +3,342 @@
 Decisions, trade-offs and loose ends. One entry per block of work, newest at
 the top.
 
+## 2026-10-03 - Extension UI redesign, stage 7: outside the webview, and wrap-up
+
+### What was done
+
+- **Status bar item** (`src/agent-status.ts`, pure and tested): context used
+  in percent and what the agent is doing, for when the sidebar is closed.
+  Spinner while working, bell while an approval waits, disconnect icon when
+  offline; the tooltip names the running tool and the token counts; the item
+  takes the warning background past the compaction threshold. Click opens
+  the chat.
+- **Explorer decorations:** every file the agent changed in the conversation
+  carries `M` (or `A` for one it created) in the git colours, from the same
+  ledger as the Changes section, cleared when the file is back to how it was
+  or the conversation changes.
+
+### State of the redesign
+
+All seven stages are in: tokens and the i18n gate (1), header and floating
+composer (2), transcript (3), rail with Changes (4), settings (5), terminal
+blocks (6), status bar and decorations (7). Per stage: typecheck, i18n gate,
+unit tests and the e2e suite pass (212 unit, 128 e2e at this point).
+
+### Deferred
+
+- **Gutter decorations** for the lines the agent changed: needs per-line
+  ranges tracked across later edits by hand; the explorer letter and the
+  Changes diff cover finding them.
+- **MCP server cards** in the compact design (status dot, tool chips, approve
+  on `warn-soft`).
+- **Terminal:** "open in the VS Code terminal" and "expand over the chat";
+  sending only changed blocks instead of the last 20.
+- **`dist/webview.js` is 2.1 MB.** Measure time to first paint of the panel
+  before deciding on code-splitting (the flow editor is the obvious split).
+- `webview/mode-switch.tsx` and `webview/usage-bar.tsx` are unused since
+  stage 2 and can be deleted.
+- Syntax-highlight colours (`.hljs-*`) are still fixed hex (from stage 1).
+
+## 2026-10-03 - Extension UI redesign, stage 6: terminal blocks
+
+### What was done
+
+- **Shell integration (backend).** `tools/terminal/shell_integration.py`
+  starts a bare `bash`, `zsh`, `pwsh`, `powershell` or `cmd` with the OSC 633
+  marks VS Code's terminal uses (A/B prompt, C command start, D exit code,
+  E command line, P cwd): an init file for bash, a `ZDOTDIR` for zsh that
+  sources the user's own files, a wrapped `prompt` plus an Enter handler for
+  PowerShell, and a `PROMPT` for cmd.exe. The user's rc and profile still
+  load first. Any other command (a dev server, a REPL, a shell with flags)
+  starts exactly as asked.
+- `ShellIntegration` takes the PTY stream, strips the marks before `pyte`
+  sees them, and cuts it into command blocks: command, author, cwd, start and
+  end, exit code, output (SGR colours kept, cursor control dropped, `\r`
+  overwrites applied, capped at 64k chars per block, 50 blocks per session).
+  A mark split across reads is reassembled.
+- **Who ran it.** `send_text` / `send_enter` take `author` ("agent" by
+  default); `SessionCommands.terminal_write` (what the user types in a UI)
+  passes "user". A block opens on Enter when the shell is at its prompt, so
+  shells that never send `C` (cmd.exe, bash 3.2) still get blocks; a later
+  `C` only moves where the output starts. Pending output is drained before
+  input is recorded, so a prompt still in the buffer is seen first.
+- `terminal.screen.updated` now also carries `integrated`, `shell`, `cwd`,
+  `running`, `running_author` and the last 20 `blocks` (output tail 4000
+  chars each). The poller also fires when only the blocks changed.
+- **Panel.** Bar with state dot, shell and cwd, Interrupt (only while your
+  own command runs) and a "more" menu (Copy output, Refresh the screen, Send
+  EOF, Clear, End the session). Blocks show the author (brand glyph for the
+  agent, person for you), command, duration and result (check, `exit N`,
+  spinner); success starts folded, failure and running start open, with a
+  danger or accent stripe. ANSI colours map to the theme tokens. While the
+  agent's command runs the input becomes "Take over" (sends Ctrl+C, focuses
+  the input). Ended: "Session ended." and New session. Footer: short id and
+  size. Without marks the raw screen stays, as before.
+- Rail badge: `running`, `exit N` (danger, opens the section once), `live`,
+  `closed`.
+- Tests: `tests/unit/test_shell_integration.py` (9, one drives a real bash
+  through `pexpect`), 4 new in `test_terminal_manager.py`,
+  `webview/__tests__/ansi.test.ts`, `e2e/terminal.e2e.mjs` (5).
+
+### Trade-offs
+
+- **The default shell is unchanged** (`COMSPEC`, so cmd.exe on Windows). cmd
+  gives blocks but no exit codes; PowerShell gives both. Switching the
+  default to `pwsh` would change what the agent's commands run in.
+- **ConPTY and OSC.** Older Windows builds can drop OSC sequences inside
+  ConPTY; then there are simply no blocks and the raw screen shows.
+- **Payload size.** Every update carries up to 20 blocks with 4000 chars of
+  output each; a chatty command at the poller's 2 Hz moves up to ~160 KB/s
+  over stdio. Sending only changed blocks would cut it; not measured yet.
+- Not done: "open in the VS Code terminal" and "expand over the chat" from
+  the design. The PTY lives in the backend, so a VS Code terminal would be a
+  second session, not this one.
+
+### Loose ends
+
+- Run `pytest tests/unit/test_shell_integration.py tests/unit/test_terminal_manager.py tests/unit/test_session_commands.py`
+  on Windows and Linux: the build environment had no `pexpect`, `pyte` or
+  `pywinpty`, so the manager tests ran against stand-ins and the real-bash
+  path was checked with the standard `pty` module instead.
+
+## 2026-10-03 - Extension UI redesign, stage 5: settings
+
+### What was done
+
+- **Categories instead of one long page:** Model, Agent, Editor, Context,
+  Tools and MCP, Sub-agents, Advanced. "Doctor" is gone as a name; each of its
+  items moved to its subject (effort to Model, tools to Tools and MCP,
+  sub-agents to their own, sampling to Advanced). Below 640px the categories
+  become a scrolling tab strip and each row stacks name over control.
+- **One row per setting:** name and description on the left, control on the
+  right. Enums of up to four values are segmented controls, longer ones stay
+  selects (reasoning effort has six). Numbers are right-aligned at 120px.
+- **Search** in the header filters rows by name and description across all
+  categories, grouped under their category.
+- **What is unsaved:** an accent dot on the row and on its category, the
+  header counts them ("3 unsaved"), and a floating bar with the composer's
+  glass offers Discard and Save, saying how many changes need a restart.
+  `Ctrl+S` saves. The bar is gone when nothing is pending and the header
+  reads Saved / Not saved. After a save that touched a restart-only setting,
+  a note offers "Restart now".
+- **Model:** the provider's list appears under the field with the current
+  model marked; typing still works for providers that do not list. "Test the
+  connection" times a model listing and reports latency and model count.
+- **API key:** "stored" with a Change button instead of an empty field.
+- **Risk:** "Commands see secret variables" sits on `warn-soft` with a risk tag.
+- **The extension's own settings** are now editable here:
+  `code-ai.diff.openInEditor` (Editor), `code-ai.command` and `code-ai.args`
+  (Advanced). They are saved through the host to the user's VS Code settings
+  (`updateEditorSettings`), never to the backend.
+- The restart tag reads "reopens panel".
+- **Bug fixed:** `UserAvatar` reset its broken flag in an effect, which raced
+  with `onError` for a fast-failing image and left a broken image on screen
+  (the intermittent e2e failure). It now remembers which source failed.
+- `e2e/settings-layout.e2e.mjs` (8 tests). `settings.e2e.mjs` and
+  `mcp.e2e.mjs` navigate to the field's category first and read the status
+  from the header instead of the button.
+
+### Trade-offs
+
+- **MCP server cards are unchanged.** The compact card design (status dot,
+  tool chips, approve on `warn-soft`) is deferred; the cards work and are
+  covered by 15 tests that would all move.
+- **Prefs (default mode, analyse selection) still apply immediately**, as
+  before, so they never show as unsaved.
+- **Save still posts every backend field** when any one changed: the backend
+  validates the set, and the existing tests pin that contract.
+
+## 2026-10-03 - Extension UI redesign, stage 4: task rail
+
+### What was done
+
+- **Badges on every section header** (`sectionNotes` in `task-rail.tsx`), in
+  the tone of what they report: Session `waiting for you` / `working` /
+  `offline`, Plan `done/total` (or `-`), Changes the file count, Agents
+  `n running` / `n failed`, Terminal `live` / `closed`. A section whose badge
+  turns warn or bad opens itself once per occurrence (docked rail only; the
+  strip never pops a drawer on its own).
+- **Session in words.** Context meter with the auto-compaction mark, state
+  as a sentence (`Running web_search`, `Waiting for you`, `Offline`),
+  tokens spent, verification only after one ran, index progress while
+  indexing. Model, workspace, branch, raw status, phase, planner and
+  permission moved under "Technical details", collapsed.
+- **Plan.** The auto/plan/act buttons are gone (the composer chip has them).
+  Steps are 22px rows: check (done, muted text), spinner (current, bold),
+  ring (pending), error (failed). No plan: one short line.
+- **Changes (new).** Every file the agent changed in the conversation, with
+  `+n -m` against the file as it was before the agent first touched it.
+  Click opens that diff; hover shows revert (delete for a file the agent
+  created), which the host confirms in a modal; Review all opens the
+  multi-file diff (`vscode.changes`), falling back to the first file's diff
+  on editors without it. Host side: `src/change-ledger.ts` (pure, tested)
+  fed by `file.write.before` and write completions, wrapped by
+  `src/session-changes.ts`; reset on new or loaded conversation; refreshed
+  on save of a tracked file.
+- **Widths.** Rail 288px by default (was 236); the chat keeps at least 320px.
+  The docked layout starts at 640px of container (was 520); below it the
+  icon strip with counts (Changes) and tone dots (activity), and the drawer.
+- **Agents icon:** two brand glyphs, the back one faded, the dot in the
+  bottom-right corner. The footer ("bridge connected", planner mode) is
+  gone: the banner and the composer chips say both.
+- `e2e/rail.e2e.mjs` (6 tests), `src/__tests__/change-ledger.test.ts` (2).
+
+### Trade-offs
+
+- **Revert writes the snapshot back whole.** Edits made by hand after the
+  agent's are lost too; the confirmation says so. A per-hunk revert would
+  need a merge, and the editor's own diff already allows reverting hunks.
+- **Line counts are against disk at refresh time**, recomputed on every
+  write and on saves of tracked files; edits not yet saved are not counted.
+- **A file over the snapshot limit (512k chars) or binary** is listed without
+  counts and cannot be reverted, because its original was never captured.
+- **The ledger lives in the extension host** and is lost on window reload;
+  persisting originals would mean storing copies of user files.
+
+## 2026-10-03 - Extension UI redesign, stage 3: transcript
+
+### What was done
+
+- **Tool cards (`webview/tool-row.tsx`).** Same anatomy as before (status,
+  kind, name; target and result below). Codicons; the kind icon is muted so
+  accent marks only what runs. No badge on success: badges only for
+  `running` and `failed`, in lower case. Duration on the right, from the
+  envelope timestamps of `tool.call.started` and its end. Writes show
+  `+n -m`. A failed call is open from the start, on a danger background, with
+  Copy and (for commands) Open the terminal.
+- **Folded runs.** Three or more consecutive successful calls collapse into
+  one line ("3 tools", the names, the summed time); a click opens them.
+- **Line counts from the backend.** `write_file` and `edit_code` now return
+  `lines_added` / `lines_removed` (`filesystem/common.py: line_delta`). An
+  overwrite of a binary or oversized file reports none. The webview falls back
+  to counting the unified diff `edit_code` already returned.
+- **Approval card.** Header on `warn-soft` with the kind icon and a "waiting
+  for you" badge. Allow once is solid, Allow for the session outlined, Deny
+  outlined in danger, each with its key inside the button; the line of key
+  hints is gone. Code changes show the path, `+n -m` and the diff; when the
+  editor diff is on, the first 8 lines plus "Open diff".
+- **Turn footer.** `turn.completed` appends a `turn` item: wall time from the
+  first `user.message` of the turn, tokens from the cumulative usage delta,
+  files written, and the last `latest_verification_passed` seen in the turn.
+  A turn with none of these leaves no footer. A steer mid-turn does not
+  restart the clock. The footer does not stop the box from turning green.
+- **Banner over the composer.** Offline (`DISCONNECTED`) with Reconnect,
+  connecting (`STARTING` / `RECONNECTING`), and model retries. Retries no
+  longer leave a notice in the transcript: the session keeps the attempt and
+  the reason, and the banner goes when the model answers. Sending is disabled
+  for all three offline states (was `STARTING` only). The header glyph turns
+  red offline.
+- **Empty conversation.** With a selection: Explain the selection (a prompt
+  with the editor context) and Refactor the selection (refactor mode, analysis
+  started). Without: Explain this workspace and Review uncommitted changes.
+  Then the three most recent conversations.
+- `IconAgentsTwin`: two of the brand glyph, front one ringed in the surface
+  colour; used for the `agent` tool kind.
+- `e2e/turns.e2e.mjs` (8 tests) and 3 new unit tests.
+
+### Trade-offs
+
+- **"Waiting for approval" is the approval card, not a tool row.** The
+  backend emits `tool.call.started` only after the approval resolves, so a
+  waiting call has no card to badge. Emitting it earlier would change what
+  every front end sees; not worth it for a duplicate of the approval card.
+- **Durations need envelope timestamps.** Saved conversations rebuilt from
+  messages have none, so their cards and footers show no time.
+- **The footer's token count is the cumulative delta**, so it includes
+  compaction or sub-agent calls made inside the turn. That is what the turn
+  cost, which is the point.
+- **Fold threshold is 3.** Two calls are short enough to read as they are.
+
+### Loose ends
+
+- Python tests (`test_writes_and_edits_report_the_lines_they_changed`) could
+  not run in the build environment; run `pytest tests/unit/test_filesystem_tools.py`.
+
+## 2026-10-03 - Extension UI redesign, stage 2: header and composer
+
+### What was done
+
+- **Codicons.** `@vscode/codicons` is a dependency; `esbuild.mjs` copies
+  `codicon.css`/`codicon.ttf` to `dist/codicons`, the webview links them (CSP
+  gains `font-src`), `verify-vsix` requires them. `webview/codicon.tsx` renders
+  one.
+- **Header (`chat-header.tsx`).** 40px: back, brand mark, title, branch chip,
+  a status glyph (spinner or dot, the activity text only in the tooltip), the
+  context meter, new / history / task panel / settings. Below the narrow
+  breakpoint the branch, status and history go.
+- **Context meter (`context-meter.tsx`).** Always visible; unknown is drawn as
+  a dashed track; past the compaction threshold it becomes the button that
+  compacts. Replaces `UsageBar`.
+- **Floating composer.** The composer floats over the transcript on a blurred
+  glass layer; the transcript pads by `--composer-h` (ResizeObserver). A jump
+  button appears when scrolled up. While the agent works an accent arc orbits
+  the field (`@property` angle, static border under reduced motion).
+- **Composer bar (`composer-bar.tsx`, `chip-menu.tsx`).** Mode, plan and
+  permission chips on the left (they wrap), model chip and send/stop on the
+  right (never wrap, so the button keeps its corner at every width). The
+  model chip lists models on open and saves the pick. Refactor and explain
+  modes show the same bar in a footer. Replaces the mode bar.
+- **The task panel's docked state moved up to `index.tsx`** so the header
+  button can toggle it.
+- `e2e/chrome.e2e.mjs`: 8 tests (header parts, meter states, chips, keyboard,
+  busy ring and stop, fixed send corner, glass and jump button).
+
+### Trade-offs
+
+- **`backdrop-filter` costs a compositing layer** over a scrolling list. It is
+  one fixed-size layer, acceptable for a sidebar; no profile was taken.
+- **The model chip saves through `updateSettings`**, the same path the
+  settings form uses, so a model change from the chip is a settings write.
+- **`button:not(:disabled)` in `motion.ts` forces `position: relative`** on
+  every button (for the ripple). Absolutely positioned buttons need a more
+  specific selector (`.composer-wrap > .jump-btn`).
+
+### Loose ends
+
+- `webview/mode-switch.tsx` and `webview/usage-bar.tsx` are no longer imported
+  and should be deleted.
+- `test-package.mjs` was only partly runnable here (no backend tree, no
+  `vsce`); the codicon entries in `verify-vsix` need a local `npm test`.
+
+## 2026-10-03 - Extension UI redesign, stage 1: design tokens and i18n gate
+
+Implements the "Code-AI" design system in stages; this is
+the foundation the later stages build on.
+
+### What was done
+
+- **Design tokens.** `webview/styles/tokens.ts` is now the only place a colour,
+  font size, spacing step or radius is decided. Every colour maps to a
+  `--vscode-*` variable (fallbacks are Dark Modern, used only outside VS Code).
+  `base.ts`, `panels.ts` and `rail.ts` read tokens only: the duplicated
+  fallbacks (`#f85149`/`#f14c4c`, four greens, two yellows) are gone, the 13
+  font sizes collapse to four (11/12/body/14, body follows
+  `--vscode-font-size`), radii map to `--radius-sm|md|lg|pill`.
+- **The agent avatar** uses `--accent` instead of an accent-to-purple gradient:
+  purple was the only colour outside the theme.
+- **i18n gate.** `scripts/check-i18n.mjs` (TypeScript AST, run as
+  `npm run lint:i18n` and part of `npm test`) fails on JSX text, string
+  children, conditional/template strings and user-facing attributes that skip
+  `t()`/`tf()`. 70 such strings were fixed; the pt-BR ones that were hard-coded
+  now have an English key and a pt entry.
+
+### Trade-offs
+
+- **Radii follow the design system as edited (15/15/20px)**, which is rounder
+  than the old 6-10px. One token change reverts it.
+- **The i18n check is syntactic.** Strings built outside JSX (a label map, a
+  helper returning text) are not seen; they still need review.
+- **The orchestrator graph (`webview/flow/`) keeps its own stylesheet** and is
+  out of scope for this redesign.
+
+### Loose ends
+
+- Syntax-highlight colours in `base.ts` (`.hljs-*`) are still fixed hex; they
+  should map to the editor's token colours.
+- `@vscode/codicons` (chosen for icons) could not be installed in the build
+  environment used for this stage; it lands with stage 2.
+
 ## 2026-09-22 - Orchestrator graph, and English as the product language
 
 ### What was done

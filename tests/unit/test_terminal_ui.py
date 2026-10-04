@@ -1953,10 +1953,10 @@ class FakeUiTerminalManager:
     def latest_session_id(self) -> str | None:
         return self._session_id
 
-    def send_text(self, session_id: str, text: str) -> None:
+    def send_text(self, session_id: str, text: str, *, author: str = "agent") -> None:
         self.sent_text.append((session_id, text))
 
-    def send_enter(self, session_id: str) -> None:
+    def send_enter(self, session_id: str, *, author: str = "agent") -> None:
         self.entered.append(session_id)
 
     def send_control(self, session_id: str, key: str) -> None:

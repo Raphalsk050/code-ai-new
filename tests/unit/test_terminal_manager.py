@@ -123,6 +123,66 @@ def test_latest_session_id_skips_closed_sessions(tmp_path) -> None:
     assert manager.latest_session_id() is None
 
 
+def test_marked_output_becomes_blocks_with_their_author(tmp_path) -> None:
+    manager, sessions = make_manager()
+    session_id = manager.create(cwd=tmp_path)
+    shell = sessions[0]
+    shell.pending.append("\x1b]633;A\x07$ \x1b]633;B\x07")
+    manager.poll()
+
+    manager.send_text(session_id, "make", author="user")
+    manager.send_enter(session_id, author="user")
+    shell.pending.append(
+        "make\r\n\x1b]633;C\x07ok\r\n\x1b]633;D;0\x07\x1b]633;A\x07$ \x1b]633;B\x07"
+    )
+    manager.send_text(session_id, "false\n")
+    shell.pending.append("false\r\n\x1b]633;C\x07\x1b]633;D;1\x07")
+
+    screen = manager.read_screen(session_id)
+    assert "633" not in str(screen["screen"])
+    assert screen["integrated"] is True and screen["running"] is False
+    blocks = screen["blocks"]
+    assert [(b["command"], b["author"], b["exit_code"]) for b in blocks] == [
+        ("make", "user", 0),
+        ("false", "agent", 1),
+    ]
+    assert blocks[0]["output"] == "ok"
+
+
+def test_a_new_block_alone_is_news_to_the_poller(tmp_path) -> None:
+    manager, sessions = make_manager()
+    manager.create(cwd=tmp_path)
+    sessions[0].pending.append("\x1b]633;A\x07$ \x1b]633;B\x07")
+    assert len(manager.poll()) == 1
+    # Same screen, but the shell moved on: the UI still has to hear of it.
+    sessions[0].pending.append("\x1b]633;P;Cwd=/w\x07")
+    assert len(manager.poll()) == 1
+
+
+def test_an_ending_session_ends_its_running_command(tmp_path) -> None:
+    manager, sessions = make_manager()
+    session_id = manager.create(cwd=tmp_path)
+    sessions[0].pending.append("\x1b]633;A\x07$ \x1b]633;B\x07")
+    manager.send_text(session_id, "npm run dev\n")
+    manager.terminate(session_id)
+    [block] = manager.read_screen(session_id)["blocks"]
+    assert block["running"] is False and block["exit_code"] is None
+
+
+def test_a_plain_manager_starts_the_command_as_given(tmp_path) -> None:
+    seen: list[object] = []
+
+    def factory(*, cwd, command, rows, cols, env=None):
+        seen.append(command)
+        return FakePtySession()
+
+    manager = PersistentTerminalManager(session_factory=factory, shell_integration=False)
+    manager.create(cwd=tmp_path)
+    assert seen == [None]
+    manager.create(cwd=tmp_path, command="python -i")
+    assert seen[-1] == "python -i"
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows ConPTY backend")
 def test_windows_backend_runs_a_real_shell(tmp_path) -> None:
     # End-to-end proof that the interactive terminal works on Windows: spawn

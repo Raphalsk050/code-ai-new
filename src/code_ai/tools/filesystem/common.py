@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 import hashlib
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -9,6 +10,19 @@ from code_ai.util.fileio import NO_RETRY, RetryPolicy, read_bytes, retry_transie
 
 if TYPE_CHECKING:
     from code_ai.tools.base import ToolContext
+
+
+def line_delta(before: str, after: str) -> tuple[int, int]:
+    """Lines added and removed going from ``before`` to ``after``."""
+
+    added = removed = 0
+    matcher = difflib.SequenceMatcher(None, before.splitlines(), after.splitlines())
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag in ("replace", "delete"):
+            removed += i2 - i1
+        if tag in ("replace", "insert"):
+            added += j2 - j1
+    return added, removed
 
 
 def sha256_bytes(data: bytes) -> str:

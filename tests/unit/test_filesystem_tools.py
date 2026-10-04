@@ -234,3 +234,24 @@ async def test_a_binary_file_is_not_offered_as_text_before_a_write(tmp_path) -> 
     await WriteFileTool().execute({"path": "blob.bin", "content": "text now\n"}, context)
 
     assert seen == []
+
+
+async def test_writes_and_edits_report_the_lines_they_changed(tmp_path) -> None:
+    context = make_context(tmp_path)
+    write = WriteFileTool()
+    edit = EditCodeTool()
+
+    created = await write.execute({"path": "a.txt", "content": "one\ntwo\nthree\n"}, context)
+    assert (created["lines_added"], created["lines_removed"]) == (3, 0)
+
+    edited = await edit.execute(
+        {"path": "a.txt", "old_text": "two\n", "new_text": "2\n2b\n"}, context
+    )
+    assert (edited["lines_added"], edited["lines_removed"]) == (2, 1)
+
+    rewritten = await write.execute({"path": "a.txt", "content": "one\n"}, context)
+    assert (rewritten["lines_added"], rewritten["lines_removed"]) == (0, 3)
+
+    (tmp_path / "blob.bin").write_bytes(b"\x00\x01")
+    over_binary = await write.execute({"path": "blob.bin", "content": "text\n"}, context)
+    assert "lines_added" not in over_binary

@@ -45,12 +45,12 @@ class _Manager:
     def latest_session_id(self) -> str | None:
         return self.session_id
 
-    def send_text(self, session_id: str, text: str) -> None:
+    def send_text(self, session_id: str, text: str, *, author: str = "agent") -> None:
         if self.fail_with is not None:
             raise self.fail_with
         self.text.append(text)
 
-    def send_enter(self, session_id: str) -> None:
+    def send_enter(self, session_id: str, *, author: str = "agent") -> None:
         self.enters += 1
 
     def send_control(self, session_id: str, key: str) -> None:

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import shutil
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
 
 from code_ai.core.errors import TerminalSessionError
-from code_ai.tools.terminal.backends import PtySession, create_pty_session
+from code_ai.tools.terminal.backends import PtySession, create_pty_session, default_shell
+from code_ai.tools.terminal.shell_integration import ShellIntegration, prepare_shell
 
 # Signature of the platform-session factory (see backends.create_pty_session);
 # injectable so tests can drive the manager with a fake PTY.
@@ -26,6 +28,12 @@ class TerminalSession:
     # Fingerprint of the last screen handed out by poll(), so the poller only
     # emits an update when the rendered display actually changed.
     last_display: str = field(default="", compare=False)
+    # Command blocks, from the marks an integrated shell emits.
+    integration: ShellIntegration = field(default_factory=ShellIntegration, compare=False)
+    #: "bash", "pwsh", ... when the shell was set up to mark its commands.
+    shell: str = ""
+    #: Where the integration scripts live; removed with the session.
+    scratch: Path | None = None
 
 
 class PersistentTerminalManager:
@@ -36,9 +44,15 @@ class PersistentTerminalManager:
     class only manages session lifecycle and the ``pyte`` screen emulation.
     """
 
-    def __init__(self, *, session_factory: SessionFactory | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        session_factory: SessionFactory | None = None,
+        shell_integration: bool = True,
+    ) -> None:
         self._sessions: dict[str, TerminalSession] = {}
         self._session_factory = session_factory or create_pty_session
+        self._shell_integration = shell_integration
         self._pyte = None
 
     def _load(self) -> None:
@@ -61,25 +75,47 @@ class PersistentTerminalManager:
         env: Mapping[str, str] | None = None,
     ) -> str:
         self._load()
-        child = self._session_factory(
-            cwd=cwd, command=command, rows=rows, cols=cols, env=env
-        )
+        shell, scratch = "", None
+        if self._shell_integration:
+            # A bare shell is started with its commands marked, so the UI can
+            # show who ran what; anything else starts exactly as asked.
+            prepared = prepare_shell(command or default_shell(), env)
+            if prepared.shell:
+                command, env = prepared.command, prepared.env
+                shell, scratch = prepared.shell, prepared.scratch
+        try:
+            child = self._session_factory(
+                cwd=cwd, command=command, rows=rows, cols=cols, env=env
+            )
+        except Exception:
+            if scratch is not None:
+                shutil.rmtree(scratch, ignore_errors=True)
+            raise
         screen = self._pyte.Screen(cols, rows)
         stream = self._pyte.Stream(screen)
         session_id = str(uuid4())
-        self._sessions[session_id] = TerminalSession(
-            session_id, child, screen, stream, cwd, rows, cols
-        )
+        session = TerminalSession(session_id, child, screen, stream, cwd, rows, cols)
+        session.shell = shell
+        session.scratch = scratch
+        self._sessions[session_id] = session
         self._drain(session_id)
         return session_id
 
-    def send_text(self, session_id: str, text: str) -> None:
+    def send_text(self, session_id: str, text: str, *, author: str = "agent") -> None:
+        """Type ``text``. ``author`` is who the command belongs to: the agent's
+        tools by default, "user" for what the user typed in a UI."""
         session = self._get(session_id)
+        # Whatever the shell said before this keystroke comes first: a prompt
+        # still in the buffer decides whether this line opens a command block.
+        self._drain(session_id)
+        session.integration.typed(text, author)
         session.child.send(text)
         self._drain(session_id)
 
-    def send_enter(self, session_id: str) -> None:
+    def send_enter(self, session_id: str, *, author: str = "agent") -> None:
         session = self._get(session_id)
+        self._drain(session_id)
+        session.integration.submitted(author)
         session.child.send_line("")
         self._drain(session_id)
 
@@ -108,6 +144,10 @@ class PersistentTerminalManager:
             return
         session.child.terminate()
         session.closed = True
+        session.integration.closed()
+        if session.scratch is not None:
+            shutil.rmtree(session.scratch, ignore_errors=True)
+            session.scratch = None
 
     def read_screen(self, session_id: str, *, include_cursor: bool = True) -> dict[str, object]:
         # Readable after the session ends: the payload carries `closed`, which
@@ -117,12 +157,17 @@ class PersistentTerminalManager:
         session = self._get(session_id, allow_closed=True)
         self._drain(session_id)
         display = "\n".join(session.screen.display)
+        closed = session.closed or not session.child.is_alive()
+        if closed and session.integration.running is not None:
+            session.integration.closed()
         payload: dict[str, object] = {
             "session_id": session_id,
             "rows": session.rows,
             "columns": session.cols,
             "screen": display.rstrip(),
-            "closed": session.closed or not session.child.is_alive(),
+            "closed": closed,
+            "shell": session.shell,
+            **session.integration.payload(),
         }
         if include_cursor:
             payload["cursor"] = {"x": session.screen.cursor.x, "y": session.screen.cursor.y}
@@ -141,7 +186,9 @@ class PersistentTerminalManager:
             if session.closed:
                 continue
             snapshot = self.read_screen(session_id)
-            fingerprint = f"{snapshot['screen']}\x00{snapshot['closed']}"
+            fingerprint = (
+                f"{snapshot['screen']}\x00{snapshot['closed']}\x00{session.integration.revision}"
+            )
             if fingerprint != session.last_display:
                 session.last_display = fingerprint
                 changed.append(snapshot)
@@ -178,4 +225,4 @@ class PersistentTerminalManager:
                 return
             if not data:
                 return
-            session.stream.feed(data)
+            session.stream.feed(session.integration.feed(data))

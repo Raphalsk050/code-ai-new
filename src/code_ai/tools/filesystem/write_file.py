@@ -8,6 +8,7 @@ from code_ai.core.errors import ToolArgumentError, ToolExecutionError
 from code_ai.tools.base import ToolCapability, ToolContext
 from code_ai.tools.filesystem.common import (
     announce_write,
+    line_delta,
     read_text_file,
     sha256_bytes,
     sha256_file,
@@ -93,7 +94,7 @@ class WriteFileTool:
             create_parents=create_dirs,
         )
 
-        return {
+        result: dict[str, Any] = {
             "path": location.relative(path),
             "location": location.location.value,
             "old_sha256": old_hash,
@@ -101,6 +102,10 @@ class WriteFileTool:
             "bytes_written": len(data),
             **outcome.to_dict(),
         }
+        # Unknown for a file that held binary or oversized content.
+        if before is not None or old_hash is None:
+            result["lines_added"], result["lines_removed"] = line_delta(before or "", content)
+        return result
 
 
 async def _current_text(path: Path, policy: RetryPolicy) -> str | None:
