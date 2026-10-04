@@ -30,8 +30,6 @@ export function draftFromSettings(settings: Settings): Draft {
     presence_penalty: settings.presence_penalty ?? null,
     mcp_enabled: settings.mcp_enabled ?? true,
     commands_see_secrets: settings.commands_see_secrets ?? false,
-    jev_enabled: settings.jev_enabled ?? false,
-    jev_base_url: settings.jev_base_url ?? "",
   };
 }
 

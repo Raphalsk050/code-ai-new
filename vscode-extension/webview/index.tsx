@@ -55,7 +55,7 @@ import { PromptPin, usePromptPin } from "./prompt-pin";
 import { ripple } from "./motion";
 import { QuestionsCard } from "./questions-card";
 import { INITIAL_REFACTOR, RefactorPanel, RefactorViewState } from "./refactor";
-import { JevState, ModelsState, SaveState, SettingsScreen } from "./settings";
+import { ModelsState, SaveState, SettingsScreen } from "./settings";
 import { applyEvent, initialAppState, isBusy, Item, messagesToItems } from "./store";
 import { STYLE } from "./styles";
 import { RailActions, TaskRail } from "./task-rail";
@@ -101,7 +101,6 @@ function App(): JSX.Element {
   const [activeId, setActiveId] = React.useState<string | null>(null);
   const [settings, setSettings] = React.useState<Settings | null>(null);
   const [models, setModels] = React.useState<ModelsState>({ status: "idle", list: [] });
-  const [jev, setJev] = React.useState<JevState>({ status: "idle" });
   const [save, setSave] = React.useState<SaveState>({ status: "idle", errors: {} });
   const [mcp, setMcp] = React.useState<McpViewState>(INITIAL_MCP);
   const [elicitErrors, setElicitErrors] = React.useState<Record<string, string>>({});
@@ -253,8 +252,6 @@ function App(): JSX.Element {
         setModels({ status: "ready", list: data.models });
       } else if (data?.type === "modelsError") {
         setModels((m) => ({ ...m, status: "error", error: data.message }));
-      } else if (data?.type === "jevTested") {
-        setJev({ status: "done", result: data.result });
       } else if (data?.type === "conversationsList") {
         setServerConvos(data.conversations);
       } else if (data?.type === "conversationLoaded") {
@@ -817,11 +814,6 @@ function App(): JSX.Element {
           onListModels={() => {
             setModels((m) => ({ ...m, status: "loading", error: undefined }));
             send({ type: "listModels" });
-          }}
-          jev={jev}
-          onTestJev={(baseUrl) => {
-            setJev({ status: "testing" });
-            send({ type: "testJev", baseUrl });
           }}
           mcp={mcp}
           onMcpAction={runMcpAction}

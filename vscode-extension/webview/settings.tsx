@@ -2,7 +2,7 @@ import * as React from "react";
 
 import { t, tf } from "./i18n";
 
-import type { AppMode, EditorSettings, JevProbe, McpAction, Settings, ToolSpec } from "../src/protocol";
+import type { AppMode, EditorSettings, McpAction, Settings, ToolSpec } from "../src/protocol";
 import { Codicon } from "./codicon";
 import { ExtPrefs } from "./history";
 import { McpSection, McpViewState } from "./mcp-settings";
@@ -14,9 +14,6 @@ export interface ModelsState {
   list: string[];
   error?: string;
 }
-
-/** State of the decision-layer connection test. */
-export type JevState = { status: "idle" | "testing" } | { status: "done"; result: JevProbe };
 
 /** What the last save did, keyed by the field the backend complained about. */
 export interface SaveState {
@@ -78,8 +75,6 @@ export function SettingsScreen({
   onPrefsChange,
   onRestart,
   onListModels,
-  jev,
-  onTestJev,
   mcp,
   onMcpAction,
 }: {
@@ -97,16 +92,12 @@ export function SettingsScreen({
   onPrefsChange: (next: Partial<ExtPrefs>) => void;
   onRestart: () => void;
   onListModels: () => void;
-  jev: JevState;
-  /** Tests the URL in the field, saved or not. */
-  onTestJev: (baseUrl: string) => void;
   mcp: McpViewState;
   onMcpAction: (action: McpAction) => void;
 }): JSX.Element {
   const [draft, setDraft] = React.useState<Draft>({});
   const [apiKey, setApiKey] = React.useState("");
   const [changingKey, setChangingKey] = React.useState(false);
-  const [jevKey, setJevKey] = React.useState("");
   const [hostDraft, setHostDraft] = React.useState<EditorSettings>(editor ?? EDITOR_DEFAULT);
   const [category, setCategory] = React.useState<Category>("model");
   const [query, setQuery] = React.useState("");
@@ -135,7 +126,6 @@ export function SettingsScreen({
       setApiKey("");
       setChangingKey(false);
     }
-    if (!errors.jev_api_key) setJevKey("");
   }, [settings]);
 
   React.useEffect(() => {
@@ -156,7 +146,6 @@ export function SettingsScreen({
   const saved = settings ? draftFromSettings(settings) : {};
   const changed = (key: string): boolean => {
     if (key === "api_key") return apiKey.trim() !== "";
-    if (key === "jev_api_key") return jevKey.trim() !== "";
     if (key === "diffInEditor" || key === "command" || key === "args") {
       const base = editor ?? EDITOR_DEFAULT;
       return !same(hostDraft[key], base[key]);
@@ -170,7 +159,6 @@ export function SettingsScreen({
 
   const backendDirty = Object.keys(draft).filter((key) => changed(key));
   if (changed("api_key")) backendDirty.push("api_key");
-  if (changed("jev_api_key")) backendDirty.push("jev_api_key");
   const hostDirty = (["diffInEditor", "command", "args"] as const).filter((key) => changed(key));
   const pending = backendDirty.length + hostDirty.length;
   const restartCount = [...backendDirty, ...hostDirty].filter((key) => RESTART_KEYS.has(key)).length;
@@ -180,7 +168,6 @@ export function SettingsScreen({
     if (backendDirty.length) {
       const updates: Record<string, unknown> = { ...draft };
       if (apiKey.trim()) updates.api_key = apiKey.trim();
-      if (jevKey.trim()) updates.jev_api_key = jevKey.trim();
       submittedRef.current = updates as Draft;
       restartRef.current = backendDirty.some((key) => RESTART_KEYS.has(key));
       onSave(updates);
@@ -196,7 +183,6 @@ export function SettingsScreen({
     if (settings) setDraft(draftFromSettings(settings));
     setApiKey("");
     setChangingKey(false);
-    setJevKey("");
     setHostDraft(editor ?? EDITOR_DEFAULT);
   };
 
@@ -389,81 +375,6 @@ export function SettingsScreen({
             options={s.supported.reasoning_effort}
             onChange={(v) => set("followup_reasoning_effort", v)}
           />
-        ),
-      },
-      {
-        id: "jev_enabled",
-        category: "model",
-        label: t("Decision layer (OpenJev)"),
-        hint: t(
-          "A decision model reads each request and each final answer, so a weaker model still finishes the task. Off leaves the keyword reading."
-        ),
-        keys: ["jev_enabled"],
-        control: (
-          <Switch
-            checked={Boolean(draft.jev_enabled)}
-            onChange={(v) => set("jev_enabled", v)}
-            label={t("Decision layer (OpenJev)")}
-          />
-        ),
-      },
-      {
-        id: "jev_base_url",
-        category: "model",
-        label: t("Jev base URL"),
-        hint: t("Where OpenJev listens: its helper, or a llama.cpp server with the GGUF. Separate from the model's."),
-        keys: ["jev_base_url"],
-        control: (
-          <input
-            value={String(draft.jev_base_url ?? "")}
-            spellCheck={false}
-            placeholder="http://127.0.0.1:3000"
-            onChange={(e) => set("jev_base_url", e.target.value)}
-          />
-        ),
-      },
-      {
-        id: "jev_api_key",
-        category: "model",
-        label: t("Jev token"),
-        hint: t("Only when the server asks for one. Kept by Code-AI, never shown again once stored."),
-        keys: ["jev_api_key"],
-        control: (
-          <input
-            type="password"
-            placeholder={s.jev_api_key_set ? t("stored") : t("not set")}
-            value={jevKey}
-            onChange={(e) => setJevKey(e.target.value)}
-          />
-        ),
-      },
-      {
-        id: "jev_connection",
-        category: "model",
-        label: t("Test the decision layer"),
-        hint: t("Asks the engine one question at the URL above, with the saved token, and times the answer."),
-        keys: [],
-        control: (
-          <span className="probe">
-            {jev.status === "done" && (
-              <span className={`probe-result ${jev.result.ok ? "ok" : "bad"}`}>
-                <Codicon name={jev.result.ok ? "pass" : "error"} size={14} />{" "}
-                {jev.result.ok
-                  ? tf(
-                      jev.result.api === "llamacpp" ? "Answered in {0} ms (llama.cpp)" : "Answered in {0} ms",
-                      jev.result.latency_ms ?? 0
-                    )
-                  : (jev.result.error ?? t("The engine did not answer."))}
-              </span>
-            )}
-            <button
-              className="btn-ghost btn-sm"
-              disabled={jev.status === "testing"}
-              onClick={() => onTestJev(String(draft.jev_base_url ?? ""))}
-            >
-              {jev.status === "testing" ? <span className="spinner" /> : <Codicon name="plug" size={14} />} {t("Test")}
-            </button>
-          </span>
         ),
       },
       {

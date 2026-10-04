@@ -365,40 +365,6 @@ DEFAULT_GOAL: dict[str, object] = {
     "confirm_criteria": True,
 }
 
-DEFAULT_DECISIONS: dict[str, object] = {
-    # A decision engine that answers the questions the runtime has
-    # about a turn: what kind of task the message is, and whether the answer
-    # the model stopped on really finishes it. Empty turns it off and leaves
-    # the keyword classifier; "openjev" asks an OpenJev server. It is a layer
-    # under the model, never a requirement: no answer means the old behaviour.
-    "engine": "",
-    # Where the engine listens: OpenJev's own helper in front of vLLM (port
-    # 3000 in its quick start), or a llama.cpp server holding the GGUF build.
-    "base_url": "http://127.0.0.1:3000",
-    # How it is spoken to. "auto" asks the helper's /v1/systemone and settles
-    # on reading the letters off llama.cpp itself when that route is missing;
-    # "systemone" and "llamacpp" skip the asking.
-    "api": "auto",
-    # Sent as a bearer token; the helper requires one once it is exposed
-    # beyond loopback (its SHIM_TOKEN). Empty sends none.
-    "api_key": "",
-    # Short on purpose: it runs on every turn, so a slow engine must lose to
-    # the keywords rather than hold the turn. Every question is one forward
-    # pass, so a CPU-only server needs a few seconds for a full set.
-    "timeout_s": 8.0,
-    # After a failed request the engine is left alone for this long, so a
-    # server that is down costs one timeout, not one per turn.
-    "retry_after_s": 30.0,
-    # A yes/no answer counts only from this probability (and a no from its
-    # mirror); anything in between is "not sure" and the keywords decide.
-    "confidence": 0.65,
-    # Sending the model back to work costs a round trip, so that takes more.
-    "nudge_confidence": 0.8,
-    # How many times a turn may be sent back because its final answer left
-    # the request unfinished. 0 keeps the classification and drops the check.
-    "max_final_answer_nudges": 1,
-}
-
 DEFAULT_GRAPH: dict[str, object] = {
     # Hard ceilings for one orchestrator-graph run. A graph mixes loops with
     # agents that can write, so the ceilings are the difference between a
@@ -535,7 +501,6 @@ DEFAULT_CONFIG: dict[str, object] = {
     "base_url": "http://localhost:11434/v1",
     "permission_mode": "ask",
     "budgets": DEFAULT_BUDGETS,
-    "decisions": DEFAULT_DECISIONS,
     "goal": DEFAULT_GOAL,
     "graph": DEFAULT_GRAPH,
     "memory": DEFAULT_MEMORY,

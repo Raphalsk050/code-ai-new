@@ -22,7 +22,6 @@ import type {
   EditorSettings,
   EventEnvelope,
   ExplainTarget,
-  JevProbe,
   McpAction,
   McpList,
   RefactorImprovement,
@@ -808,14 +807,6 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
             ?.request<{ models: string[] }>("listModels", {}, AI_REQUEST_TIMEOUT_MS)
             .then((r) => this.webview?.postMessage({ type: "modelsListed", models: r.models ?? [] }))
             .catch((err) => this.webview?.postMessage({ type: "modelsError", message: String(err) }));
-          break;
-        case "testJev":
-          client
-            ?.request<JevProbe>("testJev", { base_url: message.baseUrl }, AI_REQUEST_TIMEOUT_MS)
-            .then((result) => this.webview?.postMessage({ type: "jevTested", result }))
-            .catch((err) =>
-              this.webview?.postMessage({ type: "jevTested", result: { ok: false, error: String(err) } })
-            );
           break;
         case "mcp":
           void this.runMcp(message, client);

@@ -62,7 +62,6 @@ export type BridgeMethod =
   | "getSettings"
   | "updateSettings"
   | "listModels"
-  | "testJev"
   | "listConversations"
   | "loadConversation"
   | "deleteConversation"
@@ -134,26 +133,12 @@ export interface Settings {
   mcp_enabled?: boolean;
   /** Keys and tokens from the user's environment reach the agent's commands. */
   commands_see_secrets?: boolean;
-  /** The OpenJev decision layer under the model, and where it listens. */
-  jev_enabled?: boolean;
-  jev_base_url?: string;
-  /** A token is stored for it; like the API key, never sent back. */
-  jev_api_key_set?: boolean;
   supported: {
     api_mode: string[];
     permission_mode: string[];
     reasoning_effort: string[];
     tools: ToolSpec[];
   };
-}
-
-/** One question asked of the decision engine, timed. */
-export interface JevProbe {
-  ok: boolean;
-  latency_ms?: number;
-  /** Which kind of server answered: "systemone" (the helper) or "llamacpp". */
-  api?: string;
-  error?: string;
 }
 
 /** The extension's own settings, from VS Code's settings rather than the backend. */
@@ -348,7 +333,6 @@ export type HostToWebview =
   | { type: "settingsUpdated"; result: UpdateSettingsResult }
   | { type: "modelsListed"; models: string[] }
   | { type: "modelsError"; message: string }
-  | { type: "jevTested"; result: JevProbe }
   | { type: "mcpServers"; list: McpList }
   | { type: "mcpError"; message: string }
   | { type: "mcpElicitationResult"; id: string; ok: boolean; message: string }
@@ -431,7 +415,6 @@ export type WebviewToHost =
   | { type: "getSettings" }
   | { type: "updateSettings"; updates: Record<string, unknown> }
   | { type: "listModels" }
-  | { type: "testJev"; baseUrl: string }
   | ({ type: "mcp" } & McpAction)
   | {
       type: "mcpElicitation";

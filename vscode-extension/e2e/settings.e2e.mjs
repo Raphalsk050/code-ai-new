@@ -31,7 +31,6 @@ const value = (ui, selector) => ui.page.inputValue(selector);
 const baseUrlField = '.settings-field:has(> .settings-field-label:text-is("Base URL")) input';
 const workspaceField = '.settings-field:has(> .settings-field-label:text-is("Workspace")) input';
 const modelField = ".model-input";
-// By its label: the decision layer's token is a password field too.
 const apiKeyField = '.settings-field:has(> .settings-field-label:text-is("API key")) input[type="password"]';
 
 export const tests = {

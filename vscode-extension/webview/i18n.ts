@@ -816,21 +816,6 @@ const PT: Record<string, string> = {
   "Test the connection": "Testar a conexão",
   "Asks the provider for its models and times the answer.": "Pede ao provedor a lista de modelos e mede o tempo da resposta.",
   "Test": "Testar",
-  "Decision layer (OpenJev)": "Camada de decisão (OpenJev)",
-  "A decision model reads each request and each final answer, so a weaker model still finishes the task. Off leaves the keyword reading.":
-    "Um modelo de decisão lê cada pedido e cada resposta final, para que um modelo mais fraco ainda termine a tarefa. Desligado, fica a leitura por palavras-chave.",
-  "Jev base URL": "URL base do Jev",
-  "Where OpenJev listens: its helper, or a llama.cpp server with the GGUF. Separate from the model's.":
-    "Onde o OpenJev escuta: o helper dele, ou um servidor llama.cpp com o GGUF. Separada da do modelo.",
-  "Jev token": "Token do Jev",
-  "Only when the server asks for one. Kept by Code-AI, never shown again once stored.":
-    "Só quando o servidor pede um. Guardado pelo Code-AI, nunca mais exibido depois de armazenado.",
-  "Test the decision layer": "Testar a camada de decisão",
-  "Asks the engine one question at the URL above, with the saved token, and times the answer.":
-    "Faz uma pergunta ao motor na URL acima, com o token salvo, e mede o tempo da resposta.",
-  "Answered in {0} ms": "Respondeu em {0} ms",
-  "Answered in {0} ms (llama.cpp)": "Respondeu em {0} ms (llama.cpp)",
-  "The engine did not answer.": "O motor não respondeu.",
   "What the agent may do without asking.": "O que o agente pode fazer sem perguntar.",
   "What a new conversation opens in.": "Em que modo uma conversa nova abre.",
   "Show edits in the editor's diff": "Mostrar as edições no diff do editor",

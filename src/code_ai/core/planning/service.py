@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import logging
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -22,15 +21,12 @@ from code_ai.core.planning.models import (
     CompletionClaim,
     EvidenceType,
     ExecutionPlan,
-    FinalAnswerQuery,
-    FinalAnswerVerdict,
     PlannerMode,
     PlanningPhase,
     PlanStatus,
     PlanStep,
     PlanStepKind,
     PlanStepStatus,
-    TaskDecision,
     TaskIntent,
     TaskProfile,
     is_continuation_request,
@@ -48,32 +44,6 @@ from code_ai.events.bus import AsyncEventBus
 from code_ai.events.models import utc_now_iso
 from code_ai.tools.output import bound_text
 from code_ai.tools.registry import ToolRegistry
-
-logger = logging.getLogger(__name__)
-
-# The user's message in, the engine's reading of it out; None when it has none.
-TaskClassifier = Callable[[str], Awaitable[TaskDecision | None]]
-# The turn's request, actions and closing answer in; whether it is finished out.
-FinalAnswerJudge = Callable[[FinalAnswerQuery], Awaitable[FinalAnswerVerdict | None]]
-
-# What the model is told when the judge sends it back, by verdict.
-_FINAL_ANSWER_CORRECTIONS = {
-    FinalAnswerVerdict.ANNOUNCED: (
-        "Runtime check: your reply says what you are going to do, but the turn ended "
-        "before you did it. Do it now with the tools - do not describe it again. If it "
-        "is in fact already done, answer again reporting what was done."
-    ),
-    FinalAnswerVerdict.UNAPPLIED: (
-        "Runtime check: the user asked for a change in the workspace, but your reply "
-        "only shows it as text and no file was changed. Apply it now with the file "
-        "tools. If no workspace change was asked for, answer again and say so."
-    ),
-    FinalAnswerVerdict.INCOMPLETE: (
-        "Runtime check: part of what the user asked for still looks open. Re-read the "
-        "request below and finish what is missing with the tools, or answer again "
-        "stating exactly what is not done and why."
-    ),
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,19 +82,8 @@ class PlannerService:
         verification_memo: Callable[[ProjectVerification], None] | None = None,
         write_agent_types: frozenset[str] = frozenset(),
         review_tools_available: Callable[[], bool] | None = None,
-        task_classifier: TaskClassifier | None = None,
-        final_answer_judge: FinalAnswerJudge | None = None,
-        max_final_answer_nudges: int = 1,
     ) -> None:
         self.config = config
-        # Reads the user's message in place of the keyword classifier. Optional
-        # and best-effort: None, a failure or no answer all mean keywords.
-        self._task_classifier = task_classifier
-        # Reads the answer a turn stopped on and says whether the request is
-        # really finished. Same contract: optional, best-effort, bounded.
-        self._final_answer_judge = final_answer_judge
-        self._max_final_answer_nudges = max_final_answer_nudges
-        self._final_answer_nudges = 0
         self.event_bus = event_bus
         self.session_id = session_id
         self._workspace = workspace
@@ -204,18 +163,6 @@ class PlannerService:
     @property
     def enabled(self) -> bool:
         return self.config.enabled
-
-    def set_decision_engine(
-        self,
-        *,
-        task_classifier: TaskClassifier | None,
-        final_answer_judge: FinalAnswerJudge | None,
-        max_final_answer_nudges: int,
-    ) -> None:
-        """Take a new engine (or none) into use from the next decision on."""
-        self._task_classifier = task_classifier
-        self._final_answer_judge = final_answer_judge
-        self._max_final_answer_nudges = max_final_answer_nudges
 
     def project_verification(self) -> ProjectVerification:
         """The detected verification capabilities of the workspace, cached.
@@ -298,16 +245,11 @@ class PlannerService:
         # silences the whole runtime task state block precisely when the model
         # most needs it - the observed failure was mid-implementation follow-ups
         # running with no planner scaffolding at all.
-        decision = None if resume else await self._decide_task(text)
-        if self._continues_current_task(text, resume=resume, decision=decision):
+        if self._continues_current_task(text, resume=resume):
             self._require_tool_calling(provider_supports_tools)
             await self._resume_turn(text)
             return
-        self.profile = (
-            TaskProfile.from_signals(text, decision.signals)
-            if decision
-            else TaskProfile.from_user_text(text)
-        )
+        self.profile = TaskProfile.from_user_text(text)
         self.plan = ExecutionPlan.for_profile(
             self.profile, max_steps=self.config.max_plan_steps
         )
@@ -324,7 +266,6 @@ class PlannerService:
         self.declared_mutation = None
         self.completion_gate.reset()
         self._verification_debt_nudged = False
-        self._final_answer_nudges = 0
         self._require_tool_calling(provider_supports_tools)
 
         await self._emit_phase(
@@ -334,10 +275,7 @@ class PlannerService:
         )
         await self.event_bus.emit(
             "planning.task.classified",
-            {
-                **self.profile.model_dump(mode="json"),
-                "decided_by": "engine" if decision else "keywords",
-            },
+            self.profile.model_dump(mode="json"),
             source="core.planner",
         )
         # The deterministic skeleton drives policy and completion gating, but it is
@@ -386,7 +324,6 @@ class PlannerService:
         self.user_declined_mutation = False
         self.completion_gate.reset()
         self._verification_debt_nudged = False
-        self._final_answer_nudges = 0
         await self._emit_phase(PlanningPhase.EXECUTE)
         # A plan paused at the previous turn's end (see suspend_agent_plan) comes
         # back to life: the current step starts running again in the sidebar.
@@ -399,19 +336,7 @@ class PlannerService:
                 source="core.planner",
             )
 
-    async def _decide_task(self, text: str) -> TaskDecision | None:
-        """Ask the decision engine, if there is one. ``None`` means keywords."""
-        if self._task_classifier is None or not text.strip():
-            return None
-        try:
-            return await self._task_classifier(text)
-        except Exception:  # noqa: BLE001 - an engine that is down must not cost the turn
-            logger.warning("Task decision engine failed; using keywords.", exc_info=True)
-            return None
-
-    def _continues_current_task(
-        self, text: str, *, resume: bool, decision: TaskDecision | None = None
-    ) -> bool:
+    def _continues_current_task(self, text: str, *, resume: bool) -> bool:
         """Whether this turn carries on the live task instead of starting one.
 
         Either the caller said so (plan approved, or a reply to a blocking
@@ -421,9 +346,7 @@ class PlannerService:
         """
         if self.profile is None or self.plan is None:
             return False
-        if resume:
-            return True
-        return decision.continuation if decision else is_continuation_request(text)
+        return resume or is_continuation_request(text)
 
     def _require_tool_calling(self, provider_supports_tools: bool) -> None:
         if not (self.profile and self.profile.requires_workspace_mutation):
@@ -1577,53 +1500,6 @@ class PlannerService:
             "cannot run here, answer again and state the unverified change as an "
             "explicit limitation instead of leaving it unsaid."
         )
-
-    async def note_final_answer_gap(
-        self, answer: str, *, tool_calls_executed: int
-    ) -> str | None:
-        """One nudge when the answer a turn stopped on leaves the request open.
-
-        The weak-model failure this catches is the quiet one: the model says
-        "now I will create the file" and stops, or pastes the change into the
-        chat, and the turn ends looking like an answer. Nothing in the ledger
-        is wrong, so no evidence gate fires - it takes reading the reply.
-
-        Returns the correction to inject, or ``None`` to let the answer stand.
-        Bounded per turn and fail-open like the verification checkpoint: no
-        judge, no verdict or a spent budget all mean the answer stands.
-        """
-        if not (self.enabled and self.profile and self._final_answer_judge):
-            return None
-        if self._final_answer_nudges >= self._max_final_answer_nudges:
-            return None
-        if self.mode == PlannerMode.PLAN or self.user_declined_mutation:
-            return None
-        if not answer.strip():
-            return None
-        # Small talk has nothing to leave unfinished.
-        if self.profile.intent == TaskIntent.CONVERSATION and tool_calls_executed == 0:
-            return None
-        query = FinalAnswerQuery(
-            objective=self.profile.objective,
-            actions="\n".join(self.ledger.brief_recent(limit=12)),
-            answer=answer,
-            changed_files=self._has_workspace_change_evidence(),
-        )
-        try:
-            verdict = await self._final_answer_judge(query)
-        except Exception:  # noqa: BLE001 - an engine that is down must not cost the turn
-            logger.warning("Final-answer judge failed; the answer stands.", exc_info=True)
-            return None
-        correction = _FINAL_ANSWER_CORRECTIONS.get(verdict) if verdict else None
-        await self.event_bus.emit(
-            "planning.final_answer.judged",
-            {"verdict": verdict.value if verdict else None, "nudged": bool(correction)},
-            source="core.planner",
-        )
-        if not correction:
-            return None
-        self._final_answer_nudges += 1
-        return f"{correction}\nRequest: {bound_text(self.profile.objective, 1200)}"
 
     async def settle_agent_plan_on_final_answer(self) -> None:
         """Complete the checklist when a turn ends cleanly in a final answer.

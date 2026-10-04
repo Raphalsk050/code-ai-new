@@ -42,7 +42,6 @@ _STEPS: tuple[tuple[str, str, str], ...] = (
     ("model", "Model", "Pick from the catalog and test it live"),
     ("vision_model", "Vision model", "Reads pasted images for a non-multimodal main model"),
     ("embedding_model", "Embedding model", "Semantic search over the code index"),
-    ("jev", "Decision layer (OpenJev)", "A decision model that keeps weaker models on task"),
     ("workspace", "Workspace", "The project directory the agent works in"),
     ("language", "Language", "Language the agent replies in"),
     ("permission", "Permission mode", "When the agent must ask before acting"),
@@ -407,8 +406,6 @@ class DoctorModal(ModalScreen[None]):
             return "Vision model", self._model_widgets("vision_model")
         if step == "embedding_model":
             return "Embedding model", self._model_widgets("embedding_model")
-        if step == "jev":
-            return "Decision layer (OpenJev)", self._jev_widgets()
         if step == "workspace":
             return "Workspace", self._text_widgets(
                 "workspace",
@@ -457,9 +454,6 @@ class DoctorModal(ModalScreen[None]):
             return config.vision_model or "not set"
         if step_id == "embedding_model":
             return config.index.embedding_model or "not set (lexical only)"
-        if step_id == "jev":
-            decisions = config.decisions
-            return f"on · {decisions.base_url}" if decisions.enabled else "off"
         if step_id == "workspace":
             return str(config.workspace)
         if step_id == "language":
@@ -516,83 +510,6 @@ class DoctorModal(ModalScreen[None]):
             row.insert(1, Button("Validate", id=f"doctor-validate-{field}"))
         widgets.append(Horizontal(*row, classes="doctor-actions"))
         return widgets
-
-    def _jev_widgets(self) -> list[Any]:
-        decisions = self._config.decisions
-        return [
-            Static(
-                "An OpenJev server reads each request and each final answer, so a "
-                "weaker model still finishes the task. It has its own address, "
-                "separate from the model's: the helper that serves /v1/systemone "
-                "in front of the OpenJev model. Test asks it one question. With "
-                "it off, or not answering, the keyword reading stays.",
-                classes="doctor-note",
-            ),
-            Input(
-                value=decisions.base_url,
-                id="doctor-input-jev_base_url",
-                classes="doctor-input",
-            ),
-            Horizontal(
-                Button("Paste", id="doctor-paste-jev_base_url"),
-                Button("Test", id="doctor-jev-test"),
-                Button("Save", variant="primary", id="doctor-save-jev_base_url"),
-                Button(
-                    "Turn off" if decisions.enabled else "Turn on",
-                    variant="default" if decisions.enabled else "success",
-                    id="doctor-jev-toggle",
-                ),
-                classes="doctor-actions",
-            ),
-            Static(
-                "Token, when the server asks for one (its SHIM_TOKEN): "
-                + ("stored." if decisions.api_key else "not set."),
-                classes="doctor-note",
-            ),
-            Input(value="", password=True, id="doctor-input-jev_api_key", classes="doctor-input"),
-            Horizontal(
-                Button("Paste", id="doctor-paste-jev_api_key"),
-                Button("Save token", variant="primary", id="doctor-save-jev_api_key"),
-                classes="doctor-actions",
-            ),
-        ]
-
-    def _apply_jev(self, changes: dict[str, Any]) -> str:
-        config = self._config
-        decisions = asdict(config.decisions) | changes
-        try:
-            validated = persist_config_updates(
-                config, {"decisions": decisions}, explicit_path=self._config_path
-            )
-        except Exception as exc:  # noqa: BLE001
-            return f"✗ Not saved: {exc}"
-        config.decisions = validated.decisions
-        # The planner holds the engine, not the config, so it has to be handed
-        # the new one for this to apply without a restart.
-        reload = getattr(self._application, "reload_decision_engine", None)
-        if callable(reload):
-            reload()
-        if self._on_change is not None:
-            self._on_change()
-        state = f"on at {config.decisions.base_url}" if config.decisions.enabled else "off"
-        return f"✓ Decision layer {state} (applied from your next message)"
-
-    async def _test_jev(self) -> None:
-        from code_ai.decisions import probe_decision_engine
-
-        value = self.query_one("#doctor-input-jev_base_url", Input).value.strip()
-        self._status("Asking the decision layer…")
-        result = await probe_decision_engine(
-            value or self._config.decisions.base_url,
-            api=self._config.decisions.api,
-            api_key=self._config.decisions.api_key,
-            ssl_verification=self._config.ssl_verification,
-        )
-        if result["ok"]:
-            server = "llama.cpp" if result["api"] == "llamacpp" else "OpenJev helper"
-            self._status(f"✓ Answered in {result['latency_ms']} ms ({server}).")
-        else:
-            self._status(f"✗ {result['error']}")
 
     def _model_widgets(self, field: str) -> list[Any]:
         if field == "model":
@@ -1285,12 +1202,6 @@ class DoctorModal(ModalScreen[None]):
             self._close()
         elif button_id == "doctor-back":
             await self._set_step("menu")
-        elif button_id == "doctor-jev-test":
-            await self._test_jev()
-        elif button_id == "doctor-jev-toggle":
-            engine = "" if self._config.decisions.enabled else "openjev"
-            self._status(self._apply_jev({"engine": engine}))
-            await self._set_step(self._step)  # repaint the toggle
         elif button_id.startswith("doctor-menu-"):
             await self._set_step(button_id[len("doctor-menu-") :])
         elif button_id.startswith("doctor-choice-"):
@@ -1371,12 +1282,6 @@ class DoctorModal(ModalScreen[None]):
         value = self.query_one(f"#doctor-input-{field}", Input).value.strip()
         if field == "embedding_model":
             self._status(await self._apply_embedding_model(value))
-            return
-        if field == "jev_base_url":
-            self._status(self._apply_jev({"base_url": value}))
-            return
-        if field == "jev_api_key":
-            self._status(self._apply_jev({"api_key": value}))
             return
         if field == "api_key":
             self._status(self._apply({"api_key": value}, restart=False, secret=True))

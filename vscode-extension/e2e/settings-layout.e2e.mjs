@@ -73,26 +73,6 @@ export const tests = {
     await ui.shot("settings-model");
   },
 
-  async "the decision layer has its own URL, tested as typed and saved with the rest"(ui, assert) {
-    await openPanel(ui);
-    await ui.page.fill(`${row("jev_base_url")} input`, "http://gpu-box:8771");
-    await ui.page.click(`${row("jev_connection")} button:has-text("Test")`);
-    const [asked] = await ui.toHost("testJev");
-    assert(asked?.baseUrl === "http://gpu-box:8771", `tested ${JSON.stringify(asked)}`);
-    await ui.fromHost({ type: "jevTested", result: { ok: true, latency_ms: 42 } });
-    const result = await ui.page.textContent(`${row("jev_connection")} .probe-result`);
-    assert(result.includes("Answered in 42 ms"), `probe reads ${result}`);
-
-    await ui.page.click(`${row("jev_enabled")} .switch`);
-    await ui.shot("settings-jev");
-    await ui.page.click(".settings-save");
-    const [sent] = await ui.toHost("updateSettings");
-    assert(sent?.updates.jev_enabled === true, "the switch did not travel");
-    assert(sent?.updates.jev_base_url === "http://gpu-box:8771", "the URL did not travel");
-    // The model's own address is untouched: the two are separate settings.
-    assert(sent?.updates.base_url === "http://localhost:11434/v1", `model URL sent as ${sent?.updates.base_url}`);
-  },
-
   async "a stored key shows as stored, with a way to change it"(ui, assert) {
     await openPanel(ui, settingsSnapshot({ api_key_set: true }));
     assert(await ui.page.$(`${row("api_key")} .key-stored`), "a stored key is an empty field again");
