@@ -66,6 +66,10 @@ _RETRIES = 3
 _BACKOFF_S = 2.0
 # A connection that lasted this long resets the retry count when it drops.
 _STABLE_S = 60.0
+# How long a stopping server's task gets to wind down per cancel, and how many
+# cancels it is sent before it is left behind.
+_STOP_GRACE_S = 3.0
+_STOP_ATTEMPTS = 2
 _LOG_TAIL = 30
 _MAX_INSTRUCTIONS = 800
 _SIGN_IN_HINT = "The server needs you to sign in."
@@ -281,9 +285,17 @@ class McpManager:
             with contextlib.suppress(Exception):
                 await state.client.close()
         if task is not None and not task.done():
-            task.cancel()
-            with contextlib.suppress(BaseException):
-                await task
+            # Not a bare ``await task``: cancelled while it is still spawning the
+            # server, a task on Windows sits inside asyncio's own cleanup waiting
+            # for a child that will never report back, and the session never
+            # closes. That wait is itself cancellable, so a second cancel is
+            # what frees it; a task that outlives even that is left behind
+            # rather than allowed to hold the shutdown.
+            for _ in range(_STOP_ATTEMPTS):
+                task.cancel()
+                done, _pending = await asyncio.wait({task}, timeout=_STOP_GRACE_S)
+                if done:
+                    break
         self._unregister(state)
         state.client = None
 

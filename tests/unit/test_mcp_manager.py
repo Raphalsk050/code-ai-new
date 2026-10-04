@@ -358,3 +358,57 @@ async def test_the_session_starts_its_servers_and_tells_the_model(tmp_path) -> N
         await app.close()
 
     assert not app.orchestrator.tool_registry.has("mcp__fake__echo")
+
+
+async def test_closing_does_not_wait_on_a_server_stuck_in_its_own_cancellation(
+    tmp_path, monkeypatch
+) -> None:
+    # What a Windows spawn does when cancelled mid-flight: the first cancel
+    # lands in a cleanup that waits on the child forever, and only a second
+    # one gets out of it. One cancel and a bare await held shutdown hostage.
+    monkeypatch.setattr(manager_module, "_STOP_GRACE_S", 0.1)
+    live = _Session(tmp_path, mcp_servers={"fake": _server()})
+    cancels = 0
+
+    async def stuck_connect(state) -> None:
+        nonlocal cancels
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancels += 1
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(live.manager, "_connect", stuck_connect)
+    await live.manager.start()
+    await asyncio.sleep(0.05)
+
+    await asyncio.wait_for(live.manager.close(), timeout=5)
+
+    assert cancels == 1
+    assert live.manager.servers["fake"].task is None
+
+
+async def test_closing_gives_up_on_a_server_that_ignores_every_cancel(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(manager_module, "_STOP_GRACE_S", 0.1)
+    live = _Session(tmp_path, mcp_servers={"fake": _server()})
+    release = asyncio.Event()
+
+    async def deaf_connect(state) -> None:
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue
+
+    monkeypatch.setattr(live.manager, "_connect", deaf_connect)
+    await live.manager.start()
+    task = live.manager.servers["fake"].task
+    await asyncio.sleep(0.05)
+
+    await asyncio.wait_for(live.manager.close(), timeout=5)
+
+    assert not task.done()
+    release.set()
+    await asyncio.wait({task}, timeout=2)
