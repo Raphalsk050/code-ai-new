@@ -16,6 +16,8 @@ export interface SessionState {
   runningTools: RunningTool[];
   /** "3/20" while a failed model request is being sent again, else "". */
   retry: string;
+  /** Why the request is being retried, and when: shown on the banner. */
+  retryNote: string;
   indexPhase: string;
   indexDone: number;
   indexTotal: number;
@@ -39,6 +41,7 @@ export const initialSession: SessionState = {
   modelWaiting: false,
   runningTools: [],
   retry: "",
+  retryNote: "",
   indexPhase: "",
   indexDone: 0,
   indexTotal: 0,
@@ -55,7 +58,7 @@ const MODEL_OUTPUT = new Set([
 
 export function applySession(state: SessionState, event: EventEnvelope): SessionState {
   const p = event.payload ?? {};
-  if (state.retry && MODEL_OUTPUT.has(event.event_type)) state = { ...state, retry: "" };
+  if (state.retry && MODEL_OUTPUT.has(event.event_type)) state = { ...state, retry: "", retryNote: "" };
   switch (event.event_type) {
     case "workspace.branch":
       return { ...state, branch: String(p.branch ?? "") };
@@ -71,6 +74,7 @@ export function applySession(state: SessionState, event: EventEnvelope): Session
         modelWaiting: status === "CALLING_MODEL" ? state.modelWaiting : false,
         runningTools: over ? [] : state.runningTools,
         retry: over ? "" : state.retry,
+        retryNote: over ? "" : state.retryNote,
       };
     }
     case "tool.call.started":
@@ -87,8 +91,15 @@ export function applySession(state: SessionState, event: EventEnvelope): Session
       const left = state.runningTools.filter((tool) => tool.id !== id);
       return left.length === state.runningTools.length ? state : { ...state, runningTools: left };
     }
-    case "model.request.retrying":
-      return { ...state, retry: `${p.attempt ?? "?"}/${p.max_attempts ?? "?"}` };
+    case "model.request.retrying": {
+      const delay = Number(p.delay_s ?? 0);
+      const note = [String(p.reason ?? "").trim(), delay >= 1 ? `${Math.round(delay)}s` : ""];
+      return {
+        ...state,
+        retry: `${p.attempt ?? "?"}/${p.max_attempts ?? "?"}`,
+        retryNote: note.filter(Boolean).join(" · "),
+      };
+    }
     case "turn.heartbeat":
       return { ...state, heartbeat: Number(p.elapsed_s ?? 0) };
     case "phase.changed":
@@ -109,7 +120,7 @@ export function applySession(state: SessionState, event: EventEnvelope): Session
     case "model.request.responding":
       return { ...state, modelWaiting: false };
     case "user.message":
-      return { ...state, heartbeat: 0, runningTools: [], retry: "" };
+      return { ...state, heartbeat: 0, runningTools: [], retry: "", retryNote: "" };
     case "index.progress":
       return {
         ...state,

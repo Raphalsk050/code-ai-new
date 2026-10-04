@@ -12,40 +12,53 @@ export const RAIL_STYLE = `
   width: 40px; flex-shrink: 0;
   padding: 8px 0;
   border-left: 1px solid var(--border);
-  background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  background: var(--bg-rail);
 }
 .rail-btn {
   position: relative;
   width: 28px; height: 26px;
   display: flex; align-items: center; justify-content: center;
-  background: transparent; border: none; border-radius: 6px;
-  color: var(--muted); cursor: pointer;
+  background: transparent; border: none; border-radius: var(--radius-md);
+  color: var(--fg-muted); cursor: pointer;
 }
-.rail-btn:hover { background: var(--vscode-toolbar-hoverBackground, rgba(127,127,127,.16)); color: var(--vscode-foreground); }
-.rail-btn.active { background: var(--vscode-list-activeSelectionBackground, rgba(55,148,255,.22)); color: var(--vscode-foreground); }
+.rail-btn:hover { background: var(--hover); color: var(--fg); }
+.rail-btn.active { background: var(--accent-soft); color: var(--fg); }
 .rail-badge {
-  position: absolute; top: 0; right: 0;
-  min-width: 13px; height: 13px; padding: 0 3px;
-  border-radius: 7px;
-  background: var(--accent); color: var(--vscode-button-foreground, #fff);
-  font-size: 9px; line-height: 13px; font-variant-numeric: tabular-nums;
+  position: absolute; top: -1px; right: -1px;
+  min-width: 14px; height: 14px; padding: 0 3px; box-sizing: border-box;
+  border-radius: var(--radius-pill);
+  background: var(--accent); color: var(--button-fg);
+  font-size: 10px; line-height: 14px; text-align: center; font-variant-numeric: tabular-nums;
 }
+/* Bottom right, so it never covers the second glyph of the agents icon. */
 .rail-dot {
-  position: absolute; top: 3px; right: 4px;
-  width: 6px; height: 6px; border-radius: 50%;
-  background: var(--ok);
+  position: absolute; bottom: 2px; right: 2px;
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 0 2px var(--bg-rail);
 }
+.rail-dot.tone-warn { background: var(--warn); }
+.rail-dot.tone-bad { background: var(--danger); }
+.rail-dot.tone-ok { background: var(--success); }
+.rail-badge-text {
+  flex: none; font-size: var(--fs-label); letter-spacing: 0; text-transform: none;
+  line-height: 16px; padding: 0 7px; border-radius: var(--radius-pill);
+  color: var(--fg-muted); background: var(--hover); font-variant-numeric: tabular-nums;
+}
+.rail-badge-text.tone-run { color: var(--accent); background: var(--accent-soft); }
+.rail-badge-text.tone-warn { color: var(--warn); background: var(--warn-soft); }
+.rail-badge-text.tone-bad { color: var(--danger); background: var(--danger-soft); }
+.rail-badge-text.tone-ok { color: var(--success); background: var(--success-soft); }
 .rail-sep { width: 22px; height: 1px; background: var(--border); margin: 4px 0; }
 
 /* ---- docked column (md) ---- */
 .rail-dock {
   /* Width comes from the component (the user drags it); this is the fallback
      for the first paint, before the stored value is read. */
-  width: 236px; flex-shrink: 0;
+  width: 288px; flex-shrink: 0;
   display: flex; flex-direction: column;
   min-height: 0;
   border-left: 1px solid var(--border);
-  background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  background: var(--bg-rail);
   overflow: hidden;
 }
 .rail-dock-head {
@@ -64,7 +77,7 @@ export const RAIL_STYLE = `
   width: 280px; max-width: calc(100% - 40px);
   display: flex; flex-direction: column;
   border-left: 1px solid var(--border);
-  background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  background: var(--bg-rail);
   box-shadow: -14px 0 28px rgba(0,0,0,.34);
   z-index: 6;
   transition: transform var(--dur-base) var(--ease-out), opacity var(--dur-base) var(--ease-out);
@@ -91,17 +104,17 @@ export const RAIL_STYLE = `
   display: flex; align-items: center; gap: 7px;
   padding: 8px 12px;
   background: transparent; border: none;
-  color: var(--vscode-foreground);
-  font-size: 11px; letter-spacing: .07em; text-transform: uppercase;
+  color: var(--fg);
+  font-size: var(--fs-label); letter-spacing: .07em; text-transform: uppercase;
   cursor: pointer; text-align: left;
 }
-.rail-section-head:hover { background: var(--vscode-list-hoverBackground, rgba(127,127,127,.12)); }
-.rail-section-head .chev { transition: transform var(--dur-base) var(--ease-spring); color: var(--muted); }
+.rail-section-head:hover { background: var(--hover); }
+.rail-section-head .chev { transition: transform var(--dur-base) var(--ease-spring); color: var(--fg-muted); }
 .rail-section.open .rail-section-head .chev { transform: rotate(90deg); }
 .rail-section-title { flex: 1; }
-.rail-section-note { font-size: 10.5px; letter-spacing: 0; text-transform: none; color: var(--muted); }
-.rail-section-body { padding: 0 12px 10px 12px; font-size: 12px; }
-.rail-empty { color: var(--muted); font-size: 11.5px; padding: 2px 0 6px; }
+.rail-section-note { font-size: var(--fs-label); letter-spacing: 0; text-transform: none; color: var(--fg-muted); }
+.rail-section-body { padding: 0 12px 10px 12px; font-size: var(--fs-small); }
+.rail-empty { color: var(--fg-muted); font-size: var(--fs-small); padding: 2px 0 6px; }
 
 /* ---- splitters ---- */
 /* 1px of line, 9px of target: a 1px hit area is unusable with a mouse and
@@ -142,12 +155,51 @@ export const RAIL_STYLE = `
 /* A dragged section scrolls its own content instead of growing the rail. */
 .rail-section-body.sized { overflow-y: auto; }
 
-.rail-foot {
-  border-top: 1px solid var(--border);
-  padding: 7px 12px;
-  display: flex; align-items: center; gap: 7px;
-  font-size: 11px; color: var(--muted);
+/* ---- session ---- */
+.session-meter { margin: 2px 0 8px; }
+.session-meter-head { display: flex; align-items: baseline; justify-content: space-between; font-size: var(--fs-small); margin-bottom: 5px; }
+.session-meter-head .k { color: var(--fg-muted); }
+.session-meter-value { font-variant-numeric: tabular-nums; color: var(--fg-strong); }
+.session-meter-value.warn { color: var(--warn); }
+.session-meter-value.over { color: var(--danger); }
+.session-meter-value .muted { color: var(--fg-muted); }
+.rail-meter { position: relative; height: 6px; border-radius: 3px; background: var(--border-strong); }
+.rail-meter-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: var(--accent); transition: width var(--dur-slow) var(--ease-out); }
+.rail-meter.warn .rail-meter-fill { background: var(--warn); }
+.rail-meter.over .rail-meter-fill { background: var(--danger); }
+.rail-meter.unknown { background: repeating-linear-gradient(90deg, var(--border-strong) 0 4px, transparent 4px 8px); }
+.rail-meter-mark { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--fg-muted); }
+.state-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 2px; vertical-align: 1px; background: var(--fg-muted); }
+.state-run .state-dot { background: var(--accent); }
+.state-ok .state-dot { background: var(--success); }
+.state-warn { color: var(--warn); }
+.state-warn .state-dot { background: var(--warn); }
+.state-bad { color: var(--danger); }
+.state-bad .state-dot { background: var(--danger); }
+.session-panel .kv .v { font-family: var(--font-ui); }
+.details-toggle {
+  display: flex; align-items: center; gap: 4px; margin: 10px 0 0; padding: 2px 0;
+  border: none; background: none; color: var(--fg-muted); font: inherit; font-size: var(--fs-small); cursor: pointer;
 }
-.rail-foot .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
-.rail-foot .dot.off { background: var(--vscode-editorError-foreground, #f14c4c); }
+.details-toggle:hover { color: var(--fg); }
+.details { margin-top: 4px; }
+.details .kv .v { font-family: var(--font-mono); }
+
+/* ---- changes ---- */
+.change-list { list-style: none; margin: 0; padding: 0; }
+.change-row { display: flex; align-items: center; gap: var(--space-2); min-height: 26px; margin: 0 -6px; padding: 0 2px 0 6px; border-radius: var(--radius-sm); }
+.change-row:hover { background: var(--hover); }
+.change-open {
+  display: flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0;
+  border: none; background: none; padding: 3px 0; color: var(--fg); font: inherit; text-align: left; cursor: pointer;
+}
+.change-open > .codicon { color: var(--fg-muted); flex: none; }
+.change-name { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.change-dir { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-muted); font-size: var(--fs-label); direction: rtl; text-align: left; }
+.change-unknown { color: var(--fg-muted); font-size: var(--fs-small); }
+.change-revert { width: 22px; height: 22px; padding: 0; opacity: 0; }
+.change-row:hover .change-revert, .change-revert:focus-visible { opacity: 1; }
+.panel-btn { display: inline-flex; align-items: center; gap: 5px; }
+.rail-foot .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); }
+.rail-foot .dot.off { background: var(--danger); }
 `;

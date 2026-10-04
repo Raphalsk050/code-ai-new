@@ -32,6 +32,25 @@ export const IconBrand = ({ size = 16, className }: IconProps) => (
   </svg>
 );
 
+const BRAND_FACE =
+  "M12 3.6c5.3 0 8.6 3.1 8.6 8.2 0 5.4-3.4 8.6-8.6 8.6s-8.6-3.2-8.6-8.6c0-5.1 3.3-8.2 8.6-8.2zM9.45 9.6a1.25 1.25 0 0 0-1.25 1.25v2.3a1.25 1.25 0 0 0 2.5 0v-2.3A1.25 1.25 0 0 0 9.45 9.6zm5.1 0a1.25 1.25 0 0 0-1.25 1.25v2.3a1.25 1.25 0 0 0 2.5 0v-2.3a1.25 1.25 0 0 0-1.25-1.25z";
+const BRAND_LEAF = "M12.4 3.9C12 2 13.6.6 16.1.9c.1 2-1.4 3.4-3.7 3z";
+
+// Two of the glyph, one behind the other: instances of the same agent. The
+// front one is ringed in the surface colour so the pair reads as two.
+export const IconAgentsTwin = ({ size = 16, className }: IconProps) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className}>
+    <g transform="translate(-1.6 -0.8) scale(0.74)" opacity="0.6">
+      <path fillRule="evenodd" d={BRAND_FACE} />
+      <path d={BRAND_LEAF} />
+    </g>
+    <g transform="translate(6.5 6) scale(0.74)">
+      <path fillRule="evenodd" d={BRAND_FACE} stroke="var(--bg-rail, #181818)" strokeWidth="2.6" paintOrder="stroke" />
+      <path d={BRAND_LEAF} />
+    </g>
+  </svg>
+);
+
 export const IconTool = ({ size = 16, className }: IconProps) => (
   <svg {...base(size)} className={className}>
     <path d="M14.7 6.3a4 4 0 0 0-5.4 5.2l-5.5 5.5a1.5 1.5 0 0 0 2.1 2.1l5.5-5.5a4 4 0 0 0 5.2-5.4l-2.5 2.5-2.1-.4-.4-2.1z" />

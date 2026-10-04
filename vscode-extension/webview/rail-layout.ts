@@ -7,12 +7,12 @@
  * section below its own heading, is worse than one that does not move at all.
  */
 
-export const RAIL_DEFAULT_WIDTH = 236;
+export const RAIL_DEFAULT_WIDTH = 288;
 /** Below this the section headings wrap and the rail stops being readable. */
 export const RAIL_MIN_WIDTH = 180;
 export const RAIL_MAX_WIDTH = 560;
 /** The conversation keeps at least this much, whatever the rail is dragged to. */
-export const CHAT_MIN_WIDTH = 260;
+export const CHAT_MIN_WIDTH = 320;
 
 const STORAGE_KEY = "code-ai.railWidth";
 

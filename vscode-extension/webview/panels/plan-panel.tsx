@@ -1,66 +1,58 @@
 import * as React from "react";
 
+import { Codicon } from "../codicon";
 import { t, tf } from "../i18n";
-
 import { useFlipList } from "../motion";
-import type { GoalState, PlanState } from "../store";
+import type { GoalState, PlanState, StepStatus } from "../store";
 
-const MARK: Record<string, string> = {
-  done: "✓",
-  running: "▸",
-  failed: "✗",
-  paused: "◌",
-  pending: "○",
-};
+function StepMark({ status }: { status: StepStatus }): JSX.Element {
+  switch (status) {
+    case "done":
+      return <Codicon name="check" size={14} />;
+    case "running":
+      return <span className="spinner" />;
+    case "failed":
+      return <Codicon name="error" size={14} />;
+    case "paused":
+      return <Codicon name="debug-pause" size={14} />;
+    default:
+      return <Codicon name="circle-large-outline" size={14} />;
+  }
+}
 
 export function PlanPanel({
   plan,
   goal,
-  plannerMode,
   onReplan,
-  onPlannerMode,
   onGoal,
 }: {
   plan: PlanState;
   goal: GoalState;
-  plannerMode: string;
   onReplan: () => void;
-  onPlannerMode: (mode: string) => void;
   onGoal: (action: "start" | "stop") => void;
 }): JSX.Element {
   const register = useFlipList();
 
   if (plan.steps.length === 0 && goal.phase === "none") {
-    return (
-      <div className="rail-empty">
-        No plan in this turn. In <code>plan</code> the agent writes the steps before acting.
-        <div className="panel-actions">
-          {["auto", "plan", "act"].map((m) => (
-            <button
-              key={m}
-              className={`panel-btn ${plannerMode === m ? "primary" : ""}`}
-              onClick={() => onPlannerMode(m)}
-            >
-              {m}
-            </button>
-          ))}
-        </div>
-      </div>
-    );
+    return <div className="rail-empty">{t("No plan in this turn.")}</div>;
   }
 
   return (
     <div className="panel-card">
-      {plan.steps.map((step, i) => (
-        <div
-          key={`${i}-${step.title}`}
-          ref={register(`${i}-${step.title}`)}
-          className={`plan-step ${step.status}`}
-        >
-          <span className="mark">{MARK[step.status] ?? "○"}</span>
-          <span className="title">{step.title}</span>
-        </div>
-      ))}
+      <ol className="plan-steps">
+        {plan.steps.map((step, i) => (
+          <li
+            key={`${i}-${step.title}`}
+            ref={register(`${i}-${step.title}`)}
+            className={`plan-step ${step.status}`}
+          >
+            <span className="mark">
+              <StepMark status={step.status} />
+            </span>
+            <span className="title">{step.title}</span>
+          </li>
+        ))}
+      </ol>
 
       {plan.evidence.length > 0 && (
         <div className="plan-evidence">
@@ -72,25 +64,23 @@ export function PlanPanel({
         </div>
       )}
 
-      {plan.rejection && <div className="plan-reject">completion rejected: {plan.rejection}</div>}
+      {plan.rejection && <div className="plan-reject">{tf("completion rejected: {0}", plan.rejection)}</div>}
 
       {goal.phase !== "none" && (
-        <div className="plan-reject" style={{ borderColor: "var(--border)" }}>
+        <div className="plan-goal">
           <div>
-            <strong>objetivo</strong> · {goal.phase}
+            <strong>{t("goal")}</strong> · {goal.phase}
             {goal.maxIterations ? ` · ${goal.iteration}/${goal.maxIterations}` : ""}
           </div>
-          <div style={{ marginTop: 3 }}>{goal.objective}</div>
+          <div className="plan-goal-line">{goal.objective}</div>
           {goal.criteria.length > 0 && (
-            <div style={{ marginTop: 3 }}>
-              criteria: {goal.met}/{goal.criteria.length}
-            </div>
+            <div className="plan-goal-line">{tf("criteria: {0}/{1}", goal.met, goal.criteria.length)}</div>
           )}
-          {goal.note && <div style={{ marginTop: 3 }}>{goal.note}</div>}
+          {goal.note && <div className="plan-goal-line">{goal.note}</div>}
           <div className="panel-actions">
             {(goal.phase === "proposed" || goal.phase === "blocked") && (
               <button className="panel-btn primary" onClick={() => onGoal("start")}>
-                {goal.phase === "blocked" ? "Retomar" : "Iniciar loop"}
+                {goal.phase === "blocked" ? t("Resume") : t("Start loop")}
               </button>
             )}
             {goal.phase === "running" && (
@@ -102,20 +92,13 @@ export function PlanPanel({
         </div>
       )}
 
-      <div className="panel-actions">
-        <button className="panel-btn" onClick={onReplan}>
-          Replanejar
-        </button>
-        {["auto", "plan", "act"].map((m) => (
-          <button
-            key={m}
-            className={`panel-btn ${plannerMode === m ? "primary" : ""}`}
-            onClick={() => onPlannerMode(m)}
-          >
-            {m}
+      {plan.steps.length > 0 && (
+        <div className="panel-actions">
+          <button className="panel-btn" onClick={onReplan}>
+            {t("Replan")}
           </button>
-        ))}
-      </div>
+        </div>
+      )}
     </div>
   );
 }

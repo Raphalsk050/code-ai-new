@@ -2,9 +2,9 @@ import * as React from "react";
 
 import { t, tf } from "./i18n";
 
-import type { AppMode, McpAction, Settings, ToolSpec } from "../src/protocol";
+import type { AppMode, EditorSettings, JevProbe, McpAction, Settings, ToolSpec } from "../src/protocol";
+import { Codicon } from "./codicon";
 import { ExtPrefs } from "./history";
-import { IconBack, IconRefresh } from "./icons";
 import { McpSection, McpViewState } from "./mcp-settings";
 import { Draft, draftFromSettings, keepRefusedEdits } from "./settings-draft";
 
@@ -15,55 +15,108 @@ export interface ModelsState {
   error?: string;
 }
 
+/** State of the decision-layer connection test. */
+export type JevState = { status: "idle" | "testing" } | { status: "done"; result: JevProbe };
+
 /** What the last save did, keyed by the field the backend complained about. */
 export interface SaveState {
   status: "idle" | "saving" | "saved" | "error";
   errors: Record<string, string>;
 }
 
-const SAVE_LABEL: Record<SaveState["status"], string> = {
-  idle: "Save",
-  saving: "Saving…",
-  saved: "Saved",
-  error: "Not saved",
-};
-
 /** Session states that mean no answer is coming, so waiting is pointless. */
 const DEAD = new Set(["DISCONNECTED", "ERROR"]);
 
+type Category = "model" | "agent" | "editor" | "context" | "tools" | "subagents" | "advanced";
+
+const CATEGORIES: { id: Category; title: string; icon: string }[] = [
+  { id: "model", title: "Model", icon: "sparkle" },
+  { id: "agent", title: "Agent", icon: "hubot" },
+  { id: "editor", title: "Editor", icon: "edit" },
+  { id: "context", title: "Context", icon: "database" },
+  { id: "tools", title: "Tools and MCP", icon: "tools" },
+  { id: "subagents", title: "Sub-agents", icon: "organization" },
+  { id: "advanced", title: "Advanced", icon: "settings" },
+];
+
+/** Settings that only take effect once the backend restarts. */
+const RESTART_KEYS = new Set(["api_mode", "base_url", "api_key", "max_context_tokens", "workspace", "command", "args"]);
+
+interface Row {
+  id: string;
+  category: Category;
+  label: string;
+  hint?: string;
+  /** Draft keys this row edits: what makes it "changed". */
+  keys: string[];
+  restart?: boolean;
+  /** Exposes secrets or acts without asking. */
+  risk?: boolean;
+  /** The control takes the row's whole width, under the label. */
+  wide?: boolean;
+  control: React.ReactNode;
+}
+
+function same(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) || Array.isArray(b)) return JSON.stringify(a ?? []) === JSON.stringify(b ?? []);
+  return a === b;
+}
+
+const EDITOR_DEFAULT: EditorSettings = { diffInEditor: true, command: "", args: [] };
+
 export function SettingsScreen({
   settings,
+  editor,
   sessionStatus,
   prefs,
   models,
   save,
+  narrow,
   onBack,
   onSave,
+  onSaveEditor,
   onPrefsChange,
   onRestart,
   onListModels,
+  jev,
+  onTestJev,
   mcp,
   onMcpAction,
 }: {
   settings: Settings | null;
+  /** The extension's own settings (VS Code's settings.json), not the backend's. */
+  editor: EditorSettings | null;
   sessionStatus: string;
   prefs: ExtPrefs;
   models: ModelsState;
   save: SaveState;
+  narrow: boolean;
   onBack: () => void;
   onSave: (updates: Record<string, unknown>) => void;
+  onSaveEditor: (updates: Partial<EditorSettings>) => void;
   onPrefsChange: (next: Partial<ExtPrefs>) => void;
   onRestart: () => void;
   onListModels: () => void;
+  jev: JevState;
+  /** Tests the URL in the field, saved or not. */
+  onTestJev: (baseUrl: string) => void;
   mcp: McpViewState;
   onMcpAction: (action: McpAction) => void;
 }): JSX.Element {
   const [draft, setDraft] = React.useState<Draft>({});
   const [apiKey, setApiKey] = React.useState("");
-  const [dirty, setDirty] = React.useState(false);
+  const [changingKey, setChangingKey] = React.useState(false);
+  const [jevKey, setJevKey] = React.useState("");
+  const [hostDraft, setHostDraft] = React.useState<EditorSettings>(editor ?? EDITOR_DEFAULT);
+  const [category, setCategory] = React.useState<Category>("model");
+  const [query, setQuery] = React.useState("");
+  const [pendingRestart, setPendingRestart] = React.useState(false);
+  const [probe, setProbe] = React.useState<{ started: number; result?: string; ok?: boolean } | null>(null);
   // What the last submit put on the wire, so a refused field can be handed
   // back to the user instead of the value the backend went on holding.
   const submittedRef = React.useRef<Draft | null>(null);
+  // The last submit touched a setting that only applies after a restart.
+  const restartRef = React.useRef(false);
   // The snapshot and the save result land in the same render, so by the time
   // the effect below runs this already holds the result that goes with it.
   const saveRef = React.useRef(save);
@@ -75,41 +128,681 @@ export function SettingsScreen({
     const { errors } = saveRef.current;
     const submitted = submittedRef.current;
     submittedRef.current = null;
+    if (submitted && restartRef.current && Object.keys(errors).length === 0) setPendingRestart(true);
+    restartRef.current = false;
     setDraft(keepRefusedEdits(draftFromSettings(settings), submitted, errors));
-    if (!errors.api_key) setApiKey("");
-    setDirty(false);
+    if (!errors.api_key) {
+      setApiKey("");
+      setChangingKey(false);
+    }
+    if (!errors.jev_api_key) setJevKey("");
   }, [settings]);
 
-  const set = (key: string, value: string | number | boolean | string[] | null) => {
-    setDraft((d) => ({ ...d, [key]: value }));
-    setDirty(true);
+  React.useEffect(() => {
+    if (editor) setHostDraft(editor);
+  }, [editor]);
+
+  // The connection test is a model listing with a stopwatch on it.
+  React.useEffect(() => {
+    if (!probe || probe.result !== undefined) return;
+    if (models.status === "ready") {
+      const ms = Math.round(performance.now() - probe.started);
+      setProbe({ ...probe, ok: true, result: tf("Connected in {0} ms · {1} models", ms, models.list.length) });
+    } else if (models.status === "error") {
+      setProbe({ ...probe, ok: false, result: models.error ?? t("The provider did not answer.") });
+    }
+  }, [models, probe]);
+
+  const saved = settings ? draftFromSettings(settings) : {};
+  const changed = (key: string): boolean => {
+    if (key === "api_key") return apiKey.trim() !== "";
+    if (key === "jev_api_key") return jevKey.trim() !== "";
+    if (key === "diffInEditor" || key === "command" || key === "args") {
+      const base = editor ?? EDITOR_DEFAULT;
+      return !same(hostDraft[key], base[key]);
+    }
+    return key in draft && !same(draft[key], saved[key]);
   };
+
+  const set = (key: string, value: string | number | boolean | string[] | null) =>
+    setDraft((d) => ({ ...d, [key]: value }));
+  const setHost = (patch: Partial<EditorSettings>) => setHostDraft((d) => ({ ...d, ...patch }));
+
+  const backendDirty = Object.keys(draft).filter((key) => changed(key));
+  if (changed("api_key")) backendDirty.push("api_key");
+  if (changed("jev_api_key")) backendDirty.push("jev_api_key");
+  const hostDirty = (["diffInEditor", "command", "args"] as const).filter((key) => changed(key));
+  const pending = backendDirty.length + hostDirty.length;
+  const restartCount = [...backendDirty, ...hostDirty].filter((key) => RESTART_KEYS.has(key)).length;
 
   const submit = () => {
-    if (!settings) return;
-    const updates: Record<string, unknown> = { ...draft };
-    if (apiKey.trim()) updates.api_key = apiKey.trim();
-    submittedRef.current = updates as Draft;
-    onSave(updates);
+    if (!settings || pending === 0) return;
+    if (backendDirty.length) {
+      const updates: Record<string, unknown> = { ...draft };
+      if (apiKey.trim()) updates.api_key = apiKey.trim();
+      if (jevKey.trim()) updates.jev_api_key = jevKey.trim();
+      submittedRef.current = updates as Draft;
+      restartRef.current = backendDirty.some((key) => RESTART_KEYS.has(key));
+      onSave(updates);
+    }
+    if (hostDirty.length) {
+      const updates: Partial<EditorSettings> = {};
+      for (const key of hostDirty) (updates as any)[key] = hostDraft[key];
+      onSaveEditor(updates);
+      if (hostDirty.some((key) => RESTART_KEYS.has(key))) setPendingRestart(true);
+    }
+  };
+  const discard = () => {
+    if (settings) setDraft(draftFromSettings(settings));
+    setApiKey("");
+    setChangingKey(false);
+    setJevKey("");
+    setHostDraft(editor ?? EDITOR_DEFAULT);
   };
 
+  const submitRef = React.useRef(submit);
+  submitRef.current = submit;
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        submitRef.current();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
+
   const failures = Object.entries(save.errors);
+  const status =
+    pending > 0
+      ? tf("{0} unsaved", pending)
+      : save.status === "saving"
+        ? t("Saving…")
+        : save.status === "error"
+          ? t("Not saved")
+          : t("Saved");
+
+  const rows = settings ? buildRows() : [];
+  const needle = query.trim().toLowerCase();
+  const shown = needle
+    ? rows.filter((row) => `${row.label} ${row.hint ?? ""} ${row.id}`.toLowerCase().includes(needle))
+    : rows.filter((row) => row.category === category);
+  const dirtyCategories = new Set(rows.filter((row) => row.keys.some(changed)).map((row) => row.category));
+
+  function buildRows(): Row[] {
+    const s = settings as Settings;
+    const tools = (s.supported?.tools ?? []).filter((tool) => !tool.name.startsWith("mcp__"));
+    const modelQuery = String(draft.model ?? "");
+    const showAll = modelQuery === s.model || !modelQuery;
+    const listed = models.list.filter((m) => showAll || m.toLowerCase().includes(modelQuery.toLowerCase()));
+    return [
+      {
+        id: "api_mode",
+        category: "model",
+        label: t("API mode"),
+        hint: t("The protocol the provider speaks."),
+        keys: ["api_mode"],
+        restart: true,
+        control: (
+          <Choice
+            value={String(draft.api_mode ?? "")}
+            options={s.supported.api_mode}
+            onChange={(v) => set("api_mode", v)}
+          />
+        ),
+      },
+      {
+        id: "base_url",
+        category: "model",
+        label: t("Base URL"),
+        hint: t("Where the provider listens."),
+        keys: ["base_url"],
+        restart: true,
+        control: <input value={String(draft.base_url ?? "")} onChange={(e) => set("base_url", e.target.value)} />,
+      },
+      {
+        id: "api_key",
+        category: "model",
+        label: t("API key"),
+        hint: t("Kept by Code-AI, never shown again once stored."),
+        keys: ["api_key"],
+        restart: true,
+        control:
+          s.api_key_set && !changingKey && !apiKey ? (
+            <span className="key-stored">
+              <Codicon name="lock" size={14} /> {t("stored")}
+              <button className="btn-ghost btn-sm" onClick={() => setChangingKey(true)}>
+                {t("Change")}
+              </button>
+            </span>
+          ) : (
+            <input
+              type="password"
+              autoFocus={changingKey}
+              placeholder={s.api_key_set ? t("type the new key") : t("not set")}
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+            />
+          ),
+      },
+      {
+        id: "model",
+        category: "model",
+        label: t("Model"),
+        hint: t("Type a name, or pick one the provider serves."),
+        keys: ["model"],
+        wide: true,
+        control: (
+          <div className="model-field">
+            <div className="model-row">
+              <input
+                className="model-input"
+                value={modelQuery}
+                spellCheck={false}
+                onChange={(e) => set("model", e.target.value)}
+              />
+              <button
+                type="button"
+                className="btn-ghost model-list-btn"
+                title={t("List the models the configured provider serves")}
+                onClick={onListModels}
+                disabled={models.status === "loading"}
+              >
+                {models.status === "loading" ? <span className="spinner" /> : <Codicon name="refresh" size={14} />}
+                <span>{models.status === "loading" ? t("Listing…") : t("List models")}</span>
+              </button>
+            </div>
+            {models.status === "ready" && listed.length > 0 && (
+              <ul className="model-options" role="listbox" aria-label={t("Models")}>
+                {listed.map((m) => (
+                  <li
+                    key={m}
+                    role="option"
+                    aria-selected={m === modelQuery}
+                    className={`model-option ${m === modelQuery ? "current" : ""}`}
+                    onClick={() => set("model", m)}
+                  >
+                    <span className="model-check">{m === modelQuery && <Codicon name="check" size={14} />}</span>
+                    {m}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {models.status === "ready" && models.list.length === 0 && (
+              <div className="model-note">{t("The provider returned no models.")}</div>
+            )}
+            {models.status === "error" && !probe && <div className="model-error">{models.error}</div>}
+          </div>
+        ),
+      },
+      {
+        id: "connection",
+        category: "model",
+        label: t("Test the connection"),
+        hint: t("Asks the provider for its models and times the answer."),
+        keys: [],
+        control: (
+          <span className="probe">
+            {probe?.result && (
+              <span className={`probe-result ${probe.ok ? "ok" : "bad"}`}>
+                <Codicon name={probe.ok ? "pass" : "error"} size={14} /> {probe.result}
+              </span>
+            )}
+            <button
+              className="btn-ghost btn-sm"
+              disabled={models.status === "loading"}
+              onClick={() => {
+                setProbe({ started: performance.now() });
+                onListModels();
+              }}
+            >
+              {models.status === "loading" && probe && probe.result === undefined ? <span className="spinner" /> : <Codicon name="plug" size={14} />}{" "}
+              {t("Test")}
+            </button>
+          </span>
+        ),
+      },
+      {
+        id: "reasoning_effort",
+        category: "model",
+        label: t("Reasoning effort"),
+        hint: t("How hard the model thinks before answering; none turns thinking off."),
+        keys: ["reasoning_effort"],
+        control: (
+          <Choice
+            value={String(draft.reasoning_effort ?? "")}
+            options={s.supported.reasoning_effort}
+            onChange={(v) => set("reasoning_effort", v)}
+          />
+        ),
+      },
+      {
+        id: "followup_reasoning_effort",
+        category: "model",
+        label: t("Follow-up effort"),
+        hint: t("Tool steps after a clean result think at this level; none keeps the reasoning effort."),
+        keys: ["followup_reasoning_effort"],
+        control: (
+          <Choice
+            value={String(draft.followup_reasoning_effort ?? "none")}
+            options={s.supported.reasoning_effort}
+            onChange={(v) => set("followup_reasoning_effort", v)}
+          />
+        ),
+      },
+      {
+        id: "jev_enabled",
+        category: "model",
+        label: t("Decision layer (OpenJev)"),
+        hint: t(
+          "A decision model reads each request and each final answer, so a weaker model still finishes the task. Off leaves the keyword reading."
+        ),
+        keys: ["jev_enabled"],
+        control: (
+          <Switch
+            checked={Boolean(draft.jev_enabled)}
+            onChange={(v) => set("jev_enabled", v)}
+            label={t("Decision layer (OpenJev)")}
+          />
+        ),
+      },
+      {
+        id: "jev_base_url",
+        category: "model",
+        label: t("Jev base URL"),
+        hint: t("Where OpenJev listens: its helper, or a llama.cpp server with the GGUF. Separate from the model's."),
+        keys: ["jev_base_url"],
+        control: (
+          <input
+            value={String(draft.jev_base_url ?? "")}
+            spellCheck={false}
+            placeholder="http://127.0.0.1:3000"
+            onChange={(e) => set("jev_base_url", e.target.value)}
+          />
+        ),
+      },
+      {
+        id: "jev_api_key",
+        category: "model",
+        label: t("Jev token"),
+        hint: t("Only when the server asks for one. Kept by Code-AI, never shown again once stored."),
+        keys: ["jev_api_key"],
+        control: (
+          <input
+            type="password"
+            placeholder={s.jev_api_key_set ? t("stored") : t("not set")}
+            value={jevKey}
+            onChange={(e) => setJevKey(e.target.value)}
+          />
+        ),
+      },
+      {
+        id: "jev_connection",
+        category: "model",
+        label: t("Test the decision layer"),
+        hint: t("Asks the engine one question at the URL above, with the saved token, and times the answer."),
+        keys: [],
+        control: (
+          <span className="probe">
+            {jev.status === "done" && (
+              <span className={`probe-result ${jev.result.ok ? "ok" : "bad"}`}>
+                <Codicon name={jev.result.ok ? "pass" : "error"} size={14} />{" "}
+                {jev.result.ok
+                  ? tf(
+                      jev.result.api === "llamacpp" ? "Answered in {0} ms (llama.cpp)" : "Answered in {0} ms",
+                      jev.result.latency_ms ?? 0
+                    )
+                  : (jev.result.error ?? t("The engine did not answer."))}
+              </span>
+            )}
+            <button
+              className="btn-ghost btn-sm"
+              disabled={jev.status === "testing"}
+              onClick={() => onTestJev(String(draft.jev_base_url ?? ""))}
+            >
+              {jev.status === "testing" ? <span className="spinner" /> : <Codicon name="plug" size={14} />} {t("Test")}
+            </button>
+          </span>
+        ),
+      },
+      {
+        id: "permission_mode",
+        category: "agent",
+        label: t("Permission mode"),
+        hint: t("What the agent may do without asking."),
+        keys: ["permission_mode"],
+        control: (
+          <Choice
+            value={String(draft.permission_mode ?? "")}
+            options={s.supported.permission_mode}
+            onChange={(v) => set("permission_mode", v)}
+          />
+        ),
+      },
+      {
+        id: "default_mode",
+        category: "agent",
+        label: t("Default mode"),
+        hint: t("What a new conversation opens in."),
+        keys: [],
+        control: (
+          <Choice
+            value={prefs.mode}
+            options={["agent", "refactor", "explain"]}
+            labels={{ agent: t("Agent"), refactor: t("Refactor"), explain: t("Explain") }}
+            onChange={(v) => onPrefsChange({ mode: v as AppMode })}
+          />
+        ),
+      },
+      {
+        id: "language",
+        category: "agent",
+        label: t("Language"),
+        hint: t("The panel and the agent's answers both follow this."),
+        keys: ["language"],
+        control: (
+          <select
+            className="language-select"
+            value={String(draft.language ?? "en")}
+            onChange={(e) => set("language", e.target.value)}
+          >
+            {languageOptions(String(draft.language ?? "en")).map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        ),
+      },
+      {
+        id: "learn",
+        category: "agent",
+        label: t("Learn mode"),
+        hint: t("Shows, on approvals, why the model thinks the change is needed."),
+        keys: ["learn"],
+        control: <Switch checked={Boolean(draft.learn)} onChange={(v) => set("learn", v)} label={t("Learn mode")} />,
+      },
+      {
+        id: "inline_hints_enabled",
+        category: "editor",
+        label: t("Inline suggestions in the editor"),
+        hint: t("Completes as you type. The status bar toggles it."),
+        keys: ["inline_hints_enabled"],
+        control: (
+          <Switch
+            checked={Boolean(draft.inline_hints_enabled)}
+            onChange={(v) => set("inline_hints_enabled", v)}
+            label={t("Inline suggestions in the editor")}
+          />
+        ),
+      },
+      {
+        id: "inline_model",
+        category: "editor",
+        label: t("Model for inline suggestions"),
+        keys: ["inline_model"],
+        control: (
+          <input
+            placeholder={t("empty = uses the main model")}
+            value={String(draft.inline_model ?? "")}
+            onChange={(e) => set("inline_model", e.target.value)}
+          />
+        ),
+      },
+      {
+        id: "auto_refactor",
+        category: "editor",
+        label: t("Analyse the selection automatically"),
+        hint: t("In refactor mode, analyses the snippet as soon as you select it."),
+        keys: [],
+        control: (
+          <Switch
+            checked={prefs.autoRunRefactor}
+            onChange={(v) => onPrefsChange({ autoRunRefactor: v })}
+            label={t("Analyse the selection automatically")}
+          />
+        ),
+      },
+      {
+        id: "diff_in_editor",
+        category: "editor",
+        label: t("Show edits in the editor's diff"),
+        hint: t("Each change the agent makes opens as a diff tab while it is written."),
+        keys: ["diffInEditor"],
+        control: (
+          <Switch
+            checked={hostDraft.diffInEditor}
+            onChange={(v) => setHost({ diffInEditor: v })}
+            label={t("Show edits in the editor's diff")}
+          />
+        ),
+      },
+      {
+        id: "max_context_tokens",
+        category: "context",
+        label: t("Max context tokens"),
+        hint: t("The budget the conversation is compacted to stay under."),
+        keys: ["max_context_tokens"],
+        restart: true,
+        control: (
+          <input
+            type="number"
+            className="number"
+            value={Number(draft.max_context_tokens ?? 0)}
+            onChange={(e) => set("max_context_tokens", Number(e.target.value))}
+          />
+        ),
+      },
+      {
+        id: "workspace",
+        category: "context",
+        label: t("Workspace"),
+        hint: t("The folder the agent works in."),
+        keys: ["workspace"],
+        restart: true,
+        control: <input value={String(draft.workspace ?? "")} onChange={(e) => set("workspace", e.target.value)} />,
+      },
+      {
+        id: "mcp",
+        category: "tools",
+        label: t("MCP servers"),
+        keys: ["mcp_enabled"],
+        wide: true,
+        control: (
+          <McpSection
+            mcp={mcp}
+            enabled={draft.mcp_enabled !== false}
+            disabledTools={(draft.disabled_tools as string[]) ?? []}
+            onEnabledChange={(value) => set("mcp_enabled", value)}
+            onDisabledToolsChange={(next) => set("disabled_tools", next)}
+            onAction={onMcpAction}
+          />
+        ),
+      },
+      {
+        id: "tools",
+        category: "tools",
+        label: t("Built-in tools"),
+        hint: t("Switched off, a tool is not offered to the model at all."),
+        keys: ["disabled_tools"],
+        wide: true,
+        control: (
+          <ToolSwitches
+            tools={tools}
+            disabled={(draft.disabled_tools as string[]) ?? []}
+            onChange={(next) => set("disabled_tools", next)}
+          />
+        ),
+      },
+      {
+        id: "subagent_models",
+        category: "subagents",
+        label: t("Sub-agent models"),
+        hint: t("Comma-separated; a sub-agent takes the next one in turn."),
+        keys: ["subagent_models"],
+        control: (
+          <input
+            value={((draft.subagent_models as string[]) ?? []).join(", ")}
+            placeholder={t("empty = every sub-agent inherits the session model")}
+            onChange={(e) =>
+              set(
+                "subagent_models",
+                e.target.value
+                  .split(",")
+                  .map((name) => name.trim())
+                  .filter(Boolean)
+              )
+            }
+          />
+        ),
+      },
+      {
+        id: "max_concurrent_subagents",
+        category: "subagents",
+        label: t("Concurrent sub-agents"),
+        hint: t("How many run at once."),
+        keys: ["max_concurrent_subagents"],
+        control: (
+          <input
+            type="number"
+            className="number"
+            min={1}
+            value={Number(draft.max_concurrent_subagents ?? 1)}
+            onChange={(e) => set("max_concurrent_subagents", Number(e.target.value))}
+          />
+        ),
+      },
+      ...(["temperature", "top_p", "top_k", "presence_penalty"] as const).map(
+        (key): Row => ({
+          id: key,
+          category: "advanced",
+          label: key,
+          hint:
+            key === "presence_penalty"
+              ? t("Raise it towards 1 when a thinking model keeps going back over the same point.")
+              : t("Sampling; empty uses the endpoint default."),
+          keys: [key],
+          control: (
+            <input
+              type="number"
+              className="number"
+              step={key === "top_k" ? 1 : key === "presence_penalty" ? 0.1 : 0.05}
+              value={draft[key] == null ? "" : String(draft[key])}
+              placeholder={t("endpoint default")}
+              onChange={(e) => set(key, e.target.value === "" ? null : Number(e.target.value))}
+            />
+          ),
+        })
+      ),
+      {
+        id: "commands_see_secrets",
+        category: "advanced",
+        label: t("Commands see secret variables"),
+        hint: t(
+          "Commands get your environment variables. Keys and tokens (GITHUB_TOKEN, OPENAI_API_KEY) stay out unless this is on."
+        ),
+        keys: ["commands_see_secrets"],
+        risk: true,
+        control: (
+          <Switch
+            checked={Boolean(draft.commands_see_secrets)}
+            onChange={(v) => set("commands_see_secrets", v)}
+            label={t("Commands see secret variables")}
+          />
+        ),
+      },
+      {
+        id: "command",
+        category: "advanced",
+        label: t("Backend command"),
+        hint: t("The program the extension starts; empty finds it by itself."),
+        keys: ["command"],
+        restart: true,
+        control: (
+          <input
+            value={hostDraft.command}
+            placeholder={t("found automatically")}
+            spellCheck={false}
+            onChange={(e) => setHost({ command: e.target.value })}
+          />
+        ),
+      },
+      {
+        id: "args",
+        category: "advanced",
+        label: t("Backend arguments"),
+        hint: t("Space-separated, passed to the backend command."),
+        keys: ["args"],
+        restart: true,
+        control: (
+          <input
+            value={hostDraft.args.join(" ")}
+            spellCheck={false}
+            onChange={(e) => setHost({ args: e.target.value.split(/\s+/).filter(Boolean) })}
+          />
+        ),
+      },
+      {
+        id: "restart",
+        category: "advanced",
+        label: t("Restart Code-AI"),
+        hint: t("Reloads the configuration without reloading the window."),
+        keys: [],
+        control: (
+          <button className="btn-ghost btn-sm settings-restart-btn" onClick={onRestart}>
+            <Codicon name="debug-restart" size={14} /> {t("Restart")}
+          </button>
+        ),
+      },
+    ];
+  }
+
+  const renderRow = (row: Row) => {
+    const dirty = row.keys.some(changed);
+    return (
+      <div
+        key={row.id}
+        className={`settings-field setting-row ${row.wide ? "wide" : ""} ${row.risk ? "risk" : ""} ${dirty ? "dirty" : ""}`}
+        data-setting={row.id}
+      >
+        <span className="settings-field-label">
+          {dirty && <span className="dirty-dot" aria-label={t("changed")} />}
+          {row.label}
+          {row.restart && <span className="restart-tag">{t("reopens panel")}</span>}
+          {row.risk && <span className="risk-tag">{t("risk")}</span>}
+        </span>
+        {row.hint && <span className="setting-hint">{row.hint}</span>}
+        <div className="setting-control">{row.control}</div>
+      </div>
+    );
+  };
+
+  const groups = needle
+    ? CATEGORIES.map((c) => ({ c, rows: shown.filter((row) => row.category === c.id) })).filter((g) => g.rows.length)
+    : [{ c: CATEGORIES.find((c) => c.id === category)!, rows: shown }];
 
   return (
-    <div className="settings">
+    <div className={`settings ${narrow ? "narrow" : ""}`}>
       <div className="settings-bar">
         <button className="icon-btn" title={t("Back")} onClick={onBack}>
-          <IconBack size={16} />
+          <Codicon name="arrow-left" />
         </button>
         <span className="settings-title">{t("Settings")}</span>
-        <button
-          className="btn-primary settings-save"
-          onClick={submit}
-          disabled={!settings || save.status === "saving"}
-          data-status={dirty ? "idle" : save.status}
-        >
-          {t(dirty ? SAVE_LABEL.idle : SAVE_LABEL[save.status])}
-        </button>
+        <label className="settings-search">
+          <Codicon name="search" size={14} />
+          <input
+            type="search"
+            value={query}
+            placeholder={t("Search settings")}
+            aria-label={t("Search settings")}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </label>
+        <span className={`settings-status ${pending ? "pending" : save.status}`} role="status">
+          {pending > 0 && <span className="dirty-dot" />}
+          {status}
+        </span>
       </div>
 
       {!settings ? (
@@ -118,11 +811,7 @@ export function SettingsScreen({
         <div className="settings-loading">
           {DEAD.has(sessionStatus) ? (
             <>
-              <span>
-                {t(
-                  "Code-AI did not answer, so there are no settings to show. The chat says why."
-                )}
-              </span>
+              <span>{t("Code-AI did not answer, so there are no settings to show. The chat says why.")}</span>
               <button className="btn-primary" onClick={onRestart}>
                 {t("Try again")}
               </button>
@@ -132,317 +821,88 @@ export function SettingsScreen({
           )}
         </div>
       ) : (
-        <div className="settings-body">
-          {failures.length > 0 && (
-            <div className="settings-errors" role="alert">
-              <span className="settings-errors-head">
-                {t("Code-AI refused")}{" "}
-                {failures.length === 1 ? t("this field") : t("these fields")}; {t("the rest")}
-                {t("was saved. What you typed is still here so you can fix it.")}
-              </span>
-              {failures.map(([field, message]) => (
-                <div key={field} className="settings-error" data-field={field}>
-                  <code>{field}</code> {message}
-                </div>
-              ))}
-            </div>
-          )}
-          <Section
-            title={t("Modes and automation")}
-            hint={t("How the extension behaves in the editor.")}
-          >
-            <Field label={t("Default mode")}>
-              <select
-                value={prefs.mode}
-                onChange={(e) => onPrefsChange({ mode: e.target.value as AppMode })}
+        <div className="settings-main">
+          <nav className="settings-nav" aria-label={t("Categories")}>
+            {CATEGORIES.map((c) => (
+              <button
+                key={c.id}
+                className={`settings-nav-item ${!needle && category === c.id ? "active" : ""}`}
+                aria-current={!needle && category === c.id ? "page" : undefined}
+                onClick={() => {
+                  setCategory(c.id);
+                  setQuery("");
+                }}
               >
-                <option value="agent">{t("Agent")}</option>
-                <option value="refactor">{t("Refactor")}</option>
-                <option value="explain">{t("Explain")}</option>
-              </select>
-            </Field>
-            <Toggle
-              label={t("Analyse the selection automatically")}
-              hint={t("In refactor mode, analyses the snippet as soon as you select it.")}
-              checked={prefs.autoRunRefactor}
-              onChange={(v) => onPrefsChange({ autoRunRefactor: v })}
-            />
-          </Section>
-
-          <Section
-            title={t("Provider and model")}
-            hint={t("Fields tagged restart take effect when the panel reopens.")}
-          >
-            <Field label={t("Model")}>
-              <div className="model-row">
-                <input
-                  className="model-input"
-                  value={String(draft.model ?? "")}
-                  onChange={(e) => set("model", e.target.value)}
-                />
-                <button
-                  type="button"
-                  className="btn-ghost model-list-btn"
-                  title={t("List the models the configured provider serves")}
-                  onClick={onListModels}
-                  disabled={models.status === "loading"}
-                >
-                  {models.status === "loading" ? <span className="spinner" /> : <IconRefresh size={13} />}
-                  <span>{models.status === "loading" ? t("Listing…") : t("List models")}</span>
-                </button>
+                <Codicon name={c.icon} size={14} />
+                <span>{t(c.title)}</span>
+                {dirtyCategories.has(c.id) && <span className="dirty-dot" />}
+              </button>
+            ))}
+          </nav>
+          <div className="settings-body">
+            {failures.length > 0 && (
+              <div className="settings-errors" role="alert">
+                <span className="settings-errors-head">
+                  {t("Code-AI refused")} {failures.length === 1 ? t("this field") : t("these fields")}; {t("the rest")}{" "}
+                  {t("was saved. What you typed is still here so you can fix it.")}
+                </span>
+                {failures.map(([field, message]) => (
+                  <div key={field} className="settings-error" data-field={field}>
+                    <code>{field}</code> {message}
+                  </div>
+                ))}
               </div>
-              {models.status === "ready" && models.list.length > 0 && (
-                <select
-                  className="model-picker"
-                  value=""
-                  onChange={(e) => {
-                    if (e.target.value) set("model", e.target.value);
+            )}
+            {pendingRestart && pending === 0 && (
+              <div className="settings-restart-note" role="status">
+                <Codicon name="info" size={14} />
+                <span>{t("Some saved changes apply once Code-AI restarts.")}</span>
+                <button
+                  className="btn-ghost btn-sm"
+                  onClick={() => {
+                    setPendingRestart(false);
+                    onRestart();
                   }}
                 >
-                  <option value="">{tf("Choose from {0} available…", models.list.length)}</option>
-                  {models.list.map((m) => (
-                    <option key={m} value={m}>{m}</option>
-                  ))}
-                </select>
-              )}
-              {models.status === "ready" && models.list.length === 0 && (
-                <div className="model-note">{t("The provider returned no models.")}</div>
-              )}
-              {models.status === "error" && <div className="model-error">{models.error}</div>}
-            </Field>
-            <Field label={t("API mode")} restart>
-              <select value={String(draft.api_mode ?? "")} onChange={(e) => set("api_mode", e.target.value)}>
-                {settings.supported.api_mode.map((m) => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-              </select>
-            </Field>
-            <Field label={t("Base URL")} restart>
-              <input value={String(draft.base_url ?? "")} onChange={(e) => set("base_url", e.target.value)} />
-            </Field>
-            <Field label={t("API key")} restart>
-              <input
-                type="password"
-                placeholder={
-                  settings.api_key_set
-                    ? t("•••••••• (stored - leave empty to keep it)")
-                    : t("not set")
-                }
-                value={apiKey}
-                onChange={(e) => {
-                  setApiKey(e.target.value);
-                  setDirty(true);
-                }}
-              />
-            </Field>
-          </Section>
-
-          <Section
-            title={t("Inline suggestions")}
-            hint={t("Ghost text in the editor, from the same provider.")}
-          >
-            <Toggle
-              label={t("Inline suggestions in the editor")}
-              hint={t("Completes as you type. The status bar toggles it.")}
-              checked={Boolean(draft.inline_hints_enabled)}
-              onChange={(v) => set("inline_hints_enabled", v)}
-            />
-            <Field label={t("Model for inline suggestions")}>
-              <input
-                placeholder={t("empty = uses the main model")}
-                value={String(draft.inline_model ?? "")}
-                onChange={(e) => set("inline_model", e.target.value)}
-              />
-            </Field>
-          </Section>
-
-          <Section title={t("Behaviour")}>
-            <Field label={t("Permission mode")}>
-              <select value={String(draft.permission_mode ?? "")} onChange={(e) => set("permission_mode", e.target.value)}>
-                {settings.supported.permission_mode.map((m) => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-              </select>
-            </Field>
-            <Field label={t("Reasoning effort")}>
-              <select value={String(draft.reasoning_effort ?? "")} onChange={(e) => set("reasoning_effort", e.target.value)}>
-                {settings.supported.reasoning_effort.map((m) => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-              </select>
-              <span className="settings-hint">
-                {t("How hard the model thinks before answering; none turns thinking off.")}
-              </span>
-            </Field>
-            <Field label={t("Follow-up effort")}>
-              <select
-                value={String(draft.followup_reasoning_effort ?? "none")}
-                onChange={(e) => set("followup_reasoning_effort", e.target.value)}
-              >
-                {settings.supported.reasoning_effort.map((m) => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-              </select>
-              <span className="settings-hint">
-                {t("Tool steps after a clean result think at this level; none keeps the reasoning effort.")}
-              </span>
-            </Field>
-            <Field label={t("Language")}>
-              <select
-                className="language-select"
-                value={String(draft.language ?? "en")}
-                onChange={(e) => set("language", e.target.value)}
-              >
-                {languageOptions(String(draft.language ?? "en")).map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              <span className="settings-hint">
-                {t("The panel and the agent's answers both follow this.")}
-              </span>
-            </Field>
-            <Toggle
-              label={t("Learn mode")}
-              hint={t("Shows, on approvals, why the model thinks the change is needed.")}
-              checked={Boolean(draft.learn)}
-              onChange={(v) => set("learn", v)}
-            />
-            <Toggle
-              label={t("Commands see secret variables")}
-              hint={t(
-                "Commands get your environment variables. Keys and tokens (GITHUB_TOKEN, OPENAI_API_KEY) stay out unless this is on."
-              )}
-              checked={Boolean(draft.commands_see_secrets)}
-              onChange={(v) => set("commands_see_secrets", v)}
-            />
-          </Section>
-
-          <Section title={t("Context and workspace")}>
-            <Field label={t("Max context tokens")} restart>
-              <input
-                type="number"
-                value={Number(draft.max_context_tokens ?? 0)}
-                onChange={(e) => set("max_context_tokens", Number(e.target.value))}
-              />
-            </Field>
-            <Field label={t("Workspace")} restart>
-              <input value={String(draft.workspace ?? "")} onChange={(e) => set("workspace", e.target.value)} />
-            </Field>
-          </Section>
-
-          <McpSection
-            mcp={mcp}
-            enabled={draft.mcp_enabled !== false}
-            disabledTools={(draft.disabled_tools as string[]) ?? []}
-            onEnabledChange={(value) => set("mcp_enabled", value)}
-            onDisabledToolsChange={(next) => set("disabled_tools", next)}
-            onAction={onMcpAction}
-          />
-
-          <Section
-            title="Doctor"
-            hint={t("What the TUI edits in /doctor: tools, sub-agents and sampling.")}
-          >
-            <ToolSwitches
-              // A server's tools are switched on its card, next to its status.
-              tools={(settings.supported?.tools ?? []).filter((tool) => !tool.name.startsWith("mcp__"))}
-              disabled={(draft.disabled_tools as string[]) ?? []}
-              onChange={(next) => set("disabled_tools", next)}
-            />
-            <Field label={t("Sub-agent models")}>
-              <input
-                value={((draft.subagent_models as string[]) ?? []).join(", ")}
-                placeholder={t("empty = every sub-agent inherits the session model")}
-                onChange={(e) =>
-                  set(
-                    "subagent_models",
-                    e.target.value
-                      .split(",")
-                      .map((name) => name.trim())
-                      .filter(Boolean)
-                  )
-                }
-              />
-            </Field>
-            <Field label={t("Concurrent sub-agents")}>
-              <input
-                type="number"
-                min={1}
-                value={Number(draft.max_concurrent_subagents ?? 1)}
-                onChange={(e) => set("max_concurrent_subagents", Number(e.target.value))}
-              />
-            </Field>
-            <Field label="temperature">
-              <input
-                type="number"
-                step="0.05"
-                value={draft.temperature == null ? "" : String(draft.temperature)}
-                placeholder={t("endpoint default")}
-                onChange={(e) =>
-                  set("temperature", e.target.value === "" ? null : Number(e.target.value))
-                }
-              />
-            </Field>
-            <Field label="top_p">
-              <input
-                type="number"
-                step="0.05"
-                value={draft.top_p == null ? "" : String(draft.top_p)}
-                placeholder={t("endpoint default")}
-                onChange={(e) => set("top_p", e.target.value === "" ? null : Number(e.target.value))}
-              />
-            </Field>
-            <Field label="top_k">
-              <input
-                type="number"
-                value={draft.top_k == null ? "" : String(draft.top_k)}
-                placeholder={t("endpoint default")}
-                onChange={(e) => set("top_k", e.target.value === "" ? null : Number(e.target.value))}
-              />
-            </Field>
-            <Field label="presence_penalty">
-              <input
-                type="number"
-                step="0.1"
-                value={draft.presence_penalty == null ? "" : String(draft.presence_penalty)}
-                placeholder={t("endpoint default")}
-                onChange={(e) =>
-                  set("presence_penalty", e.target.value === "" ? null : Number(e.target.value))
-                }
-              />
-              <span className="settings-hint">
-                {t("Raise it towards 1 when a thinking model keeps going back over the same point.")}
-              </span>
-            </Field>
-          </Section>
-
-          <div className="settings-restart">
-            <div className="settings-note">
-              {t("Fields tagged")} <span className="restart-tag">restart</span>{" "}
-              {t(
-                "are saved now but only take effect after restarting Code-AI, which reloads the config without reloading the window."
-              )}
-            </div>
-            <button className="btn-ghost settings-restart-btn" onClick={onRestart}>
-              <IconRefresh size={13} /> Reiniciar Code-AI
-            </button>
+                  {t("Restart now")}
+                </button>
+              </div>
+            )}
+            {groups.length === 0 && <div className="settings-note">{tf("Nothing matches “{0}”.", query.trim())}</div>}
+            {groups.map(({ c, rows: list }) => (
+              <section key={c.id} className="settings-group">
+                <h3 className="settings-group-title">{t(c.title)}</h3>
+                <div className="settings-rows">{list.map(renderRow)}</div>
+              </section>
+            ))}
           </div>
         </div>
       )}
-    </div>
-  );
-}
 
-function Section({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
-  return (
-    <div className="settings-section">
-      <div className="settings-section-head">
-        <h3>{title}</h3>
-        {hint && <span className="settings-section-hint">{hint}</span>}
-      </div>
-      <div className="settings-fields">{children}</div>
+      {settings && (pending > 0 || save.status === "saving") && (
+        <div className="save-bar" role="region" aria-label={t("Unsaved changes")}>
+          <span className="save-bar-text">
+            {pending === 1 ? t("1 unsaved change") : tf("{0} unsaved changes", pending)}
+            {restartCount > 0 && (
+              <span className="save-bar-note">
+                {" "}
+                · {restartCount === 1 ? t("1 reopens the panel") : tf("{0} reopen the panel", restartCount)}
+              </span>
+            )}
+          </span>
+          <button className="btn-ghost btn-sm" onClick={discard} disabled={save.status === "saving"}>
+            {t("Discard")}
+          </button>
+          <button
+            className="btn-primary settings-save"
+            onClick={submit}
+            disabled={save.status === "saving" || pending === 0}
+            title={t("Save (Ctrl+S)")}
+          >
+            {save.status === "saving" && pending === 0 ? t("Saving…") : t("Save")}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -464,42 +924,62 @@ export function languageOptions(current: string): { value: string; label: string
   return [...LANGUAGES, { value: current, label: current || "(unset)" }];
 }
 
-function Field({ label, restart, children }: { label: string; restart?: boolean; children: React.ReactNode }) {
-  return (
-    <label className="settings-field">
-      <span className="settings-field-label">
-        {label}
-        {restart && <span className="restart-tag">restart</span>}
-      </span>
-      {children}
-    </label>
-  );
-}
-
-function Toggle({
-  label,
-  hint,
-  checked,
+/** Up to four choices side by side; a longer or open list is a select. */
+function Choice({
+  value,
+  options,
+  labels,
   onChange,
 }: {
-  label: string;
-  hint?: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
-}) {
+  value: string;
+  options: string[];
+  labels?: Record<string, string>;
+  onChange: (value: string) => void;
+}): JSX.Element {
+  const all = options.includes(value) || !value ? options : [...options, value];
+  if (all.length > 4) {
+    return (
+      <select value={value} onChange={(e) => onChange(e.target.value)}>
+        {all.map((option) => (
+          <option key={option} value={option}>
+            {labels?.[option] ?? option}
+          </option>
+        ))}
+      </select>
+    );
+  }
   return (
-    <div className="settings-toggle" onClick={() => onChange(!checked)}>
-      <button className={`switch ${checked ? "on" : ""}`} role="switch" aria-checked={checked}>
-        <span className="switch-knob" />
-      </button>
-      <div className="settings-toggle-text">
-        <span className="settings-field-label">{label}</span>
-        {hint && <span className="settings-toggle-hint">{hint}</span>}
-      </div>
+    <div className="segmented" role="radiogroup">
+      {all.map((option) => (
+        <button
+          key={option}
+          type="button"
+          role="radio"
+          aria-checked={option === value}
+          className={option === value ? "on" : ""}
+          onClick={() => onChange(option)}
+        >
+          {labels?.[option] ?? option}
+        </button>
+      ))}
     </div>
   );
 }
 
+function Switch({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
+  return (
+    <button
+      type="button"
+      className={`switch ${checked ? "on" : ""}`}
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      onClick={() => onChange(!checked)}
+    >
+      <span className="switch-knob" />
+    </button>
+  );
+}
 
 /**
  * The agent's tools, switched on and off.
@@ -547,11 +1027,7 @@ function ToolSwitches({
       <div className="tool-switch-list">
         {tools.map((tool) => (
           <label key={tool.name} className="tool-switch" title={tool.description}>
-            <input
-              type="checkbox"
-              checked={!off.has(tool.name)}
-              onChange={() => toggle(tool.name)}
-            />
+            <input type="checkbox" checked={!off.has(tool.name)} onChange={() => toggle(tool.name)} />
             <span className="tool-switch-name">{tool.name}</span>
           </label>
         ))}

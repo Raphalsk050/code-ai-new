@@ -4,6 +4,10 @@
 // `src/code_ai/ui/terminal/view_models.py` consumes. Event *names* are the
 // versioned contract: keep this in sync with that reducer.
 
+import type { ChangeSummary } from "./change-ledger";
+
+export type { ChangeSummary };
+
 export interface EventEnvelope {
   event_id: string;
   event_type: string;
@@ -58,6 +62,7 @@ export type BridgeMethod =
   | "getSettings"
   | "updateSettings"
   | "listModels"
+  | "testJev"
   | "listConversations"
   | "loadConversation"
   | "deleteConversation"
@@ -129,12 +134,36 @@ export interface Settings {
   mcp_enabled?: boolean;
   /** Keys and tokens from the user's environment reach the agent's commands. */
   commands_see_secrets?: boolean;
+  /** The OpenJev decision layer under the model, and where it listens. */
+  jev_enabled?: boolean;
+  jev_base_url?: string;
+  /** A token is stored for it; like the API key, never sent back. */
+  jev_api_key_set?: boolean;
   supported: {
     api_mode: string[];
     permission_mode: string[];
     reasoning_effort: string[];
     tools: ToolSpec[];
   };
+}
+
+/** One question asked of the decision engine, timed. */
+export interface JevProbe {
+  ok: boolean;
+  latency_ms?: number;
+  /** Which kind of server answered: "systemone" (the helper) or "llamacpp". */
+  api?: string;
+  error?: string;
+}
+
+/** The extension's own settings, from VS Code's settings rather than the backend. */
+export interface EditorSettings {
+  /** `code-ai.diff.openInEditor` */
+  diffInEditor: boolean;
+  /** `code-ai.command`: empty finds the backend by itself. */
+  command: string;
+  /** `code-ai.args` */
+  args: string[];
 }
 
 /** An MCP server's declaration, as the editor edits it. */
@@ -319,6 +348,7 @@ export type HostToWebview =
   | { type: "settingsUpdated"; result: UpdateSettingsResult }
   | { type: "modelsListed"; models: string[] }
   | { type: "modelsError"; message: string }
+  | { type: "jevTested"; result: JevProbe }
   | { type: "mcpServers"; list: McpList }
   | { type: "mcpError"; message: string }
   | { type: "mcpElicitationResult"; id: string; ok: boolean; message: string }
@@ -334,6 +364,9 @@ export type HostToWebview =
   | { type: "explainError"; message: string }
   /** Whether file edits open in the editor's diff view (so the panel shows none). */
   | { type: "editorDiff"; enabled: boolean }
+  | { type: "editorSettings"; settings: EditorSettings }
+  /** What the agent changed in this conversation, file by file. */
+  | { type: "sessionChanges"; files: ChangeSummary[] }
   /** A newer release is out (see src/code_ai/updates.py for where it is looked for). */
   | { type: "updateAvailable"; version: string; current: string; notes: string; url: string }
   /** The releases live on a host this machine has no login for yet. */
@@ -398,6 +431,7 @@ export type WebviewToHost =
   | { type: "getSettings" }
   | { type: "updateSettings"; updates: Record<string, unknown> }
   | { type: "listModels" }
+  | { type: "testJev"; baseUrl: string }
   | ({ type: "mcp" } & McpAction)
   | {
       type: "mcpElicitation";
@@ -415,6 +449,14 @@ export type WebviewToHost =
   | { type: "restartBridge" }
   /** Show what the agent changed in a file, in the editor's diff view. */
   | { type: "openDiff"; path: string }
+  /** A file from the Changes section: its change since the conversation began. */
+  | { type: "openChange"; path: string }
+  /** Put a file back as it was before the agent touched it (the host asks first). */
+  | { type: "revertChange"; path: string }
+  /** Every changed file in one review. */
+  | { type: "reviewChanges" }
+  /** Write the extension's own settings to the user's VS Code settings. */
+  | { type: "updateEditorSettings"; updates: Partial<EditorSettings> }
   | { type: "installUpdate" }
   | { type: "signInForUpdates" }
   /** Open the browser window that fetches the GitHub picture after a sign-in. */

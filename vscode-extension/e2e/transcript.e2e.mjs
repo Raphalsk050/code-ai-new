@@ -75,18 +75,37 @@ async function pin(ui) {
 }
 
 export const tests = {
+  async "the avatar sits centred over the title, on the home page and in a new chat"(ui, assert) {
+    // The avatar is a block-level svg everywhere else; left as one here it
+    // hugs the left edge of a column whose text is centred.
+    const offCentre = (scope) =>
+      ui.page.evaluate((scope) => {
+        const mid = (el) => {
+          const r = el.getBoundingClientRect();
+          return r.left + r.width / 2;
+        };
+        return Math.abs(mid(document.querySelector(`${scope} .spark svg`)) - mid(document.querySelector(`${scope} h2`)));
+      }, scope);
+    const home = await offCentre(".home-hero");
+    assert(home <= 1, `the home avatar is ${home}px off the title's centre`);
+    await openChat(ui);
+    const empty = await offCentre(".empty");
+    assert(empty <= 1, `the new-chat avatar is ${empty}px off the title's centre`);
+  },
+
   async "the new glyph is everywhere the old one was"(ui, assert) {
-    const heroPath = await ui.page.getAttribute(".home-hero .spark path", "d");
-    assert(heroPath.startsWith(BRAND), `home hero draws ${heroPath.slice(0, 16)}`);
+    // By the body's path wherever it sits: the animated avatar draws its leaf
+    // first, so the first path under a mark is not always the body.
+    const draws = async (where) => (await ui.page.$(`${where} path[d^="${BRAND}"]`)) !== null;
+    assert(await draws(".home-hero .spark"), "the home hero does not draw the new glyph");
     await ui.shot("home-hero");
     await openChat(ui);
-    for (const where of [".empty .spark", ".mode-switch"]) {
-      const d = await ui.page.getAttribute(`${where} path`, "d");
-      assert(d.startsWith(BRAND), `${where} draws ${d.slice(0, 16)}`);
+    for (const where of [".empty .spark", ".statusbar .brand-mark", ".composer-opts .chip"]) {
+      assert(await draws(where), `${where} does not draw the new glyph`);
     }
     await ui.fromHost(envelope("client.load", { items: exchange(1, 1) }));
-    const avatar = await ui.page.getAttribute(".block-agent .avatar-assistant path", "d");
-    assert(avatar.startsWith(BRAND), "the agent's avatar draws the new glyph");
+    // The agent's latest box carries the live avatar, the earlier ones the still one.
+    assert(await draws(".block-agent .avatar"), "the agent's avatar does not draw the new glyph");
     const old = await ui.page.$$(`path[d^="${OLD_GLYPH}"]`);
     assert(old.length === 0, `${old.length} old lettermark(s) still on screen`);
   },

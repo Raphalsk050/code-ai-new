@@ -1,8 +1,9 @@
 import * as React from "react";
 
+import { AgentAvatar } from "./agent-avatar";
 import { t, tf } from "./i18n";
 
-import { IconBrand, IconHistory, IconPlus, IconSettings, IconTrash } from "./icons";
+import { IconHistory, IconPlus, IconSettings, IconTrash } from "./icons";
 import { HistoryEntry, relativeTime } from "./history";
 
 export function HomeScreen({
@@ -32,7 +33,7 @@ export function HomeScreen({
       </div>
       <div className="home-hero">
         <div className="spark">
-          <IconBrand size={30} />
+          <AgentAvatar pose="idle" size={30} />
         </div>
         <h2>Code-AI</h2>
         <div className="home-sub">{t("Pick up a conversation or start another.")}</div>

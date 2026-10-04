@@ -1,4 +1,5 @@
 import * as React from "react";
+import { t, tf } from "./i18n";
 
 import { pulse } from "./motion";
 import type { UsageState } from "./store";
@@ -35,15 +36,15 @@ export function UsageBar({
       <span ref={labelRef}>
         {usage.estimated ? "~" : ""}
         {formatTokens(usage.used)}
-        {usage.budget ? ` / ${formatTokens(usage.budget)}` : " tok"}
+        {usage.budget ? ` / ${formatTokens(usage.budget)}` : ` ${t("tok")}`}
       </span>
       <div className="track">
         <div className={`fill ${level}`} style={{ width: `${Math.max(2, ratio * 100)}%` }} />
       </div>
-      <span>{usage.cumulative ? `${formatTokens(usage.cumulative)} acum.` : ""}</span>
+      <span>{usage.cumulative ? tf("{0} total", formatTokens(usage.cumulative)) : ""}</span>
       {level && (
         <button className="compact-btn" onClick={onCompact}>
-          compactar
+          {t("compact")}
         </button>
       )}
     </div>

@@ -53,6 +53,7 @@ export function endsOnAnswer(block: Block): boolean {
   let answered = false;
   for (const item of block.items) {
     if (item.kind === "assistant") answered = !item.streaming;
+    else if (item.kind === "turn") continue;
     else if (item.kind !== "notice" || item.level === "error" || item.level === "warning") answered = false;
   }
   return answered;

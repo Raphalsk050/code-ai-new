@@ -63,6 +63,7 @@ async function openPanel(ui, servers = [server()]) {
   await ui.fromHost({ type: "settings", settings: settingsSnapshot() });
   await ui.page.click('button[title="Settings"]');
   await ui.page.waitForSelector(".settings-body");
+  await ui.page.click('.settings-nav-item:has-text("Tools and MCP")');
   const asked = await ui.toHost("mcp");
   await ui.fromHost({ type: "mcpServers", list: { enabled: true, servers } });
   await ui.clearToHost();
@@ -255,6 +256,7 @@ export const tests = {
     });
     await ui.page.click('button[title="Settings"]');
     await ui.page.waitForSelector(".settings-body");
+    await ui.page.click('.settings-nav-item:has-text("Tools and MCP")');
     await ui.fromHost({ type: "mcpServers", list: { enabled: true, servers: [server()] } });
 
     const doctor = await ui.page.locator(".tool-switches .tool-switch-name").allTextContents();

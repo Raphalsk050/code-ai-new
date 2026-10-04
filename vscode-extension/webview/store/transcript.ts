@@ -26,17 +26,126 @@ export type Item =
       path: string;
       status: ToolStatus;
       detail: string;
+      /** Epoch ms the call started, when the event carried a time. */
+      started?: number;
+      /** How long it ran, once it ended. */
+      ms?: number;
+      /** Lines a write added and removed, when the tool reported them. */
+      added?: number;
+      removed?: number;
     }
-  | { kind: "notice"; id: string; level: NoticeLevel; text: string };
+  | { kind: "notice"; id: string; level: NoticeLevel; text: string }
+  | {
+      kind: "turn";
+      id: string;
+      /** Wall time from the request to the end of the turn. */
+      ms?: number;
+      /** Tokens the turn spent, from the cumulative usage. */
+      tokens?: number;
+      /** Files the turn wrote, in the order it first touched them. */
+      files: string[];
+      /** The last verification in the turn; undefined when none ran. */
+      verified?: boolean;
+    };
+
+export interface TurnTally {
+  /** Epoch ms of the request that opened the turn; null when unknown. */
+  started: number | null;
+  /** Where the turn's items start. */
+  from: number;
+  /** Cumulative tokens when the turn opened. */
+  tokens0: number | null;
+  verified?: boolean;
+}
 
 export interface TranscriptState {
   items: Item[];
   /** Where the running model request's output starts, so a retry can take back
    * what a broken attempt streamed. -1 when no request is running. */
   requestStart: number;
+  /** The turn in progress, null between turns. */
+  turn: TurnTally | null;
+  /** Session tokens so far, from the last usage update. */
+  tokens: number | null;
 }
 
-export const initialTranscript: TranscriptState = { items: [], requestStart: -1 };
+export const initialTranscript: TranscriptState = { items: [], requestStart: -1, turn: null, tokens: null };
+
+/** The event's own time, in epoch ms; undefined when it carries none. */
+export function eventTime(event: EventEnvelope): number | undefined {
+  const ms = Date.parse(event.timestamp);
+  return Number.isFinite(ms) ? ms : undefined;
+}
+
+const DIFF_TOOLS = new Set(["write_file", "edit_code"]);
+const TURN_BROKEN = new Set(["ERROR", "FAILED", "DISCONNECTED"]);
+
+/** Lines added and removed, from the counts the tool reports or its diff. */
+export function lineDelta(result: any): { added?: number; removed?: number } {
+  if (!result || typeof result !== "object") return {};
+  if (typeof result.lines_added === "number" && typeof result.lines_removed === "number") {
+    return { added: result.lines_added, removed: result.lines_removed };
+  }
+  if (typeof result.diff !== "string" || !result.diff) return {};
+  let added = 0;
+  let removed = 0;
+  for (const line of result.diff.split("\n")) {
+    if (line.startsWith("+++") || line.startsWith("---")) continue;
+    if (line.startsWith("+")) added++;
+    else if (line.startsWith("-")) removed++;
+  }
+  return { added, removed };
+}
+
+function turnFooter(state: TranscriptState, event: EventEnvelope): Item | null {
+  const turn = state.turn;
+  if (!turn) return null;
+  const files: string[] = [];
+  for (const item of state.items.slice(turn.from)) {
+    if (item.kind !== "tool" || item.status !== "done" || !DIFF_TOOLS.has(item.name)) continue;
+    const file = item.path || item.target;
+    if (file && !files.includes(file)) files.push(file);
+  }
+  const end = eventTime(event);
+  const ms = end != null && turn.started != null ? Math.max(0, end - turn.started) : undefined;
+  const tokens = state.tokens != null && turn.tokens0 != null ? Math.max(0, state.tokens - turn.tokens0) : undefined;
+  if (ms == null && !tokens && files.length === 0 && turn.verified == null) return null;
+  return { kind: "turn", id: event.event_id, ms, tokens: tokens || undefined, files, verified: turn.verified };
+}
+
+function applyTurn(state: TranscriptState, event: EventEnvelope): TranscriptState {
+  const p = event.payload ?? {};
+  switch (event.event_type) {
+    case "user.message":
+      // A message sent mid-turn steers it; only the first one opens a turn.
+      if (state.turn) return state;
+      return {
+        ...state,
+        turn: { started: eventTime(event) ?? null, from: state.items.length, tokens0: state.tokens },
+      };
+    case "usage.updated": {
+      const total = (p.cumulative as any)?.total_tokens;
+      if (total == null) return state;
+      const tokens = Number(total);
+      const turn = state.turn && state.turn.tokens0 == null ? { ...state.turn, tokens0: state.tokens ?? tokens } : state.turn;
+      return { ...state, tokens, turn };
+    }
+    case "turn.completed": {
+      const footer = turnFooter(state, event);
+      return { ...state, turn: null, items: footer ? [...state.items, footer] : state.items };
+    }
+    case "turn.cancelled":
+      return state.turn ? { ...state, turn: null } : state;
+    case "status.changed":
+      return state.turn && TURN_BROKEN.has(String(p.state)) ? { ...state, turn: null } : state;
+    default:
+      if (state.turn && event.event_type.startsWith("planning.") && p.latest_verification_passed != null) {
+        const verified = Boolean(p.latest_verification_passed);
+        return verified === state.turn.verified ? state : { ...state, turn: { ...state.turn, verified } };
+      }
+      return state;
+  }
+}
 
 const WORKING_STATES = new Set([
   "CALLING_MODEL",
@@ -97,28 +206,33 @@ function extendText(items: Item[], kind: Item["kind"], text: string, makeNew: ()
 }
 
 /**
- * Close the open reasoning block, if the last thing in the transcript is one.
- * The model has stopped thinking, so the block stops holding the view open and
- * goes back to being a header the reader can expand.
+ * Close every reasoning block still marked as live. The model has stopped
+ * thinking, so the block stops holding the view open and goes back to being a
+ * header the reader can expand.
+ *
+ * Wherever it sits, not only at the end: the answer streams in after the
+ * reasoning, so by the time the response completes the block is no longer the
+ * last item - and one left live keeps its dot pulsing for good.
  */
 function settleThinking(items: Item[]): Item[] {
-  const last = items[items.length - 1];
-  if (!last || last.kind !== "thinking" || !last.streaming) return items;
-  const copy = items.slice();
-  copy[copy.length - 1] = { ...last, streaming: false };
-  return copy;
+  if (!items.some((item) => item.kind === "thinking" && item.streaming)) return items;
+  return items.map((item) =>
+    item.kind === "thinking" && item.streaming ? { ...item, streaming: false } : item
+  );
 }
 
 function updateTool(
   items: Item[],
   toolId: string,
-  patch: Partial<Extract<Item, { kind: "tool" }>>
+  patch: Partial<Extract<Item, { kind: "tool" }>>,
+  ended?: number
 ): Item[] {
   let patched = false;
   return items.map((it) => {
     if (!patched && it.kind === "tool" && it.toolId === toolId && it.status === "running") {
       patched = true;
-      return { ...it, ...patch };
+      const ms = ended != null && it.started != null ? Math.max(0, ended - it.started) : undefined;
+      return { ...it, ...patch, ms };
     }
     return it;
   });
@@ -197,7 +311,7 @@ export function applyTranscript(state: TranscriptState, event: EventEnvelope): T
     case "conversation.reset":
       return initialTranscript;
     case "client.load":
-      return { items: (event.payload?.items as Item[]) ?? [], requestStart: -1 };
+      return { ...initialTranscript, items: (event.payload?.items as Item[]) ?? [], tokens: state.tokens };
     case "model.request.started":
       return { ...state, requestStart: state.items.length };
     case "model.request.retrying":
@@ -206,34 +320,20 @@ export function applyTranscript(state: TranscriptState, event: EventEnvelope): T
       return applyResend(state, event);
   }
   const next = applyItems(state, event);
-  return next === state || next.items === state.items ? state : { ...state, items: next.items };
+  const withItems = next === state || next.items === state.items ? state : { ...state, items: next.items };
+  return applyTurn(withItems, event);
 }
 
 /**
  * A failed model request is being sent again. Whatever the broken attempt
- * already streamed is not the answer, so it comes off the transcript, and the
- * retries share one notice that counts up instead of stacking twenty.
+ * already streamed is not the answer, so it comes off the transcript. The
+ * retry itself is transient: the banner over the composer says it, and it
+ * leaves no trace here once the call comes back.
  */
 function applyRetry(state: TranscriptState, event: EventEnvelope): TranscriptState {
   const p = event.payload ?? {};
-  let items = state.items;
-  if (p.discarded && state.requestStart >= 0 && state.requestStart <= items.length) {
-    items = items.slice(0, state.requestStart);
-  }
-  const delay = Number(p.delay_s ?? 0);
-  const wait = delay >= 1 ? " " + tf("in {0}s", Math.round(delay)) : "";
-  const reason = String(p.reason ?? "").trim();
-  const text =
-    tf("retrying {0}/{1}", Number(p.attempt ?? 0), Number(p.max_attempts ?? 0)) +
-    wait +
-    (reason ? ` — ${reason}` : "");
-  const notice: Item = { kind: "notice", id: "retry-" + event.event_id, level: "warning", text };
-  const last = items[items.length - 1];
-  items =
-    last && last.kind === "notice" && last.id.startsWith("retry-")
-      ? [...items.slice(0, -1), notice]
-      : [...items, notice];
-  return { ...state, items };
+  if (!p.discarded || state.requestStart < 0 || state.requestStart > state.items.length) return state;
+  return { ...state, items: state.items.slice(0, state.requestStart) };
 }
 
 /**
@@ -263,7 +363,7 @@ function applyResend(state: TranscriptState, event: EventEnvelope): TranscriptSt
       Number(p.max_attempts ?? 1)
     ),
   };
-  return { items: [...items.slice(0, cut), notice], requestStart: -1 };
+  return { ...state, items: [...items.slice(0, cut), notice], requestStart: -1, turn: null };
 }
 
 function applyItems(state: TranscriptState, event: EventEnvelope): Pick<TranscriptState, "items"> {
@@ -311,13 +411,16 @@ function applyItems(state: TranscriptState, event: EventEnvelope): Pick<Transcri
     case "model.stream.delta": {
       const channel = String(p.channel ?? "answer");
       const text = String(p.text ?? "");
+      // Text arriving means the reasoning before it is done; waiting for the
+      // response to complete would leave the block open under a whole answer.
+      const settled = settleThinking(items);
       if (channel === "working") {
         return {
-          items: extendText(items, "working", text, () => ({ kind: "working", id, text })),
+          items: extendText(settled, "working", text, () => ({ kind: "working", id, text })),
         };
       }
       return {
-        items: extendText(items, "assistant", text, () => ({
+        items: extendText(settled, "assistant", text, () => ({
           kind: "assistant",
           id,
           text,
@@ -390,6 +493,7 @@ function applyItems(state: TranscriptState, event: EventEnvelope): Pick<Transcri
           path: String(p.path ?? ""),
           status: "running",
           detail: "",
+          started: eventTime(event),
         }),
       };
     case "tool.call.completed":
@@ -397,14 +501,15 @@ function applyItems(state: TranscriptState, event: EventEnvelope): Pick<Transcri
         items: updateTool(items, String(p.tool_call_id ?? ""), {
           status: "done",
           detail: toolDetail(String(p.name ?? ""), p.result),
-        }),
+          ...lineDelta(p.result),
+        }, eventTime(event)),
       };
     case "tool.call.failed":
       return {
         items: updateTool(items, String(p.tool_call_id ?? ""), {
           status: "failed",
           detail: String(p.message ?? ""),
-        }),
+        }, eventTime(event)),
       };
     case "tool.call.interrupted":
       return {

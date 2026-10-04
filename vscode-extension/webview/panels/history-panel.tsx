@@ -59,18 +59,18 @@ export function HistoryPanel({
           {entry.summary ? (
             <div className="history-summary">{entry.summary}</div>
           ) : (
-            <div className="agent-task">sem resumo ainda</div>
+            <div className="agent-task">{t("no summary yet")}</div>
           )}
           <div className="history-tags">
             <span className="history-tag">{relativeTime(entry.updatedAt)}</span>
-            <span className="history-tag">{entry.count} msgs</span>
+            <span className="history-tag">{tf("{0} msgs", entry.count)}</span>
             {entry.tokens ? <span className="history-tag">{entry.tokens}</span> : null}
           </div>
         </div>
       ))}
       <div className="panel-actions">
         <button className="panel-btn" onClick={onSeeAll}>
-          Ver todas
+          {t("See all")}
         </button>
         <button className="panel-btn primary" onClick={onNew}>
           {t("New conversation")}

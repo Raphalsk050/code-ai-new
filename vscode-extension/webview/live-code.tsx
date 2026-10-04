@@ -1,4 +1,5 @@
 import * as React from "react";
+import { t, tf } from "./i18n";
 
 import type { CodeStreamState } from "./store";
 
@@ -27,8 +28,8 @@ export function LiveCodePanel({ code }: { code: CodeStreamState }): JSX.Element 
           {code.path || code.tool}
         </span>
         <span className="rail-section-note">
-          {code.complete ? "escrito" : "escrevendo"}
-          {lines ? ` · ${lines} linhas` : ""}
+          {code.complete ? t("written") : t("writing")}
+          {lines ? ` · ${tf("{0} lines", lines)}` : ""}
         </span>
       </div>
       {code.reason && <div className="livecode-reason">{code.reason}</div>}

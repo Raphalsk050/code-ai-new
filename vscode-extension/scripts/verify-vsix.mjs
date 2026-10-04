@@ -170,6 +170,8 @@ export function verify(file, target) {
     "extension/dist/extension.js",
     "extension/dist/webview.js",
     "extension/dist/flow.js",
+    "extension/dist/codicons/codicon.css",
+    "extension/dist/codicons/codicon.ttf",
     "extension/package.json",
   ];
   for (const required of REQUIRED) {

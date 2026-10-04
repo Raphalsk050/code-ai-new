@@ -5,6 +5,8 @@ import * as vscode from "vscode";
 
 import type { BridgeClient } from "./bridge-client";
 import { EditDiffs } from "./edit-diff";
+import { SessionChanges } from "./session-changes";
+import { initialAgentStatus, reduceAgentStatus, statusView } from "./agent-status";
 import {
   BridgeSession,
   StartReason,
@@ -17,8 +19,10 @@ import type {
   AppMode,
   BridgeMethod,
   EditorContext,
+  EditorSettings,
   EventEnvelope,
   ExplainTarget,
+  JevProbe,
   McpAction,
   McpList,
   RefactorImprovement,
@@ -73,13 +77,23 @@ export function activate(context: vscode.ExtensionContext): void {
   // The agent's file edits, shown in the editor's diff view as they are made.
   // Subscribed here rather than by the chat view, so they show with it closed.
   const diffs = new EditDiffs();
-  const provider = new ChatViewProvider(context.extensionUri, bridge, diffs);
+  // Everything the agent changed in the conversation, for the rail's Changes.
+  const changes = new SessionChanges();
+  const provider = new ChatViewProvider(context.extensionUri, bridge, diffs, changes);
   const flowEditor = new FlowEditorProvider(context.extensionUri, bridge, context.secrets);
   provider.onSettingsSaved = () => flowEditor.refreshCatalog();
   context.subscriptions.push(
     bridge,
     diffs,
-    bridge.subscribe({ onEvent: (event) => diffs.handle(event) }),
+    changes,
+    vscode.window.registerFileDecorationProvider(changes),
+    bridge.subscribe({
+      onEvent: (event) => {
+        diffs.handle(event);
+        changes.handle(event);
+        showAgentStatus(event);
+      },
+    }),
     vscode.window.registerWebviewViewProvider("code-ai.chat", provider, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
@@ -114,6 +128,27 @@ export function activate(context: vscode.ExtensionContext): void {
   statusBar.command = "code-ai.toggleInlineHints";
   context.subscriptions.push(statusBar);
   provider.bindInlineStatusBar(statusBar);
+
+  // The agent at a glance with the sidebar closed: context left, and whether
+  // it is working or waiting on an approval.
+  const agentItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 101);
+  agentItem.command = "code-ai.open";
+  context.subscriptions.push(agentItem);
+  let agentStatus = initialAgentStatus;
+  const paint = () => {
+    const view = statusView(agentStatus);
+    agentItem.text = view.text;
+    agentItem.tooltip = view.tooltip;
+    agentItem.backgroundColor = view.warn ? new vscode.ThemeColor("statusBarItem.warningBackground") : undefined;
+    agentItem.show();
+  };
+  function showAgentStatus(event: EventEnvelope): void {
+    const next = reduceAgentStatus(agentStatus, event);
+    if (next === agentStatus) return;
+    agentStatus = next;
+    paint();
+  }
+  paint();
 }
 
 export function deactivate(): void {
@@ -124,8 +159,33 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly bridge: BridgeSession,
-    private readonly diffs: EditDiffs
+    private readonly diffs: EditDiffs,
+    private readonly changes: SessionChanges
   ) {}
+
+  /** The extension's own settings, as the panel's settings screen edits them. */
+  private postEditorSettings(): void {
+    const config = vscode.workspace.getConfiguration("code-ai");
+    const settings: EditorSettings = {
+      diffInEditor: config.get<boolean>("diff.openInEditor", true),
+      command: config.get<string>("command", "") ?? "",
+      args: config.get<string[]>("args", []) ?? [],
+    };
+    void this.webview?.postMessage({ type: "editorSettings", settings });
+  }
+
+  private async updateEditorSettings(updates: Partial<EditorSettings>): Promise<void> {
+    const config = vscode.workspace.getConfiguration("code-ai");
+    const target = vscode.ConfigurationTarget.Global;
+    try {
+      if (updates.diffInEditor !== undefined) await config.update("diff.openInEditor", updates.diffInEditor, target);
+      if (updates.command !== undefined) await config.update("command", updates.command, target);
+      if (updates.args !== undefined) await config.update("args", updates.args, target);
+    } catch (err) {
+      void vscode.window.showErrorMessage(`Code-AI could not save its settings: ${(err as Error).message}`);
+    }
+    this.postEditorSettings();
+  }
 
   /** The window's backend, shared with the graph editor. */
   private get client(): BridgeClient | undefined {
@@ -680,6 +740,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         case "newConversation":
           this.activeConversation = message.id;
+          this.changes.reset();
           client?.send("newConversation", { conversation_id: message.id });
           break;
         case "listConversations":
@@ -692,6 +753,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         case "loadConversation":
           this.activeConversation = message.id;
+          this.changes.reset();
           client
             ?.request<{ id: string; messages: any[] }>("loadConversation", { conversation_id: message.id })
             .then((r) =>
@@ -746,6 +808,14 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
             ?.request<{ models: string[] }>("listModels", {}, AI_REQUEST_TIMEOUT_MS)
             .then((r) => this.webview?.postMessage({ type: "modelsListed", models: r.models ?? [] }))
             .catch((err) => this.webview?.postMessage({ type: "modelsError", message: String(err) }));
+          break;
+        case "testJev":
+          client
+            ?.request<JevProbe>("testJev", { base_url: message.baseUrl }, AI_REQUEST_TIMEOUT_MS)
+            .then((result) => this.webview?.postMessage({ type: "jevTested", result }))
+            .catch((err) =>
+              this.webview?.postMessage({ type: "jevTested", result: { ok: false, error: String(err) } })
+            );
           break;
         case "mcp":
           void this.runMcp(message, client);
@@ -891,6 +961,18 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         case "openDiff":
           void this.diffs.open(message.path);
           break;
+        case "openChange":
+          void this.changes.open(message.path);
+          break;
+        case "revertChange":
+          void this.changes.revert(message.path);
+          break;
+        case "reviewChanges":
+          void this.changes.reviewAll();
+          break;
+        case "updateEditorSettings":
+          void this.updateEditorSettings(message.updates);
+          break;
         case "installUpdate":
           void this.installUpdate();
           break;
@@ -950,9 +1032,17 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     editorSubs.push(
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (e.affectsConfiguration("code-ai.diff.openInEditor")) postEditorDiff();
+        if (["code-ai.diff.openInEditor", "code-ai.command", "code-ai.args"].some((key) => e.affectsConfiguration(key))) {
+          this.postEditorSettings();
+        }
       })
     );
     postEditorDiff();
+    this.postEditorSettings();
+    editorSubs.push(
+      this.changes.onDidChangeList((files) => void this.webview?.postMessage({ type: "sessionChanges", files }))
+    );
+    void this.changes.summaries().then((files) => this.webview?.postMessage({ type: "sessionChanges", files }));
     this.postUpdate();
     this.postProfile();
 
@@ -1287,10 +1377,12 @@ function formatEditorContext(context: EditorContext | null): string {
 
 function renderHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
   const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "dist", "webview.js"));
+  const codiconsUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "dist", "codicons", "codicon.css"));
   const nonce = makeNonce();
   const csp =
     `default-src 'none'; ` +
     `img-src ${webview.cspSource} https: data:; ` +
+    `font-src ${webview.cspSource}; ` +
     `style-src ${webview.cspSource} 'unsafe-inline'; ` +
     `script-src 'nonce-${nonce}';`;
   return `<!DOCTYPE html>
@@ -1299,6 +1391,7 @@ function renderHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
     <meta charset="UTF-8" />
     <meta http-equiv="Content-Security-Policy" content="${csp}" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="${codiconsUri}" />
     <title>Code-AI</title>
   </head>
   <body>

@@ -2,17 +2,10 @@ import * as React from "react";
 
 import { t, tf } from "./i18n";
 
+import type { ChangeSummary } from "../src/protocol";
+import { Codicon } from "./codicon";
 import type { HistoryEntry } from "./history";
-import {
-  IconAgents,
-  IconChevron,
-  IconGauge,
-  IconHistory,
-  IconList,
-  IconPanelRight,
-  IconSettings,
-  IconTerminal,
-} from "./icons";
+import { IconAgentsTwin } from "./icons";
 import { ripple, useCollapseHeight, useMountTransition } from "./motion";
 import {
   RAIL_DEFAULT_WIDTH,
@@ -25,6 +18,7 @@ import {
   widthFromDrag,
 } from "./rail-layout";
 import { AgentsPanel } from "./panels/agents-panel";
+import { ChangesPanel } from "./panels/changes-panel";
 import { HistoryPanel } from "./panels/history-panel";
 import { PlanPanel } from "./panels/plan-panel";
 import { SessionPanel } from "./panels/session-panel";
@@ -32,13 +26,12 @@ import { TerminalAction, TerminalPanel } from "./panels/terminal-panel";
 import type { AppState } from "./store";
 import type { WidthClass } from "./use-container-width";
 
-export type SectionId = "session" | "plan" | "agents" | "terminal" | "history";
+export type SectionId = "session" | "plan" | "changes" | "agents" | "terminal" | "history";
 
 export interface RailActions {
   onIndex: (full: boolean) => void;
   onCompact: () => void;
   onReplan: () => void;
-  onPlannerMode: (mode: string) => void;
   onGoal: (action: "start" | "stop") => void;
   onTerminal: (action: TerminalAction) => void;
   onOpenConversation: (id: string) => void;
@@ -46,6 +39,9 @@ export interface RailActions {
   onNewConversation: () => void;
   onSeeAllHistory: () => void;
   onSettings: () => void;
+  onOpenChange: (path: string) => void;
+  onRevertChange: (path: string) => void;
+  onReviewChanges: () => void;
 }
 
 interface RailProps {
@@ -60,51 +56,73 @@ interface RailProps {
   history: HistoryEntry[];
   activeId: string | null;
   connected: boolean;
+  /** An approval is waiting on the user. */
+  waiting: boolean;
+  /** Files the agent changed in this conversation. */
+  changes: ChangeSummary[];
+  /** Docked as a column (wide) or collapsed to the icon strip; owned by the header's toggle. */
+  docked: boolean;
+  onDockedChange: (docked: boolean) => void;
   actions: RailActions;
 }
 
-const ICONS: Record<SectionId, (props: { size?: number }) => JSX.Element> = {
-  session: IconGauge,
-  plan: IconList,
-  agents: IconAgents,
-  terminal: IconTerminal,
-  history: IconHistory,
-};
+function SectionIcon({ id, size = 16 }: { id: SectionId; size?: number }): JSX.Element {
+  if (id === "agents") return <IconAgentsTwin size={size + 2} />;
+  const name = { session: "dashboard", plan: "checklist", changes: "diff", terminal: "terminal", history: "history" }[id];
+  return <Codicon name={name} size={size} />;
+}
 
 const TITLES: Record<SectionId, string> = {
   session: "Session",
-  plan: "Plano",
-  agents: "Agentes",
+  plan: "Plan",
+  changes: "Changes",
+  agents: "Agents",
   terminal: "Terminal",
   history: "History",
 };
 
-const ORDER: SectionId[] = ["session", "plan", "agents", "terminal", "history"];
+const ORDER: SectionId[] = ["session", "plan", "changes", "agents", "terminal", "history"];
+
+export type Tone = "run" | "warn" | "bad" | "ok" | "";
+
+/** What a section says while closed: a badge in its header, a mark on the strip. */
+export interface SectionNote {
+  text: string;
+  tone: Tone;
+  /** A number on the strip icon. */
+  count?: number;
+  /** A dot on the strip icon, in the tone's colour. */
+  dot?: boolean;
+}
 
 /**
  * Everything that is not the conversation, in one place on the right.
  *
- * Three layouts, one component: docked column when the sidebar is wide, overlay
- * drawer when it is not, icon strip in both. Which one is live comes from the
+ * Three layouts, one component: docked column when the sidebar is wide and the
+ * user has not collapsed it, otherwise the icon strip with an overlay drawer
+ * for the one section picked from it. Which one is live comes from the
  * measured width band, never from a media query.
  */
 export function TaskRail(props: RailProps): JSX.Element {
   const { width, state } = props;
   const wide = width === "md";
-  const [docked, setDocked] = React.useState(true);
+  const { docked, onDockedChange: setDocked } = props;
   // Both splitters. The width is one number; the heights are per section and
   // absent until the user drags one, so an untouched rail keeps sizing itself.
   const [railWidth, setRailWidth] = React.useState(() => readStoredRailWidth() ?? RAIL_DEFAULT_WIDTH);
   const [heights, setHeights] = React.useState<Record<string, number>>(() => readStoredSectionHeights());
   const dragFromWidth = React.useRef(railWidth);
-  const [open, setOpen] = React.useState<Set<SectionId>>(() => new Set(["session", "plan"]));
+  const [open, setOpen] = React.useState<Set<SectionId>>(() => new Set(["session", "changes"]));
   const [drawer, setDrawer] = React.useState<SectionId | null>(null);
 
-  // Collapsing the drawer when the rail becomes wide (and vice versa) keeps one
-  // mental model: a section is either in the column or in the sheet, never both.
+  const showDock = wide && docked;
+
+  // A section is either in the column or in the sheet, never both: a drawer
+  // left open behind the column would only sit there unseen and pop out on the
+  // next collapse.
   React.useEffect(() => {
-    if (wide) setDrawer(null);
-  }, [wide]);
+    if (showDock) setDrawer(null);
+  }, [showDock]);
 
   // Something outside the rail asked for a section (Esc reaching for the
   // terminal): open it where this width keeps sections.
@@ -123,8 +141,21 @@ export function TaskRail(props: RailProps): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [revealNonce]);
 
-  const notes = sectionNotes(state);
-  const showDock = wide && docked;
+  const notes = sectionNotes(state, props);
+
+  // A section that needs the user (a failure, a wait) opens itself, once per
+  // occurrence: closing it again sticks until something new happens there.
+  const seen = React.useRef<Record<string, string>>({});
+  React.useEffect(() => {
+    for (const id of ORDER) {
+      const note = notes[id];
+      const key = note.tone === "bad" || note.tone === "warn" ? `${note.tone}:${note.text}` : "";
+      if (key && seen.current[id] !== key && showDock) {
+        setOpen((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
+      }
+      seen.current[id] = key;
+    }
+  });
 
   const toggleSection = (id: SectionId) => {
     if (showDock) {
@@ -136,8 +167,9 @@ export function TaskRail(props: RailProps): JSX.Element {
       });
       return;
     }
+    // From the strip an icon opens its own section and nothing else, at any
+    // width. Docking the whole column is the strip's first button.
     setDrawer((prev) => (prev === id ? null : id));
-    if (wide) setDocked(true);
   };
 
   const body = (id: SectionId) => <SectionBody id={id} {...props} />;
@@ -151,26 +183,26 @@ export function TaskRail(props: RailProps): JSX.Element {
             title={wide ? t("Dock the panel") : t("Task panel")}
             aria-label={t("Task panel")}
             onPointerDown={ripple}
-            onClick={() => (wide ? setDocked(true) : setDrawer(drawer ? null : "plan"))}
+            onClick={() => (wide ? setDocked(true) : setDrawer(drawer ? null : "session"))}
           >
-            <IconPanelRight size={14} />
+            <Codicon name="layout-sidebar-right" />
           </button>
           <div className="rail-sep" />
           {ORDER.map((id) => {
-            const Icon = ICONS[id];
             const note = notes[id];
+            const label = note.text ? `${t(TITLES[id])} · ${note.text}` : t(TITLES[id]);
             return (
               <button
                 key={id}
-                className={`rail-btn ${drawer === id ? "active" : ""}`}
-                title={t(TITLES[id])}
-                aria-label={t(TITLES[id])}
+                className={`rail-btn rail-btn-${id} ${drawer === id ? "active" : ""}`}
+                title={label}
+                aria-label={label}
                 onPointerDown={ripple}
                 onClick={() => toggleSection(id)}
               >
-                <Icon size={14} />
-                {note.badge ? <span className="rail-badge">{note.badge}</span> : null}
-                {note.dot ? <span className="rail-dot" /> : null}
+                <SectionIcon id={id} />
+                {note.count ? <span className="rail-badge">{note.count}</span> : null}
+                {!note.count && note.dot ? <span className={`rail-dot tone-${note.tone || "run"}`} /> : null}
               </button>
             );
           })}
@@ -182,7 +214,7 @@ export function TaskRail(props: RailProps): JSX.Element {
             onPointerDown={ripple}
             onClick={props.actions.onSettings}
           >
-            <IconSettings size={14} />
+            <Codicon name="gear" />
           </button>
         </div>
       )}
@@ -215,7 +247,7 @@ export function TaskRail(props: RailProps): JSX.Element {
         <div className="rail-dock" style={{ width: clampRailWidth(railWidth, Infinity) }}>
           <div className="rail-dock-head">
             <span className="rail-section-title rail-section-head" style={{ padding: 0 }}>
-              Tarefas
+              {t("Tasks")}
             </span>
             <button
               className="rail-btn"
@@ -224,7 +256,7 @@ export function TaskRail(props: RailProps): JSX.Element {
               onPointerDown={ripple}
               onClick={() => setDocked(false)}
             >
-              <IconChevron size={13} />
+              <Codicon name="chevron-right" size={14} />
             </button>
           </div>
           <div className="rail-dock-body">
@@ -233,7 +265,7 @@ export function TaskRail(props: RailProps): JSX.Element {
                 key={id}
                 id={id}
                 open={open.has(id)}
-                note={notes[id].text}
+                note={notes[id]}
                 height={heights[id]}
                 onResize={(next) =>
                   setHeights((prev) => {
@@ -250,7 +282,6 @@ export function TaskRail(props: RailProps): JSX.Element {
               </RailSection>
             ))}
           </div>
-          <RailFooter connected={props.connected} state={state} />
           </div>
         </>
       ) : (
@@ -297,7 +328,7 @@ function RailGrip({
       role="separator"
       aria-orientation={axis === "x" ? "vertical" : "horizontal"}
       aria-label={label}
-      title={`${label} (duplo clique para restaurar)`}
+      title={`${label} (${t("double-click to reset")})`}
       tabIndex={0}
       onPointerDown={(e) => {
         e.preventDefault();
@@ -344,7 +375,7 @@ function RailSection({
 }: {
   id: SectionId;
   open: boolean;
-  note: string;
+  note: SectionNote;
   onToggle: () => void;
   /** Dragged height in px, or undefined to size to the content. */
   height?: number;
@@ -368,9 +399,9 @@ function RailSection({
         onPointerDown={ripple}
         onClick={onToggle}
       >
-        <IconChevron size={12} className="chev" />
+        <Codicon name="chevron-right" size={14} className="chev" />
         <span className="rail-section-title">{t(TITLES[id])}</span>
-        {note && <span className="rail-section-note">{note}</span>}
+        {note.text && <span className={`rail-badge-text tone-${note.tone || "none"}`}>{note.text}</span>}
       </button>
       <div ref={ref} id={`rail-body-${id}`}>
         <div
@@ -425,7 +456,7 @@ function RailDrawer({
             {title}
           </span>
           <button className="rail-btn" aria-label={t("Close")} onPointerDown={ripple} onClick={onClose}>
-            ✕
+            <Codicon name="close" />
           </button>
         </div>
         <div className="rail-dock-body">
@@ -433,17 +464,6 @@ function RailDrawer({
         </div>
       </div>
     </>
-  );
-}
-
-function RailFooter({ connected, state }: { connected: boolean; state: AppState }): JSX.Element {
-  return (
-    <div className="rail-foot">
-      <span className={`dot ${connected ? "" : "off"}`} />
-      <span>{connected ? "bridge conectada" : "bridge offline"}</span>
-      <span style={{ flex: 1 }} />
-      <span>{state.session.plannerMode}</span>
-    </div>
   );
 }
 
@@ -458,19 +478,23 @@ function SectionBody(props: RailProps & { id: SectionId }): JSX.Element {
           model={props.model}
           workspace={props.workspace}
           branch={props.branch}
+          waiting={props.waiting}
+          connected={props.connected}
           onIndex={actions.onIndex}
           onCompact={actions.onCompact}
         />
       );
     case "plan":
       return (
-        <PlanPanel
-          plan={state.plan}
-          goal={state.goal}
-          plannerMode={state.session.plannerMode}
-          onReplan={actions.onReplan}
-          onPlannerMode={actions.onPlannerMode}
-          onGoal={actions.onGoal}
+        <PlanPanel plan={state.plan} goal={state.goal} onReplan={actions.onReplan} onGoal={actions.onGoal} />
+      );
+    case "changes":
+      return (
+        <ChangesPanel
+          files={props.changes}
+          onOpen={actions.onOpenChange}
+          onRevert={actions.onRevertChange}
+          onReviewAll={actions.onReviewChanges}
         />
       );
     case "agents":
@@ -497,20 +521,53 @@ function SectionBody(props: RailProps & { id: SectionId }): JSX.Element {
   }
 }
 
-function sectionNotes(state: AppState): Record<SectionId, { text: string; badge?: number; dot?: boolean }> {
-  const running = state.agents.rows.filter((r) => r.status === "running").length;
-  const doneSteps = state.plan.steps.filter((s) => s.status === "done").length;
+function terminalNote(terminal: AppState["terminal"]): SectionNote {
+  if (!terminal.live) return { text: "", tone: "" };
+  if (terminal.closed) return { text: t("closed"), tone: "" };
+  if (terminal.runningAuthor) return { text: t("running"), tone: "run", dot: true };
+  const last = terminal.blocks[terminal.blocks.length - 1];
+  if (last && last.exitCode != null && last.exitCode !== 0) {
+    return { text: tf("exit {0}", last.exitCode), tone: "bad", dot: true };
+  }
+  return { text: t("live"), tone: "", dot: false };
+}
+
+const BUSY = new Set(["CALLING_MODEL", "EXECUTING_TOOL", "COMPRESSING_CONTEXT", "CANCELLING"]);
+
+export function sectionNotes(
+  state: AppState,
+  props: { connected: boolean; waiting: boolean; changes: ChangeSummary[] }
+): Record<SectionId, SectionNote> {
+  const rows = state.agents.rows;
+  const running = rows.filter((r) => r.status === "running").length;
+  const failedAgents = rows.filter((r) => r.status === "failed" || r.status === "rejected").length;
+  const steps = state.plan.steps;
+  const done = steps.filter((s) => s.status === "done").length;
+  const planTone: Tone = steps.some((s) => s.status === "failed")
+    ? "bad"
+    : steps.some((s) => s.status === "running")
+      ? "run"
+      : steps.length && done === steps.length
+        ? "ok"
+        : "";
+  const session: SectionNote = !props.connected
+    ? { text: t("offline"), tone: "bad", dot: true }
+    : props.waiting
+      ? { text: t("waiting for you"), tone: "warn", dot: true }
+      : BUSY.has(state.session.status)
+        ? { text: t("working"), tone: "run", dot: true }
+        : { text: "", tone: "" };
+  const terminal = state.terminal;
   return {
-    session: { text: state.session.phase },
-    plan: {
-      text: state.plan.steps.length ? `${doneSteps}/${state.plan.steps.length}` : "",
-      badge: state.plan.steps.length ? undefined : undefined,
-    },
-    agents: { text: running ? `${running} rodando` : "", badge: running || undefined },
-    terminal: {
-      text: state.terminal.live ? (state.terminal.closed ? "encerrada" : "ativa") : "",
-      dot: state.terminal.live && !state.terminal.closed,
-    },
-    history: { text: "" },
+    session,
+    plan: { text: steps.length ? `${done}/${steps.length}` : "-", tone: planTone, dot: planTone === "run" || planTone === "bad" },
+    changes: { text: props.changes.length ? String(props.changes.length) : "", tone: "", count: props.changes.length || undefined },
+    agents: failedAgents
+      ? { text: tf("{0} failed", failedAgents), tone: "bad", dot: true }
+      : running
+        ? { text: tf("{0} running", running), tone: "run", dot: true }
+        : { text: "", tone: "" },
+    terminal: terminalNote(terminal),
+    history: { text: "", tone: "" },
   };
 }

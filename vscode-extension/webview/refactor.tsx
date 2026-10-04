@@ -45,10 +45,10 @@ export function RefactorPanel({
         <div className="refactor-head">
           <div className="refactor-title">
             <IconWand size={16} />
-            <span>Architectural improvements</span>
+            <span>{t("Architectural improvements")}</span>
           </div>
           <button className="btn-ghost refactor-analyze" onClick={onAnalyze} disabled={status === "analyzing"}>
-            {status === "analyzing" ? "Analisando…" : improvements.length ? "Analisar de novo" : "Analisar seleção"}
+            {status === "analyzing" ? t("Analysing…") : improvements.length ? t("Analyse again") : t("Analyse selection")}
           </button>
         </div>
 
@@ -61,7 +61,7 @@ export function RefactorPanel({
 
         {status === "analyzing" && (
           <div className="refactor-status">
-            <span className="spinner" /> Analisando a seleção…
+            <span className="spinner" /> {t("Analysing the selection…")}
           </div>
         )}
 
@@ -77,7 +77,7 @@ export function RefactorPanel({
 
         {status === "ready" && improvements.length === 0 && (
           <div className="refactor-empty">
-            <IconCheck size={16} /> No improvements found — this snippet looks clean.
+            <IconCheck size={16} /> {t("No improvements found: this snippet looks clean.")}
           </div>
         )}
 
@@ -99,15 +99,15 @@ export function RefactorPanel({
             <div className="refactor-all">
               {state.planned[ALL] ? (
                 <button className="btn-primary" onClick={() => onApply(state.planned[ALL]!)}>
-                  Apply all changes
+                  {t("Apply all changes")}
                 </button>
               ) : state.planning[ALL] ? (
                 <button className="btn-ghost" disabled>
-                  <span className="spinner" /> Planning all…
+                  <span className="spinner" /> {t("Planning all…")}
                 </button>
               ) : (
                 <button className="btn-ghost" onClick={() => onPlan(ALL, improvements)}>
-                  Planning all
+                  {t("Planning all")}
                 </button>
               )}
             </div>
@@ -143,15 +143,15 @@ function Card({
       <div className="refactor-card-action">
         {planned ? (
           <button className="btn-primary" onClick={onApply} title={t("Apply with the agent")}>
-            Apply changes
+            {t("Apply changes")}
           </button>
         ) : planning ? (
           <button className="btn-ghost" disabled>
-            <span className="spinner" /> Planning…
+            <span className="spinner" /> {t("Planning…")}
           </button>
         ) : (
           <button className="btn-ghost" onClick={onPlan} title={t("Write a detailed plan")}>
-            Planning
+            {t("Planning")}
           </button>
         )}
       </div>

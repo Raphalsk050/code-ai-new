@@ -2,7 +2,7 @@
   "name": "code-ai",
   "displayName": "Code-AI",
   "description": "Drive the Code-AI agent from VSCode. Ships the agent with it: no Python, no install.",
-  "version": "0.35.0",
+  "version": "0.36.0",
   "publisher": "code-ai",
   "private": true,
   "engines": {
@@ -126,20 +126,22 @@
     "test:webview": "node scripts/test-webview.mjs",
     "test:package": "node scripts/test-package.mjs",
     "test:e2e": "node e2e/run.mjs",
-    "test": "npm run typecheck && npm run test:webview && npm run test:package && npm run test:e2e"
+    "test": "npm run typecheck && npm run lint:i18n && npm run test:webview && npm run test:package && npm run test:e2e",
+    "lint:i18n": "node scripts/check-i18n.mjs"
   },
   "devDependencies": {
     "@types/diff": "^5.0.9",
-    "@vscode/vsce": "^3.2.0",
     "@types/node": "^20.11.0",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
     "@types/vscode": "^1.74.0",
+    "@vscode/vsce": "^3.2.0",
     "esbuild": "^0.20.0",
     "playwright": "^1.56.0",
     "typescript": "^5.4.0"
   },
   "dependencies": {
+    "@vscode/codicons": "^0.0.46-24",
     "diff": "^5.2.0",
     "dompurify": "^3.0.11",
     "highlight.js": "^11.9.0",

@@ -1,3 +1,5 @@
+import { copyFileSync, mkdirSync } from "node:fs";
+
 import esbuild from "esbuild";
 
 const watch = process.argv.includes("--watch");
@@ -37,6 +39,15 @@ const flowConfig = {
 };
 
 const configs = [extensionConfig, webviewConfig, flowConfig];
+
+/** The codicon font and its stylesheet ship beside the bundles: node_modules is not packaged. */
+function copyCodicons() {
+  mkdirSync("dist/codicons", { recursive: true });
+  for (const file of ["codicon.css", "codicon.ttf"]) {
+    copyFileSync(`node_modules/@vscode/codicons/dist/${file}`, `dist/codicons/${file}`);
+  }
+}
+copyCodicons();
 
 if (watch) {
   const contexts = await Promise.all(configs.map((config) => esbuild.context(config)));

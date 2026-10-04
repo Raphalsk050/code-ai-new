@@ -911,7 +911,7 @@ function RunPanel({ state }: { state: EditorState }) {
       )}
       {run.runId && (
         <p className="flow-hint">
-          run {run.runId} · {tf("{0} nodes", run.nodesExecuted)}
+          {tf("run {0}", run.runId)} · {tf("{0} nodes", run.nodesExecuted)}
         </p>
       )}
 

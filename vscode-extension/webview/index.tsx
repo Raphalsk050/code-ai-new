@@ -4,6 +4,8 @@ import { createRoot } from "react-dom/client";
 import type {
   AppMode,
   ApprovalScope,
+  ChangeSummary,
+  EditorSettings,
   EditorContext,
   EventEnvelope,
   HostToWebview,
@@ -18,6 +20,8 @@ import type {
   WebviewToHost,
 } from "../src/protocol";
 import { ApprovalCard } from "./approval";
+import { Banner, BannerState } from "./banner";
+import { EmptyAction, EmptyState } from "./empty-state";
 import { CommandMenu } from "./command-menu";
 import { ElicitationCard } from "./elicitation-card";
 import { buildCatalog, matchCommands, resolveCommand, SlashCommand } from "./commands";
@@ -34,18 +38,9 @@ import {
   removeConversation,
   upsertActive,
 } from "./history";
-import {
-  IconBack,
-  IconBranch,
-  IconBrand,
-  IconBroom,
-  IconFile,
-  IconPlus,
-  IconRefresh,
-  IconSend,
-  IconSettings,
-  IconStop,
-} from "./icons";
+import { ChatHeader } from "./chat-header";
+import { Codicon } from "./codicon";
+import { ComposerBar } from "./composer-bar";
 import { LiveCodePanel } from "./live-code";
 import { UpdateButton, UpdateView } from "./update-button";
 import { mergeStatus } from "./mcp-form";
@@ -54,16 +49,16 @@ import { MentionMenu } from "./mention-menu";
 import { applyMention, mentionPrefix, rankPaths } from "./mentions";
 import { agentKey, Block, endsOnAnswer, groupBlocks } from "./blocks";
 import { activityLabel, BlockView, formatElapsed, TypingIndicator } from "./messages";
+import { useSteadyPose } from "./agent-avatar";
+import { avatarPose } from "./avatar-pose";
 import { PromptPin, usePromptPin } from "./prompt-pin";
-import { ModeSwitch } from "./mode-switch";
 import { ripple } from "./motion";
 import { QuestionsCard } from "./questions-card";
 import { INITIAL_REFACTOR, RefactorPanel, RefactorViewState } from "./refactor";
-import { ModelsState, SaveState, SettingsScreen } from "./settings";
+import { JevState, ModelsState, SaveState, SettingsScreen } from "./settings";
 import { applyEvent, initialAppState, isBusy, Item, messagesToItems } from "./store";
 import { STYLE } from "./styles";
 import { RailActions, TaskRail } from "./task-rail";
-import { UsageBar } from "./usage-bar";
 import { useContainerWidth } from "./use-container-width";
 
 declare function acquireVsCodeApi(): {
@@ -93,6 +88,8 @@ type Screen = "home" | "chat" | "settings";
 // Backend states a turn ends well in; ERROR, FAILED and CANCELLED end it too,
 // but not with an answer worth marking done.
 const SETTLED = new Set(["READY", "IDLE"]);
+// No backend to send to: the composer says so and will not send.
+const OFFLINE = new Set(["STARTING", "RECONNECTING", "DISCONNECTED"]);
 
 function App(): JSX.Element {
   const [state, dispatch] = React.useReducer(applyEvent, initialAppState);
@@ -104,6 +101,7 @@ function App(): JSX.Element {
   const [activeId, setActiveId] = React.useState<string | null>(null);
   const [settings, setSettings] = React.useState<Settings | null>(null);
   const [models, setModels] = React.useState<ModelsState>({ status: "idle", list: [] });
+  const [jev, setJev] = React.useState<JevState>({ status: "idle" });
   const [save, setSave] = React.useState<SaveState>({ status: "idle", errors: {} });
   const [mcp, setMcp] = React.useState<McpViewState>(INITIAL_MCP);
   const [elicitErrors, setElicitErrors] = React.useState<Record<string, string>>({});
@@ -124,8 +122,14 @@ function App(): JSX.Element {
   const [dropping, setDropping] = React.useState(false);
   const [reveal, setReveal] = React.useState<{ section: "terminal"; nonce: number } | null>(null);
   const [terminalFocus, setTerminalFocus] = React.useState(0);
+  const [railDocked, setRailDocked] = React.useState(true);
+  // Scrolled up away from the newest message: the composer offers a way back.
+  const [atBottom, setAtBottom] = React.useState(true);
   // Edits are shown in the editor's diff view: no live code or diff in here.
   const [editorDiff, setEditorDiff] = React.useState(false);
+  // What the agent changed in this conversation, from the host.
+  const [changes, setChanges] = React.useState<ChangeSummary[]>([]);
+  const [editorSettings, setEditorSettings] = React.useState<EditorSettings | null>(null);
   // A newer release, once the backend has found one.
   const [update, setUpdate] = React.useState<UpdateView | null>(null);
   // The user's picture on the releases host; the icon stands in until then,
@@ -170,6 +174,10 @@ function App(): JSX.Element {
         dispatch(event);
       } else if (data?.type === "editorDiff") {
         setEditorDiff(data.enabled);
+      } else if (data?.type === "sessionChanges") {
+        setChanges(data.files);
+      } else if (data?.type === "editorSettings") {
+        setEditorSettings(data.settings);
       } else if (data?.type === "updateAvailable") {
         setUpdate((u) => ({
           version: data.version,
@@ -245,6 +253,8 @@ function App(): JSX.Element {
         setModels({ status: "ready", list: data.models });
       } else if (data?.type === "modelsError") {
         setModels((m) => ({ ...m, status: "error", error: data.message }));
+      } else if (data?.type === "jevTested") {
+        setJev({ status: "done", result: data.result });
       } else if (data?.type === "conversationsList") {
         setServerConvos(data.conversations);
       } else if (data?.type === "conversationLoaded") {
@@ -340,10 +350,31 @@ function App(): JSX.Element {
 
   // -- autoscroll / auto-grow ---------------------------------------------
   const pin = usePromptPin(scrollRef, pinnedRef);
+  const jumpToLatest = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    pinnedRef.current = true;
+    setAtBottom(true);
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  };
+  // The composer floats over the transcript; the transcript keeps that much
+  // room at its end so the newest line is never under the glass.
+  const composerRef = React.useRef<HTMLDivElement>(null);
+  React.useLayoutEffect(() => {
+    const el = composerRef.current;
+    const col = el?.parentElement;
+    if (!el || !col || typeof ResizeObserver === "undefined") return;
+    const apply = () => col.style.setProperty("--composer-h", `${Math.ceil(el.getBoundingClientRect().height)}px`);
+    apply();
+    const observer = new ResizeObserver(apply);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [screen, mode]);
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
     pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    setAtBottom(pinnedRef.current);
     pin.onScroll();
   };
   React.useLayoutEffect(() => {
@@ -358,9 +389,11 @@ function App(): JSX.Element {
   }, [draft]);
 
   const busy = isBusy(state.session.status);
+  const connected = !OFFLINE.has(state.session.status);
   const items = state.transcript.items;
   const lastItem = items[items.length - 1];
   const showTyping = busy && lastItem?.kind !== "assistant";
+  const pose = useSteadyPose(busy ? avatarPose(state.session, lastItem) : "idle");
   const blocks = React.useMemo(() => groupBlocks(items), [items]);
   const pinText = React.useMemo(() => {
     const found = pin.target && items.find((item) => item.id === pin.target?.message);
@@ -618,6 +651,11 @@ function App(): JSX.Element {
     }
   };
 
+  /** A prompt from a button rather than the composer: sent as written. */
+  const sendPrompt = (text: string, withContext: boolean) => {
+    send({ type: "submit", text, includeContext: withContext && !!editorContext });
+  };
+
   const submit = (steer = false) => {
     const text = draft.trim();
     if (!text) return;
@@ -730,7 +768,6 @@ function App(): JSX.Element {
     onIndex: (full) => send({ type: "indexRefresh", full }),
     onCompact: () => send({ type: "compact" }),
     onReplan: () => send({ type: "replan" }),
-    onPlannerMode: (m) => send({ type: "setPlannerMode", mode: m }),
     onGoal: (action) => send({ type: "goal", action }),
     onTerminal: (request) => send({ type: "terminal", request }),
     onOpenConversation: openConversation,
@@ -738,6 +775,9 @@ function App(): JSX.Element {
     onNewConversation: startNewConversation,
     onSeeAllHistory: goHome,
     onSettings: openSettings,
+    onOpenChange: (path) => send({ type: "openChange", path }),
+    onRevertChange: (path) => send({ type: "revertChange", path }),
+    onReviewChanges: () => send({ type: "reviewChanges" }),
   };
 
   const history = mergeHistory(persisted.conversations, serverConvos);
@@ -760,6 +800,9 @@ function App(): JSX.Element {
       <div className="app" ref={rootRef} data-w={width}>
         <SettingsScreen
           settings={settings}
+          editor={editorSettings}
+          narrow={width !== "md"}
+          onSaveEditor={(updates) => send({ type: "updateEditorSettings", updates })}
           sessionStatus={state.session.status}
           prefs={prefs}
           models={models}
@@ -774,6 +817,11 @@ function App(): JSX.Element {
           onListModels={() => {
             setModels((m) => ({ ...m, status: "loading", error: undefined }));
             send({ type: "listModels" });
+          }}
+          jev={jev}
+          onTestJev={(baseUrl) => {
+            setJev({ status: "testing" });
+            send({ type: "testJev", baseUrl });
           }}
           mcp={mcp}
           onMcpAction={runMcpAction}
@@ -844,120 +892,109 @@ function App(): JSX.Element {
       ? [...blocks, { speaker: "agent", key: agentKey(lastBlock?.key ?? ""), items: [] }]
       : blocks;
 
+  const composerBar = (action?: React.ReactNode) => (
+    <ComposerBar
+      mode={mode}
+      planner={state.session.plannerMode}
+      permission={state.session.permissionMode}
+      model={settings?.model ?? ""}
+      models={models}
+      onMode={(m: AppMode) => updatePrefs({ mode: m })}
+      onPlanner={(m) => send({ type: "setPlannerMode", mode: m })}
+      onPermission={setPermission}
+      onModel={(m) => {
+        setSave({ status: "saving", errors: {} });
+        send({ type: "updateSettings", updates: { model: m } });
+      }}
+      onListModels={() => {
+        if (models.status === "loading") return;
+        setModels((m) => ({ ...m, status: "loading", error: undefined }));
+        send({ type: "listModels" });
+      }}
+      action={action}
+    />
+  );
+
+  const hasSelection = !!editorContext?.selection;
+  const emptyActions: EmptyAction[] = hasSelection
+    ? [
+        {
+          icon: "lightbulb",
+          label: t("Explain the selection"),
+          hint: ctxLabelOf(editorContext),
+          run: () => sendPrompt(t("Explain the selected code: what it does, why, and anything surprising in it."), true),
+        },
+        {
+          icon: "wand",
+          label: t("Refactor the selection"),
+          hint: t("Architectural improvements, planned before they are applied"),
+          run: () => {
+            updatePrefs({ mode: "refactor" });
+            send({ type: "analyzeRefactor" });
+          },
+        },
+      ]
+    : [
+        {
+          icon: "book",
+          label: t("Explain this workspace"),
+          hint: t("Its structure, main modules and how they fit together"),
+          run: () => sendPrompt(t("Explain this workspace: its structure, its main modules and how they fit together."), false),
+        },
+        {
+          icon: "git-compare",
+          label: t("Review uncommitted changes"),
+          hint: t("Bugs, risks and loose ends in the working tree"),
+          run: () => sendPrompt(t("Review the uncommitted changes in this workspace: bugs, risks and loose ends."), false),
+        },
+      ];
+  const banner: BannerState | null =
+    state.session.status === "DISCONNECTED"
+      ? { kind: "offline" }
+      : !connected
+        ? { kind: "connecting" }
+        : state.session.retry
+          ? { kind: "retry", attempt: state.session.retry, note: state.session.retryNote }
+          : null;
+  const showTerminal = () => setReveal({ section: "terminal", nonce: Date.now() });
+
   const ctxChip = editorContext && includeContext;
-  const ctxLabel = editorContext
-    ? editorContext.selection && editorContext.startLine && editorContext.endLine
-      ? `${editorContext.path}:${editorContext.startLine}-${editorContext.endLine}`
-      : editorContext.path
-    : "";
+  const ctxLabel = ctxLabelOf(editorContext);
 
   return (
     <div className="app" ref={rootRef} data-w={width}>
-      <div className="statusbar">
-        <div className="brand">
-          <button className="icon-btn back-btn" title={t("Back to the history")} onClick={goHome}>
-            <IconBack size={16} />
-          </button>
-          <span className={`dot ${busy ? "busy" : ""}`} />
-          Code-AI
-          {branch && (
-            <span className="branch-chip" title={tf("On the {0} branch", branch)}>
-              <IconBranch size={12} />
-              <span>{branch}</span>
-            </span>
-          )}
-          {busy && (
-            <span className="heartbeat" title={t("The agent is working")}>
-              <span className="spinner heartbeat-spin" />
-              <span className="heartbeat-label">{activityLabel(state.session)}</span>
-              <span className="heartbeat-clock">{formatElapsed(state.session.heartbeat)}</span>
-            </span>
-          )}
-        </div>
-        <div className="meta">
-          {updateButton}
-          <div className="topbar-actions">
-            {busy && (
-              <button
-                className="icon-btn danger"
-                title={t("Stop the agent")}
-                onPointerDown={ripple}
-                onClick={() => send({ type: "cancel" })}
-              >
-                <IconStop size={14} />
-              </button>
-            )}
-            <button
-              className="icon-btn"
-              title={t("Clear messages")}
-              onPointerDown={ripple}
-              onClick={clearMessages}
-            >
-              <IconBroom size={16} />
-            </button>
-            <button
-              className="icon-btn"
-              title={t("New conversation")}
-              onPointerDown={ripple}
-              onClick={startNewConversation}
-            >
-              <IconPlus size={16} />
-            </button>
-            <button
-              className="icon-btn"
-              title="Reiniciar Code-AI"
-              onPointerDown={ripple}
-              onClick={() => send({ type: "restartBridge" })}
-            >
-              <IconRefresh size={15} />
-            </button>
-            <button
-              className="icon-btn"
-              title={t("Settings")}
-              onPointerDown={ripple}
-              onClick={openSettings}
-            >
-              <IconSettings size={16} />
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div className="modebar">
-        <ModeSwitch mode={mode} onChange={(m: AppMode) => updatePrefs({ mode: m })} />
-        <label className="perm" title={t("Permission mode for commands and edits")}>
-          <span>perms</span>
-          <select
-            value={state.session.permissionMode}
-            onChange={(e) => setPermission(e.target.value as PermissionMode)}
-          >
-            <option value="ask">Ask</option>
-            <option value="auto">Auto</option>
-            <option value="bypass">Bypass</option>
-          </select>
-        </label>
-      </div>
-
-      <UsageBar usage={state.usage} onCompact={() => send({ type: "compact" })} />
+      <ChatHeader
+        title={history.find((h) => h.id === activeId)?.title || t("New conversation")}
+        branch={branch}
+        busy={busy}
+        pose={pose}
+        offline={!connected}
+        activity={`${activityLabel(state.session)} · ${formatElapsed(state.session.heartbeat)}`}
+        narrow={width !== "md"}
+        usage={state.usage}
+        update={updateButton}
+        railOpen={railDocked}
+        onBack={goHome}
+        onNew={startNewConversation}
+        onHistory={goHome}
+        onToggleRail={() => setRailDocked((d) => !d)}
+        onSettings={openSettings}
+        onCompact={() => send({ type: "compact" })}
+      />
 
       <div className="workbench">
         <div className="workarea">
           {mode === "agent" ? (
-            <>
+            <div className="chat-col">
               <div className="transcript" ref={scrollRef} onScroll={onScroll}>
                 <PromptPin target={pin.target} text={pinText} avatar={avatar.src} onGo={pin.go} />
                 <div className="transcript-inner">
                   {shownBlocks.length === 0 ? (
-                    <div className="empty">
-                      <div className="spark">
-                        <IconBrand size={30} />
-                      </div>
-                      <h2>Code-AI</h2>
-                      <div>
-                        {t("Ask anything about this workspace. Tools, plan and")}{" "}
-                        {t("approvals show up here.")}
-                      </div>
-                    </div>
+                    <EmptyState
+                      actions={emptyActions}
+                      recent={history.filter((h) => h.id !== activeId).slice(0, 3)}
+                      onOpen={openConversation}
+                    />
                   ) : (
                     shownBlocks.map((block, i) => (
                       <BlockView
@@ -968,7 +1005,9 @@ function App(): JSX.Element {
                         avatarPending={avatar.pending}
                         onAvatarSignIn={avatar.signIn && !avatar.src ? signInForPicture : undefined}
                         done={done && block === lastBlock}
+                        pose={i === shownBlocks.length - 1 && block.speaker === "agent" ? pose : null}
                         onOpenDiff={editorDiff ? openDiff : undefined}
+                        onTerminal={showTerminal}
                       >
                         {i === shownBlocks.length - 1 && block.speaker === "agent" ? live : null}
                       </BlockView>
@@ -977,9 +1016,8 @@ function App(): JSX.Element {
                 </div>
               </div>
 
-              {!editorDiff && <LiveCodePanel code={state.code} />}
-
               <div
+                ref={composerRef}
                 className={`composer-wrap ${dropping ? "dropping" : ""}`}
                 onDragOver={(e) => {
                   if (!Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
@@ -989,41 +1027,19 @@ function App(): JSX.Element {
                 onDragLeave={() => setDropping(false)}
                 onDrop={onComposerDrop}
               >
-                {ctxChip && (
-                  <div className="ctx-chip" title={t("Travels with the next message")}>
-                    <IconFile size={13} />
-                    <span className="ctx-label">{ctxLabel}</span>
-                    <span className="ctx-kind">
-                      {editorContext?.selection ? t("selection") : t("open file")}
-                    </span>
-                    <button
-                      className="ctx-remove"
-                      title={t("Do not include the editor context")}
-                      onClick={() => setIncludeContext(false)}
-                    >
-                      ×
-                    </button>
-                  </div>
+                {!atBottom && (
+                  <button
+                    className="jump-btn"
+                    title={t("Go to the latest message")}
+                    aria-label={t("Go to the latest message")}
+                    onClick={jumpToLatest}
+                  >
+                    <Codicon name="arrow-down" />
+                  </button>
                 )}
-                {images.length > 0 && (
-                  <div className="paste-strip">
-                    {images.map((image, i) => (
-                      <div key={i} className="paste-chip">
-                        <img
-                          src={`data:${image.media_type};base64,${image.data}`}
-                          alt={`Imagem colada ${i + 1}`}
-                        />
-                        <button
-                          aria-label="Remover imagem"
-                          onClick={() => setImages((prev) => prev.filter((_, j) => j !== i))}
-                        >
-                          ×
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                {!editorDiff && <LiveCodePanel code={state.code} />}
                 <div className="composer-stack">
+                  {banner && <Banner state={banner} onReconnect={() => send({ type: "restartBridge" })} />}
                   {mentionOpen && mention && (
                     <MentionMenu
                       paths={mention.paths}
@@ -1040,11 +1056,51 @@ function App(): JSX.Element {
                       onHover={setCmdIndex}
                     />
                   )}
-                  <div className="composer">
+                  <div className={`composer ${busy ? "busy" : ""} ${connected ? "" : "off"}`}>
+                    {(ctxChip || images.length > 0) && (
+                      <div className="composer-ctx">
+                        {ctxChip && (
+                          <span className="ctx-chip" title={t("Travels with the next message")}>
+                            <Codicon name="file" size={13} />
+                            <span className="ctx-label">{ctxLabel}</span>
+                            <span className="ctx-kind">
+                              {editorContext?.selection ? t("selection") : t("open file")}
+                            </span>
+                            <button
+                              className="ctx-remove"
+                              title={t("Do not include the editor context")}
+                              onClick={() => setIncludeContext(false)}
+                            >
+                              <Codicon name="close" size={12} />
+                            </button>
+                          </span>
+                        )}
+                        {images.map((image, i) => (
+                          <span key={i} className="paste-chip">
+                            <img
+                              src={`data:${image.media_type};base64,${image.data}`}
+                              alt={tf("Pasted image {0}", i + 1)}
+                            />
+                            <button
+                              aria-label={t("Remove image")}
+                              onClick={() => setImages((prev) => prev.filter((_, j) => j !== i))}
+                            >
+                              <Codicon name="close" size={11} />
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
                     <textarea
                       ref={textareaRef}
                       value={draft}
-                      placeholder={t("Message for Code-AI…  (/ for commands)")}
+                      placeholder={
+                        !connected
+                          ? t("Reconnect to send")
+                          : busy
+                            ? t("Reply or steer the agent…")
+                            : t("Ask, request a change, or type / for commands")
+                      }
                       rows={1}
                       onChange={(e) => {
                         setDraft(e.target.value);
@@ -1060,45 +1116,55 @@ function App(): JSX.Element {
                       onKeyDown={onComposerKey}
                       onPaste={onComposerPaste}
                     />
-                    {busy && !draft.trim() ? (
-                      <button
-                        className="send-btn stop"
-                        title="Cancelar"
-                        onPointerDown={ripple}
-                        onClick={() => send({ type: "cancel" })}
-                      >
-                        <IconStop />
-                      </button>
-                    ) : (
-                      <button
-                        className="send-btn"
-                        title={t("Send (Alt to steer the running turn)")}
-                        disabled={!draft.trim()}
-                        onPointerDown={ripple}
-                        onClick={(e) => submit(e.altKey)}
-                      >
-                        <IconSend size={15} />
-                      </button>
+                    {composerBar(
+                      busy && !draft.trim() ? (
+                        <button
+                          className="send-btn stop"
+                          title={t("Stop the agent")}
+                          aria-label={t("Stop the agent")}
+                          onPointerDown={ripple}
+                          onClick={() => send({ type: "cancel" })}
+                        >
+                          <Codicon name="debug-stop" />
+                        </button>
+                      ) : (
+                        <button
+                          className="send-btn"
+                          title={connected ? t("Send (Alt to steer the running turn)") : t("Not connected to the backend")}
+                          aria-label={t("Send")}
+                          disabled={!draft.trim() || !connected}
+                          onPointerDown={ripple}
+                          onClick={(e) => submit(e.altKey)}
+                        >
+                          <Codicon name="send" />
+                        </button>
+                      )
                     )}
                   </div>
                 </div>
                 <div className="hint">
                   {busy
                     ? t("Enter answers later · Alt+Enter steers this turn · Esc terminal")
-                    : "Enter envia · Shift+Enter quebra linha · / comandos · @ arquivos · Esc terminal"}
+                    : t("Enter sends · Shift+Enter new line · / commands · @ files · Esc terminal")}
                 </div>
               </div>
-            </>
+            </div>
           ) : mode === "refactor" ? (
-            <RefactorPanel
-              state={refactor}
-              autoRun={prefs.autoRunRefactor}
-              onAnalyze={() => send({ type: "analyzeRefactor" })}
-              onPlan={(id: string, improvements) => send({ type: "planRefactor", id, improvements })}
-              onApply={applyRefactor}
-            />
+            <div className="mode-col">
+              <RefactorPanel
+                state={refactor}
+                autoRun={prefs.autoRunRefactor}
+                onAnalyze={() => send({ type: "analyzeRefactor" })}
+                onPlan={(id: string, improvements) => send({ type: "planRefactor", id, improvements })}
+                onApply={applyRefactor}
+              />
+              <div className="mode-foot">{composerBar()}</div>
+            </div>
           ) : (
-            <ExplainPanel state={explain} />
+            <div className="mode-col">
+              <ExplainPanel state={explain} />
+              <div className="mode-foot">{composerBar()}</div>
+            </div>
           )}
         </div>
 
@@ -1112,13 +1178,24 @@ function App(): JSX.Element {
           branch={branch}
           history={history}
           activeId={activeId}
-          connected={state.session.status !== "STARTING"}
+          connected={connected}
+          waiting={!!state.approvals.pending}
+          changes={changes}
+          docked={railDocked}
+          onDockedChange={setRailDocked}
           actions={railActions}
         />
       </div>
 
     </div>
   );
+}
+
+function ctxLabelOf(context: EditorContext | null): string {
+  if (!context) return "";
+  return context.selection && context.startLine && context.endLine
+    ? `${context.path}:${context.startLine}-${context.endLine}`
+    : context.path;
 }
 
 const styleTag = document.createElement("style");

@@ -297,6 +297,32 @@ test("the reasoning block closes itself when the model answers", () => {
   assert.equal((last as { streaming?: boolean }).streaming, false);
 });
 
+test("the reasoning block closes as soon as the answer starts", () => {
+  // The bug this guards: the answer lands after the reasoning, so the block
+  // was no longer the last item when the response completed and stayed live -
+  // open, with its dot pulsing, under a finished answer.
+  const during = feed([
+    ["user.message", { text: "ola" }],
+    ["model.thinking.delta", { text: "The user said ola." }],
+    ["model.stream.delta", { text: "Olá!" }],
+  ]);
+  const thinking = during.transcript.items.find((item) => item.kind === "thinking");
+  assert.equal((thinking as { streaming?: boolean }).streaming, false);
+});
+
+test("a reasoning block left live is closed when the response completes", () => {
+  // Reasoning, then a tool call and its result: nothing streamed after it.
+  const state = feed([
+    ["model.thinking.delta", { text: "hmm" }],
+    ["tool.call.started", { tool_call_id: "t", name: "read_file" }],
+    ["model.response.completed", { finish_reason: "tool_calls" }],
+  ]);
+  const live = state.transcript.items.filter(
+    (item) => item.kind === "thinking" && (item as { streaming?: boolean }).streaming
+  );
+  assert.equal(live.length, 0);
+});
+
 test("settling the reasoning block twice is harmless", () => {
   const state = feed([
     ["model.thinking.delta", { text: "hmm" }],

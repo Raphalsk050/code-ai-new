@@ -11,7 +11,7 @@ export function AgentsPanel({ agents }: { agents: AgentsState }): JSX.Element {
   if (agents.rows.length === 0) {
     return (
       <div className="rail-empty">
-        No sub-agent in this turn. They show up here as soon as the agent delegates.
+        {t("No sub-agent in this turn. They show up here as soon as the agent delegates.")}
       </div>
     );
   }
@@ -31,7 +31,7 @@ export function AgentsPanel({ agents }: { agents: AgentsState }): JSX.Element {
       ))}
       {agents.circuitOpen.length > 0 && (
         <div className="plan-reject">
-          circuit open: {agents.circuitOpen.join(", ")} (repeated failures, dispatch paused)
+          {tf("circuit open: {0} (repeated failures, dispatch paused)", agents.circuitOpen.join(", "))}
         </div>
       )}
     </div>

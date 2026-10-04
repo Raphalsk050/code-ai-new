@@ -1,5 +1,6 @@
 // The settings panel, end to end: click Save, answer as the bridge answers,
-// read what the form is left holding.
+// read what the form is left holding. Save lives on the bar that appears while
+// something is unsaved; the header's status says Saved or Not saved.
 //
 // The bug these pin down: `updateSettings` answers with the configuration as
 // it stands, so a field the backend refused comes back carrying the value the
@@ -9,6 +10,10 @@
 import { settingsSnapshot } from "./harness.mjs";
 
 const SAVE = ".settings-save";
+const STATUS = ".settings-status";
+
+/** Settings live in categories; a field is on screen once its category is. */
+const goTo = (ui, category) => ui.page.click(`.settings-nav-item:has-text("${category}")`);
 
 /** Open the panel with a snapshot already delivered. */
 async function openPanel(ui, snapshot = settingsSnapshot()) {
@@ -26,7 +31,8 @@ const value = (ui, selector) => ui.page.inputValue(selector);
 const baseUrlField = '.settings-field:has(> .settings-field-label:text-is("Base URL")) input';
 const workspaceField = '.settings-field:has(> .settings-field-label:text-is("Workspace")) input';
 const modelField = ".model-input";
-const apiKeyField = '.settings-field input[type="password"]';
+// By its label: the decision layer's token is a password field too.
+const apiKeyField = '.settings-field:has(> .settings-field-label:text-is("API key")) input[type="password"]';
 
 export const tests = {
   async "the form posts every field, with the api key last"(ui, assert) {
@@ -67,9 +73,10 @@ export const tests = {
       "the saved model should stay in the form"
     );
     assert(
-      (await ui.page.textContent(SAVE)).trim() === "Saved",
+      (await ui.page.textContent(STATUS)).trim() === "Saved",
       "a clean save should say so"
     );
+    assert(!(await ui.page.$(SAVE)), "the save bar outlived the save");
     assert(
       (await ui.page.locator(".settings-errors").count()) === 0,
       "a clean save shows no error block"
@@ -119,8 +126,9 @@ export const tests = {
       },
     });
 
-    const label = (await ui.page.textContent(SAVE)).trim();
+    const label = (await ui.page.textContent(STATUS)).trim();
     assert(label !== "Saved", `a refused save must not claim "Saved", said ${label}`);
+    assert(await ui.page.$(SAVE), "the refused field is unsaved, so the bar stays");
     const shown = await ui.page.textContent('.settings-error[data-field="base_url"]');
     assert(
       shown.includes("api_key is required"),
@@ -164,12 +172,16 @@ export const tests = {
       },
     });
 
-    assert((await value(ui, apiKeyField)) === "", "a stored key should not sit in the form");
+    assert(!(await ui.page.$(apiKeyField)), "a stored key should not sit in the form");
+    assert(await ui.page.$(".key-stored"), "a stored key says it is stored");
+    await ui.page.click('.key-stored button:has-text("Change")');
+    assert((await value(ui, apiKeyField)) === "", "changing the key starts from an empty field");
   },
 
   async "editing after a refusal offers to save again"(ui, assert) {
     const snapshot = await openPanel(ui);
 
+    await goTo(ui, "Context");
     await ui.page.fill(workspaceField, "C:/projetos/outro");
     await ui.page.click(SAVE);
     await ui.fromHost({
@@ -203,13 +215,14 @@ export const tests = {
     const title = await ui.page.textContent(".settings-title");
     assert(title.trim() === "Configurações", `the title read ${title}`);
     assert(
-      (await ui.page.textContent(SAVE)).trim() === "Salvar",
-      "the save button stayed English with pt-BR selected"
+      (await ui.page.textContent(STATUS)).trim() === "Salvo",
+      "the status stayed English with pt-BR selected"
     );
   },
 
   async "the language field offers English and Portuguese"(ui, assert) {
     await openPanel(ui);
+    await goTo(ui, "Agent");
 
     const options = await ui.page.$$eval(".language-select option", (items) =>
       items.map((item) => ({ value: item.value, label: item.textContent.trim() }))
@@ -237,6 +250,7 @@ export const tests = {
     // A config edited by hand must not be silently rewritten to English the
     // first time the panel is opened.
     await openPanel(ui, settingsSnapshot({ language: "es-ES" }));
+    await goTo(ui, "Agent");
 
     const values = await ui.page.$$eval(".language-select option", (items) =>
       items.map((item) => item.value)
@@ -254,11 +268,13 @@ export const tests = {
   ) {
     const snapshot = await openPanel(ui);
     assert(
-      (await ui.page.textContent(SAVE)).trim() === "Save",
+      (await ui.page.textContent(STATUS)).trim() === "Saved",
       "the panel did not start in English"
     );
 
+    await goTo(ui, "Agent");
     await ui.page.selectOption(".language-select", "pt-BR");
+    assert((await ui.page.textContent(SAVE)).trim() === "Save", "an edit does not offer Save");
     await ui.page.click(SAVE);
 
     // What the panel puts on the wire is the language, not a label.
@@ -282,8 +298,8 @@ export const tests = {
       () => document.querySelector(".settings-title")?.textContent?.trim() === "Configurações"
     );
     assert(
-      (await ui.page.textContent(SAVE)).trim() === "Salvo",
-      `the save button read ${await ui.page.textContent(SAVE)}`
+      (await ui.page.textContent(STATUS)).trim() === "Salvo",
+      `the status read ${await ui.page.textContent(STATUS)}`
     );
     assert(
       (await ui.page.inputValue(".language-select")) === "pt-BR",
@@ -297,10 +313,11 @@ export const tests = {
   async "switching back to English repaints the panel in English"(ui, assert) {
     const snapshot = await openPanel(ui, settingsSnapshot({ language: "pt-BR" }));
     assert(
-      (await ui.page.textContent(SAVE)).trim() === "Salvar",
+      (await ui.page.textContent(STATUS)).trim() === "Salvo",
       "the panel did not start in Portuguese"
     );
 
+    await goTo(ui, "Agente");
     await ui.page.selectOption(".language-select", "en");
     await ui.page.click(SAVE);
     await ui.fromHost({
@@ -316,12 +333,13 @@ export const tests = {
     await ui.page.waitForFunction(
       () => document.querySelector(".settings-title")?.textContent?.trim() === "Settings"
     );
-    assert((await ui.page.textContent(SAVE)).trim() === "Saved", "the button stayed Portuguese");
+    assert((await ui.page.textContent(STATUS)).trim() === "Saved", "the status stayed Portuguese");
   },
 
   async "a refused language leaves the panel in the language it still has"(ui, assert) {
     const snapshot = await openPanel(ui);
 
+    await goTo(ui, "Agent");
     await ui.page.selectOption(".language-select", "pt-BR");
     await ui.page.click(SAVE);
     // The backend refused it, so its snapshot still says English.

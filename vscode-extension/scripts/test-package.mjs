@@ -184,6 +184,8 @@ test("verify rejects a package with no backend in it", () => {
     ["extension/dist/extension.js", Buffer.from("//")],
     ["extension/dist/webview.js", Buffer.from("//")],
     ["extension/dist/flow.js", Buffer.from("//")],
+    ["extension/dist/codicons/codicon.css", Buffer.from("/**/")],
+    ["extension/dist/codicons/codicon.ttf", Buffer.from("ttf")],
   ]);
   const { problems } = verify(file, "linux-x64");
   assert.equal(problems.length, 1);
@@ -198,6 +200,8 @@ test("verify rejects the other platform's binary and a non-executable one", () =
     ["extension/dist/extension.js", Buffer.from("//")],
     ["extension/dist/webview.js", Buffer.from("//")],
     ["extension/dist/flow.js", Buffer.from("//")],
+    ["extension/dist/codicons/codicon.css", Buffer.from("/**/")],
+    ["extension/dist/codicons/codicon.ttf", Buffer.from("ttf")],
     ["extension/bin/code-ai", big, 0o644],
     ["extension/bin/code-ai.exe", big],
   ]);
@@ -296,6 +300,8 @@ test("verify wants the macOS runtime whole, and in one archive", () => {
     ["extension/dist/extension.js", Buffer.from("//")],
     ["extension/dist/webview.js", Buffer.from("//")],
     ["extension/dist/flow.js", Buffer.from("//")],
+    ["extension/dist/codicons/codicon.css", Buffer.from("/**/")],
+    ["extension/dist/codicons/codicon.ttf", Buffer.from("ttf")],
     ["extension/bin/code-ai", Buffer.from("#!/bin/sh\n"), 0o755],
     ["extension/bin/runtime/bin/python3.12", Buffer.alloc(1024), 0o644],
   ]);

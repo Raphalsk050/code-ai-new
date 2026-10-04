@@ -1,4 +1,5 @@
 import * as React from "react";
+import { t } from "./i18n";
 
 import type { ExplainTarget } from "../src/protocol";
 import { IconBook, IconChevron } from "./icons";
@@ -48,7 +49,7 @@ export function ExplainPanel({ state }: { state: ExplainViewState }): JSX.Elemen
             <IconChevron size={14} className={`explain-chevron ${collapsed ? "" : "open"}`} />
           </button>
           <IconBook size={16} />
-          <span className="explain-title">Explanation</span>
+          <span className="explain-title">{t("Explanation")}</span>
           {status === "analyzing" && <span className="spinner explain-spin" />}
         </div>
 
@@ -58,12 +59,12 @@ export function ExplainPanel({ state }: { state: ExplainViewState }): JSX.Elemen
           <div className="explain-body">
             {idle && (
               <div className="explain-empty">
-                Select code in the editor to see a detailed explanation here — and inline on hover.
+                {t("Select code in the editor to see a detailed explanation here, and inline on hover.")}
               </div>
             )}
             {status === "analyzing" && !state.markdown && (
               <div className="explain-status">
-                <span className="spinner" /> Reading the selection…
+                <span className="spinner" /> {t("Reading the selection…")}
               </div>
             )}
             {status === "error" && <div className="explain-error">{state.error}</div>}

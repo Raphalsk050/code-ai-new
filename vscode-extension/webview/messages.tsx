@@ -3,30 +3,22 @@ import * as React from "react";
 import { t, tf } from "./i18n";
 
 import type { Block } from "./blocks";
-import {
-  IconAgents,
-  IconBrain,
-  IconBrand,
-  IconCheck,
-  IconChevron,
-  IconFile,
-  IconGlobe,
-  IconList,
-  IconPencil,
-  IconSearch,
-  IconTerminal,
-  IconTool,
-  IconUser,
-  IconWarn,
-  IconX,
-} from "./icons";
+import { Codicon } from "./codicon";
+import { AgentAvatar } from "./agent-avatar";
+import type { AvatarPose } from "./avatar-pose";
+import { IconUser } from "./icons";
 import { Markdown } from "./markdown";
 import type { SessionState } from "./store/session";
-import { Item, ToolStatus, workingLabel } from "./store/transcript";
-import { ToolKind, toolKind } from "./tool-target";
+import { Item, workingLabel } from "./store/transcript";
+import { DIFF_TOOLS, foldTools, ToolGroup, ToolRow, TurnFooter } from "./tool-row";
+import { toolKind } from "./tool-target";
 
-/** The tools whose change the editor can show as a diff. */
-const DIFF_TOOLS = new Set(["write_file", "edit_code"]);
+interface ItemActions {
+  /** Set when edits are reviewed in the editor's diff view. */
+  onOpenDiff?: (path: string) => void;
+  /** Brings up the terminal, offered on a command that failed. */
+  onTerminal?: () => void;
+}
 
 /**
  * One box per run of messages from the same side: the user's hug the right edge
@@ -40,9 +32,11 @@ export function BlockView({
   avatarPending,
   onAvatarSignIn,
   done,
+  pose = null,
   onOpenDiff,
+  onTerminal,
   children,
-}: {
+}: ItemActions & {
   block: Block;
   /** The user's picture, as a data: URI; the icon stands in without one. */
   avatar?: string;
@@ -54,7 +48,7 @@ export function BlockView({
   onAvatarSignIn?: () => void;
   /** The turn is over and this box holds its answer: it turns green. */
   done?: boolean;
-  onOpenDiff?: (path: string) => void;
+  pose?: AvatarPose | null;
   children?: React.ReactNode;
 }): JSX.Element {
   const user = block.speaker === "user";
@@ -74,16 +68,30 @@ export function BlockView({
             onSignIn={onAvatarSignIn}
           />
         ) : (
-          <span className="avatar avatar-assistant">
-            <IconBrand size={14} />
-          </span>
+          pose ? (
+            <span className="avatar avatar-live">
+              <AgentAvatar pose={pose} size={28} fx />
+            </span>
+          ) : (
+            <span className="avatar avatar-assistant">
+              <AgentAvatar pose={null} size={14} />
+            </span>
+          )
         )}
         <span className="block-name">{user ? t("You") : "Code-AI"}</span>
       </div>
       <div className="block-body">
-        {block.items.map((item) => (
-          <ItemView key={item.id} item={item} onOpenDiff={onOpenDiff} />
-        ))}
+        {foldTools(block.items).map((entry) =>
+          "group" in entry ? (
+            <ToolGroup key={entry.group[0].id} items={entry.group}>
+              {entry.group.map((item) => (
+                <ItemView key={item.id} item={item} onOpenDiff={onOpenDiff} onTerminal={onTerminal} />
+              ))}
+            </ToolGroup>
+          ) : (
+            <ItemView key={entry.item.id} item={entry.item} onOpenDiff={onOpenDiff} onTerminal={onTerminal} />
+          )
+        )}
         {children}
       </div>
     </section>
@@ -108,8 +116,11 @@ export function UserAvatar({
   onSignIn?: () => void;
   size?: number;
 }): JSX.Element {
-  const [broken, setBroken] = React.useState(false);
-  React.useEffect(() => setBroken(false), [src]);
+  // Keyed by the source that failed: an error that lands before an effect
+  // could reset a flag would otherwise leave a new picture marked broken, or
+  // a broken one shown as a blank image.
+  const [brokenSrc, setBrokenSrc] = React.useState("");
+  const broken = !!src && brokenSrc === src;
   const style = { width: size, height: size };
   if (src && !broken) {
     return (
@@ -118,7 +129,7 @@ export function UserAvatar({
         style={style}
         src={src}
         alt=""
-        onError={() => setBroken(true)}
+        onError={() => setBrokenSrc(src)}
       />
     );
   }
@@ -157,11 +168,8 @@ export function UserAvatar({
 export function ItemView({
   item,
   onOpenDiff,
-}: {
-  item: Item;
-  /** Set when edits are reviewed in the editor's diff view. */
-  onOpenDiff?: (path: string) => void;
-}): JSX.Element | null {
+  onTerminal,
+}: ItemActions & { item: Item }): JSX.Element | null {
   switch (item.kind) {
     case "user":
       // Each send keeps its own line: the pin finds it, and a click lands on it.
@@ -183,19 +191,19 @@ export function ItemView({
     case "tool":
       return (
         <ToolRow
-          name={item.name}
-          target={item.target}
-          status={item.status}
-          detail={item.detail}
+          item={item}
           onOpen={
             onOpenDiff && item.path && DIFF_TOOLS.has(item.name)
               ? () => onOpenDiff(item.path)
               : undefined
           }
+          onTerminal={onTerminal && toolKind(item.name) === "run" ? onTerminal : undefined}
         />
       );
     case "notice":
       return <NoticeRow level={item.level} text={item.text} />;
+    case "turn":
+      return <TurnFooter item={item} onOpen={onOpenDiff} />;
     default:
       return null;
   }
@@ -224,10 +232,10 @@ function ThinkingRow({ text, streaming }: { text: string; streaming?: boolean })
   return (
     <div className={`thinking ${open ? "open" : ""} ${streaming ? "live" : ""}`}>
       <button className="thinking-head" onClick={() => setChoice(!open)}>
-        <IconChevron size={13} className="chev" />
-        <IconBrain size={13} />
+        <Codicon name="chevron-right" size={14} className="chev" />
+        <Codicon name="lightbulb" size={14} />
         <span>{t("Reasoning")}</span>
-        {streaming && <span className="thinking-live" aria-label="em andamento" />}
+        {streaming && <span className="thinking-live" aria-label={t("in progress")} />}
       </button>
       {open && (
         <div
@@ -245,71 +253,9 @@ function ThinkingRow({ text, streaming }: { text: string; streaming?: boolean })
   );
 }
 
-const STATUS_LABEL: Record<ToolStatus, string> = {
-  running: "running",
-  done: "ok",
-  failed: "failed",
-};
-
-const KIND_ICON: Record<ToolKind, (props: { size?: number; className?: string }) => JSX.Element> = {
-  read: IconFile,
-  write: IconPencil,
-  run: IconTerminal,
-  search: IconSearch,
-  web: IconGlobe,
-  agent: IconAgents,
-  plan: IconList,
-  tool: IconTool,
-};
-
-function ToolRow(props: {
-  name: string;
-  target: string;
-  status: ToolStatus;
-  detail: string;
-  onOpen?: () => void;
-}) {
-  const { name, target, status } = props;
-  const [open, setOpen] = React.useState(false);
-  // A write reports its path, which the target already shows.
-  const detail = props.detail === target ? "" : props.detail;
-  const long = detail.length > 80 || detail.includes("\n");
-  const Kind = KIND_ICON[toolKind(name)];
-  return (
-    <div className={`tool tool-${status}`}>
-      <div className="tool-head" onClick={() => long && setOpen((v) => !v)} style={{ cursor: long ? "pointer" : "default" }}>
-        <span className="tool-icon">
-          {status === "running" ? <span className="spinner" /> : status === "done" ? <IconCheck /> : <IconX />}
-        </span>
-        <Kind size={13} className="tool-kind" />
-        <span className="tool-name">{name}</span>
-        <span className={`tool-badge badge-${status}`}>{t(STATUS_LABEL[status])}</span>
-        {long && <IconChevron size={13} className={`chev ${open ? "chev-open" : ""}`} />}
-      </div>
-      {/* Its own row, so the file or command keeps the card's full width
-          instead of being squeezed to a few letters in a narrow panel. */}
-      {(target || (detail && !long)) && (
-        <div className="tool-sub">
-          {target &&
-            (props.onOpen ? (
-              <button className="tool-target tool-target-link" title={t("Show the change in the editor")} onClick={props.onOpen}>
-                {target}
-              </button>
-            ) : (
-              <span className="tool-target" title={target}>
-                {target}
-              </span>
-            ))}
-          {detail && !long && <span className="tool-detail-inline">{detail}</span>}
-        </div>
-      )}
-      {long && open && <pre className="tool-detail-block">{detail}</pre>}
-    </div>
-  );
-}
-
 function NoticeRow({ level, text }: { level: string; text: string }) {
-  const icon = level === "error" || level === "warning" ? <IconWarn size={13} /> : null;
+  const icon =
+    level === "error" ? <Codicon name="error" size={14} /> : level === "warning" ? <Codicon name="warning" size={14} /> : null;
   return (
     <div className={`notice notice-${level}`}>
       {icon}

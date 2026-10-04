@@ -68,10 +68,10 @@ export function QuestionsCard({
   return (
     <div className="qcard" onKeyDown={onKey} tabIndex={-1}>
       <div className="qcard-head">
-        <span style={{ flex: 1 }}>{question.header || "O agente precisa decidir"}</span>
+        <span style={{ flex: 1 }}>{question.header || t("The agent needs a decision")}</span>
         {questions.length > 1 && (
           <span className="rail-section-note">
-            {index + 1} de {questions.length}
+            {tf("{0} of {1}", index + 1, questions.length)}
           </span>
         )}
       </div>
@@ -122,9 +122,9 @@ export function QuestionsCard({
 
         <div className="qcard-foot">
           <span className="hint">
-            {question.options.length ? "1-9 escolhe · " : ""}
-            {question.multiSelect ? "várias opções · " : ""}
-            Cmd/Ctrl+Enter envia
+            {question.options.length ? `${t("1-9 picks")} · ` : ""}
+            {question.multiSelect ? `${t("several options")} · ` : ""}
+            {t("Cmd/Ctrl+Enter sends")}
           </span>
           {index > 0 && (
             <button className="panel-btn" onClick={() => setIndex((i) => i - 1)}>

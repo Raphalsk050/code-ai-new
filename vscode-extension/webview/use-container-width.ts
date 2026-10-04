@@ -8,8 +8,8 @@ export type WidthClass = "xs" | "sm" | "md";
  * in the UI keys off this instead of a media query.
  *
  *   xs  < 380  icon strip, drawer covers the chat
- *   sm  < 520  icon strip, drawer overlays at 280px
- *   md  >=520  rail docks as a column
+ *   sm  < 640  icon strip, drawer overlays at 280px
+ *   md  >=640  rail docks as a column
  */
 export function useContainerWidth<T extends HTMLElement>(): [React.RefObject<T>, WidthClass] {
   const ref = React.useRef<T>(null);
@@ -18,7 +18,7 @@ export function useContainerWidth<T extends HTMLElement>(): [React.RefObject<T>,
   React.useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const classify = (w: number): WidthClass => (w < 380 ? "xs" : w < 520 ? "sm" : "md");
+    const classify = (w: number): WidthClass => (w < 380 ? "xs" : w < 640 ? "sm" : "md");
     setBand(classify(el.getBoundingClientRect().width));
     if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver((entries) => {

@@ -5,7 +5,7 @@
 // so a spec drives the panel exactly as the extension does - no VS Code, no
 // bridge, no Python.
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,6 +53,7 @@ const PAGE = `<!DOCTYPE html>
         setState: (state) => { window.__state = state; },
       });
     </script>
+    <link rel="stylesheet" href="./codicons/codicon.css" />
     <script src="./webview.js"></script>
   </body>
 </html>`;
@@ -74,6 +75,10 @@ export async function buildWebview(entry = "webview/index.tsx", bundleName = "we
     target: "es2021",
   });
   writeFileSync(join(out, "index.html"), PAGE.replace("./webview.js", `./${bundleName}`), "utf8");
+  mkdirSync(join(out, "codicons"), { recursive: true });
+  for (const file of ["codicon.css", "codicon.ttf"]) {
+    copyFileSync(join(root, "node_modules/@vscode/codicons/dist", file), join(out, "codicons", file));
+  }
   return { dir: out, dispose: () => rmSync(out, { recursive: true, force: true }) };
 }
 
