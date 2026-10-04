@@ -49,6 +49,8 @@ import { MentionMenu } from "./mention-menu";
 import { applyMention, mentionPrefix, rankPaths } from "./mentions";
 import { agentKey, Block, endsOnAnswer, groupBlocks } from "./blocks";
 import { activityLabel, BlockView, formatElapsed, TypingIndicator } from "./messages";
+import { useSteadyPose } from "./agent-avatar";
+import { avatarPose } from "./avatar-pose";
 import { PromptPin, usePromptPin } from "./prompt-pin";
 import { ripple } from "./motion";
 import { QuestionsCard } from "./questions-card";
@@ -388,6 +390,7 @@ function App(): JSX.Element {
   const items = state.transcript.items;
   const lastItem = items[items.length - 1];
   const showTyping = busy && lastItem?.kind !== "assistant";
+  const pose = useSteadyPose(busy ? avatarPose(state.session, lastItem) : "idle");
   const blocks = React.useMemo(() => groupBlocks(items), [items]);
   const pinText = React.useMemo(() => {
     const found = pin.target && items.find((item) => item.id === pin.target?.message);
@@ -956,6 +959,7 @@ function App(): JSX.Element {
         title={history.find((h) => h.id === activeId)?.title || t("New conversation")}
         branch={branch}
         busy={busy}
+        pose={pose}
         offline={!connected}
         activity={`${activityLabel(state.session)} · ${formatElapsed(state.session.heartbeat)}`}
         narrow={width !== "md"}
@@ -993,6 +997,7 @@ function App(): JSX.Element {
                         avatarPending={avatar.pending}
                         onAvatarSignIn={avatar.signIn && !avatar.src ? signInForPicture : undefined}
                         done={done && block === lastBlock}
+                        pose={i === shownBlocks.length - 1 && block.speaker === "agent" ? pose : null}
                         onOpenDiff={editorDiff ? openDiff : undefined}
                         onTerminal={showTerminal}
                       >

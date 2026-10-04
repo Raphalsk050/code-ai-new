@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 36,
-  "patch": 2,
-  "build": 81,
+  "patch": 3,
+  "build": 82,
   "updated": "2026-10-04",
-  "note": "Static glyph in place of the animated avatar"
+  "note": "Animated agent avatar"
 }
