@@ -288,7 +288,7 @@ export interface ServerConversation {
 
 /** A snapshot of what the user is looking at in the editor, attached to a turn. */
 export interface EditorContext {
-  /** Workspace-relative path of the active file, e.g. `src/app.ts`. */
+  /** Workspace-relative path of the active file, e.g. `src/app.ts`; "" when no file has the focus. */
   path: string;
   /** VSCode language id, e.g. `typescript`. */
   language: string;
@@ -297,6 +297,8 @@ export interface EditorContext {
   /** 1-based inclusive line range of the selection. */
   startLine?: number;
   endLine?: number;
+  /** The other files open in the editor, workspace-relative, in tab order. */
+  openFiles?: string[];
 }
 
 /** Where in the editor an explanation applies, mirrored into the side panel. */

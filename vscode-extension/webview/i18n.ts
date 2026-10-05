@@ -467,6 +467,13 @@ const PT: Record<string, string> = {
     "Passos de ferramenta após um resultado limpo pensam neste nível; none mantém o esforço de raciocínio.",
   "Tools": "Ferramentas",
   "Travels with the next message": "Vai junto com a próxima mensagem",
+  "Also open in the editor:": "Também abertos no editor:",
+  "Open in the editor:": "Abertos no editor:",
+  "and {0} more": "e mais {0}",
+  "1 open file": "1 arquivo aberto",
+  "{0} open files": "{0} arquivos abertos",
+  "+1 open": "+1 aberto",
+  "+{0} open": "+{0} abertos",
   "Try again": "Tentar de novo",
   "Waiting for your answer.": "Esperando sua resposta.",
   "What the TUI edits in /doctor: tools, sub-agents and sampling.":

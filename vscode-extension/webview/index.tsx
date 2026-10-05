@@ -969,6 +969,7 @@ function App(): JSX.Element {
 
   const ctxChip = editorContext && includeContext;
   const ctxLabel = ctxLabelOf(editorContext);
+  const otherOpen = editorContext?.openFiles?.length ?? 0;
 
   return (
     <div className="app" ref={rootRef} data-w={width}>
@@ -1068,12 +1069,19 @@ function App(): JSX.Element {
                     {(ctxChip || images.length > 0) && (
                       <div className="composer-ctx">
                         {ctxChip && (
-                          <span className="ctx-chip" title={t("Travels with the next message")}>
-                            <Codicon name="file" size={13} />
+                          <span className="ctx-chip" title={ctxTitleOf(editorContext)}>
+                            <Codicon name={editorContext?.path ? "file" : "files"} size={13} />
                             <span className="ctx-label">{ctxLabel}</span>
-                            <span className="ctx-kind">
-                              {editorContext?.selection ? t("selection") : t("open file")}
-                            </span>
+                            {editorContext?.path ? (
+                              <span className="ctx-kind">
+                                {editorContext.selection ? t("selection") : t("open file")}
+                              </span>
+                            ) : null}
+                            {editorContext?.path && otherOpen > 0 ? (
+                              <span className="ctx-more">
+                                {otherOpen === 1 ? t("+1 open") : tf("+{0} open", otherOpen)}
+                              </span>
+                            ) : null}
                             <button
                               className="ctx-remove"
                               title={t("Do not include the editor context")}
@@ -1199,11 +1207,34 @@ function App(): JSX.Element {
   );
 }
 
+/** How many of the other open files the chip's tooltip names. */
+const CTX_TOOLTIP_FILES = 12;
+
 function ctxLabelOf(context: EditorContext | null): string {
   if (!context) return "";
+  if (!context.path) {
+    // No file has the focus: the open ones are the context.
+    const count = context.openFiles?.length ?? 0;
+    return count === 1 ? t("1 open file") : tf("{0} open files", count);
+  }
   return context.selection && context.startLine && context.endLine
     ? `${context.path}:${context.startLine}-${context.endLine}`
     : context.path;
+}
+
+/** The chip's tooltip: that the context travels, and which open files travel with it. */
+function ctxTitleOf(context: EditorContext | null): string {
+  const open = context?.openFiles ?? [];
+  if (open.length === 0) return t("Travels with the next message");
+  const named = open.slice(0, CTX_TOOLTIP_FILES);
+  const left = open.length - named.length;
+  return [
+    t("Travels with the next message"),
+    "",
+    context?.path ? t("Also open in the editor:") : t("Open in the editor:"),
+    ...named,
+    ...(left > 0 ? [tf("and {0} more", left)] : []),
+  ].join("\n");
 }
 
 const styleTag = document.createElement("style");

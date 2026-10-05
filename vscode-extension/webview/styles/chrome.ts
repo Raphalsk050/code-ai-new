@@ -134,6 +134,11 @@ button.context-meter:hover { background: var(--hover); }
 }
 .ctx-chip .ctx-label { font-family: var(--font-mono); color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ctx-chip .ctx-kind { font-size: var(--fs-label); color: var(--fg-muted); }
+/* The other open files that travel with it: a count, named on hover. */
+.ctx-chip .ctx-more {
+  flex: none; height: 16px; padding: 0 6px; border-radius: var(--radius-pill); background: var(--hover);
+  font-size: var(--fs-label); line-height: 16px; color: var(--fg); white-space: nowrap; font-variant-numeric: tabular-nums;
+}
 .ctx-remove {
   display: inline-grid; place-items: center; width: 18px; height: 18px; padding: 0;
   border: none; border-radius: 50%; background: transparent; color: var(--fg-muted); cursor: pointer;

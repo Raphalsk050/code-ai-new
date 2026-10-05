@@ -98,6 +98,41 @@ export const tests = {
     assert(!(await ui.page.$(".chip-pop")), "Escape did not close the menu");
   },
 
+  async "the context chip counts the other open files and names them on hover"(ui, assert) {
+    await openChat(ui);
+    await ui.fromHost({
+      type: "editorContext",
+      context: { path: "src/chunk.cpp", language: "cpp", openFiles: ["src/mesh.cpp", "README.md", "CMakeLists.txt"] },
+    });
+    const chip = await ui.page.waitForSelector(".ctx-chip");
+    const text = (selector) => ui.page.textContent(`.ctx-chip ${selector}`);
+    assert((await text(".ctx-label")) === "src/chunk.cpp", `the chip names ${await text(".ctx-label")}`);
+    assert((await text(".ctx-kind")) === "open file", `the chip calls it ${await text(".ctx-kind")}`);
+    assert((await text(".ctx-more")) === "+3 open", `the chip counts ${await text(".ctx-more")}`);
+    const title = await chip.getAttribute("title");
+    for (const file of ["src/mesh.cpp", "README.md", "CMakeLists.txt"]) {
+      assert(title.includes(file), `the tooltip does not name ${file}: ${title}`);
+    }
+    await ui.shot("chrome-context-open-files");
+
+    // One file alone is the chip as it always was.
+    await ui.fromHost({ type: "editorContext", context: { path: "src/chunk.cpp", language: "cpp" } });
+    assert(!(await ui.page.$(".ctx-chip .ctx-more")), "a file alone still shows a count");
+
+    // No file has the focus (a graph, a preview): the open ones are still context.
+    await ui.fromHost({
+      type: "editorContext",
+      context: { path: "", language: "", openFiles: ["graph.flow.json", "src/mesh.cpp"] },
+    });
+    assert((await text(".ctx-label")) === "2 open files", `without a focused file the chip says ${await text(".ctx-label")}`);
+    assert(!(await ui.page.$(".ctx-chip .ctx-kind")), "it calls a list of files one open file");
+    await ui.clearToHost();
+    await ui.page.fill(".composer textarea", "which of these draws the mesh?");
+    await ui.page.click(".composer-end .send-btn");
+    const sent = await ui.toHost("submit");
+    assert(sent.length === 1 && sent[0].includeContext === true, `the open files did not travel: ${JSON.stringify(sent)}`);
+  },
+
   async "while the agent works the field wears the moving ring and the button stops"(ui, assert) {
     await openChat(ui);
     await busy(ui);

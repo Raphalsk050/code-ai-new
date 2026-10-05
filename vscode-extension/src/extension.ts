@@ -5,6 +5,7 @@ import * as vscode from "vscode";
 
 import type { BridgeClient } from "./bridge-client";
 import { EditDiffs } from "./edit-diff";
+import { formatEditorContext, otherOpenFiles } from "./editor-context";
 import { SessionChanges } from "./session-changes";
 import { initialAgentStatus, reduceAgentStatus, statusView } from "./agent-status";
 import {
@@ -985,6 +986,8 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       void this.webview?.postMessage({ type: "editorContext", context: currentEditorContext() });
     const editorSubs = [
       vscode.window.onDidChangeActiveTextEditor(pushContext),
+      // A tab opened, closed or moved: the list of open files changed.
+      vscode.window.tabGroups.onDidChangeTabs(pushContext),
       vscode.window.onDidChangeTextEditorSelection((e) => {
         if (e.textEditor !== vscode.window.activeTextEditor) return;
         pushContext();
@@ -1325,13 +1328,37 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 
 }
 
-/** Build an {@link EditorContext} from the active editor, or `null` if none. */
+/** The files open in editor tabs, workspace-relative, in tab order. */
+function openFilePaths(): string[] {
+  const paths: string[] = [];
+  for (const group of vscode.window.tabGroups.all) {
+    for (const tab of group.tabs) {
+      const input = tab.input;
+      // A file shown as text, in a custom editor (a graph) or as a notebook.
+      // Diffs are left out: the agent's own show up there as it works.
+      const uri =
+        input instanceof vscode.TabInputText ||
+        input instanceof vscode.TabInputCustom ||
+        input instanceof vscode.TabInputNotebook
+          ? input.uri
+          : undefined;
+      if (uri?.scheme === "file") paths.push(vscode.workspace.asRelativePath(uri, false));
+    }
+  }
+  return paths;
+}
+
+/**
+ * Build an {@link EditorContext} from the editor: the active file and its
+ * selection, and the other files open beside it. `null` when nothing is open.
+ */
 function currentEditorContext(): EditorContext | null {
   const editor = vscode.window.activeTextEditor;
-  if (!editor) return null;
-  const doc = editor.document;
-  if (doc.uri.scheme !== "file") return null; // skip output/diff/webview docs
-  const path = vscode.workspace.asRelativePath(doc.uri, false);
+  // Output, diff and webview documents are not files the user is working on.
+  const doc = editor?.document.uri.scheme === "file" ? editor.document : undefined;
+  const path = doc ? vscode.workspace.asRelativePath(doc.uri, false) : "";
+  const openFiles = otherOpenFiles(openFilePaths(), path || undefined);
+  if (!doc || !editor) return openFiles.length ? { path: "", language: "", openFiles } : null;
   const sel = editor.selection;
   const context: EditorContext = { path, language: doc.languageId };
   if (sel && !sel.isEmpty) {
@@ -1339,6 +1366,7 @@ function currentEditorContext(): EditorContext | null {
     context.startLine = sel.start.line + 1;
     context.endLine = sel.end.line + 1;
   }
+  if (openFiles.length) context.openFiles = openFiles;
   return context;
 }
 
@@ -1349,21 +1377,6 @@ async function openMarkdownPreview(sourcePath: string, markdown: string): Promis
   await fs.promises.writeFile(file, markdown, "utf8");
   const uri = vscode.Uri.file(file);
   await vscode.commands.executeCommand("markdown.showPreview", uri);
-}
-
-/** Render an {@link EditorContext} into the preamble the model receives. */
-function formatEditorContext(context: EditorContext | null): string {
-  if (!context) return "";
-  const head = `[Editor context] Active file: ${context.path} (${context.language})`;
-  if (context.selection && context.startLine && context.endLine) {
-    return (
-      `${head}\nUser has selected lines ${context.startLine}-${context.endLine}:\n` +
-      "```" +
-      `${context.language}\n${context.selection}\n` +
-      "```"
-    );
-  }
-  return `${head}\nThe user currently has this file open (no selection).`;
 }
 
 function renderHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
