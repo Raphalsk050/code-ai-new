@@ -1,5 +1,6 @@
 import groovy.json.JsonSlurper
 import java.util.Properties
+import org.jetbrains.intellij.platform.gradle.tasks.PrepareSandboxTask
 import org.jetbrains.kotlin.gradle.dsl.KotlinVersion
 
 plugins {
@@ -26,16 +27,102 @@ val localProperties = Properties().apply {
     if (file.isFile) file.inputStream().use(::load)
 }
 
-fun setting(name: String, env: String): String? =
+/** What the first of those places to name a setting says, even when it says nothing. */
+fun answer(name: String, env: String): String? =
     providers.gradleProperty(name).orNull
         ?: localProperties.getProperty(name)
         ?: providers.environmentVariable(env).orNull
+
+/** A setting, or null: left out, or given empty to switch off what a file sets (`-PideDir=`). */
+fun setting(name: String, env: String): String? = answer(name, env)?.trim()?.takeIf { it.isNotEmpty() }
 
 /** An installed IDE to build against, instead of downloading one. */
 val ideDir = setting("ideDir", "CODE_AI_IDE_DIR")
 
 /** A folder holding the frozen backend (`code-ai`, or `code-ai.exe`) to ship inside the plugin. */
 val backendDir = setting("backendDir", "CODE_AI_BACKEND_DIR")
+
+// --- the IDE -----------------------------------------------------------------
+
+/** A file of the installed IDE, at whichever of the places a platform keeps it. */
+fun ideFile(vararg places: String): File? = ideDir?.let { dir -> places.map { File(dir, it) }.firstOrNull(File::isFile) }
+
+/** Read while the build is configured, and so that the build notices when it changes. */
+fun textOf(file: File): String = providers.fileContents(layout.projectDirectory.file(file.absolutePath)).asText.get()
+
+/** What the installed IDE says of itself, in its product-info.json. */
+val installedIde: Map<String, Any?>? = ideDir?.let { dir ->
+    val file = ideFile("product-info.json", "Resources/product-info.json", "Contents/Resources/product-info.json")
+        ?: error("ideDir is not an IDE, there is no product-info.json in it: $dir")
+    @Suppress("UNCHECKED_CAST")
+    JsonSlurper().parseText(textOf(file)) as Map<String, Any?>
+}
+
+/** The IntelliJ Platform release the plugin is built against, as its builds are numbered: 253 is 2025.3. */
+val platformBranch: Int =
+    if (installedIde != null) {
+        installedIde["buildNumber"]?.toString()?.substringBefore('.')?.toIntOrNull()
+            ?: error("ideDir names an IDE whose product-info.json has no build number: $ideDir")
+    } else {
+        val (year, release) = providers.gradleProperty("platformVersion").get().split('.')
+        year.toInt() % 100 * 10 + release.toInt()
+    }
+
+// --- the embedded browser ----------------------------------------------------
+// The panel is drawn in the IDE's embedded browser (JCEF), and where an IDE
+// keeps that browser changed with 2026.1.
+//
+// Before, its classes are the IDE's and the browser itself is part of the Java
+// runtime. Android Studio ships a runtime without one, so the sandbox IDE runs
+// on the JetBrains Runtime that has it, as a user's does once they have
+// switched.
+//
+// Since, the browser is a plugin of JetBrains' own, Web Browser (JCEF), with
+// its Chromium inside, and from 2026.2 the classes are that plugin's as well.
+// JetBrains' IDEs come with it; Android Studio gets it from the Marketplace,
+// where the build fetches it for the sandbox and a user installs it once (see
+// README).
+
+val browserPlugin = "com.intellij.modules.jcef"
+val browserIsPlugin = platformBranch >= 261
+val browserIsBundled = (installedIde?.get("bundledPlugins") as? List<*>)?.contains(browserPlugin) == true
+
+/** This machine, as the Marketplace names the builds of a plugin that has one for each system. */
+val hostSystem: String = run {
+    val system = System.getProperty("os.name").lowercase()
+    val family = when {
+        system.startsWith("windows") -> "windows"
+        system.startsWith("mac") -> "mac"
+        else -> "linux"
+    }
+    val processor = System.getProperty("os.arch").lowercase()
+    "$family-" + if (processor == "aarch64" || processor == "arm64") "arm64" else "x86_64"
+}
+
+/**
+ * The JetBrains Runtime the installed IDE ships, as jetbrainsRuntime() names
+ * one (21.0.9b1163.94): read from the runtime's own `release` file.
+ */
+fun installedRuntime(): String? {
+    val text = ideFile("jbr/release", "Contents/jbr/Contents/Home/release")?.let(::textOf) ?: return null
+    fun value(pattern: String) = Regex(pattern, RegexOption.MULTILINE).find(text)?.groupValues?.get(1)
+    val java = value("""^JAVA_VERSION="([^"]+)"""") ?: return null
+    val build = value("""^JAVA_RUNTIME_VERSION="[^"]*-b([0-9][0-9.]*)"""") ?: return null
+    return "${java}b$build"
+}
+
+/**
+ * The JetBrains Runtime the sandbox IDE runs on where the browser is the
+ * runtime's: the variant with JCEF of the one the IDE ships. The installed IDE
+ * says which that is; for the release the build downloads it is written
+ * beside it in gradle.properties. `-PjbrVersion=<version>` names another, and
+ * `-PjbrVersion=` none: the IDE then runs on what it ships, which is what a
+ * user sees before switching (see README).
+ */
+val sandboxRuntime: String? =
+    (answer("jbrVersion", "CODE_AI_JBR_VERSION")
+        ?: (if (browserIsPlugin) null else installedRuntime() ?: providers.gradleProperty("platformJbrVersion").orNull))
+        ?.trim()?.takeIf { it.isNotEmpty() }
 
 repositories {
     mavenCentral()
@@ -47,17 +134,27 @@ repositories {
 dependencies {
     intellijPlatform {
         if (ideDir != null) local(ideDir) else androidStudio(providers.gradleProperty("platformVersion"))
-        // The runtime Android Studio ships has no embedded browser (JCEF), which
-        // the panel is drawn in. The sandbox IDE runs on the JetBrains Runtime
-        // it was built from, with the browser, as a user's does once they have
-        // switched (see README). -PjbrVersion= leaves the IDE on its own
-        // runtime: what a user sees before switching.
-        providers.gradleProperty("jbrVersion").orNull?.takeIf { it.isNotBlank() }?.let { jetbrainsRuntime(it) }
+        when {
+            !browserIsPlugin -> Unit
+            browserIsBundled -> bundledPlugin(browserPlugin)
+            else -> compatiblePlugin(browserPlugin)
+        }
+        sandboxRuntime?.let { jetbrainsRuntime(it) }
     }
     testImplementation(kotlin("test"))
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     // The IDE's test listener, which the platform puts on every test run, is written against JUnit 4.
     testRuntimeOnly("junit:junit:4.13.2")
+}
+
+// The browser plugin has a build for each system. Asked which of them fits an
+// IDE, the Marketplace names one for whichever system: take this machine's.
+configurations.configureEach {
+    resolutionStrategy.eachDependency {
+        if (requested.name == browserPlugin) {
+            requested.version?.let { useVersion(it.replace(Regex("-(linux|mac|windows)-(x86_64|arm64)$"), "-$hostSystem")) }
+        }
+    }
 }
 
 kotlin {
@@ -84,7 +181,7 @@ intellijPlatform {
 // one panel, written once. It is built where it lives and copied in.
 
 val vscodeExtension = repoRoot.dir("vscode-extension")
-val npm = if (System.getProperty("os.name").lowercase().contains("win")) "npm.cmd" else "npm"
+val npm = if (hostSystem.startsWith("windows")) "npm.cmd" else "npm"
 
 /**
  * Runs npm in the panel's folder.
@@ -179,6 +276,18 @@ tasks.buildPlugin {
     useFileSystemPermissions()
 }
 
+// macOS seals an application once it has run, and the browser plugin holds a
+// few: the processes its Chromium runs in. Its copy in a sandbox can then be
+// removed and not written over, so it is removed, and the copy that follows
+// is a new one.
+tasks.withType<PrepareSandboxTask>().configureEach {
+    doFirst {
+        (this as Sync).destinationDir
+            .listFiles { plugin -> File(plugin, "jcef/Frameworks").isDirectory }
+            ?.forEach { it.deleteRecursively() }
+    }
+}
+
 // --- the sandbox IDE ---------------------------------------------------------
 
 /** Words of a `-P` property, as a command line splits them. */
@@ -186,8 +295,15 @@ fun words(property: String): List<String> =
     providers.gradleProperty(property).orNull?.split(Regex("\\s+"))?.filter { it.isNotBlank() } ?: emptyList()
 
 tasks.runIde {
-    // A sandbox is a fresh install: go straight to the IDE, not through Android Studio's setup wizard.
-    jvmArgs("-Ddisable.android.first.run=true")
+    // A sandbox is a fresh install: go straight to the IDE, past what Android
+    // Studio asks a new user. Its setup wizard, a Google sign-in, and whether
+    // to send usage statistics: that last answer is kept outside the sandbox,
+    // where it would stand for the user's own Android Studio too.
+    jvmArgs(
+        "-Ddisable.android.first.run=true",
+        "-Dgoogle.login.enable.startup.sign.in.dialog=false",
+        "-Ddisable.android.analytics.consent.dialog=true",
+    )
     // The backend being worked on is the repository's own (install.sh puts it in .venv):
     // the sandbox finds it there without anything being set in the IDE.
     jvmArgs("-Dcode.ai.dev.root=${repoRoot.asFile.absolutePath}")
