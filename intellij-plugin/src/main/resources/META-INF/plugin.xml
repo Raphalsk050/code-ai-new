@@ -27,6 +27,7 @@
     <statusBarWidgetFactory id="CodeAi.AgentStatus"
                             implementation="com.codeai.intellij.status.AgentStatusWidgetFactory"/>
     <projectViewNodeDecorator implementation="com.codeai.intellij.changes.ChangeDecorator"/>
+    <inline.completion.provider implementation="com.codeai.intellij.inline.CodeAiInlineCompletionProvider"/>
   </extensions>
 
   <actions>
