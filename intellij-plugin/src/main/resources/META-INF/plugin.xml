@@ -15,9 +15,37 @@
   <depends>com.intellij.modules.platform</depends>
 
   <extensions defaultExtensionNs="com.intellij">
+    <toolWindow id="Code-AI"
+                anchor="right"
+                icon="/icons/toolWindow.svg"
+                factoryClass="com.codeai.intellij.chat.ChatToolWindowFactory"/>
     <notificationGroup id="Code-AI" displayType="BALLOON"/>
+    <applicationConfigurable parentId="tools"
+                             id="com.codeai.intellij.settings"
+                             displayName="Code-AI"
+                             instance="com.codeai.intellij.settings.CodeAiConfigurable"/>
     <statusBarWidgetFactory id="CodeAi.AgentStatus"
                             implementation="com.codeai.intellij.status.AgentStatusWidgetFactory"/>
     <projectViewNodeDecorator implementation="com.codeai.intellij.changes.ChangeDecorator"/>
   </extensions>
+
+  <actions>
+    <action id="CodeAi.FocusChat"
+            class="com.codeai.intellij.actions.FocusChatAction"
+            text="Code-AI: Focus Chat"
+            description="Open the Code-AI chat"/>
+    <action id="CodeAi.Restart"
+            class="com.codeai.intellij.actions.RestartAction"
+            text="Code-AI: Restart (Reload Settings)"
+            description="Restart the Code-AI backend so edited settings take effect"
+            icon="AllIcons.Actions.Refresh"/>
+    <action id="CodeAi.ToggleInlineHints"
+            class="com.codeai.intellij.actions.ToggleInlineHintsAction"
+            text="Code-AI: Toggle Inline Hints"
+            description="Turn Code-AI's inline code hints on or off"/>
+    <action id="CodeAi.ShowBackendLog"
+            class="com.codeai.intellij.actions.ShowBackendLogAction"
+            text="Code-AI: Show Backend Log"
+            description="Open what the Code-AI backend wrote while starting and running"/>
+  </actions>
 </idea-plugin>
