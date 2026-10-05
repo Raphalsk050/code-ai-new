@@ -51,6 +51,22 @@ async function settle(ui, ms = 40) {
   );
 }
 
+/**
+ * Entry animations over. A box still rising in is drawn a little smaller than
+ * it will be, so its edges are not yet where they belong: measured then, the
+ * answer depends on how busy the machine is.
+ */
+async function landed(ui) {
+  await ui.page.evaluate(() =>
+    Promise.all(
+      document
+        .getAnimations()
+        .filter((animation) => animation.effect?.getComputedTiming().iterations !== Infinity)
+        .map((animation) => animation.finished.catch(() => undefined))
+    )
+  );
+}
+
 /** Put `selector`'s top `offset` px below the transcript's top edge (negative: above it). */
 async function scrollTopTo(ui, selector, offset) {
   await ui.page.evaluate(
@@ -133,6 +149,7 @@ export const tests = {
     assert(shape[0].sends === 2, "both sends in one user box, one line each");
     assert(shape[1].parts === 4, "reasoning, tool and both answers in one agent box");
 
+    await landed(ui);
     const geo = await ui.page.evaluate(() => {
       const inner = document.querySelector(".transcript-inner");
       const box = inner.getBoundingClientRect();
@@ -143,7 +160,7 @@ export const tests = {
     });
     assert(Math.abs(geo.userRight - geo.right) < 1.5, `user box ends at ${geo.userRight}, column at ${geo.right}`);
     assert(geo.userLeft > geo.agentLeft + 40, "the user's box starts well right of the agent's");
-    assert(Math.abs(geo.agentRight - geo.right) < 1.5, "the agent's box takes the column's width");
+    assert(Math.abs(geo.agentRight - geo.right) < 1.5, `the agent's box ends at ${geo.agentRight}, column at ${geo.right}`);
     await ui.shot("transcript-blocks");
 
     // The same, in Light Modern: the boxes have to hold up on a white page too.
