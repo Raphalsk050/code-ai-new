@@ -86,12 +86,27 @@ intellijPlatform {
 val vscodeExtension = repoRoot.dir("vscode-extension")
 val npm = if (System.getProperty("os.name").lowercase().contains("win")) "npm.cmd" else "npm"
 
+/**
+ * Runs npm in the panel's folder.
+ *
+ * The environment is added to when the task runs. Added to while the build is
+ * being configured, the configuration cache would keep the whole of it, PATH
+ * included, as it was the day the cache was written: a Node.js installed
+ * since would stay unfound.
+ */
+fun Exec.npm(vararg arguments: String, variables: Map<String, String> = emptyMap()) {
+    workingDir = vscodeExtension.asFile
+    commandLine(listOf(npm) + arguments)
+    doFirst {
+        this as Exec
+        variables.forEach { (name, value) -> environment(name, value) }
+    }
+}
+
 val installWebviewDependencies by tasks.registering(Exec::class) {
     description = "Installs the panel's npm dependencies when they are missing."
-    workingDir = vscodeExtension.asFile
-    commandLine(npm, "ci", "--no-audit", "--no-fund")
     // The e2e browser is hundreds of megabytes the build has no use for.
-    environment("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "1")
+    npm("ci", "--no-audit", "--no-fund", variables = mapOf("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD" to "1"))
     val modules = vscodeExtension.dir("node_modules").asFile
     onlyIf { !modules.isDirectory }
 }
@@ -99,8 +114,7 @@ val installWebviewDependencies by tasks.registering(Exec::class) {
 val buildWebview by tasks.registering(Exec::class) {
     description = "Bundles the panel (vscode-extension/dist)."
     dependsOn(installWebviewDependencies)
-    workingDir = vscodeExtension.asFile
-    commandLine(npm, "run", "build")
+    npm("run", "build")
     inputs.dir(vscodeExtension.dir("webview"))
     inputs.dir(vscodeExtension.dir("src"))
     inputs.files(vscodeExtension.file("esbuild.mjs"), vscodeExtension.file("package-lock.json"))
