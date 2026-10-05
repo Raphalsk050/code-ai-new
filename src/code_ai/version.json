@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 36,
-  "patch": 2,
-  "build": 81,
-  "updated": "2026-10-04",
-  "note": "Static glyph in place of the animated avatar"
+  "minor": 37,
+  "patch": 0,
+  "build": 82,
+  "updated": "2026-10-05",
+  "note": "Android Studio plugin, and the open files as context"
 }

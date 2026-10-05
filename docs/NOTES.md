@@ -3,6 +3,71 @@
 Decisions, trade-offs and loose ends. One entry per block of work, newest at
 the top.
 
+## 2026-10-05 - Android Studio plugin
+
+### What was done
+
+- **`intellij-plugin/`: the VS Code extension's counterpart for Android Studio**, and for any IDE on the IntelliJ Platform.
+  Kotlin, built with Gradle and the IntelliJ Platform Gradle Plugin against Android Studio 2025.3.2.
+- **The panel is not ported: it is the same bundle.**
+  The build runs `npm run build` in `vscode-extension/` and ships `dist/webview.js` inside the plugin.
+  `web/WebviewPage.kt` rebuilds around it what VS Code gives a webview: `acquireVsCodeApi()`, the default stylesheet VS Code puts under every webview, and the `--vscode-*` theme variables filled in from the IDE's theme and editor colour scheme (`web/ThemeVariables.kt`).
+- **The host is ported, file for file.**
+  `ChatHost` is `ChatViewProvider`, `BridgeSession` and `BridgeClient` keep their names, and the modules with no IDE import (`ResolveCommand`, `CrashPolicy`, `EditPlan`, `ChangeLedger`, `AgentStatus`, `EditorContext`) carry the same unit tests as their TypeScript originals.
+  The wire contract is still `vscode-extension/src/protocol.ts`.
+- **Native integrations:** the agent's edits in the IDE's diff viewer while they stream and after they land, the conversation's changes to open, review all at once and revert, `M`/`A` in the project view, a status bar widget, Settings | Tools | Code-AI, inline hints, and Restart, Focus Chat, Toggle Inline Hints and Show Backend Log as actions.
+- **The open files are context**, in both IDEs.
+  `EditorContext` gained `openFiles`: the other files open in tabs travel with the active one and its selection, and still do when a diff or a graph has the focus instead of a file.
+  The chip over the composer counts them and names them on hover.
+
+### Decisions
+
+- **The embedded browser, not a second UI.**
+  A Swing panel would be a second implementation of every screen, to keep in step for ever.
+  The cost is that Android Studio ships a runtime without the browser (JCEF): the tool window says so and opens the IDE's own "Choose Boot Java Runtime" for the one-time switch.
+- **A Kotlin host, not the TypeScript one in a sidecar.**
+  The agent's logic is already in the Python backend; the host is a thin layer of routing and IDE calls, and a Node runtime inside the plugin would cost more than the port.
+- **One thread for the host's state** (`HostThread`).
+  The TypeScript host leans on Node handling one event at a time; the port queues backend events, panel messages and timers on one thread to keep that, and hops to the EDT for the IDE.
+- **The plugin saves every file before a turn and refreshes the IDE's view of the disk after one.**
+  The agent reads and writes the disk with its own hands; IntelliJ users rarely save by hand, and the IDE only looks at the disk when its window is focused again.
+- **One preview diff tab.**
+  Showing a change takes the place of the one shown before, as VS Code's preview tab does.
+- **`https://code-ai.localhost` as the page's origin**, answered from the plugin's own resources.
+  A real origin makes it a secure context (clipboard) and nothing is ever fetched from the network.
+
+### Checked
+
+- 43 unit tests, the JSON-RPC client among them against a fake bridge over real pipes.
+- In a sandbox Android Studio 2025.3.2 on JetBrains Runtime 21.0.9 with JCEF, against the real backend: the panel renders in the IDE's colours, settings load, a question about the selection is answered with the selection in its context, an edit goes through approval and is written, the diff tab goes from "proposed" to the file itself, and the rail lists the change and opens its review.
+  The panel was driven through the browser's debugging port and the IDE's window painted from inside the IDE, so nothing was typed on a real keyboard.
+
+### Deferred
+
+- **The orchestrator graph editor** (`*.flow.json`): a `FileEditorProvider` over the `flow.js` bundle, which the build already ships.
+- **Explain mode's hover**: the explanation shows in the panel only.
+- **Updating itself, and the release pipeline.**
+  `build-binaries.yml` does not build the plugin, and the backend's updater only knows the VS Code package.
+  Until both do, `/update` answers with how to install a newer package.
+- **Other platforms and older IDEs.**
+  Run and checked on macOS only; `sinceBuild` is 253 because that is the only build it was compiled and run against.
+- **The keyboard inside the panel** (Escape, which the IDE uses to leave a tool window) was not exercised.
+
+## 2026-10-05 - Panel fixes found on the way
+
+- **The composer's working arc ran at an uneven pace.**
+  It was a conic gradient turned by an angle from the field's centre: 5px a step along the long sides against 140px round the ends.
+  It is now a dash on the field's outline (`webview/busy-ring.tsx`), moved by its offset.
+  A dash given a unitless length, or a `calc()` over one, is accepted and not interpolated: every value is a plain `px`.
+- **The composer's glass blurred the agent's working line.**
+  Its reach above the field is for text on its way under it; at the end of the conversation nothing is.
+  `--glass` (0 at the end, 1 once scrolled away) now scales that reach.
+- **Segments and menu rows did not follow their containers' corners.**
+  The radii went to 15px and what is drawn inside them stayed at 4px; each now takes its container's radius less the border and padding between the two edges.
+- **The approval's "Open diff" broke onto two lines** in a sidebar's width.
+- **A flaky spec**: `transcript.e2e` measured a box two frames into its entry animation.
+  It waits for the animation now.
+
 ## 2026-10-03 - Extension UI redesign, stage 7: outside the webview, and wrap-up
 
 ### What was done
