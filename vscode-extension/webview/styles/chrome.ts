@@ -63,23 +63,28 @@ button.context-meter:hover { background: var(--hover); }
    masked layer cross-fades sharp text with its blurred copy over a few pixels,
    which reads as a ghosted line jammed against the field. Here a light layer
    starts well above the field and softens the text, and a heavy one closer in
-   dissolves it, so nothing legible ever reaches the field's edge. */
+   dissolves it, so nothing legible ever reaches the field's edge.
+   The reach above the field is for text on its way under it. At the end of the
+   conversation nothing is, and the last lines - the agent's "working" line
+   among them - rest right there: --glass (0 at the end, 1 once scrolled away
+   from it, set by the panel) takes that reach away so they stay sharp. */
 .composer-wrap::before, .composer-wrap::after {
   content: ""; position: absolute; left: 0; right: 0; bottom: 0; z-index: -1; pointer-events: none;
+  --reach: rgb(0 0 0 / var(--glass, 0));
 }
 .composer-wrap::before {
   top: -64px;
   background: linear-gradient(to bottom, transparent 0, var(--bg-glass) 64px);
   -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 44px);
-  mask-image: linear-gradient(to bottom, transparent 0, #000 44px);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, var(--reach) 44px, var(--reach) 64px, #000 64px);
+  mask-image: linear-gradient(to bottom, transparent 0, var(--reach) 44px, var(--reach) 64px, #000 64px);
 }
 .composer-wrap::after {
   top: -28px;
   background: linear-gradient(to bottom, transparent 0, var(--bg-veil) 40px);
   -webkit-backdrop-filter: blur(18px) saturate(1.1); backdrop-filter: blur(18px) saturate(1.1);
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 28px);
-  mask-image: linear-gradient(to bottom, transparent 0, #000 28px);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, var(--reach) 28px, #000 28px);
+  mask-image: linear-gradient(to bottom, transparent 0, var(--reach) 28px, #000 28px);
 }
 .composer-stack { position: relative; max-width: 820px; margin: 0 auto; }
 .composer {

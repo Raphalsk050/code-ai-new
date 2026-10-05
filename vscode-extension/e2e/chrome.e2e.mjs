@@ -197,4 +197,41 @@ export const tests = {
     await ui.page.click(".jump-btn");
     await ui.page.waitForSelector(".jump-btn", { state: "detached" });
   },
+
+  async "at the end of the conversation the glass leaves the working line sharp"(ui, assert) {
+    await openChat(ui);
+    const items = [1, 2, 3].flatMap((n) => [
+      { kind: "user", id: `u${n}`, text: `Request ${n}` },
+      { kind: "assistant", id: `a${n}`, text: long, streaming: false },
+    ]);
+    await ui.fromHost(envelope("client.load", { items }));
+    await ui.fromHost(envelope("user.message", { text: "Look at the seam between the chunks" }));
+    await ui.fromHost(envelope("status.changed", { state: "CALLING_MODEL" }));
+    await ui.page.waitForSelector(".block-agent .typing");
+    const below = await ui.page.$eval(".transcript", (el) => el.scrollHeight - el.scrollTop - el.clientHeight);
+    assert(below < 1, `the transcript is ${below}px short of its end`);
+    // The transcript follows its end: the working line rests right above the field.
+    const glass = () => ui.page.$eval(".chat-col", (el) => getComputedStyle(el).getPropertyValue("--glass").trim());
+    assert((await glass()) === "0", `at the end of the conversation the glass reaches ${await glass()}`);
+
+    // Frozen, so two pictures of the same thing are the same picture.
+    await ui.page.evaluate(() => document.getAnimations().forEach((a) => { a.pause(); a.currentTime = 0; }));
+    const clip = await ui.page.$eval(".block-agent .typing", (el) => {
+      const box = el.closest(".block").getBoundingClientRect();
+      return { x: Math.floor(box.left) - 2, y: Math.floor(box.top) - 2, width: Math.ceil(box.width) + 4, height: Math.ceil(box.height) + 4 };
+    });
+    const under = await ui.page.screenshot({ clip });
+    const hidden = await ui.page.addStyleTag({ content: ".composer-wrap { visibility: hidden !important; }" });
+    const alone = await ui.page.screenshot({ clip });
+    await hidden.evaluate((style) => style.remove());
+    assert(under.equals(alone), "the glass over the composer blurs the agent's working line");
+    await ui.shot("chrome-glass-at-rest");
+
+    // Scrolled away from the end, text is on its way under the field: the reach is back.
+    await ui.page.evaluate(() => { document.querySelector(".transcript").scrollTop -= 200; });
+    await ui.page.dispatchEvent(".transcript", "scroll");
+    assert((await glass()) === "1", `scrolled up, the glass reaches ${await glass()}`);
+    const softened = await ui.page.$eval(".composer-wrap", (el) => getComputedStyle(el, "::before").maskImage);
+    assert(/rgb\(0, 0, 0\) 44px/.test(softened), `the glass does not build up over the text: ${softened}`);
+  },
 };

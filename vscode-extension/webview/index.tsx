@@ -87,6 +87,8 @@ type Screen = "home" | "chat" | "settings";
 // Backend states a turn ends well in; ERROR, FAILED and CANCELLED end it too,
 // but not with an answer worth marking done.
 const SETTLED = new Set(["READY", "IDLE"]);
+// Scrolled this far from the end, the glass over the composer is fully drawn.
+const GLASS_RAMP_PX = 24;
 // No backend to send to: the composer says so and will not send.
 const OFFLINE = new Set(["STARTING", "RECONNECTING", "DISCONNECTED"]);
 
@@ -356,11 +358,26 @@ function App(): JSX.Element {
   // The composer floats over the transcript; the transcript keeps that much
   // room at its end so the newest line is never under the glass.
   const composerRef = React.useRef<HTMLDivElement>(null);
+  // The glass reaches above the composer only for text on its way under it:
+  // 0 at the end of the conversation, 1 once scrolled away from it.
+  const syncGlass = () => {
+    const el = scrollRef.current;
+    const col = el?.parentElement;
+    if (!el || !col) return;
+    const below = el.scrollHeight - el.scrollTop - el.clientHeight;
+    // Under a pixel is rounding at a fractional zoom, not a scroll.
+    const glass = below < 1 ? 0 : Math.min(1, below / GLASS_RAMP_PX);
+    col.style.setProperty("--glass", String(Math.round(glass * 100) / 100));
+  };
   React.useLayoutEffect(() => {
     const el = composerRef.current;
     const col = el?.parentElement;
     if (!el || !col || typeof ResizeObserver === "undefined") return;
-    const apply = () => col.style.setProperty("--composer-h", `${Math.ceil(el.getBoundingClientRect().height)}px`);
+    const apply = () => {
+      col.style.setProperty("--composer-h", `${Math.ceil(el.getBoundingClientRect().height)}px`);
+      // A taller composer moves the end of the transcript without a scroll.
+      syncGlass();
+    };
     apply();
     const observer = new ResizeObserver(apply);
     observer.observe(el);
@@ -371,11 +388,13 @@ function App(): JSX.Element {
     if (!el) return;
     pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
     setAtBottom(pinnedRef.current);
+    syncGlass();
     pin.onScroll();
   };
   React.useLayoutEffect(() => {
     const el = scrollRef.current;
     if (el && pinnedRef.current) el.scrollTop = el.scrollHeight;
+    syncGlass();
   });
   React.useEffect(() => {
     const ta = textareaRef.current;
@@ -1045,6 +1064,7 @@ function App(): JSX.Element {
                     />
                   )}
                   <div className={`composer ${busy ? "busy" : ""} ${connected ? "" : "off"}`}>
+                    {busy && <BusyRing />}
                     {(ctxChip || images.length > 0) && (
                       <div className="composer-ctx">
                         {ctxChip && (
@@ -1064,7 +1084,6 @@ function App(): JSX.Element {
                           </span>
                         )}
                         {images.map((image, i) => (
-                    {busy && <BusyRing />}
                           <span key={i} className="paste-chip">
                             <img
                               src={`data:${image.media_type};base64,${image.data}`}
