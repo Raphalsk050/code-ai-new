@@ -3,6 +3,68 @@
 Decisions, trade-offs and loose ends. One entry per block of work, newest at
 the top.
 
+## 2026-10-05 - Android Studio 2026: the embedded browser is a plugin
+
+### What happened
+
+- **The plugin did not open in the Android Studio people have.**
+  A colleague installed the package and the tool window threw `NoClassDefFoundError: com/intellij/ui/jcef/JBCefApp`.
+  It had been built and run against 2025.3.2 only, the release installed on the machine it was written on.
+  Google had shipped two since: 2026.1 (Quail) and 2026.2 (Rabbit).
+- **Where an IDE keeps its embedded browser changed with 2026.1.**
+  Up to 2025.3 the browser's classes are the IDE's and its Chromium is part of the Java runtime, which Android Studio ships without.
+  In 2026.1 the Chromium moved into a plugin of JetBrains' own, **Web Browser (JCEF)** (`com.intellij.modules.jcef`): one build per system, about 150 MB, in the Marketplace, and listed as compatible with Android Studio.
+  In 2026.2 the classes moved into that plugin too, and Android Studio has neither.
+  JetBrains' IDEs bundle it.
+
+### What was done
+
+- **The plugin names Web Browser (JCEF) as an optional dependency**, which is what puts its classes in reach once it is installed.
+  `web/EmbeddedBrowser.kt` tells apart an IDE with a browser, one whose browser plugin is missing, and one whose runtime has none, without naming a browser class: in an IDE without them a mention is an error wherever it is run into.
+- **The tool window offers the way out for each.**
+  From 2026.1, "Install Web Browser (JCEF)": the IDE's own installer, which picks the build for the system, then a restart.
+  On 2025.3, the boot runtime with JCEF, as before.
+- **The page's requests are answered through the browser's adapter class.**
+  The handler interface gained three methods; the adapter of each release answers them with "ask the older way".
+- **Read actions that 2026.2 does not deprecate**, and that 2025.3 has.
+- **The build knows which release it is building against**, from the installed IDE's `product-info.json` or from `platformVersion`.
+  From 2026.1 it fetches the browser plugin for the sandbox, in this machine's build; before, the runtime with JCEF that matches the installed IDE's own, read from that runtime's `release` file instead of written down.
+  `./gradlew runIde -PideDir= -PplatformVersion=2026.2.1.8` runs any release.
+- **A sandbox goes straight to the IDE.**
+  Android Studio 2026 asks a new user two more things, a Google sign-in and whether to send usage statistics, each in a dialog that blocks the project from opening.
+  The second is switched off for another reason too: its answer is written to `~/.android`, outside the sandbox, where it stands for the user's own Android Studio.
+
+### Decisions
+
+- **Optional, not required, and `sinceBuild` stays 253.**
+  A required dependency would keep the plugin from loading on 2025.3, where there is no such plugin and the browser is the IDE's.
+  Optional also lets the tool window open without it, to say how to get it.
+- **A button, not an install behind the user's back.**
+  It is a download of 150 MB and a restart: the user asks for it, and the IDE shows what it is about to fetch.
+- **The Marketplace is asked which build fits, and its answer corrected.**
+  `compatiblePlugin` finds the build line for an IDE; the Marketplace answers with any system's, so a rule swaps the suffix for this machine's.
+- **Built against whichever IDE is at hand, and the default stays the oldest supported.**
+  The same sources compile against 2025.3.2 and 2026.2.1 without a warning.
+
+### Checked
+
+- 43 unit tests, against both releases.
+- In sandboxes, the panel driven through the browser's debugging port and the IDE's window painted from inside:
+  - **2026.2.1 and 2026.1.4, each on the runtime it ships.**
+    Without the browser plugin the tool window offers it; installed by the IDE's installer it comes for the right system; after the restart the panel opens and answers a question about the selection.
+    On 2026.2.1 also an edit through approval, the diff tab from "proposed" to the file, the `M` in the project view and the status bar.
+  - **The package as built against 2025.3.2, unpacked into a 2026.2.1 sandbox**, which is what an install from disk does: the same.
+  - **2025.3.2** on the runtime with the browser: as before.
+- Not checked: Linux and Windows, the button's own click and the IDE's dialog (the installer was called the way the button calls it, without the dialog), and "Install Plugin from Disk" itself.
+
+### Loose ends
+
+- **Nothing runs the plugin against a release before its users do.**
+  The Plugin Verifier (`./gradlew verifyPlugin`) reports a class a release no longer has, and belongs in the pipeline once the plugin is built there.
+- **On macOS a sandbox's copy of the browser plugin cannot be written over once it has run**: the system seals its helper applications.
+  The build removes the copy before making a new one.
+- **Helper processes outlive an IDE that is killed**, and a debugging port is one IDE's: two sandboxes started with the same port answer as one.
+
 ## 2026-10-05 - Android Studio plugin
 
 ### What was done

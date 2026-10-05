@@ -17,7 +17,7 @@ vscode-extension/webview     this folder                              (Python co
 - **The backend is the same `code-ai bridge`.**
   The plugin starts it in the project's folder and restarts it when it dies.
 
-The panel runs in the IDE's embedded browser (JCEF).
+The panel runs in the IDE's embedded browser (JCEF), which Android Studio has to be given once: see Requirements.
 `web/WebviewPage.kt` rebuilds around the bundle what VS Code gives a webview: `acquireVsCodeApi()`, the default stylesheet VS Code puts under every webview, and the `--vscode-*` theme variables, filled in from the IDE's theme and editor colour scheme.
 
 | VS Code extension (`vscode-extension/src`) | Plugin (`src/main/kotlin/com/codeai/intellij`) |
@@ -60,10 +60,17 @@ Before a message is sent the plugin saves every unsaved file, because the agent 
 ## Requirements
 
 - Android Studio 2025.3 or later (IntelliJ Platform 253).
-- **A Java runtime with the embedded browser (JCEF).**
-  Android Studio ships a runtime without it.
-  The plugin says so in its tool window and offers the IDE's own way to switch: **Choose Boot Java Runtime for the IDE**, a runtime marked JCEF, restart.
-  It is done once, and the same menu puts the original runtime back.
+- **The IDE's embedded browser (JCEF).**
+  Android Studio comes without it.
+  The plugin's tool window says so and offers the IDE's own way to get it, which depends on the release.
+  Either way it is done once.
+
+| Android Studio | Where the browser is | What to do |
+| --- | --- | --- |
+| 2026.1 and later | A plugin of JetBrains' own, **Web Browser (JCEF)**, with its own Chromium inside. | **Install Web Browser (JCEF)** in the Code-AI tool window, or Settings \| Plugins \| Marketplace, then restart. |
+| 2025.3 | Part of the Java runtime the IDE runs on. | **Choose Boot Java Runtime for the IDE**, a runtime marked JCEF, then restart. The same menu puts the original runtime back. |
+
+JetBrains' own IDEs come with the browser, and need neither.
 
 ## Build
 
@@ -111,9 +118,13 @@ The tool window is **Code-AI**, on the right.
 ./gradlew runIde
 ```
 
-A sandbox Android Studio starts with the plugin installed, on a runtime that has JCEF.
-`-PideArgs="/path/to/a/project"` opens a project straight away.
-`-PjbrVersion=` leaves the sandbox on the runtime Android Studio ships, to see what a user sees before switching.
+A sandbox Android Studio starts with the plugin installed and the embedded browser it needs.
+The build fetches that browser the first time: JetBrains' plugin for 2026.1 and later, the runtime that has it for 2025.3.
+It goes straight to the IDE, past the questions Android Studio asks a new user.
+
+- `-PideArgs="/path/to/a/project"` opens a project straight away.
+- `-PideDir= -PplatformVersion=2026.2.1.8` runs another release than the one installed: the build downloads it.
+- `-PjbrVersion=` leaves a 2025.3 sandbox on the runtime Android Studio ships, to see what a user sees before switching.
 
 ```bash
 ./gradlew test
@@ -142,6 +153,10 @@ A sandbox Android Studio starts with the plugin installed, on a runtime that has
 
 **The tool window says it needs the embedded browser.**
 See Requirements.
+
+**"Embedded Browser is suspended", on Linux.**
+The IDE says this itself when the system keeps the browser's sandbox from starting, which Ubuntu does since 24.04.
+Its notification offers the two ways out: **Install Profile** (an AppArmor profile for the IDE, the one to prefer) or **Disable Sandbox**.
 
 **The panel says the backend did not start.**
 **Code-AI: Show Backend Log** opens what the backend wrote while starting.
