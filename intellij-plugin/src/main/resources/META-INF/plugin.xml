@@ -16,5 +16,6 @@
 
   <extensions defaultExtensionNs="com.intellij">
     <notificationGroup id="Code-AI" displayType="BALLOON"/>
+    <projectViewNodeDecorator implementation="com.codeai.intellij.changes.ChangeDecorator"/>
   </extensions>
 </idea-plugin>
