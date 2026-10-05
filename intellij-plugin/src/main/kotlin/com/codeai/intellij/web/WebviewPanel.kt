@@ -30,7 +30,7 @@ import org.cef.handler.CefLifeSpanHandlerAdapter
 import org.cef.handler.CefLoadHandlerAdapter
 import org.cef.handler.CefRequestHandler
 import org.cef.handler.CefRequestHandlerAdapter
-import org.cef.handler.CefResourceHandler
+import org.cef.handler.CefResourceHandlerAdapter
 import org.cef.handler.CefResourceRequestHandler
 import org.cef.handler.CefResourceRequestHandlerAdapter
 import org.cef.misc.BoolRef
@@ -272,8 +272,14 @@ internal class WebviewPanel(
 
     private class Resource(val bytes: ByteArray, val mime: String)
 
-    /** Answers one request from memory. */
-    private class Served(private val lookup: (path: String) -> Resource?) : CefResourceHandler {
+    /**
+     * Answers one request from memory.
+     *
+     * Through the adapter, not the interface: newer browsers ask a handler in
+     * a second way first (open, read, skip), and the adapter of each answers
+     * that with "ask the first way", which is the one written here.
+     */
+    private class Served(private val lookup: (path: String) -> Resource?) : CefResourceHandlerAdapter() {
         private var body = ByteArray(0)
         private var mime = "text/plain"
         private var status = 404
