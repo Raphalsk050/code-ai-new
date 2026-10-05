@@ -1,8 +1,9 @@
 package com.codeai.intellij.editor
 
-import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
+import com.intellij.openapi.util.Computable
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
@@ -91,8 +92,8 @@ internal object Workspace {
      * knows the files and what the project excludes.
      */
     fun search(project: Project, query: String, limit: Int = 200): List<String> =
-        ReadAction.compute<List<String>, RuntimeException> {
-            if (project.isDisposed) return@compute emptyList()
+        ApplicationManager.getApplication().runReadAction(Computable {
+            if (project.isDisposed) return@Computable emptyList()
             val needle = query.replace(GLOB_CHARACTERS, "").lowercase()
             val found = ArrayList<String>()
             ProjectFileIndex.getInstance(project).iterateContent(
@@ -107,5 +108,5 @@ internal object Workspace {
                 { file -> !(file.isDirectory && file.name in SKIPPED) },
             )
             found.sortedBy { it.length }
-        }
+        })
 }

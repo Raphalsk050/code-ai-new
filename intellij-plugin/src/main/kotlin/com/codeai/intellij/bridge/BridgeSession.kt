@@ -12,7 +12,6 @@ import com.intellij.execution.configurations.GeneralCommandLine
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.PathManager
-import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.Logger
@@ -295,12 +294,12 @@ internal class BridgeSession(private val project: Project) : Disposable {
         System.getProperty(DEV_ROOT)?.takeIf { it.isNotBlank() }?.let(roots::add)
         project.basePath?.let(roots::add)
         try {
-            ReadAction.compute<Unit, RuntimeException> {
+            ApplicationManager.getApplication().runReadAction(Runnable {
                 if (!project.isDisposed) {
                     ProjectRootManager.getInstance(project).contentRoots.filter { it.isInLocalFileSystem }
                         .mapTo(roots) { it.path }
                 }
-            }
+            })
         } catch (e: RuntimeException) {
             LOG.debug("Could not read the content roots", e)
         }
