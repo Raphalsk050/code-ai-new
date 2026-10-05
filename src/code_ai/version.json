@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 37,
-  "patch": 1,
-  "build": 83,
+  "patch": 2,
+  "build": 84,
   "updated": "2026-10-05",
-  "note": "Android Studio 2026: the embedded browser as JetBrains' plugin"
+  "note": "The Android Studio package carries its backend, and a setup script for Linux"
 }

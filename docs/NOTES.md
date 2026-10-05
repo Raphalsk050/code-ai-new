@@ -3,6 +3,53 @@
 Decisions, trade-offs and loose ends. One entry per block of work, newest at
 the top.
 
+## 2026-10-05 - The Android Studio package carries its backend
+
+### What was done
+
+- **Installing the package is all there is to do.**
+  `./gradlew buildPlugin` now makes the backend for the target system and puts it in the plugin's `bin/`, where the plugin looks first.
+  It is the VS Code extension's backend, asked of the extension's own scripts by `intellij-plugin/scripts/stage-backend.mjs`: the frozen executable for Linux and Windows, the folder with its own Python for macOS.
+  One package for each system, named for it; `-Ptarget=none` builds one without a backend, `-PbackendDir` ships one made elsewhere.
+- **A backend that is still starting is waited for.**
+  The macOS backend unpacks its Python the first time it runs.
+  What is asked of a bridge that has said nothing yet now counts its time from the bridge's first word, for up to five minutes, and what the backend's launcher says meanwhile goes to the panel.
+- **A setup script for a Linux machine**, `intellij-plugin/setup.sh`: the system packages by apt, dnf or pacman, a Node.js of the build's own where the distribution's is too old, the backend in `.venv`, the installed Android Studio in `local.properties`, and the first build.
+- **The build runs on JDK 21 whichever Java starts it** (`gradle/gradle-daemon-jvm.properties`), and bundles the panel with the Node.js `nodeDir` names when there is one.
+- **Two faults in how the build ran npm**, found on the way.
+  A variable set on the task while the build was configured made the configuration cache keep the whole environment, PATH included, as it was that day.
+  And the install was skipped whenever `node_modules` existed, after one that was cut short as after a pull that changed the lock file.
+
+### Decisions
+
+- **Made when the package is built, not fetched when it is first run.**
+  As with the extension: nothing to download on the user's machine, no Python asked of it, and a package that works without a network.
+  The cost is one package for each system, most of it backend.
+- **The sandbox IDE gets no packaged backend.**
+  It runs the one being worked on, from the repository's `.venv`; freezing one for every run would turn seconds into minutes.
+- **The plugin waits for a slow start, and the extension does not.**
+  The extension's Mac installer unpacks the Python when it installs; a plugin has no installer, so its client waits instead.
+  The two sides differ here on purpose.
+- **The distribution's packages first, and nodejs.org only where they will not do.**
+  A setup script that adds a package source to the system would outlive the build it was run for.
+
+### Checked
+
+- 46 unit tests, three of them new, for the wait.
+- **macOS, for real.**
+  The package built on this machine, unpacked into an Android Studio 2026.2.1 sandbox with no other backend to be found: the one inside unpacked its Python and answered a question about the selection.
+- **The setup script, mostly simulated.**
+  Its syntax under dash, and its decisions against stand-ins for apt, dnf and pacman: a bare Ubuntu 24.04, an Ubuntu 22.04 (Node.js 12, Python 3.10), a Debian 12 without JDK 21, Fedora with and without it, Arch, an unknown system, no terminal to ask, nothing missing, an old Android Studio and none.
+  Run for real on this Mac where that is possible: the Node.js fetch, checked against the published sums, and the panel's `npm ci` and bundle with only that Node.js in reach.
+  The Linux archive was fetched, checked and unpacked here as well, and could not be run.
+- Not checked: the script on a Linux machine, and the Linux and Windows packages, which need Linux or Docker to make.
+  Their backend is the one the extension's packages already carry.
+
+### Loose ends
+
+- **The pipeline builds no plugin package**; `build-binaries.yml` has the backends it would put in them.
+- **On its home screen the panel says nothing while a backend unpacks**: the launcher's line shows inside a conversation only.
+
 ## 2026-10-05 - Android Studio 2026: the embedded browser is a plugin
 
 ### What happened

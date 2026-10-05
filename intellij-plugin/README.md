@@ -72,45 +72,65 @@ Before a message is sent the plugin saves every unsaved file, because the agent 
 
 JetBrains' own IDEs come with the browser, and need neither.
 
-## Build
+## Setup
 
-JDK 21 is needed to run Gradle; Android Studio's own (`Contents/jbr/Contents/Home`) will do.
+On Linux, one script gets a machine ready to build the plugin and try it:
+
+```bash
+cd intellij-plugin
+./setup.sh
+```
+
+It installs what is missing with the distribution's package manager (apt, dnf or pacman), after showing the command and asking: a Java to start the build with, Node.js, Python for the backend, and the libraries the sandbox IDE needs to open a window.
+Where the distribution's Node.js is too old, as on Ubuntu 22.04, it fetches one from nodejs.org into `.tools/` for this build alone.
+It installs the backend into the repository's `.venv`, writes the Android Studio it finds to `local.properties`, and builds the package once.
+Run it again whenever: what is already there is left alone.
+`./setup.sh --help` lists its options, `--dry-run` among them.
+
+## Build
 
 ```bash
 cd intellij-plugin
 ./gradlew buildPlugin
 ```
 
-The package is `build/distributions/code-ai-intellij-<version>.zip`.
+The package is `build/distributions/code-ai-intellij-<version>-<system>.zip`, and **it carries the backend**: installing it is all there is to do on the machine that gets it.
 Its version is the product's, read from `src/code_ai/version.json`.
 
-The build compiles against Android Studio.
-By default it downloads the release named in `gradle.properties` (over a gigabyte).
-To use one that is already installed, create `local.properties` (kept out of git) next to this file:
+The backend is the VS Code extension's, made by the same scripts, so there is one package for each system, as there:
+
+| `-Ptarget=` | Backend inside | Where it can be built |
+| --- | --- | --- |
+| `linux-x64` | One frozen executable (PyInstaller). | On Linux; elsewhere with Docker. |
+| `win32-x64` | The same, for Windows. | On Windows; elsewhere with Docker. |
+| `darwin-arm64`, `darwin-x64` | A folder with its own Python, which it unpacks the first time it runs. | Anywhere. |
+| `none` | None: the plugin looks for `code-ai` in the project's `.venv`, then on the PATH. | Anywhere. |
+
+Left out, the target is the machine's own.
+Making a backend needs Python 3.11 or newer and takes a few minutes the first time; it is made again only when the Python sources change.
+`-PbackendDir=/path/to/folder` ships that folder's contents instead, for a backend made elsewhere, such as the release pipeline's.
+
+What the build needs from the machine:
+
+- **A Java to start Gradle with.**
+  The build itself runs on JDK 21, which Gradle finds or fetches (`gradle/gradle-daemon-jvm.properties`).
+- **Node.js 18 or newer**, on the PATH, to bundle the panel: the build runs `npm run build` in `vscode-extension/` by itself.
+  `nodeDir=/path/to/node` in `local.properties` names another.
+- **Android Studio to compile against.**
+  By default the build downloads the release named in `gradle.properties` (over a gigabyte).
+  To use one that is installed, create `local.properties` (kept out of git) next to this file:
 
 ```properties
 ideDir=/Applications/Android Studio.app
 ```
 
-The panel is bundled by `npm run build` in `vscode-extension/`, which the build runs by itself; Node.js has to be on the PATH.
-
-### With the backend inside
-
-A plugin built as above carries no backend.
-It then looks for one in the project's `.venv`, and after that for `code-ai` on the PATH.
-To ship the frozen backend inside the plugin, so that an install needs nothing else on the machine, point the build at the folder that holds it:
-
-```bash
-./gradlew buildPlugin -PbackendDir=/path/to/folder/with/code-ai
-```
-
-The folder's contents go to the plugin's `bin/`, where the plugin looks first.
-One package per platform, as with the VS Code extension: the backend is most of the download.
+From 2026.1 the build also asks the Marketplace for the Web Browser (JCEF) plugin that fits the IDE, which the sandbox and the compiler need.
 
 ## Install
 
 **Settings | Plugins | gear icon | Install Plugin from Disk**, choose the zip, restart.
 The tool window is **Code-AI**, on the right.
+The first time it asks for the embedded browser, and installs it from there: see Requirements.
 
 ## Run it while working on it
 
@@ -121,6 +141,7 @@ The tool window is **Code-AI**, on the right.
 A sandbox Android Studio starts with the plugin installed and the embedded browser it needs.
 The build fetches that browser the first time: JetBrains' plugin for 2026.1 and later, the runtime that has it for 2025.3.
 It goes straight to the IDE, past the questions Android Studio asks a new user.
+The sandbox runs the backend being worked on, the one `install.sh` puts in the repository's `.venv`, and not a packaged one.
 
 - `-PideArgs="/path/to/a/project"` opens a project straight away.
 - `-PideDir= -PplatformVersion=2026.2.1.8` runs another release than the one installed: the build downloads it.
@@ -157,6 +178,10 @@ See Requirements.
 **"Embedded Browser is suspended", on Linux.**
 The IDE says this itself when the system keeps the browser's sandbox from starting, which Ubuntu does since 24.04.
 Its notification offers the two ways out: **Install Profile** (an AppArmor profile for the IDE, the one to prefer) or **Disable Sandbox**.
+
+**The first start waits, on macOS.**
+The backend that comes in the package unpacks its Python the first time it runs, which can take a minute.
+What the panel asked meanwhile is answered when it is done.
 
 **The panel says the backend did not start.**
 **Code-AI: Show Backend Log** opens what the backend wrote while starting.
