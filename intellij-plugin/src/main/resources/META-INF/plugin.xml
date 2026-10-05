@@ -1,0 +1,16 @@
+<idea-plugin>
+  <id>com.codeai.intellij</id>
+  <name>Code-AI</name>
+  <vendor>Code-AI</vendor>
+  <description><![CDATA[
+    Drive the Code-AI agent from Android Studio and other IntelliJ-based IDEs.
+    Ships the agent with it: no Python, no install.
+    <ul>
+      <li>The same chat panel as the VS Code extension, in a tool window.</li>
+      <li>The agent's edits in the IDE's own diff viewer as they are written, and every file it changed in the conversation to review or revert.</li>
+      <li>The file you have open, your selection and the other open files travel with what you ask.</li>
+    </ul>
+  ]]></description>
+
+  <depends>com.intellij.modules.platform</depends>
+</idea-plugin>
