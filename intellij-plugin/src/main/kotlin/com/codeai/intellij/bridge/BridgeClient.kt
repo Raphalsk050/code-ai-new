@@ -42,6 +42,7 @@ internal class BridgeClient private constructor(
     private val process: Process,
     private val listener: Listener,
     private val scheduler: ScheduledExecutorService,
+    private val startAllowanceMs: Long,
 ) {
     interface Listener {
         /** A bus event forwarded by the bridge. */
@@ -54,11 +55,24 @@ internal class BridgeClient private constructor(
         fun onExit(client: BridgeClient, code: Int)
     }
 
-    private class Pending(val future: CompletableFuture<JsonElement>, val timeout: ScheduledFuture<*>)
+    private class Pending(val future: CompletableFuture<JsonElement>, val method: String, val timeoutMs: Long) {
+        @Volatile
+        var timeout: ScheduledFuture<*>? = null
+    }
 
     private val stdin: Writer = process.outputStream.bufferedWriter(Charsets.UTF_8)
     private val nextId = AtomicInteger(1)
     private val pending = ConcurrentHashMap<Int, Pending>()
+
+    /**
+     * Whether the bridge has said anything yet. Until it has it is still
+     * starting, which the backend that comes with the plugin takes a minute or
+     * more over the first time on macOS, where it unpacks its Python: what is
+     * asked of it meanwhile waits in its pipe, and so does the asker.
+     */
+    @Volatile
+    var started = false
+        private set
 
     /** Why the bridge is gone, once it is: every later request is refused with it. */
     @Volatile
@@ -104,15 +118,33 @@ internal class BridgeClient private constructor(
         dead = reason
         for (id in pending.keys.toList()) {
             val waiting = pending.remove(id) ?: continue
-            waiting.timeout.cancel(false)
+            waiting.timeout?.cancel(false)
             waiting.future.completeExceptionally(BridgeException(reason))
         }
+    }
+
+    /** Give a request so long to be answered, counted from now. */
+    private fun arm(id: Int, waiting: Pending, delayMs: Long) {
+        waiting.timeout?.cancel(false)
+        waiting.timeout = scheduler.schedule({
+            if (pending.remove(id) != null) {
+                val seconds = (delayMs / 1000.0).roundToLong()
+                waiting.future.completeExceptionally(
+                    BridgeException("Bridge request \"${waiting.method}\" timed out after ${seconds}s")
+                )
+            }
+        }, delayMs, TimeUnit.MILLISECONDS)
     }
 
     private fun onLine(raw: String) {
         val line = raw.trim()
         if (line.isEmpty()) return
         val message = parseJsonObject(line) ?: return // ignore non-JSON noise on stdout
+        if (!started) {
+            started = true
+            // What was asked while it started has its own time to be answered from here.
+            for ((id, waiting) in pending) arm(id, waiting, waiting.timeoutMs)
+        }
         if (message.string("method") == "event") {
             val params = message.obj("params") ?: return
             listener.onEvent(this, BusEvent(params))
@@ -120,7 +152,7 @@ internal class BridgeClient private constructor(
         }
         val id = message.present("id")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }?.asInt ?: return
         val waiting = pending.remove(id) ?: return
-        waiting.timeout.cancel(false)
+        waiting.timeout?.cancel(false)
         val error = message.present("error")
         if (error != null) {
             val reason = (error as? JsonObject)?.text("message")?.ifEmpty { null } ?: "bridge error"
@@ -147,20 +179,16 @@ internal class BridgeClient private constructor(
             return future
         }
         val id = nextId.getAndIncrement()
-        val timeout = scheduler.schedule({
-            if (pending.remove(id) != null) {
-                val seconds = (timeoutMs / 1000.0).roundToLong()
-                future.completeExceptionally(
-                    BridgeException("Bridge request \"$method\" timed out after ${seconds}s")
-                )
-            }
-        }, timeoutMs, TimeUnit.MILLISECONDS)
-        pending[id] = Pending(future, timeout)
+        val waiting = Pending(future, method, timeoutMs)
+        pending[id] = waiting
+        arm(id, waiting, if (started) timeoutMs else timeoutMs + startAllowanceMs)
+        // It spoke between that check and the timer being set: the timer is the longer one.
+        if (started && !future.isDone) arm(id, waiting, timeoutMs)
         // It died between the check above and the entry going in: nobody else
         // will ever settle this one.
         dead?.let { reason ->
             if (pending.remove(id) != null) {
-                timeout.cancel(false)
+                waiting.timeout?.cancel(false)
                 future.completeExceptionally(BridgeException(reason))
             }
             return future
@@ -189,6 +217,9 @@ internal class BridgeClient private constructor(
 
     companion object {
         const val DEFAULT_TIMEOUT_MS = 20_000L
+
+        /** How long a bridge may take to say its first word before what waits on it gives up. */
+        const val START_ALLOWANCE_MS = 5 * 60_000L
         private const val SHUTDOWN_GRACE_MS = 500L
         private const val STDOUT_DRAIN_MS = 2_000L
 
@@ -200,6 +231,8 @@ internal class BridgeClient private constructor(
             workDir: Path?,
             listener: Listener,
             scheduler: ScheduledExecutorService,
-        ): BridgeClient = BridgeClient(launcher.launch(command, workDir), listener, scheduler).also { it.start() }
+            startAllowanceMs: Long = START_ALLOWANCE_MS,
+        ): BridgeClient =
+            BridgeClient(launcher.launch(command, workDir), listener, scheduler, startAllowanceMs).also { it.start() }
     }
 }

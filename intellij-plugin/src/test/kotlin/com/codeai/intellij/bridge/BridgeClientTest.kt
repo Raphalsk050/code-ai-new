@@ -22,16 +22,20 @@ class BridgeClientTest {
     private val stderr = StringBuffer()
     private val exit = CompletableFuture<Int>()
     private var client: BridgeClient? = null
+    private var process: Process? = null
 
-    /** The fake bridge, on this JVM's own java and class path. */
-    private fun start(): BridgeClient {
+    /**
+     * The fake bridge, on this JVM's own java and class path. [slowMs] is how
+     * long it takes to start, and [allowanceMs] how long the client lets it.
+     */
+    private fun start(slowMs: Long? = null, allowanceMs: Long = 0): BridgeClient {
         // An argument file: the test class path is longer than a Windows command line may be.
         val argFile = Files.createTempFile("code-ai-fake-bridge", ".args")
         argFile.toFile().deleteOnExit()
         val classPath = System.getProperty("java.class.path").replace("\\", "\\\\")
         Files.writeString(argFile, "-cp \"$classPath\"\n")
         val java = Path.of(System.getProperty("java.home"), "bin", "java").toString()
-        val launcher = ProcessLauncher { command, _ -> ProcessBuilder(command).start() }
+        val launcher = ProcessLauncher { command, _ -> ProcessBuilder(command).start().also { process = it } }
         val listener = object : BridgeClient.Listener {
             override fun onEvent(client: BridgeClient, event: BusEvent) {
                 heard += "event:${event.type}:${event.payload}"
@@ -46,13 +50,18 @@ class BridgeClientTest {
                 exit.complete(code)
             }
         }
-        return BridgeClient.start(launcher, listOf(java, "@$argFile", FakeBridge::class.java.name), null, listener, scheduler)
-            .also { client = it }
+        val command = listOf(java, "@$argFile", FakeBridge::class.java.name) + listOfNotNull(slowMs?.toString())
+        return BridgeClient.start(launcher, command, null, listener, scheduler, allowanceMs).also { client = it }
     }
 
     @AfterTest
     fun stop() {
         client?.dispose()
+        // One that is still starting does not hear that: end it, and wait for the client to notice.
+        process?.let { running ->
+            if (!running.waitFor(2, TimeUnit.SECONDS)) running.destroyForcibly()
+            exit.get(30, TimeUnit.SECONDS)
+        }
         scheduler.shutdownNow()
     }
 
@@ -81,6 +90,28 @@ class BridgeClientTest {
     fun `a request the bridge never answers times out, naming the method`() {
         val failure = start().request("silent", timeoutMs = 300).failure()
         assertEquals("Bridge request \"silent\" timed out after 0s", failure.message)
+    }
+
+    @Test
+    fun `what is asked while the bridge starts waits for it, however short its own time`() {
+        val bridge = start(slowMs = 1_500, allowanceMs = 30_000)
+        val asked = bridge.request("echo", json("n" to 1), timeoutMs = 200)
+        assertEquals("1", asked.await().asJsonObject.text("n"))
+        assertTrue(bridge.started)
+    }
+
+    @Test
+    fun `once the bridge has spoken, what was asked while it started has its own time again`() {
+        val bridge = start(slowMs = 500, allowanceMs = 60_000)
+        val failure = bridge.request("silent", timeoutMs = 300).failure()
+        assertEquals("Bridge request \"silent\" timed out after 0s", failure.message)
+    }
+
+    @Test
+    fun `a bridge that never starts is given up on when its allowance is spent`() {
+        val bridge = start(slowMs = 60_000, allowanceMs = 700)
+        val failure = bridge.request("echo", timeoutMs = 300).failure()
+        assertEquals("Bridge request \"echo\" timed out after 1s", failure.message)
     }
 
     @Test

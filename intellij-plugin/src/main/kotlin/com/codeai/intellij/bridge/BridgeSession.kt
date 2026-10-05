@@ -249,7 +249,16 @@ internal class BridgeSession(private val project: Project) : Disposable {
             if (bridge === client) broadcast(event)
         }
 
-        override fun onStderr(client: BridgeClient, chunk: String) = host.run { note(chunk) }
+        override fun onStderr(client: BridgeClient, chunk: String) = host.run {
+            note(chunk)
+            // What the backend's launcher says before the backend is up is said to the user:
+            // that it is unpacking its Python, the first time, and how long that takes.
+            if (bridge === client && !client.started) {
+                for (line in chunk.lines()) {
+                    if (line.startsWith(LAUNCHER_SAYS)) broadcast(syntheticNotice(line.removePrefix(LAUNCHER_SAYS).trim()))
+                }
+            }
+        }
 
         override fun onExit(client: BridgeClient, code: Int) = host.run { exited(client, code) }
     }
@@ -351,6 +360,9 @@ internal class BridgeSession(private val project: Project) : Disposable {
         private const val AUTO_RESTART_DELAY_MS = 1_000L
         private const val LOG_LIMIT_BYTES = 2L * 1024 * 1024
         private val TRACEBACK_FRAME = Regex("""^\s*(File "|\s+\S)""")
+
+        /** How the launcher of the backend that comes with the plugin begins what it has to tell the user. */
+        private const val LAUNCHER_SAYS = "Code-AI: "
 
         /** A folder whose `.venv` is searched for the backend first: the build sets it for the sandbox IDE. */
         private const val DEV_ROOT = "code.ai.dev.root"
