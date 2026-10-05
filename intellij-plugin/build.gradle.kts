@@ -103,12 +103,38 @@ fun Exec.npm(vararg arguments: String, variables: Map<String, String> = emptyMap
     }
 }
 
+/** What npm has installed, held against what its lock file asks for. */
+object NodeModules {
+    /**
+     * Whether every package of the lock file is installed, at its version.
+     * [installed] is the list npm leaves in node_modules once an install has
+     * run to its end, so one that was cut short reads as not installed.
+     */
+    fun match(lock: File, installed: File): Boolean {
+        if (!lock.isFile || !installed.isFile) return false
+        val have = packages(installed)
+        return packages(lock).all { (path, wanted) ->
+            val there = have[path]
+            when {
+                path.isEmpty() -> true // the panel itself
+                there != null -> there["version"] == wanted["version"]
+                else -> wanted["optional"] == true // another platform's binary
+            }
+        }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun packages(file: File): Map<String, Map<String, Any?>> =
+        (JsonSlurper().parse(file) as? Map<String, Any?>)?.get("packages") as? Map<String, Map<String, Any?>> ?: emptyMap()
+}
+
 val installWebviewDependencies by tasks.registering(Exec::class) {
-    description = "Installs the panel's npm dependencies when they are missing."
+    description = "Installs the panel's npm dependencies, unless what is installed is what the lock file asks for."
     // The e2e browser is hundreds of megabytes the build has no use for.
     npm("ci", "--no-audit", "--no-fund", variables = mapOf("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD" to "1"))
-    val modules = vscodeExtension.dir("node_modules").asFile
-    onlyIf { !modules.isDirectory }
+    val lock = vscodeExtension.file("package-lock.json").asFile
+    val installed = vscodeExtension.file("node_modules/.package-lock.json").asFile
+    onlyIf { !NodeModules.match(lock, installed) }
 }
 
 val buildWebview by tasks.registering(Exec::class) {
