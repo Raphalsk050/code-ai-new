@@ -42,6 +42,9 @@ val ideDir = setting("ideDir", "CODE_AI_IDE_DIR")
 /** A folder holding the frozen backend (`code-ai`, or `code-ai.exe`) to ship inside the plugin. */
 val backendDir = setting("backendDir", "CODE_AI_BACKEND_DIR")
 
+/** A Node.js to bundle the panel with instead of the one on PATH (setup.sh fetches one when the system's is too old). */
+val nodeDir = setting("nodeDir", "CODE_AI_NODE_DIR")
+
 // --- the IDE -----------------------------------------------------------------
 
 /** A file of the installed IDE, at whichever of the places a platform keeps it. */
@@ -181,23 +184,39 @@ intellijPlatform {
 // one panel, written once. It is built where it lives and copied in.
 
 val vscodeExtension = repoRoot.dir("vscode-extension")
-val npm = if (hostSystem.startsWith("windows")) "npm.cmd" else "npm"
+val windows = hostSystem.startsWith("windows")
+
+/** Where `nodeDir` keeps node and npm: they run from there, and nothing else on the machine has to know of them. */
+val nodeBin: String? = nodeDir?.let { if (windows) it else File(it, "bin").path }
 
 /**
- * Runs npm in the panel's folder.
+ * Runs one of Node.js's two commands, `node` or `npm`.
  *
  * The environment is added to when the task runs. Added to while the build is
  * being configured, the configuration cache would keep the whole of it, PATH
  * included, as it was the day the cache was written: a Node.js installed
  * since would stay unfound.
  */
-fun Exec.npm(vararg arguments: String, variables: Map<String, String> = emptyMap()) {
-    workingDir = vscodeExtension.asFile
-    commandLine(listOf(npm) + arguments)
+fun Exec.nodeCommand(name: String, arguments: List<String>, variables: Map<String, String> = emptyMap()) {
+    // Locals, so that the action below holds on to them and not to this script.
+    val bin = nodeBin
+    val command = if (!windows) name else if (name == "npm") "npm.cmd" else "$name.exe"
+    commandLine(listOf(bin?.let { File(it, command).path } ?: command) + arguments)
     doFirst {
         this as Exec
         variables.forEach { (name, value) -> environment(name, value) }
+        if (bin != null) {
+            // npm starts node, and the packages' own scripts start it again, by name.
+            val path = environment.keys.firstOrNull { it.equals("PATH", ignoreCase = true) } ?: "PATH"
+            environment(path, listOfNotNull(bin, environment[path]?.toString()).joinToString(File.pathSeparator))
+        }
     }
+}
+
+/** Runs npm in the panel's folder. */
+fun Exec.npm(vararg arguments: String, variables: Map<String, String> = emptyMap()) {
+    workingDir = vscodeExtension.asFile
+    nodeCommand("npm", arguments.toList(), variables)
 }
 
 /** What npm has installed, held against what its lock file asks for. */
