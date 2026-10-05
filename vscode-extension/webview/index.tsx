@@ -21,6 +21,7 @@ import type {
 } from "../src/protocol";
 import { ApprovalCard } from "./approval";
 import { Banner, BannerState } from "./banner";
+import { BusyRing } from "./busy-ring";
 import { EmptyAction, EmptyState } from "./empty-state";
 import { CommandMenu } from "./command-menu";
 import { ElicitationCard } from "./elicitation-card";
@@ -1063,6 +1064,7 @@ function App(): JSX.Element {
                           </span>
                         )}
                         {images.map((image, i) => (
+                    {busy && <BusyRing />}
                           <span key={i} className="paste-chip">
                             <img
                               src={`data:${image.media_type};base64,${image.data}`}

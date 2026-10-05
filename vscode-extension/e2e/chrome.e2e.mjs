@@ -102,14 +102,58 @@ export const tests = {
     await openChat(ui);
     await busy(ui);
     assert(await ui.page.$(".composer.busy"), "the composer is not marked busy");
-    const ring = await ui.page.$eval(".composer.busy", (el) => getComputedStyle(el, "::before").animationName);
-    assert(ring === "ca-orbit", `ring animation is ${ring}`);
+    const ring = await ui.page.$eval(".composer.busy .busy-ring rect", (el) => getComputedStyle(el).animationName);
+    assert(ring === "ring-run", `ring animation is ${ring}`);
     const stop = await ui.page.$(".composer-end .send-btn.stop");
     assert(stop, "no stop button in the composer's corner");
     await ui.clearToHost();
     await stop.click();
     assert((await ui.toHost("cancel")).length === 1, "stop did not cancel");
     await ui.shot("chrome-composer-busy");
+  },
+
+  async "the ring keeps an even pace round a field of any shape"(ui, assert) {
+    // An arc swept by an angle from the field's centre crawls along its long
+    // sides and whips round the ends: 5px a step against 140px on this field.
+    await openChat(ui);
+    await busy(ui);
+    for (const width of [900, 440]) {
+      await ui.page.setViewportSize({ width, height: 800 });
+      await ui.page.waitForTimeout(100);
+      const pace = await ui.page.evaluate(() => {
+        const field = document.querySelector(".composer").getBoundingClientRect();
+        const rects = [...document.querySelectorAll(".busy-ring rect")];
+        const peak = rects[rects.length - 1];
+        const outline = peak.getTotalLength();
+        const run = document.getAnimations().find((a) => a.animationName === "ring-run" && a.effect.target === peak);
+        const duration = run.effect.getComputedTiming().duration;
+        run.pause();
+        // Where the arc's brightest point is on screen, at even steps of a lap.
+        const steps = 48;
+        const points = [];
+        for (let i = 0; i < steps; i++) {
+          run.currentTime = (duration * i) / steps;
+          const style = getComputedStyle(peak);
+          const along = parseFloat(style.getPropertyValue("--ring-from")) - parseFloat(style.strokeDashoffset);
+          const at = peak.getPointAtLength((outline * (((along % 100) + 100) % 100)) / 100);
+          points.push([at.x, at.y]);
+        }
+        const hops = points.map(([x, y], i) => {
+          const [nx, ny] = points[(i + 1) % steps];
+          return Math.hypot(nx - x, ny - y);
+        });
+        return { shape: field.width / field.height, slowest: Math.min(...hops), fastest: Math.max(...hops), outline };
+      });
+      assert(pace.shape > 2, `the field is ${pace.shape.toFixed(1)} times as wide as tall: no test of an uneven pace`);
+      assert(pace.slowest > 0, "the ring does not move");
+      assert(
+        pace.fastest / pace.slowest < 1.15,
+        `at ${width}px the ring covers ${pace.slowest.toFixed(1)}px to ${pace.fastest.toFixed(1)}px a step`
+      );
+      // One lap is one cycle: the steps add up to the outline, corners cut a little short.
+      const lap = (pace.slowest + pace.fastest) / 2 * 48;
+      assert(Math.abs(lap - pace.outline) / pace.outline < 0.05, `48 steps cover ${lap.toFixed(0)}px of ${pace.outline.toFixed(0)}px`);
+    }
   },
 
   async "the send button keeps its corner at every width"(ui, assert) {

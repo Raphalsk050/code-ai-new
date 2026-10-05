@@ -91,22 +91,28 @@ button.context-meter:hover { background: var(--hover); }
 .composer:focus-within { box-shadow: 0 0 0 3px var(--accent-soft); }
 .composer.off { border-color: var(--border-strong); }
 .composer-wrap.dropping .composer { box-shadow: 0 0 0 3px var(--accent-soft); }
-/* Working: an accent arc runs around the field, on its own masked layer so the
-   glass body never shows the gradient through. */
-@property --ca-angle { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
-.composer.busy { border-color: transparent; }
-.composer.busy::before {
-  content: ""; position: absolute; inset: -1px; border-radius: inherit; padding: 1px; pointer-events: none;
-  background: conic-gradient(from var(--ca-angle), var(--turn-user-line) 0deg, var(--turn-user-line) 200deg, var(--accent) 290deg, var(--turn-user-line) 360deg);
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
-  animation: ca-orbit 2.4s linear infinite;
+/* Working: an accent arc runs around the field. It is a dash on the field's
+   own outline, moved by its offset, so it covers the same distance every
+   instant. An angle swept from the centre does not: on a field wider than it
+   is tall it crawls along the long sides and whips round the ends. */
+.composer.busy { border-color: var(--turn-user-line); }
+.busy-ring {
+  position: absolute; inset: -1px; width: calc(100% + 2px); height: calc(100% + 2px);
+  overflow: visible; pointer-events: none;
 }
-@keyframes ca-orbit { to { --ca-angle: 360deg; } }
+.busy-ring rect {
+  x: .5px; y: .5px; width: calc(100% - 1px); height: calc(100% - 1px); rx: calc(var(--radius-lg) - .5px);
+  fill: none; stroke: var(--accent); stroke-width: 1px;
+  stroke-dasharray: var(--ring-dash) var(--ring-gap);
+  animation: ring-run 2.4s linear infinite;
+}
+@keyframes ring-run {
+  from { stroke-dashoffset: var(--ring-from); }
+  to { stroke-dashoffset: var(--ring-to); }
+}
 @media (prefers-reduced-motion: reduce) {
   .composer.busy { border-color: var(--accent); }
-  .composer.busy::before { display: none; }
+  .busy-ring { display: none; }
 }
 .composer textarea {
   resize: none; max-height: 180px; min-height: 22px;
