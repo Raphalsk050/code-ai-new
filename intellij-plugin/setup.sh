@@ -133,8 +133,9 @@ starter_java() {
 
 # Whether a JDK 21 is where Gradle looks for one by itself: the build runs on it and compiles with it.
 jdk21_present() {
+    # Gradle keeps the ones it fetched a folder deeper, and a Mac's have their own inside.
     for jdk_home in "${JAVA_HOME:-}" /usr/lib/jvm/* /usr/lib64/jvm/* /usr/java/* /opt/java/* \
-        "$HOME"/.gradle/jdks/* "$HOME"/.gradle/jdks/*/Contents/Home "$HOME"/.jdks/* "$HOME"/.sdkman/candidates/java/*; do
+        "$HOME"/.gradle/jdks/*/* "$HOME"/.gradle/jdks/*/*/Contents/Home "$HOME"/.jdks/* "$HOME"/.sdkman/candidates/java/*; do
         [ -n "$jdk_home" ] && [ -x "$jdk_home/bin/javac" ] || continue
         if grep -q '^JAVA_VERSION="21' "$jdk_home/release" 2>/dev/null; then
             return 0
