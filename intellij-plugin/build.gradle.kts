@@ -39,7 +39,7 @@ fun setting(name: String, env: String): String? = answer(name, env)?.trim()?.tak
 /** An installed IDE to build against, instead of downloading one. */
 val ideDir = setting("ideDir", "CODE_AI_IDE_DIR")
 
-/** A folder holding the frozen backend (`code-ai`, or `code-ai.exe`) to ship inside the plugin. */
+/** A folder holding a backend made elsewhere (`code-ai`, or `code-ai.exe`) to ship inside the plugin as it is. */
 val backendDir = setting("backendDir", "CODE_AI_BACKEND_DIR")
 
 /** A Node.js to bundle the panel with instead of the one on PATH (setup.sh fetches one when the system's is too old). */
@@ -278,9 +278,49 @@ sourceSets.main {
 }
 
 // --- the backend -------------------------------------------------------------
-// A packaged plugin carries the frozen `code-ai` in its own bin/ folder, where
-// the plugin looks for it first (ResolveCommand.kt). Without one the plugin
-// still builds, and finds the backend in the project's .venv or on PATH.
+// A package carries the agent itself in its bin/ folder, where the plugin looks
+// first (ResolveCommand.kt): installing it is all there is to do. It is the VS
+// Code extension's backend, made by the same scripts, frozen for Linux and
+// Windows and with its own Python for macOS (scripts/stage-backend.mjs).
+//
+// -Ptarget names the system the package is for, and is this machine's when
+// left out. -Ptarget=none builds a package without a backend, which looks for
+// `code-ai` in the project's .venv and then on PATH. -PbackendDir=<folder>
+// ships that folder's contents instead of making one.
+//
+// The sandbox IDE gets none of this: it runs the backend being worked on, from
+// the repository's own .venv (see runIde below).
+
+/** The package this machine's backend goes in, as the VS Code extension names its own: none is made for the others. */
+val hostTarget: String? = mapOf(
+    "linux-x86_64" to "linux-x64",
+    "windows-x86_64" to "win32-x64",
+    "mac-arm64" to "darwin-arm64",
+    "mac-x86_64" to "darwin-x64",
+)[hostSystem]
+
+val target: String = setting("target", "CODE_AI_TARGET") ?: hostTarget ?: "none"
+val carriesBackend = target != "none"
+val stagedBackend = layout.buildDirectory.dir("backend/$target")
+
+val stageBackend by tasks.registering(Exec::class) {
+    description = "Makes the backend the package carries, for the system -Ptarget names."
+    val wanted = carriesBackend && backendDir == null
+    onlyIf { wanted }
+    workingDir = layout.projectDirectory.asFile
+    nodeCommand("node", listOf("scripts/stage-backend.mjs", "--target", target, "--out", stagedBackend.get().asFile.path))
+    // What a backend is made from: when none of it moved, the one from last time stands.
+    inputs.property("target", target)
+    inputs.files(fileTree(repoRoot.dir("src")) { exclude("**/__pycache__/**", "**/*.egg-info/**") })
+    inputs.files(fileTree(repoRoot.dir("packaging")) { exclude("**/__pycache__/**") })
+    inputs.files(repoRoot.file("pyproject.toml"), repoRoot.file("scripts/build_mac_bundle.py"))
+    inputs.files(
+        layout.projectDirectory.file("scripts/stage-backend.mjs"),
+        vscodeExtension.file("scripts/ensure-backend.mjs"),
+        vscodeExtension.file("scripts/bundle-binary.mjs"),
+    )
+    outputs.dir(stagedBackend)
+}
 
 tasks.prepareSandbox {
     if (backendDir != null) {
@@ -293,6 +333,17 @@ tasks.prepareSandbox {
 tasks.buildPlugin {
     // The backend has to stay executable inside the package.
     useFileSystemPermissions()
+    if (carriesBackend) {
+        // One package for each system, as with the VS Code extension: the backend is most of the download.
+        archiveClassifier = target
+        if (backendDir == null) {
+            dependsOn(stageBackend)
+            // Beside lib/, in the plugin's own folder: the task puts everything under it.
+            from(stagedBackend) {
+                into("bin")
+            }
+        }
+    }
 }
 
 // macOS seals an application once it has run, and the browser plugin holds a
