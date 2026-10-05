@@ -289,6 +289,10 @@ internal class BridgeSession(private val project: Project) : Disposable {
 
     private fun workspaceRoots(): List<String> {
         val roots = LinkedHashSet<String>()
+        // Run from the repository (`./gradlew runIde`), the repository's own
+        // virtualenv holds the backend being worked on: it comes before the
+        // project's, as the extension run from source finds the one beside it.
+        System.getProperty(DEV_ROOT)?.takeIf { it.isNotBlank() }?.let(roots::add)
         project.basePath?.let(roots::add)
         try {
             ReadAction.compute<Unit, RuntimeException> {
@@ -348,6 +352,9 @@ internal class BridgeSession(private val project: Project) : Disposable {
         private const val AUTO_RESTART_DELAY_MS = 1_000L
         private const val LOG_LIMIT_BYTES = 2L * 1024 * 1024
         private val TRACEBACK_FRAME = Regex("""^\s*(File "|\s+\S)""")
+
+        /** A folder whose `.venv` is searched for the backend first: the build sets it for the sandbox IDE. */
+        private const val DEV_ROOT = "code.ai.dev.root"
         private val SCHEDULER = AppExecutorUtil.getAppScheduledExecutorService()
 
         fun of(project: Project): BridgeSession = project.service()

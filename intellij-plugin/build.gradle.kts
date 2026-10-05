@@ -148,6 +148,9 @@ fun words(property: String): List<String> =
 tasks.runIde {
     // A sandbox is a fresh install: go straight to the IDE, not through Android Studio's setup wizard.
     jvmArgs("-Ddisable.android.first.run=true")
+    // The backend being worked on is the repository's own (install.sh puts it in .venv):
+    // the sandbox finds it there without anything being set in the IDE.
+    jvmArgs("-Dcode.ai.dev.root=${repoRoot.asFile.absolutePath}")
     // -PideJvmArgs="-Dkey=value ..." and -PideArgs="/path/to/a/project" reach the IDE as they are.
     jvmArgs(words("ideJvmArgs"))
     args(words("ideArgs"))
