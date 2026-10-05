@@ -13,6 +13,13 @@
   ]]></description>
 
   <depends>com.intellij.modules.platform</depends>
+  <!-- The embedded browser the panel is drawn in. From 2026.1 it is a plugin of
+       JetBrains' own (Web Browser (JCEF)), which Android Studio does not come
+       with: naming it here is what lets the panel reach it once it is
+       installed. Optional, because before 2026.1 the browser is part of the
+       IDE itself, and because without it the tool window still opens, to say
+       how to get it (chat/MissingBrowser.kt). -->
+  <depends optional="true" config-file="code-ai-browser.xml">com.intellij.modules.jcef</depends>
 
   <extensions defaultExtensionNs="com.intellij">
     <toolWindow id="Code-AI"

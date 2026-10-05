@@ -1,0 +1,5 @@
+<idea-plugin>
+  <!-- Nothing to add when the embedded browser's plugin is there: plugin.xml
+       names it for its classes alone, and an optional dependency has to name
+       a file. -->
+</idea-plugin>
