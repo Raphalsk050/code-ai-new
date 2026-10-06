@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Builds dist/avatar-lab.html: the avatar's proposals on the real panel, in one
-// file that opens in any browser. Not part of the extension - `npm run build`
+// Builds dist/avatar-lab.html: the avatar on the real panel, in one file that
+// opens in any browser. Not part of the extension - `npm run build`
 // and the VSIX know nothing of it.
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -61,8 +61,7 @@ html, body { margin: 0; }
 .lab-shell { display: grid; grid-template-columns: minmax(360px, 520px) minmax(0, 1fr); height: 100vh; }
 .lab-panel { position: relative; height: 100vh; overflow: hidden; background: var(--bg); border-right: 1px solid var(--border); }
 .lab-panel #root, .lab-panel .app { height: 100%; }
-.lab-float-layer { position: absolute; inset: 0; z-index: 40; pointer-events: none; }
-.lab-float-layer > * { pointer-events: auto; }
+
 /* The rail's colour behind cards in the pane's: the panel's own pairing. */
 #lab {
   overflow-y: auto; height: 100vh; box-sizing: border-box; padding: 22px 26px 48px;

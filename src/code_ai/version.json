@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 36,
-  "patch": 9,
-  "build": 88,
+  "minor": 37,
+  "patch": 0,
+  "build": 89,
   "updated": "2026-10-06",
-  "note": "Avatar skins keep their colours on Chromium without color-mix()"
+  "note": "Float the avatar in the panel, with seasonal costumes and a physically simulated idle"
 }

@@ -1,19 +1,17 @@
-// The avatar's proposals, shown on the real panel before any of them ships.
+// The avatar on the real panel, away from VS Code.
 //
 // Importing ../webview/index mounts the panel exactly as the extension does;
 // this file then plays the host (a conversation, a turn in each state) and
-// lays the proposals over and beside it. Nothing here is in the product.
+// puts every skin, state and size beside it.
 
 import "../webview/index";
 
 import * as React from "react";
-import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 
 import { AgentAvatar } from "../webview/agent-avatar";
 import type { AvatarPose } from "../webview/avatar-pose";
 import { AVATAR_SKINS, type AvatarSkin, seasonalSkin, setAvatarSkin } from "../webview/avatar-skin";
-import { FloatingAvatar, type Point } from "../webview/floating-avatar";
 
 const SKIN_NAME: Record<AvatarSkin, string> = {
   default: "Padrão",
@@ -95,15 +93,6 @@ function openPanel(): void {
   document.querySelector<HTMLButtonElement>(".home-new")?.click();
 }
 
-function remembered(): Point | undefined {
-  try {
-    const at = JSON.parse(localStorage.getItem("avatar-lab.at") ?? "null");
-    return at && typeof at.x === "number" && typeof at.y === "number" ? at : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 function Choice<T extends string>({
   label,
   value,
@@ -129,14 +118,10 @@ function Choice<T extends string>({
   );
 }
 
-function Lab({ layer }: { layer: HTMLElement }): JSX.Element {
+function Lab(): JSX.Element {
   const [skin, setSkin] = React.useState<AvatarSkin>("default");
-  const [pose, setPose] = React.useState<AvatarPose>("think");
-  const [inertia, setInertia] = React.useState("on");
-  const [size, setSize] = React.useState("72");
-  const [base, setBase] = React.useState("glass");
+  const [pose, setPose] = React.useState<AvatarPose>("idle");
   const [theme, setTheme] = React.useState("dark");
-  const [floating, setFloating] = React.useState("on");
 
   React.useEffect(() => setAvatarSkin(skin), [skin]);
   React.useEffect(() => showTurn(pose), [pose]);
@@ -149,31 +134,9 @@ function Lab({ layer }: { layer: HTMLElement }): JSX.Element {
   const today = seasonalSkin(new Date());
   return (
     <>
-      {floating === "on" &&
-        createPortal(
-          <FloatingAvatar
-            pose={pose}
-            size={Number(size)}
-            inertia={inertia === "on"}
-            bare={base === "bare"}
-            start={remembered()}
-            onRest={(at) => {
-              try {
-                localStorage.setItem("avatar-lab.at", JSON.stringify(at));
-              } catch {
-                // A preview opened from a file may have no storage; it just forgets.
-              }
-            }}
-          />,
-          layer
-        )}
-
       <header className="lab-head">
-        <h1>Avatar: propostas</h1>
-        <p>
-          O painel é o de verdade, com uma conversa de mentira. Nada disto está ligado no produto: o que você
-          escolher aqui é o que entra.
-        </p>
+        <h1>Avatar</h1>
+        <p>O painel é o de verdade, com uma conversa de mentira. O que se vê aqui é o que a extensão mostra.</p>
       </header>
 
       <section className="lab-card">
@@ -186,12 +149,9 @@ function Lab({ layer }: { layer: HTMLElement }): JSX.Element {
         <h2>Flutuando na ferramenta</h2>
         <p>
           Arraste o avatar no painel e solte em qualquer lugar. Solte em movimento para ver a inércia: ele desliza,
-          bate de leve na borda e a folha chega atrasada. Setas empurram, duplo clique manda de volta ao canto.
+          bate de leve na borda e a folha chega atrasada. Setas empurram, duplo clique manda de volta ao canto. Só o
+          rosto pega o clique; em volta dele o painel continua clicável. Desliga em Configurações, Agente.
         </p>
-        <Choice label="Avatar" value={floating} options={[["on", "Flutuando"], ["off", "Escondido"]]} onPick={setFloating} />
-        <Choice label="Tamanho" value={size} options={[["56", "56 px"], ["72", "72 px"], ["96", "96 px"]]} onPick={setSize} />
-        <Choice label="Inércia" value={inertia} options={[["on", "Ligada"], ["off", "Desligada"]]} onPick={setInertia} />
-        <Choice label="Base" value={base} options={[["glass", "Vidro"], ["bare", "Sem base"]]} onPick={setBase} />
       </section>
 
       <section className="lab-card">
@@ -230,15 +190,11 @@ function Lab({ layer }: { layer: HTMLElement }): JSX.Element {
   );
 }
 
-const panel = document.querySelector<HTMLElement>(".lab-panel")!;
-const layer = document.createElement("div");
-layer.className = "lab-float-layer";
-panel.appendChild(layer);
 
 // The panel hears its host only once its effects have run: a frame after it paints.
 requestAnimationFrame(() =>
   window.setTimeout(() => {
     openPanel();
-    createRoot(document.getElementById("lab")!).render(<Lab layer={layer} />);
+    createRoot(document.getElementById("lab")!).render(<Lab />);
   }, 30)
 );

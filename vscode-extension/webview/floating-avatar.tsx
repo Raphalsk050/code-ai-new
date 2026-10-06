@@ -1,32 +1,27 @@
 import * as React from "react";
 
 import { AgentAvatar } from "./agent-avatar";
-import { type Body, type Bounds, clampTo, glide, leanFor, settled, type Spring, stepSpring } from "./avatar-motion";
+import {
+  type Body, type Bounds, clampTo, glide, leanFor, type Place, placeOf, pointOf, settled, type Spring, stepSpring,
+} from "./avatar-motion";
 import type { AvatarPose } from "./avatar-pose";
 import type { AvatarSkin } from "./avatar-skin";
 import { t } from "./i18n";
 
-/** Large enough to read as the agent in the room, not as one more button. */
-const DEFAULT_SIZE = 72;
-/** How much of the base the glyph's box takes. */
-const GLYPH_SHARE = 0.8;
+/** Its box. The face is six tenths of it: the agent in the room, not one more button. */
+const DEFAULT_SIZE = 88;
 /** Kept clear of the container's edges. */
 const MARGIN = 8;
 /** Its own corner is the bottom right: clear of the rail's strip, above the composer. */
-const HOME_INSET = { right: 52, bottom: 150 };
+const HOME: Place = { right: true, bottom: true, x: 32, y: 150 };
 /** What an arrow key gives it, in px/s: a push, not a step. */
 const NUDGE = 520;
-/** Returning home is a spring too, softer than the body's. */
-const HOME = { stiffness: 70, damping: 13 };
+/** Going home is a spring too, softer than the body's. */
+const RETURN = { stiffness: 70, damping: 13 };
 
 /** The system was asked for less motion: no throw, no lean, no glide home. */
 function wantsLessMotion(): boolean {
   return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
-}
-
-export interface Point {
-  x: number;
-  y: number;
 }
 
 interface Sim extends Body {
@@ -37,7 +32,9 @@ interface Sim extends Body {
   /** Where the pointer wants it. */
   wantX: number;
   wantY: number;
-  home: Point | null;
+  home: { x: number; y: number } | null;
+  /** Where it rests, as the room's size will not change it. */
+  place: Place;
   tilt: Spring;
   leaf: Spring;
   lookX: Spring;
@@ -49,14 +46,15 @@ interface Sim extends Body {
 }
 
 const still = (): Spring => ({ x: 0, v: 0 });
+const same = (a: Place, b: Place) => a.right === b.right && a.bottom === b.bottom && a.x === b.x && a.y === b.y;
 
 /**
  * The avatar loose in the panel: picked up, dropped anywhere, thrown. Lives
- * inside a positioned container and never leaves it.
+ * inside a positioned container and never leaves it. Only the face takes the
+ * pointer; the rest of its box lets a click through to what is under it.
  *
- * @param size how wide it is, base included, in px
- * @param start where it is first put, in the container's pixels; the bottom
- *   right corner when left out
+ * @param size its box, in px
+ * @param start where it is first put; its own corner when left out
  * @param inertia off, it goes where the pointer goes and stops when let go
  * @param onRest called with where it came to rest, for remembering it
  */
@@ -66,38 +64,32 @@ export function FloatingAvatar({
   size = DEFAULT_SIZE,
   start,
   inertia = true,
-  bare = false,
   onRest,
 }: {
   pose: AvatarPose | null;
   skin?: AvatarSkin;
   size?: number;
-  start?: Point;
+  start?: Place;
   inertia?: boolean;
-  bare?: boolean;
-  onRest?: (at: Point) => void;
+  onRest?: (place: Place) => void;
 }): JSX.Element {
   const ref = React.useRef<HTMLDivElement>(null);
   const [held, setHeld] = React.useState(false);
   const sim = React.useRef<Sim>({
-    x: 0, y: 0, vx: 0, vy: 0, held: false, grabX: 0, grabY: 0, wantX: 0, wantY: 0, home: null,
+    x: 0, y: 0, vx: 0, vy: 0, held: false, grabX: 0, grabY: 0, wantX: 0, wantY: 0, home: null, place: start ?? HOME,
     tilt: still(), leaf: still(), lookX: still(), lookY: still(), sx: { x: 1, v: 0 }, sy: { x: 1, v: 0 },
     last: 0, frame: 0,
   });
   const live = React.useRef({ inertia, onRest });
   live.current = { inertia, onRest };
 
+  const room = React.useCallback(() => ref.current?.offsetParent as HTMLElement | null, []);
   const bounds = React.useCallback((): Bounds => {
-    const box = ref.current?.offsetParent as HTMLElement | null;
+    const box = room();
     const width = box?.clientWidth ?? window.innerWidth;
     const height = box?.clientHeight ?? window.innerHeight;
     return { left: MARGIN, top: MARGIN, right: width - size - MARGIN, bottom: height - size - MARGIN };
-  }, [size]);
-
-  const home = React.useCallback((): Point => {
-    const edge = bounds();
-    return clampTo(edge, edge.right - HOME_INSET.right, edge.bottom - HOME_INSET.bottom);
-  }, [bounds]);
+  }, [room, size]);
 
   const paint = React.useCallback(() => {
     const el = ref.current;
@@ -130,8 +122,8 @@ export function FloatingAvatar({
       } else if (s.home && wantsLessMotion()) {
         Object.assign(s, { x: s.home.x, y: s.home.y, vx: 0, vy: 0, home: null });
       } else if (s.home) {
-        const x = stepSpring({ x: s.x, v: s.vx }, s.home.x, dt, HOME.stiffness, HOME.damping);
-        const y = stepSpring({ x: s.y, v: s.vy }, s.home.y, dt, HOME.stiffness, HOME.damping);
+        const x = stepSpring({ x: s.x, v: s.vx }, s.home.x, dt, RETURN.stiffness, RETURN.damping);
+        const y = stepSpring({ x: s.y, v: s.vy }, s.home.y, dt, RETURN.stiffness, RETURN.damping);
         Object.assign(s, { x: x.x, vx: x.v, y: y.x, vy: y.v });
         if (settled(x, s.home.x, 0.3) && settled(y, s.home.y, 0.3)) {
           Object.assign(s, { x: s.home.x, y: s.home.y, vx: 0, vy: 0, home: null });
@@ -171,7 +163,10 @@ export function FloatingAvatar({
       }
       // At rest nothing runs: no frame is asked for until it is touched again.
       s.frame = 0;
-      live.current.onRest?.({ x: s.x, y: s.y });
+      const place = placeOf(bounds(), s.x, s.y);
+      if (same(place, s.place)) return;
+      s.place = place;
+      live.current.onRest?.(place);
     },
     [bounds, paint]
   );
@@ -186,18 +181,19 @@ export function FloatingAvatar({
   // Placed once: `start` is where it begins, not somewhere it is sent back to.
   const placed = React.useRef(false);
   React.useLayoutEffect(() => {
-    if (placed.current || !ref.current?.offsetParent) return;
+    if (placed.current || !room()) return;
     placed.current = true;
-    const corner = home();
-    Object.assign(sim.current, clampTo(bounds(), start?.x ?? corner.x, start?.y ?? corner.y));
+    Object.assign(sim.current, pointOf(bounds(), sim.current.place));
     paint();
   });
-  // Kept inside whenever the container changes size under it, or it does.
+  // The room changes size under it, or it does: at rest it keeps its place,
+  // caught in flight it is only kept inside.
   React.useLayoutEffect(() => {
-    const box = ref.current?.offsetParent;
+    const box = room();
     if (!box) return;
     const fit = () => {
-      Object.assign(sim.current, clampTo(bounds(), sim.current.x, sim.current.y));
+      const s = sim.current;
+      Object.assign(s, s.frame ? clampTo(bounds(), s.x, s.y) : pointOf(bounds(), s.place));
       paint();
     };
     fit();
@@ -205,13 +201,13 @@ export function FloatingAvatar({
     const observer = new ResizeObserver(fit);
     observer.observe(box);
     return () => observer.disconnect();
-  }, [bounds, paint]);
+  }, [bounds, paint, room]);
   React.useEffect(() => () => cancelAnimationFrame(sim.current.frame), []);
 
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
+    const box = room()?.getBoundingClientRect();
+    if (event.button !== 0 || !box) return;
     const s = sim.current;
-    const box = (event.currentTarget.offsetParent as HTMLElement).getBoundingClientRect();
     event.currentTarget.setPointerCapture(event.pointerId);
     Object.assign(s, {
       held: true, home: null, vx: 0, vy: 0,
@@ -222,8 +218,8 @@ export function FloatingAvatar({
   };
   const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
     const s = sim.current;
-    if (!s.held) return;
-    const box = (event.currentTarget.offsetParent as HTMLElement).getBoundingClientRect();
+    const box = room()?.getBoundingClientRect();
+    if (!s.held || !box) return;
     s.wantX = event.clientX - box.left - s.grabX;
     s.wantY = event.clientY - box.top - s.grabY;
   };
@@ -233,6 +229,10 @@ export function FloatingAvatar({
     setHeld(false);
     wake();
   };
+  const goHome = () => {
+    sim.current.home = pointOf(bounds(), HOME);
+    wake();
+  };
 
   const onKeyDown = (event: React.KeyboardEvent) => {
     const push: Record<string, [number, number]> = {
@@ -240,7 +240,7 @@ export function FloatingAvatar({
     };
     const s = sim.current;
     if (event.key === "Home") {
-      s.home = home();
+      goHome();
     } else if (push[event.key]) {
       const by = live.current.inertia && !wantsLessMotion() ? NUDGE : 0;
       s.home = null;
@@ -248,36 +248,28 @@ export function FloatingAvatar({
       s.vy += push[event.key][1] * by;
       // With no inertia a key is a plain step.
       if (!by) Object.assign(s, clampTo(bounds(), s.x + push[event.key][0] * 16, s.y + push[event.key][1] * 16));
+      wake();
     } else {
       return;
     }
     event.preventDefault();
-    wake();
   };
 
   return (
-    <div
-      ref={ref}
-      className="av-float"
-      style={{ width: size, height: size }}
-      role="button"
-      tabIndex={0}
-      aria-label={t("Code-AI. Drag to move, arrow keys to push, Home to send back.")}
-      data-held={held ? "" : undefined}
-      data-busy={pose && pose !== "idle" ? "" : undefined}
-      data-bare={bare ? "" : undefined}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={release}
-      onPointerCancel={release}
-      onKeyDown={onKeyDown}
-      onDoubleClick={() => {
-        sim.current.home = home();
-        wake();
-      }}
-    >
-      <span className="av-float-puck" />
-      <AgentAvatar pose={pose} size={Math.round(size * GLYPH_SHARE)} fx skin={skin} />
+    <div ref={ref} className="av-float" style={{ width: size, height: size }} data-held={held ? "" : undefined}>
+      <AgentAvatar pose={pose} size={size} fx skin={skin} backed />
+      <div
+        className="av-float-grip"
+        role="button"
+        tabIndex={0}
+        aria-label={t("Code-AI. Drag to move, arrow keys to push, Home to send back.")}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={release}
+        onPointerCancel={release}
+        onKeyDown={onKeyDown}
+        onDoubleClick={goHome}
+      />
     </div>
   );
 }

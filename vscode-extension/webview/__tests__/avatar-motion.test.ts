@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { type Body, type Bounds, clampTo, glide, leanFor, settled, type Spring, stepSpring } from "../avatar-motion";
+import {
+  type Body, type Bounds, clampTo, glide, isPlace, leanFor, placeOf, pointOf, settled, type Spring, stepSpring,
+} from "../avatar-motion";
 
 const ROOM: Bounds = { left: 8, top: 8, right: 400, bottom: 600 };
 
@@ -79,6 +81,23 @@ test("no speed bends it out of shape", () => {
   assert.ok(Math.abs(wild.tilt) <= 16 && Math.abs(wild.leaf) <= 32);
   assert.ok(Math.abs(wild.lookX) <= 1.5 && Math.abs(wild.lookY) <= 1.3);
   assert.ok(wild.stretchX >= 0.92 && wild.stretchX <= 1.08 && wild.stretchY >= 0.92 && wild.stretchY <= 1.08);
+});
+
+test("a place is kept by its nearer sides, so a corner survives a room of another size", () => {
+  const corner = placeOf(ROOM, 370, 540);
+  assert.deepEqual(corner, { right: true, bottom: true, x: 30, y: 60 });
+  assert.deepEqual(pointOf(ROOM, corner), { x: 370, y: 540 });
+  assert.deepEqual(pointOf({ left: 8, top: 8, right: 900, bottom: 300 }, corner), { x: 870, y: 240 });
+  assert.deepEqual(placeOf(ROOM, 20, 30), { right: false, bottom: false, x: 12, y: 22 });
+  // A room too small for where it was: as near as the room allows.
+  assert.deepEqual(pointOf({ left: 8, top: 8, right: 20, bottom: 40 }, corner), { x: 8, y: 8 });
+});
+
+test("a place read back from storage is checked before it is believed", () => {
+  assert.ok(isPlace({ right: true, bottom: false, x: 3, y: 4 }));
+  for (const junk of [undefined, null, "there", { x: 3, y: 4 }, { right: true, bottom: true, x: "3", y: 4 }, { right: 1, bottom: 0, x: 3, y: NaN }]) {
+    assert.ok(!isPlace(junk), JSON.stringify(junk));
+  }
 });
 
 test("a room smaller than the avatar still has one place for it", () => {

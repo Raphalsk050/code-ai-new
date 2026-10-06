@@ -1,8 +1,8 @@
 import * as React from "react";
 
 import type { AvatarPose } from "./avatar-pose";
+import { IDLE_LOOP_S } from "./avatar-rig";
 import { type AvatarSkin, useAvatarSkin } from "./avatar-skin";
-import { IDLE_LOOP_S } from "./styles/avatar";
 
 const FACE = "M12 3.6c5.3 0 8.6 3.1 8.6 8.2 0 5.4-3.4 8.6-8.6 8.6s-8.6-3.2-8.6-8.6c0-5.1 3.3-8.2 8.6-8.2z";
 const LEAF = "M12.4 3.9C12 2 13.6.6 16.1.9c.1 2-1.4 3.4-3.7 3z";
@@ -45,6 +45,7 @@ export function AgentAvatar({
   size = 16,
   fx = false,
   skin,
+  backed = false,
   className,
 }: {
   pose: AvatarPose | null;
@@ -52,6 +53,8 @@ export function AgentAvatar({
   fx?: boolean;
   /** Left out, the avatar wears what the whole page wears. */
   skin?: AvatarSkin;
+  /** The eyes are holes: over anything but the page's own ground they need one behind them. */
+  backed?: boolean;
   className?: string;
 }): JSX.Element {
   const mask = "agent-av-" + React.useId().replace(/:/g, "");
@@ -130,6 +133,7 @@ export function AgentAvatar({
                 )}
               </g>
             )}
+            {backed && !carved && <path className="agent-av-back" d={FACE} />}
             <path className="agent-av-face" d={FACE} mask={`url(#${mask})`} />
             {carved && detail && (
               <g className="agent-av-lobes" clipPath={`url(#${outline})`} mask={`url(#${mask})`}>

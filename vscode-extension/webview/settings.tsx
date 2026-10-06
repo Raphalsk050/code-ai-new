@@ -3,6 +3,7 @@ import * as React from "react";
 import { t, tf } from "./i18n";
 
 import type { AppMode, EditorSettings, McpAction, Settings, ToolSpec } from "../src/protocol";
+import { AVATAR_SKINS } from "./avatar-skin";
 import { Codicon } from "./codicon";
 import { ExtPrefs } from "./history";
 import { McpSection, McpViewState } from "./mcp-settings";
@@ -433,6 +434,41 @@ export function SettingsScreen({
         hint: t("Shows, on approvals, why the model thinks the change is needed."),
         keys: ["learn"],
         control: <Switch checked={Boolean(draft.learn)} onChange={(v) => set("learn", v)} label={t("Learn mode")} />,
+      },
+      {
+        id: "floating_avatar",
+        category: "agent",
+        label: t("Floating avatar"),
+        hint: t("The agent loose in the panel: drag it anywhere, double-click sends it back to its corner."),
+        keys: [],
+        control: (
+          <Switch
+            checked={prefs.floatingAvatar}
+            onChange={(v) => onPrefsChange({ floatingAvatar: v })}
+            label={t("Floating avatar")}
+          />
+        ),
+      },
+      {
+        id: "avatar_skin",
+        category: "agent",
+        label: t("Avatar costume"),
+        hint: t("By the calendar it dresses up for Halloween, Christmas and Easter."),
+        keys: [],
+        control: (
+          <Choice
+            value={prefs.avatarSkin}
+            options={["auto", ...AVATAR_SKINS]}
+            labels={{
+              auto: t("By the calendar"),
+              default: t("No costume"),
+              halloween: t("Halloween"),
+              christmas: t("Christmas"),
+              easter: t("Easter"),
+            }}
+            onChange={(v) => onPrefsChange({ avatarSkin: v as ExtPrefs["avatarSkin"] })}
+          />
+        ),
       },
       {
         id: "inline_hints_enabled",

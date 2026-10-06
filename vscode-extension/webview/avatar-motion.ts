@@ -56,6 +56,46 @@ export function clampTo(bounds: Bounds, x: number, y: number): { x: number; y: n
 }
 
 /**
+ * Where it was left, measured in from the two sides it is nearer to: put back
+ * in a room of another size, a corner is still that corner.
+ */
+export interface Place {
+  right: boolean;
+  bottom: boolean;
+  x: number;
+  y: number;
+}
+
+export function placeOf(bounds: Bounds, x: number, y: number): Place {
+  const right = x - bounds.left > bounds.right - x;
+  const bottom = y - bounds.top > bounds.bottom - y;
+  return {
+    right,
+    bottom,
+    x: Math.round(right ? bounds.right - x : x - bounds.left),
+    y: Math.round(bottom ? bounds.bottom - y : y - bounds.top),
+  };
+}
+
+export function pointOf(bounds: Bounds, place: Place): { x: number; y: number } {
+  return clampTo(
+    bounds,
+    place.right ? bounds.right - place.x : bounds.left + place.x,
+    place.bottom ? bounds.bottom - place.y : bounds.top + place.y
+  );
+}
+
+/** A place read back from storage is whatever was written there. */
+export function isPlace(value: unknown): value is Place {
+  const place = value as Place | null;
+  return (
+    typeof place === "object" && place !== null &&
+    typeof place.right === "boolean" && typeof place.bottom === "boolean" &&
+    Number.isFinite(place.x) && Number.isFinite(place.y)
+  );
+}
+
+/**
  * One step of a body thrown and left to itself. `hit` is the speed it struck a
  * wall with, 0 when it did not: what the squash of a landing is made from.
  */

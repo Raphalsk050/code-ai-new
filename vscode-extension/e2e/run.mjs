@@ -20,6 +20,7 @@ import { tests as turns } from "./turns.e2e.mjs";
 import { tests as rail } from "./rail.e2e.mjs";
 import { tests as settingsLayout } from "./settings-layout.e2e.mjs";
 import { tests as terminal } from "./terminal.e2e.mjs";
+import { tests as avatar } from "./avatar.e2e.mjs";
 import { tests as flow } from "./flow.e2e.mjs";
 
 const GROUPS = [
@@ -29,7 +30,7 @@ const GROUPS = [
     ready: "#root .app",
     // The chat panel is a sidebar: its specs assume the width one has.
     viewport: { width: 900, height: 900 },
-    specs: { settings, mcp, update, branch, transcript, chrome, turns, rail, settingsLayout, terminal },
+    specs: { settings, mcp, update, branch, transcript, chrome, turns, rail, settingsLayout, terminal, avatar },
   },
   {
     name: "flow",

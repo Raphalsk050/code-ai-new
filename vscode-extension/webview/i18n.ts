@@ -820,6 +820,17 @@ const PT: Record<string, string> = {
   "Test": "Testar",
   "What the agent may do without asking.": "O que o agente pode fazer sem perguntar.",
   "What a new conversation opens in.": "Em que modo uma conversa nova abre.",
+  "Floating avatar": "Avatar flutuante",
+  "The agent loose in the panel: drag it anywhere, double-click sends it back to its corner.":
+    "O agente solto no painel: arraste para qualquer lugar; duplo clique manda de volta ao canto.",
+  "Avatar costume": "Fantasia do avatar",
+  "By the calendar it dresses up for Halloween, Christmas and Easter.":
+    "Pelo calendário ele se veste para o Halloween, o Natal e a Páscoa.",
+  "By the calendar": "Pelo calendário",
+  "No costume": "Sem fantasia",
+  Halloween: "Halloween",
+  Christmas: "Natal",
+  Easter: "Páscoa",
   "Show edits in the editor's diff": "Mostrar as edições no diff do editor",
   "Each change the agent makes opens as a diff tab while it is written.": "Cada mudança do agente abre numa aba de diff enquanto é escrita.",
   "The budget the conversation is compacted to stay under.": "O orçamento abaixo do qual a conversa é compactada.",
