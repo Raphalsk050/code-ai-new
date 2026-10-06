@@ -6,6 +6,7 @@ from typing import Any
 from code_ai.core.errors import ToolArgumentError, ToolExecutionError
 from code_ai.core.internet_intent import requires_current_web_search
 from code_ai.tools.base import ToolCapability, ToolContext
+from code_ai.tools.output import WEB_CONTENT_NOTE, defuse_untrusted, quote_web
 from code_ai.tools.schema import tool_schema
 from code_ai.tools.web.backend import DDGSWebSearchBackend, WebSearchBackend, fetch_page_text
 
@@ -66,16 +67,29 @@ class WebSearchTool:
 
         return {
             "query": query,
-            "results": [result.to_dict() for result in results[:max_results]],
+            "results": [_quoted(result.to_dict(), "snippet") for result in results[:max_results]],
             "pages": pages,
+            "note": WEB_CONTENT_NOTE,
         }
 
 
 async def _fetch_page(url: str, *, timeout: float) -> dict[str, str]:
     page = await asyncio.to_thread(fetch_page_text, url, timeout=timeout, max_chars=6000)
-    data = page.to_dict()
+    data = _quoted(page.to_dict(), "text")
     data["status"] = "ok"
     return data
+
+
+def _quoted(entry: dict[str, str], body: str) -> dict[str, str]:
+    """An entry with its long text fenced and its short fields defused.
+
+    Titles stay bare: both front ends print them on the tool card.
+    """
+
+    return {
+        key: quote_web(value) if key == body else defuse_untrusted(value)
+        for key, value in entry.items()
+    }
 
 
 def _fetch_top_n(arguments: dict[str, Any], query: str) -> int:

@@ -15,6 +15,7 @@ from code_ai.tools.browser.devtools import (
     MAX_DOM_DEPTH,
     MAX_LOG_ENTRIES,
 )
+from code_ai.tools.output import defuse_untrusted_in
 from code_ai.tools.schema import tool_schema
 
 # Reading a page is the one browser action worth describing once and reusing:
@@ -732,7 +733,7 @@ class BrowserInspectTool:
             level = str(arguments.get("level") or "log").strip().lower()
             if level not in LOG_LEVELS:
                 raise ToolArgumentError(f"level must be one of: {', '.join(LOG_LEVELS)}.")
-            return await session.inspect(
+            logs = await session.inspect(
                 aspect,
                 level=level,
                 contains=str(arguments.get("filter") or "").strip(),
@@ -740,13 +741,14 @@ class BrowserInspectTool:
                 limit=_bounded_int(arguments, "limit", DEFAULT_LOG_LIMIT, 1, MAX_LOG_ENTRIES),
                 clear=bool(arguments.get("clear")),
             )
+            return defuse_untrusted_in(logs)
         selector = str(arguments.get("selector") or "").strip()
         if aspect == "styles" and not selector:
             raise ToolArgumentError("styles needs a selector: the element whose styles to show.")
         properties = arguments.get("css_properties") or []
         if not isinstance(properties, list):
             raise ToolArgumentError("css_properties must be a list of CSS property names.")
-        return await session.inspect(
+        inspected = await session.inspect(
             aspect,
             selector=selector,
             depth=_bounded_int(arguments, "depth", DEFAULT_DOM_DEPTH, 0, MAX_DOM_DEPTH),
@@ -754,6 +756,7 @@ class BrowserInspectTool:
             include_scripts=bool(arguments.get("include_scripts")),
             offset=_bounded_int(arguments, "offset", 0, 0, 1 << 31),
         )
+        return defuse_untrusted_in(inspected)
 
 
 class BrowserEvaluateTool:
@@ -781,4 +784,4 @@ class BrowserEvaluateTool:
         expression = str(arguments.get("expression") or "").strip()
         if not expression:
             raise ToolArgumentError("expression is required.")
-        return await _session(context).evaluate(expression)
+        return defuse_untrusted_in(await _session(context).evaluate(expression))

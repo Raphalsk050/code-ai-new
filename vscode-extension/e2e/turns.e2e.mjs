@@ -100,6 +100,20 @@ export const tests = {
     await ui.page.click('.approval-card button:has-text("Open diff")');
     assert((await ui.toHost("openDiff")).length === 1, "open diff did not ask the editor");
     await ui.shot("turns-approval");
+
+    // In a sidebar's width the file's name is what gives way: the button keeps to one line.
+    const wide = await ui.page.$eval('.approval-card button:has-text("Open diff")', (el) => el.getBoundingClientRect().height);
+    await ui.page.setViewportSize({ width: 400, height: 900 });
+    await ui.page.waitForTimeout(100);
+    const fit = await ui.page.$eval('.approval-card .diff-path', (row) => {
+      const button = row.querySelector("button").getBoundingClientRect();
+      const name = row.querySelector(".diff-path-name");
+      return { height: button.height, inside: button.right <= row.getBoundingClientRect().right + 0.5, cut: name.scrollWidth > name.clientWidth };
+    });
+    assert(Math.abs(fit.height - wide) < 0.5, `narrow, the button is ${fit.height}px tall against ${wide}px`);
+    assert(fit.inside, "narrow, the button runs out of the card");
+    await ui.shot("turns-approval-narrow");
+    await ui.page.setViewportSize({ width: 900, height: 900 });
     await ui.page.keyboard.press("a");
     const resolved = await ui.toHost("resolveApproval");
     assert(resolved.at(-1)?.scope === "once", `A resolved ${JSON.stringify(resolved)}`);

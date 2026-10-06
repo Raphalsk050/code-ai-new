@@ -584,10 +584,16 @@ export const tests = {
     await boot(ui);
 
     await ui.page.click('[data-testid="node-n3"] .flow-node-box');
-    await ui.page.keyboard.down("Control");
+    // The paste is read from the browser's own paste event, which only the
+    // system's shortcut raises: Cmd on a Mac, Ctrl everywhere else.
+    await ui.page.keyboard.down("ControlOrMeta");
     await ui.page.keyboard.press("KeyC");
+    // Whether the system clipboard took the copy is known a moment later, and
+    // a browser under test may refuse it: paste once that is settled, as a
+    // hand does, so the copy is found on the clipboard or in memory.
+    await ui.page.waitForTimeout(100);
     await ui.page.keyboard.press("KeyV");
-    await ui.page.keyboard.up("Control");
+    await ui.page.keyboard.up("ControlOrMeta");
 
     const sent = await lastGraph(ui);
     const agents = sent.nodes.filter((item) => item.kind === "profession");

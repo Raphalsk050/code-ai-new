@@ -1,3 +1,4 @@
+import KATEX_STYLE from "katex-style";
 import * as React from "react";
 import { createRoot } from "react-dom/client";
 
@@ -21,6 +22,7 @@ import type {
 } from "../src/protocol";
 import { ApprovalCard } from "./approval";
 import { Banner, BannerState } from "./banner";
+import { BusyRing } from "./busy-ring";
 import { EmptyAction, EmptyState } from "./empty-state";
 import { CommandMenu } from "./command-menu";
 import { ElicitationCard } from "./elicitation-card";
@@ -48,7 +50,13 @@ import { INITIAL_MCP, McpViewState } from "./mcp-settings";
 import { MentionMenu } from "./mention-menu";
 import { applyMention, mentionPrefix, rankPaths } from "./mentions";
 import { agentKey, Block, endsOnAnswer, groupBlocks } from "./blocks";
+import { useFollow } from "./follow";
 import { activityLabel, BlockView, formatElapsed, TypingIndicator } from "./messages";
+import { useSteadyPose } from "./agent-avatar";
+import { isPlace } from "./avatar-motion";
+import { avatarPose } from "./avatar-pose";
+import { seasonalSkin, setAvatarSkin } from "./avatar-skin";
+import { FloatingAvatar } from "./floating-avatar";
 import { PromptPin, usePromptPin } from "./prompt-pin";
 import { ripple } from "./motion";
 import { QuestionsCard } from "./questions-card";
@@ -86,6 +94,8 @@ type Screen = "home" | "chat" | "settings";
 // Backend states a turn ends well in; ERROR, FAILED and CANCELLED end it too,
 // but not with an answer worth marking done.
 const SETTLED = new Set(["READY", "IDLE"]);
+// Scrolled this far from the end, the glass over the composer is fully drawn.
+const GLASS_RAMP_PX = 24;
 // No backend to send to: the composer says so and will not send.
 const OFFLINE = new Set(["STARTING", "RECONNECTING", "DISCONNECTED"]);
 
@@ -120,8 +130,6 @@ function App(): JSX.Element {
   const [reveal, setReveal] = React.useState<{ section: "terminal"; nonce: number } | null>(null);
   const [terminalFocus, setTerminalFocus] = React.useState(0);
   const [railDocked, setRailDocked] = React.useState(true);
-  // Scrolled up away from the newest message: the composer offers a way back.
-  const [atBottom, setAtBottom] = React.useState(true);
   // Edits are shown in the editor's diff view: no live code or diff in here.
   const [editorDiff, setEditorDiff] = React.useState(false);
   // What the agent changed in this conversation, from the host.
@@ -137,11 +145,20 @@ function App(): JSX.Element {
   const [rootRef, width] = useContainerWidth<HTMLDivElement>();
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
-  const pinnedRef = React.useRef(true);
   const pendingReconstructRef = React.useRef<string | null>(null);
 
-  const prefs: ExtPrefs = persisted.prefs ?? DEFAULT_PREFS;
+  // State saved by an older build has no word on what came after it.
+  const prefs: ExtPrefs = { ...DEFAULT_PREFS, ...persisted.prefs };
   const mode = prefs.mode;
+
+  // The season's costume unless one was picked by hand. A panel left open
+  // overnight has to notice the date by itself.
+  React.useEffect(() => {
+    const dress = () => setAvatarSkin(prefs.avatarSkin === "auto" ? seasonalSkin(new Date()) : prefs.avatarSkin);
+    dress();
+    const hourly = window.setInterval(dress, 3_600_000);
+    return () => window.clearInterval(hourly);
+  }, [prefs.avatarSkin]);
 
   // -- host messages -------------------------------------------------------
   React.useEffect(() => {
@@ -344,38 +361,45 @@ function App(): JSX.Element {
   }, []);
 
   // -- autoscroll / auto-grow ---------------------------------------------
-  const pin = usePromptPin(scrollRef, pinnedRef);
-  const jumpToLatest = () => {
-    const el = scrollRef.current;
-    if (!el) return;
-    pinnedRef.current = true;
-    setAtBottom(true);
-    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-  };
+  const follow = useFollow(scrollRef, { page: true });
+  const pin = usePromptPin(scrollRef, follow.following);
+  const jumpToLatest = () => follow.rejoin(true);
+  // A conversation opens on its newest message, wherever the last one was left.
+  React.useLayoutEffect(() => follow.rejoin(), [activeId, screen, mode]);
   // The composer floats over the transcript; the transcript keeps that much
   // room at its end so the newest line is never under the glass.
   const composerRef = React.useRef<HTMLDivElement>(null);
+  // The glass reaches above the composer only for text on its way under it:
+  // 0 at the end of the conversation, 1 once scrolled away from it.
+  const syncGlass = () => {
+    const el = scrollRef.current;
+    const col = el?.parentElement;
+    if (!el || !col) return;
+    const below = el.scrollHeight - el.scrollTop - el.clientHeight;
+    // Under a pixel is rounding at a fractional zoom, not a scroll.
+    const glass = below < 1 ? 0 : Math.min(1, below / GLASS_RAMP_PX);
+    col.style.setProperty("--glass", String(Math.round(glass * 100) / 100));
+  };
   React.useLayoutEffect(() => {
     const el = composerRef.current;
     const col = el?.parentElement;
     if (!el || !col || typeof ResizeObserver === "undefined") return;
-    const apply = () => col.style.setProperty("--composer-h", `${Math.ceil(el.getBoundingClientRect().height)}px`);
+    const apply = () => {
+      col.style.setProperty("--composer-h", `${Math.ceil(el.getBoundingClientRect().height)}px`);
+      // A taller composer moves the end of the transcript without a scroll.
+      syncGlass();
+    };
     apply();
     const observer = new ResizeObserver(apply);
     observer.observe(el);
     return () => observer.disconnect();
   }, [screen, mode]);
   const onScroll = () => {
-    const el = scrollRef.current;
-    if (!el) return;
-    pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-    setAtBottom(pinnedRef.current);
+    follow.handlers.onScroll();
+    syncGlass();
     pin.onScroll();
   };
-  React.useLayoutEffect(() => {
-    const el = scrollRef.current;
-    if (el && pinnedRef.current) el.scrollTop = el.scrollHeight;
-  });
+  React.useLayoutEffect(syncGlass);
   React.useEffect(() => {
     const ta = textareaRef.current;
     if (!ta) return;
@@ -388,6 +412,7 @@ function App(): JSX.Element {
   const items = state.transcript.items;
   const lastItem = items[items.length - 1];
   const showTyping = busy && lastItem?.kind !== "assistant";
+  const pose = useSteadyPose(busy ? avatarPose(state.session, lastItem) : "idle");
   const blocks = React.useMemo(() => groupBlocks(items), [items]);
   const pinText = React.useMemo(() => {
     const found = pin.target && items.find((item) => item.id === pin.target?.message);
@@ -680,6 +705,8 @@ function App(): JSX.Element {
     setDraft("");
     setImages([]);
     setMenuDismissed(false);
+    // Sending is asking to see the answer: back to the end, wherever they were.
+    follow.rejoin();
   };
 
   const onComposerKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -788,6 +815,17 @@ function App(): JSX.Element {
     />
   );
 
+  // Over every screen, where it was last left. Keyed, so it is the same one on
+  // each of them and going from one to another does not put it back.
+  const floater = prefs.floatingAvatar && (
+    <FloatingAvatar
+      key="floater"
+      pose={pose}
+      start={isPlace(prefs.avatarAt) ? prefs.avatarAt : undefined}
+      onRest={(avatarAt) => updatePrefs({ avatarAt })}
+    />
+  );
+
   // -- screens -------------------------------------------------------------
   if (screen === "settings") {
     return (
@@ -815,6 +853,7 @@ function App(): JSX.Element {
           mcp={mcp}
           onMcpAction={runMcpAction}
         />
+        {floater}
       </div>
     );
   }
@@ -830,6 +869,7 @@ function App(): JSX.Element {
           onSettings={openSettings}
           update={updateButton}
         />
+        {floater}
       </div>
     );
   }
@@ -949,6 +989,7 @@ function App(): JSX.Element {
 
   const ctxChip = editorContext && includeContext;
   const ctxLabel = ctxLabelOf(editorContext);
+  const otherOpen = editorContext?.openFiles?.length ?? 0;
 
   return (
     <div className="app" ref={rootRef} data-w={width}>
@@ -956,6 +997,7 @@ function App(): JSX.Element {
         title={history.find((h) => h.id === activeId)?.title || t("New conversation")}
         branch={branch}
         busy={busy}
+        pose={pose}
         offline={!connected}
         activity={`${activityLabel(state.session)} · ${formatElapsed(state.session.heartbeat)}`}
         narrow={width !== "md"}
@@ -974,7 +1016,7 @@ function App(): JSX.Element {
         <div className="workarea">
           {mode === "agent" ? (
             <div className="chat-col">
-              <div className="transcript" ref={scrollRef} onScroll={onScroll}>
+              <div className="transcript" ref={scrollRef} {...follow.handlers} onScroll={onScroll}>
                 <PromptPin target={pin.target} text={pinText} avatar={avatar.src} onGo={pin.go} />
                 <div className="transcript-inner">
                   {shownBlocks.length === 0 ? (
@@ -993,6 +1035,7 @@ function App(): JSX.Element {
                         avatarPending={avatar.pending}
                         onAvatarSignIn={avatar.signIn && !avatar.src ? signInForPicture : undefined}
                         done={done && block === lastBlock}
+                        pose={i === shownBlocks.length - 1 && block.speaker === "agent" ? pose : null}
                         onOpenDiff={editorDiff ? openDiff : undefined}
                         onTerminal={showTerminal}
                       >
@@ -1014,7 +1057,7 @@ function App(): JSX.Element {
                 onDragLeave={() => setDropping(false)}
                 onDrop={onComposerDrop}
               >
-                {!atBottom && (
+                {follow.away && (
                   <button
                     className="jump-btn"
                     title={t("Go to the latest message")}
@@ -1044,15 +1087,23 @@ function App(): JSX.Element {
                     />
                   )}
                   <div className={`composer ${busy ? "busy" : ""} ${connected ? "" : "off"}`}>
+                    {busy && <BusyRing />}
                     {(ctxChip || images.length > 0) && (
                       <div className="composer-ctx">
                         {ctxChip && (
-                          <span className="ctx-chip" title={t("Travels with the next message")}>
-                            <Codicon name="file" size={13} />
+                          <span className="ctx-chip" title={ctxTitleOf(editorContext)}>
+                            <Codicon name={editorContext?.path ? "file" : "files"} size={13} />
                             <span className="ctx-label">{ctxLabel}</span>
-                            <span className="ctx-kind">
-                              {editorContext?.selection ? t("selection") : t("open file")}
-                            </span>
+                            {editorContext?.path ? (
+                              <span className="ctx-kind">
+                                {editorContext.selection ? t("selection") : t("open file")}
+                              </span>
+                            ) : null}
+                            {editorContext?.path && otherOpen > 0 ? (
+                              <span className="ctx-more">
+                                {otherOpen === 1 ? t("+1 open") : tf("+{0} open", otherOpen)}
+                              </span>
+                            ) : null}
                             <button
                               className="ctx-remove"
                               title={t("Do not include the editor context")}
@@ -1174,19 +1225,44 @@ function App(): JSX.Element {
         />
       </div>
 
+      {floater}
     </div>
   );
 }
 
+/** How many of the other open files the chip's tooltip names. */
+const CTX_TOOLTIP_FILES = 12;
+
 function ctxLabelOf(context: EditorContext | null): string {
   if (!context) return "";
+  if (!context.path) {
+    // No file has the focus: the open ones are the context.
+    const count = context.openFiles?.length ?? 0;
+    return count === 1 ? t("1 open file") : tf("{0} open files", count);
+  }
   return context.selection && context.startLine && context.endLine
     ? `${context.path}:${context.startLine}-${context.endLine}`
     : context.path;
 }
 
+/** The chip's tooltip: that the context travels, and which open files travel with it. */
+function ctxTitleOf(context: EditorContext | null): string {
+  const open = context?.openFiles ?? [];
+  if (open.length === 0) return t("Travels with the next message");
+  const named = open.slice(0, CTX_TOOLTIP_FILES);
+  const left = open.length - named.length;
+  return [
+    t("Travels with the next message"),
+    "",
+    context?.path ? t("Also open in the editor:") : t("Open in the editor:"),
+    ...named,
+    ...(left > 0 ? [tf("and {0} more", left)] : []),
+  ].join("\n");
+}
+
 const styleTag = document.createElement("style");
-styleTag.textContent = STYLE;
+// KaTeX's first: the panel's own rules come after it and win.
+styleTag.textContent = `${KATEX_STYLE}\n${STYLE}`;
 document.head.appendChild(styleTag);
 
 createRoot(document.getElementById("root")!).render(<App />);

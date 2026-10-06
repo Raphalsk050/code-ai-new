@@ -894,6 +894,44 @@ async def test_new_turn_start_does_not_rerender_committed_log(tmp_path) -> None:
         assert terminal_app._committed == committed_before
 
 
+async def test_scrolling_up_is_not_taken_back_by_the_next_line(tmp_path) -> None:
+    from textual.containers import VerticalScroll
+
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app)
+
+    async def say(count: int) -> None:
+        for index in range(count):
+            await fake_app.emit("user.message", {"text": f"question {index}"})
+            await fake_app.emit("assistant.final", {"text": f"answer {index}\n\nand more"})
+        await pilot.pause(0.1)
+
+    async with terminal_app.run_test(size=(100, 30)) as pilot:
+        await fake_app.emit("status.changed", {"state": "READY"})
+        log = terminal_app.query_one("#conversation", VerticalScroll)
+        await say(20)
+        assert log.max_scroll_y > 0
+        assert log.scroll_y == log.max_scroll_y, "the transcript does not follow from the start"
+
+        # One row up is already the reader's choice.
+        log.scroll_to(y=log.max_scroll_y - 1, animate=False)
+        await pilot.pause(0.05)
+        assert terminal_app.follow_output is False
+        log.scroll_to(y=3, animate=False)
+        await pilot.pause(0.05)
+
+        await say(5)
+        assert log.scroll_y == 3, "new lines took the view back"
+        assert log.max_scroll_y > 3
+
+        # Back at the end, it follows again.
+        log.scroll_end(animate=False)
+        await pilot.pause(0.05)
+        assert terminal_app.follow_output is True
+        await say(3)
+        assert log.scroll_y == log.max_scroll_y
+
+
 async def test_clear_resets_incremental_render_state(tmp_path) -> None:
     fake_app = FakeTerminalApplication(tmp_path)
     terminal_app = create_terminal_app(fake_app)

@@ -15,11 +15,13 @@ import { tests as mcp } from "./mcp.e2e.mjs";
 import { tests as update } from "./update.e2e.mjs";
 import { tests as branch } from "./branch.e2e.mjs";
 import { tests as transcript } from "./transcript.e2e.mjs";
+import { tests as stream } from "./stream.e2e.mjs";
 import { tests as chrome } from "./chrome.e2e.mjs";
 import { tests as turns } from "./turns.e2e.mjs";
 import { tests as rail } from "./rail.e2e.mjs";
 import { tests as settingsLayout } from "./settings-layout.e2e.mjs";
 import { tests as terminal } from "./terminal.e2e.mjs";
+import { tests as avatar } from "./avatar.e2e.mjs";
 import { tests as flow } from "./flow.e2e.mjs";
 
 const GROUPS = [
@@ -29,7 +31,7 @@ const GROUPS = [
     ready: "#root .app",
     // The chat panel is a sidebar: its specs assume the width one has.
     viewport: { width: 900, height: 900 },
-    specs: { settings, mcp, update, branch, transcript, chrome, turns, rail, settingsLayout, terminal },
+    specs: { settings, mcp, update, branch, transcript, stream, chrome, turns, rail, settingsLayout, terminal, avatar },
   },
   {
     name: "flow",

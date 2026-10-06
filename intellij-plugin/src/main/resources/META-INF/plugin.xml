@@ -1,0 +1,59 @@
+<idea-plugin>
+  <id>com.codeai.intellij</id>
+  <name>Code-AI</name>
+  <vendor>Code-AI</vendor>
+  <description><![CDATA[
+    Drive the Code-AI agent from Android Studio and other IntelliJ-based IDEs.
+    Ships the agent with it: no Python, no install.
+    <ul>
+      <li>The same chat panel as the VS Code extension, in a tool window.</li>
+      <li>The agent's edits in the IDE's own diff viewer as they are written, and every file it changed in the conversation to review or revert.</li>
+      <li>The file you have open, your selection and the other open files travel with what you ask.</li>
+    </ul>
+  ]]></description>
+
+  <depends>com.intellij.modules.platform</depends>
+  <!-- The embedded browser the panel is drawn in. From 2026.1 it is a plugin of
+       JetBrains' own (Web Browser (JCEF)), which Android Studio does not come
+       with: naming it here is what lets the panel reach it once it is
+       installed. Optional, because before 2026.1 the browser is part of the
+       IDE itself, and because without it the tool window still opens, to say
+       how to get it (chat/MissingBrowser.kt). -->
+  <depends optional="true" config-file="code-ai-browser.xml">com.intellij.modules.jcef</depends>
+
+  <extensions defaultExtensionNs="com.intellij">
+    <toolWindow id="Code-AI"
+                anchor="right"
+                icon="/icons/toolWindow.svg"
+                factoryClass="com.codeai.intellij.chat.ChatToolWindowFactory"/>
+    <notificationGroup id="Code-AI" displayType="BALLOON"/>
+    <applicationConfigurable parentId="tools"
+                             id="com.codeai.intellij.settings"
+                             displayName="Code-AI"
+                             instance="com.codeai.intellij.settings.CodeAiConfigurable"/>
+    <statusBarWidgetFactory id="CodeAi.AgentStatus"
+                            implementation="com.codeai.intellij.status.AgentStatusWidgetFactory"/>
+    <projectViewNodeDecorator implementation="com.codeai.intellij.changes.ChangeDecorator"/>
+    <inline.completion.provider implementation="com.codeai.intellij.inline.CodeAiInlineCompletionProvider"/>
+  </extensions>
+
+  <actions>
+    <action id="CodeAi.FocusChat"
+            class="com.codeai.intellij.actions.FocusChatAction"
+            text="Code-AI: Focus Chat"
+            description="Open the Code-AI chat"/>
+    <action id="CodeAi.Restart"
+            class="com.codeai.intellij.actions.RestartAction"
+            text="Code-AI: Restart (Reload Settings)"
+            description="Restart the Code-AI backend so edited settings take effect"
+            icon="AllIcons.Actions.Refresh"/>
+    <action id="CodeAi.ToggleInlineHints"
+            class="com.codeai.intellij.actions.ToggleInlineHintsAction"
+            text="Code-AI: Toggle Inline Hints"
+            description="Turn Code-AI's inline code hints on or off"/>
+    <action id="CodeAi.ShowBackendLog"
+            class="com.codeai.intellij.actions.ShowBackendLogAction"
+            text="Code-AI: Show Backend Log"
+            description="Open what the Code-AI backend wrote while starting and running"/>
+  </actions>
+</idea-plugin>

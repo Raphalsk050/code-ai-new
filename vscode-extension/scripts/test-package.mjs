@@ -127,7 +127,9 @@ test("staleness is judged against src/, the spec and pyproject", () => {
 test("a stale binary is not silently packaged for a platform that can be rebuilt", () => {
   // The regression: discovery used to return any existing candidate, so a fix
   // landing in src/ would ship inside a backend built before it.
-  const old = fakeBinary(hostPlatform(), `stale-host${hostPlatform() === "win32" ? ".exe" : ""}`);
+  // A Mac builds no binary of its own: any platform's will do, staleness is about the date.
+  const platform = hostPlatform() ?? "linux";
+  const old = fakeBinary(platform, `stale-host${platform === "win32" ? ".exe" : ""}`);
   const year = Date.now() / 1000 - 365 * 24 * 3600;
   utimesSync(old, year, year);
   // Not actually building here - just proving the fresh path is not taken.

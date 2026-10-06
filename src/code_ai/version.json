@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 36,
-  "patch": 3,
-  "build": 82,
+  "minor": 39,
+  "patch": 6,
+  "build": 96,
   "updated": "2026-10-06",
-  "note": "Release titled with its build, body of Features and Improvement"
+  "note": "Android Studio plugin, floating avatar and the new release notes on main"
 }

@@ -77,7 +77,7 @@ export const PANELS_STYLE = `
   border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface);
   box-shadow: 0 8px 24px var(--shadow);
 }
-.term-menu-item { display: block; width: 100%; padding: 5px 8px; border: none; border-radius: 4px; background: none; color: var(--fg); font: inherit; font-size: var(--fs-small); text-align: left; cursor: pointer; }
+.term-menu-item { display: block; width: 100%; padding: 5px 8px; border: none; border-radius: calc(var(--radius-sm) - 5px); background: none; color: var(--fg); font: inherit; font-size: var(--fs-small); text-align: left; cursor: pointer; }
 .term-menu-item:hover { background: var(--hover); }
 .term-menu-item.danger { color: var(--danger); }
 .term-menu-sep { height: 1px; margin: 4px 2px; background: var(--border); }

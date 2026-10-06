@@ -6,6 +6,7 @@ import { TOKENS } from "./styles/tokens";
 import { CHROME_STYLE } from "./styles/chrome";
 import { TRANSCRIPT_STYLE } from "./styles/transcript";
 import { SETTINGS_STYLE } from "./styles/settings";
+import { AVATAR_STYLE } from "./styles/avatar";
 
 /**
  * One stylesheet, composed in cascade order: base first, then motion, then the
@@ -13,4 +14,4 @@ import { SETTINGS_STYLE } from "./styles/settings";
  * component so a change to timing or to the drawer never means reading 900
  * lines of chat CSS.
  */
-export const STYLE = [TOKENS, BASE_STYLE, MOTION_STYLE, RAIL_STYLE, PANELS_STYLE, CHROME_STYLE, TRANSCRIPT_STYLE, SETTINGS_STYLE].join("\n");
+export const STYLE = [TOKENS, BASE_STYLE, MOTION_STYLE, RAIL_STYLE, PANELS_STYLE, CHROME_STYLE, TRANSCRIPT_STYLE, SETTINGS_STYLE, AVATAR_STYLE].join("\n");

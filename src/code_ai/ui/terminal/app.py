@@ -1232,6 +1232,12 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             self._apply_configured_terminal_theme()
             self._apply_session_collapsed(application.session.config.terminal_session_collapsed)
             self.theme_changed_signal.subscribe(self, self._on_theme_changed)
+            self.watch(
+                self.query_one("#conversation", VerticalScroll),
+                "scroll_y",
+                self._conversation_scrolled,
+                init=False,
+            )
             await application.start()
             self._refresh_status()
             self.query_one("#input", MultilineInput).focus()
@@ -1499,6 +1505,18 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 panel.display = False
                 panel.reset()
 
+        def _conversation_scrolled(self, old: float, new: float) -> None:
+            """Follow the newest line until the reader scrolls up, and again at the end.
+
+            Any move up lets go, so a line arriving mid-read never takes the
+            view back; reaching the end is the only way following resumes.
+            """
+            log = self.query_one("#conversation", VerticalScroll)
+            if new >= log.max_scroll_y:
+                self.follow_output = True
+            elif new < old:
+                self.follow_output = False
+
         def _trim_and_follow_conversation(self, log: VerticalScroll) -> None:
             excess = len(log.children) - _MAX_CONVERSATION_LINES
             for child in list(log.children)[:excess]:
@@ -1523,6 +1541,8 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             event.input.remember(text)
             event.input.clear_value()
             self._set_command_suggestions("")
+            # Sending is asking to see the answer, wherever the view was left.
+            self.follow_output = True
             if text.strip() == "/quit":
                 await self.action_quit()
                 return

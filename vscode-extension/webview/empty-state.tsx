@@ -3,7 +3,7 @@ import * as React from "react";
 import { Codicon } from "./codicon";
 import { HistoryEntry, relativeTime } from "./history";
 import { t } from "./i18n";
-import { IconBrand } from "./icons";
+import { AgentAvatar } from "./agent-avatar";
 
 export interface EmptyAction {
   icon: string;
@@ -28,7 +28,7 @@ export function EmptyState({
   return (
     <div className="empty">
       <div className="spark">
-        <IconBrand size={30} />
+        <AgentAvatar pose="idle" size={30} />
       </div>
       <h2>Code-AI</h2>
       <div className="empty-sub">{t("Ask anything about this workspace, or start from here.")}</div>

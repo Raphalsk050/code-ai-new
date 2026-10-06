@@ -55,6 +55,35 @@ export const tests = {
     assert(sent?.updates.permission_mode === "never", `saved ${JSON.stringify(sent?.updates)}`);
   },
 
+  async "the chosen segment follows the curve of its track"(ui, assert) {
+    await openPanel(ui);
+    // The draft is filled in a beat after the screen: until then no segment is chosen.
+    await ui.page.waitForSelector(`${row("api_mode")} .segmented button.on`);
+    const fit = await ui.page.$eval(`${row("api_mode")} .segmented button.on`, (button) => {
+      const track = button.parentElement;
+      const outer = getComputedStyle(track);
+      const box = button.getBoundingClientRect();
+      const frame = track.getBoundingClientRect();
+      return {
+        track: parseFloat(outer.borderTopLeftRadius),
+        segment: parseFloat(getComputedStyle(button).borderTopLeftRadius),
+        // What lies between the two edges: the track's border and its inset.
+        // Measured at the top, where every segment sits the same way.
+        between: box.top - frame.top,
+        height: box.height,
+      };
+    });
+    // Parallel curves: the inner radius is the outer one less the gap between
+    // them. A 4px corner inside a 15px one is a brick in a pipe.
+    assert(
+      Math.abs(fit.segment - (fit.track - fit.between)) < 0.5,
+      `a ${fit.segment}px corner ${fit.between}px inside a ${fit.track}px one`
+    );
+    // And round to its own ends, as the track is: no flat sides against a curve.
+    assert(fit.segment >= fit.height / 2 - 0.5, `a ${fit.segment}px corner on a segment ${fit.height}px tall`);
+    await ui.shot("settings-segmented");
+  },
+
   async "the model list marks the current model, and the connection test times the provider"(ui, assert) {
     await openPanel(ui);
     await ui.page.click(".model-list-btn");

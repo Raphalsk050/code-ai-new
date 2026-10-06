@@ -13,6 +13,8 @@ import { fileURLToPath } from "node:url";
 import esbuild from "esbuild";
 import { chromium } from "playwright";
 
+import { webviewPlugins } from "../scripts/webview-build.mjs";
+
 const root = fileURLToPath(new URL("..", import.meta.url));
 
 const PAGE = `<!DOCTYPE html>
@@ -73,6 +75,7 @@ export async function buildWebview(entry = "webview/index.tsx", bundleName = "we
     platform: "browser",
     format: "iife",
     target: "es2021",
+    plugins: webviewPlugins,
   });
   writeFileSync(join(out, "index.html"), PAGE.replace("./webview.js", `./${bundleName}`), "utf8");
   mkdirSync(join(out, "codicons"), { recursive: true });

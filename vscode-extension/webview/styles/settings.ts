@@ -72,10 +72,17 @@ export const SETTINGS_STYLE = `
 }
 .risk-tag { color: var(--danger); background: var(--danger-soft); }
 
-.segmented { display: inline-flex; padding: 2px; gap: 2px; border-radius: var(--radius-sm); background: var(--surface-input); border: 1px solid var(--border-strong); }
+.segmented {
+  --seg-inset: 2px;
+  display: inline-flex; padding: var(--seg-inset); gap: 2px; border-radius: var(--radius-sm);
+  background: var(--surface-input); border: 1px solid var(--border-strong);
+}
+/* A segment's corners run parallel to the track's: the track's radius less
+   what lies between the two edges (its border and its inset). Any other
+   radius and the chosen segment sits in the track like a brick in a pipe. */
 .segmented button {
   border: none; background: none; color: var(--fg-muted); font: inherit; font-size: var(--fs-small);
-  padding: 3px 10px; border-radius: 4px; cursor: pointer; white-space: nowrap;
+  padding: 3px 10px; border-radius: calc(var(--radius-sm) - var(--seg-inset) - 1px); cursor: pointer; white-space: nowrap;
 }
 .segmented button:hover { color: var(--fg); }
 .segmented button.on { background: var(--button); color: var(--button-fg); }
@@ -104,7 +111,8 @@ export const SETTINGS_STYLE = `
   list-style: none; margin: 0; padding: 3px; max-height: 196px; overflow-y: auto;
   border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface);
 }
-.model-option { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border-radius: 4px; font-family: var(--font-mono); font-size: var(--fs-small); cursor: pointer; }
+/* Rows follow the list's corners: its radius less its border and padding. */
+.model-option { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border-radius: calc(var(--radius-sm) - 4px); font-family: var(--font-mono); font-size: var(--fs-small); cursor: pointer; }
 .model-option:hover { background: var(--hover); }
 .model-option.current { color: var(--fg-strong); background: var(--accent-soft); }
 .model-check { width: 14px; display: inline-grid; place-items: center; color: var(--accent); }

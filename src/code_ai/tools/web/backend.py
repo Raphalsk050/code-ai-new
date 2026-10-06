@@ -684,15 +684,50 @@ def _looks_like_html(value: str) -> bool:
     return bool(re.search(r"<\s*(html|body|main|article|p|div|title)\b", value, re.IGNORECASE))
 
 
+_VOID_TAGS = frozenset(
+    {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "wbr"}
+)
+_HIDDEN_STYLE = re.compile(
+    r"display\s*:\s*none|visibility\s*:\s*(?:hidden|collapse)"
+    r"|(?:font-size|opacity)\s*:\s*0(?![.\d])",
+    re.IGNORECASE,
+)
+
+
+def _is_hidden(tag: str, attrs: list[tuple[str, str | None]]) -> bool:
+    """Whether a browser would show none of this element's text.
+
+    Inline only. A stylesheet hides text too, and telling takes a layout engine;
+    what gets through is still fenced as the page's own wording.
+    """
+
+    if tag == "template":
+        return True
+    for name, value in attrs:
+        if name == "hidden" or (name == "style" and value and _HIDDEN_STYLE.search(value)):
+            return True
+    return False
+
+
 class PageTextParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.title = ""
         self._title_depth = 0
         self._skip_depth = 0
+        # Open tags from a hidden element down: text a person reading the page
+        # never sees is the cheapest place to leave a sentence for the model.
+        self._hidden: list[str] = []
         self._chunks: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        # A <p> or <li> ends the one before it, closing tag or not.
+        if self._hidden and tag in {"p", "li"} and self._hidden[-1] == tag:
+            self._hidden.pop()
+        if self._hidden or _is_hidden(tag, attrs):
+            if tag not in _VOID_TAGS:
+                self._hidden.append(tag)
+            return
         if tag in {"script", "style", "noscript", "svg"}:
             self._skip_depth += 1
             return
@@ -700,6 +735,11 @@ class PageTextParser(HTMLParser):
             self._title_depth += 1
 
     def handle_endtag(self, tag: str) -> None:
+        if self._hidden:
+            # Back to the tag it closes, taking the unclosed ones inside with it.
+            if tag in self._hidden:
+                del self._hidden[len(self._hidden) - 1 - self._hidden[::-1].index(tag) :]
+            return
         if tag in {"script", "style", "noscript", "svg"} and self._skip_depth:
             self._skip_depth -= 1
         if tag == "title" and self._title_depth:
@@ -708,7 +748,7 @@ class PageTextParser(HTMLParser):
             self._chunks.append("\n")
 
     def handle_data(self, data: str) -> None:
-        if self._skip_depth:
+        if self._skip_depth or self._hidden:
             return
         if self._title_depth:
             self.title += data

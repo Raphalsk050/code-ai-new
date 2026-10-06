@@ -51,6 +51,22 @@ async function settle(ui, ms = 40) {
   );
 }
 
+/**
+ * Entry animations over. A box still rising in is drawn a little smaller than
+ * it will be, so its edges are not yet where they belong: measured then, the
+ * answer depends on how busy the machine is.
+ */
+async function landed(ui) {
+  await ui.page.evaluate(() =>
+    Promise.all(
+      document
+        .getAnimations()
+        .filter((animation) => animation.effect?.getComputedTiming().iterations !== Infinity)
+        .map((animation) => animation.finished.catch(() => undefined))
+    )
+  );
+}
+
 /** Put `selector`'s top `offset` px below the transcript's top edge (negative: above it). */
 async function scrollTopTo(ui, selector, offset) {
   await ui.page.evaluate(
@@ -75,7 +91,9 @@ async function pin(ui) {
 }
 
 export const tests = {
-  async "the glyph sits centred over the title, on the home page and in a new chat"(ui, assert) {
+  async "the avatar sits centred over the title, on the home page and in a new chat"(ui, assert) {
+    // The avatar is a block-level svg everywhere else; left as one here it
+    // hugs the left edge of a column whose text is centred.
     const offCentre = (scope) =>
       ui.page.evaluate((scope) => {
         const mid = (el) => {
@@ -85,13 +103,15 @@ export const tests = {
         return Math.abs(mid(document.querySelector(`${scope} .spark svg`)) - mid(document.querySelector(`${scope} h2`)));
       }, scope);
     const home = await offCentre(".home-hero");
-    assert(home <= 1, `the home glyph is ${home}px off the title's centre`);
+    assert(home <= 1, `the home avatar is ${home}px off the title's centre`);
     await openChat(ui);
     const empty = await offCentre(".empty");
-    assert(empty <= 1, `the new-chat glyph is ${empty}px off the title's centre`);
+    assert(empty <= 1, `the new-chat avatar is ${empty}px off the title's centre`);
   },
 
   async "the new glyph is everywhere the old one was"(ui, assert) {
+    // By the body's path wherever it sits: the animated avatar draws its leaf
+    // first, so the first path under a mark is not always the body.
     const draws = async (where) => (await ui.page.$(`${where} path[d^="${BRAND}"]`)) !== null;
     assert(await draws(".home-hero .spark"), "the home hero does not draw the new glyph");
     await ui.shot("home-hero");
@@ -100,6 +120,7 @@ export const tests = {
       assert(await draws(where), `${where} does not draw the new glyph`);
     }
     await ui.fromHost(envelope("client.load", { items: exchange(1, 1) }));
+    // The agent's latest box carries the live avatar, the earlier ones the still one.
     assert(await draws(".block-agent .avatar"), "the agent's avatar does not draw the new glyph");
     const old = await ui.page.$$(`path[d^="${OLD_GLYPH}"]`);
     assert(old.length === 0, `${old.length} old lettermark(s) still on screen`);
@@ -133,6 +154,7 @@ export const tests = {
     assert(shape[0].sends === 2, "both sends in one user box, one line each");
     assert(shape[1].parts === 4, "reasoning, tool and both answers in one agent box");
 
+    await landed(ui);
     const geo = await ui.page.evaluate(() => {
       const inner = document.querySelector(".transcript-inner");
       const box = inner.getBoundingClientRect();
@@ -143,7 +165,7 @@ export const tests = {
     });
     assert(Math.abs(geo.userRight - geo.right) < 1.5, `user box ends at ${geo.userRight}, column at ${geo.right}`);
     assert(geo.userLeft > geo.agentLeft + 40, "the user's box starts well right of the agent's");
-    assert(Math.abs(geo.agentRight - geo.right) < 1.5, "the agent's box takes the column's width");
+    assert(Math.abs(geo.agentRight - geo.right) < 1.5, `the agent's box ends at ${geo.agentRight}, column at ${geo.right}`);
     await ui.shot("transcript-blocks");
 
     // The same, in Light Modern: the boxes have to hold up on a white page too.

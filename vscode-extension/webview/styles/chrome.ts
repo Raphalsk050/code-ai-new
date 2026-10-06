@@ -63,23 +63,28 @@ button.context-meter:hover { background: var(--hover); }
    masked layer cross-fades sharp text with its blurred copy over a few pixels,
    which reads as a ghosted line jammed against the field. Here a light layer
    starts well above the field and softens the text, and a heavy one closer in
-   dissolves it, so nothing legible ever reaches the field's edge. */
+   dissolves it, so nothing legible ever reaches the field's edge.
+   The reach above the field is for text on its way under it. At the end of the
+   conversation nothing is, and the last lines - the agent's "working" line
+   among them - rest right there: --glass (0 at the end, 1 once scrolled away
+   from it, set by the panel) takes that reach away so they stay sharp. */
 .composer-wrap::before, .composer-wrap::after {
   content: ""; position: absolute; left: 0; right: 0; bottom: 0; z-index: -1; pointer-events: none;
+  --reach: rgb(0 0 0 / var(--glass, 0));
 }
 .composer-wrap::before {
   top: -64px;
   background: linear-gradient(to bottom, transparent 0, var(--bg-glass) 64px);
   -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 44px);
-  mask-image: linear-gradient(to bottom, transparent 0, #000 44px);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, var(--reach) 44px, var(--reach) 64px, #000 64px);
+  mask-image: linear-gradient(to bottom, transparent 0, var(--reach) 44px, var(--reach) 64px, #000 64px);
 }
 .composer-wrap::after {
   top: -28px;
   background: linear-gradient(to bottom, transparent 0, var(--bg-veil) 40px);
   -webkit-backdrop-filter: blur(18px) saturate(1.1); backdrop-filter: blur(18px) saturate(1.1);
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 28px);
-  mask-image: linear-gradient(to bottom, transparent 0, #000 28px);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, var(--reach) 28px, #000 28px);
+  mask-image: linear-gradient(to bottom, transparent 0, var(--reach) 28px, #000 28px);
 }
 .composer-stack { position: relative; max-width: 820px; margin: 0 auto; }
 .composer {
@@ -91,22 +96,28 @@ button.context-meter:hover { background: var(--hover); }
 .composer:focus-within { box-shadow: 0 0 0 3px var(--accent-soft); }
 .composer.off { border-color: var(--border-strong); }
 .composer-wrap.dropping .composer { box-shadow: 0 0 0 3px var(--accent-soft); }
-/* Working: an accent arc runs around the field, on its own masked layer so the
-   glass body never shows the gradient through. */
-@property --ca-angle { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
-.composer.busy { border-color: transparent; }
-.composer.busy::before {
-  content: ""; position: absolute; inset: -1px; border-radius: inherit; padding: 1px; pointer-events: none;
-  background: conic-gradient(from var(--ca-angle), var(--turn-user-line) 0deg, var(--turn-user-line) 200deg, var(--accent) 290deg, var(--turn-user-line) 360deg);
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
-  animation: ca-orbit 2.4s linear infinite;
+/* Working: an accent arc runs around the field. It is a dash on the field's
+   own outline, moved by its offset, so it covers the same distance every
+   instant. An angle swept from the centre does not: on a field wider than it
+   is tall it crawls along the long sides and whips round the ends. */
+.composer.busy { border-color: var(--turn-user-line); }
+.busy-ring {
+  position: absolute; inset: -1px; width: calc(100% + 2px); height: calc(100% + 2px);
+  overflow: visible; pointer-events: none;
 }
-@keyframes ca-orbit { to { --ca-angle: 360deg; } }
+.busy-ring rect {
+  x: .5px; y: .5px; width: calc(100% - 1px); height: calc(100% - 1px); rx: calc(var(--radius-lg) - .5px);
+  fill: none; stroke: var(--accent); stroke-width: 1px;
+  stroke-dasharray: var(--ring-dash) var(--ring-gap);
+  animation: ring-run 2.4s linear infinite;
+}
+@keyframes ring-run {
+  from { stroke-dashoffset: var(--ring-from); }
+  to { stroke-dashoffset: var(--ring-to); }
+}
 @media (prefers-reduced-motion: reduce) {
   .composer.busy { border-color: var(--accent); }
-  .composer.busy::before { display: none; }
+  .busy-ring { display: none; }
 }
 .composer textarea {
   resize: none; max-height: 180px; min-height: 22px;
@@ -123,6 +134,11 @@ button.context-meter:hover { background: var(--hover); }
 }
 .ctx-chip .ctx-label { font-family: var(--font-mono); color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ctx-chip .ctx-kind { font-size: var(--fs-label); color: var(--fg-muted); }
+/* The other open files that travel with it: a count, named on hover. */
+.ctx-chip .ctx-more {
+  flex: none; height: 16px; padding: 0 6px; border-radius: var(--radius-pill); background: var(--hover);
+  font-size: var(--fs-label); line-height: 16px; color: var(--fg); white-space: nowrap; font-variant-numeric: tabular-nums;
+}
 .ctx-remove {
   display: inline-grid; place-items: center; width: 18px; height: 18px; padding: 0;
   border: none; border-radius: 50%; background: transparent; color: var(--fg-muted); cursor: pointer;

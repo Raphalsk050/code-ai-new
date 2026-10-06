@@ -1,0 +1,10 @@
+.gradle/
+.kotlin/
+.intellijPlatform/
+build/
+# The frozen backend staged for a package, hundreds of megabytes.
+bin/
+# Per-machine settings: where the IDE to build against lives.
+local.properties
+# A Node.js that setup.sh fetched for this build alone.
+.tools/

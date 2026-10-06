@@ -101,6 +101,9 @@ export const TRANSCRIPT_STYLE = `
 }
 .approval-card .diff-wrap { margin: 0 0 10px; border-radius: var(--radius-sm); }
 .approval-card .diff-path { display: flex; align-items: center; gap: var(--space-2); }
+/* In a narrow panel the file's name gives way, not the button: it is a label,
+   on one line, in the interface's own face rather than the path's. */
+.approval-card .diff-path > button { flex: none; white-space: nowrap; font-family: var(--font-ui); }
 .diff-path-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
 .approval-card .diff { max-height: 240px; }
 .diff-more { padding: 3px 10px; color: var(--fg-muted); font-family: var(--font-ui); border-top: 1px solid var(--border); }

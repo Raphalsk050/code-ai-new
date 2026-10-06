@@ -98,18 +98,97 @@ export const tests = {
     assert(!(await ui.page.$(".chip-pop")), "Escape did not close the menu");
   },
 
+  async "the context chip counts the other open files and names them on hover"(ui, assert) {
+    await openChat(ui);
+    await ui.fromHost({
+      type: "editorContext",
+      context: { path: "src/chunk.cpp", language: "cpp", openFiles: ["src/mesh.cpp", "README.md", "CMakeLists.txt"] },
+    });
+    const chip = await ui.page.waitForSelector(".ctx-chip");
+    const text = (selector) => ui.page.textContent(`.ctx-chip ${selector}`);
+    assert((await text(".ctx-label")) === "src/chunk.cpp", `the chip names ${await text(".ctx-label")}`);
+    assert((await text(".ctx-kind")) === "open file", `the chip calls it ${await text(".ctx-kind")}`);
+    assert((await text(".ctx-more")) === "+3 open", `the chip counts ${await text(".ctx-more")}`);
+    const title = await chip.getAttribute("title");
+    for (const file of ["src/mesh.cpp", "README.md", "CMakeLists.txt"]) {
+      assert(title.includes(file), `the tooltip does not name ${file}: ${title}`);
+    }
+    await ui.shot("chrome-context-open-files");
+
+    // One file alone is the chip as it always was.
+    await ui.fromHost({ type: "editorContext", context: { path: "src/chunk.cpp", language: "cpp" } });
+    assert(!(await ui.page.$(".ctx-chip .ctx-more")), "a file alone still shows a count");
+
+    // No file has the focus (a graph, a preview): the open ones are still context.
+    await ui.fromHost({
+      type: "editorContext",
+      context: { path: "", language: "", openFiles: ["graph.flow.json", "src/mesh.cpp"] },
+    });
+    assert((await text(".ctx-label")) === "2 open files", `without a focused file the chip says ${await text(".ctx-label")}`);
+    assert(!(await ui.page.$(".ctx-chip .ctx-kind")), "it calls a list of files one open file");
+    await ui.clearToHost();
+    await ui.page.fill(".composer textarea", "which of these draws the mesh?");
+    await ui.page.click(".composer-end .send-btn");
+    const sent = await ui.toHost("submit");
+    assert(sent.length === 1 && sent[0].includeContext === true, `the open files did not travel: ${JSON.stringify(sent)}`);
+  },
+
   async "while the agent works the field wears the moving ring and the button stops"(ui, assert) {
     await openChat(ui);
     await busy(ui);
     assert(await ui.page.$(".composer.busy"), "the composer is not marked busy");
-    const ring = await ui.page.$eval(".composer.busy", (el) => getComputedStyle(el, "::before").animationName);
-    assert(ring === "ca-orbit", `ring animation is ${ring}`);
+    const ring = await ui.page.$eval(".composer.busy .busy-ring rect", (el) => getComputedStyle(el).animationName);
+    assert(ring === "ring-run", `ring animation is ${ring}`);
     const stop = await ui.page.$(".composer-end .send-btn.stop");
     assert(stop, "no stop button in the composer's corner");
     await ui.clearToHost();
     await stop.click();
     assert((await ui.toHost("cancel")).length === 1, "stop did not cancel");
     await ui.shot("chrome-composer-busy");
+  },
+
+  async "the ring keeps an even pace round a field of any shape"(ui, assert) {
+    // An arc swept by an angle from the field's centre crawls along its long
+    // sides and whips round the ends: 5px a step against 140px on this field.
+    await openChat(ui);
+    await busy(ui);
+    for (const width of [900, 440]) {
+      await ui.page.setViewportSize({ width, height: 800 });
+      await ui.page.waitForTimeout(100);
+      const pace = await ui.page.evaluate(() => {
+        const field = document.querySelector(".composer").getBoundingClientRect();
+        const rects = [...document.querySelectorAll(".busy-ring rect")];
+        const peak = rects[rects.length - 1];
+        const outline = peak.getTotalLength();
+        const run = document.getAnimations().find((a) => a.animationName === "ring-run" && a.effect.target === peak);
+        const duration = run.effect.getComputedTiming().duration;
+        run.pause();
+        // Where the arc's brightest point is on screen, at even steps of a lap.
+        const steps = 48;
+        const points = [];
+        for (let i = 0; i < steps; i++) {
+          run.currentTime = (duration * i) / steps;
+          const style = getComputedStyle(peak);
+          const along = parseFloat(style.getPropertyValue("--ring-from")) - parseFloat(style.strokeDashoffset);
+          const at = peak.getPointAtLength((outline * (((along % 100) + 100) % 100)) / 100);
+          points.push([at.x, at.y]);
+        }
+        const hops = points.map(([x, y], i) => {
+          const [nx, ny] = points[(i + 1) % steps];
+          return Math.hypot(nx - x, ny - y);
+        });
+        return { shape: field.width / field.height, slowest: Math.min(...hops), fastest: Math.max(...hops), outline };
+      });
+      assert(pace.shape > 2, `the field is ${pace.shape.toFixed(1)} times as wide as tall: no test of an uneven pace`);
+      assert(pace.slowest > 0, "the ring does not move");
+      assert(
+        pace.fastest / pace.slowest < 1.15,
+        `at ${width}px the ring covers ${pace.slowest.toFixed(1)}px to ${pace.fastest.toFixed(1)}px a step`
+      );
+      // One lap is one cycle: the steps add up to the outline, corners cut a little short.
+      const lap = (pace.slowest + pace.fastest) / 2 * 48;
+      assert(Math.abs(lap - pace.outline) / pace.outline < 0.05, `48 steps cover ${lap.toFixed(0)}px of ${pace.outline.toFixed(0)}px`);
+    }
   },
 
   async "the send button keeps its corner at every width"(ui, assert) {
@@ -152,5 +231,42 @@ export const tests = {
     await ui.shot("chrome-glass");
     await ui.page.click(".jump-btn");
     await ui.page.waitForSelector(".jump-btn", { state: "detached" });
+  },
+
+  async "at the end of the conversation the glass leaves the working line sharp"(ui, assert) {
+    await openChat(ui);
+    const items = [1, 2, 3].flatMap((n) => [
+      { kind: "user", id: `u${n}`, text: `Request ${n}` },
+      { kind: "assistant", id: `a${n}`, text: long, streaming: false },
+    ]);
+    await ui.fromHost(envelope("client.load", { items }));
+    await ui.fromHost(envelope("user.message", { text: "Look at the seam between the chunks" }));
+    await ui.fromHost(envelope("status.changed", { state: "CALLING_MODEL" }));
+    await ui.page.waitForSelector(".block-agent .typing");
+    const below = await ui.page.$eval(".transcript", (el) => el.scrollHeight - el.scrollTop - el.clientHeight);
+    assert(below < 1, `the transcript is ${below}px short of its end`);
+    // The transcript follows its end: the working line rests right above the field.
+    const glass = () => ui.page.$eval(".chat-col", (el) => getComputedStyle(el).getPropertyValue("--glass").trim());
+    assert((await glass()) === "0", `at the end of the conversation the glass reaches ${await glass()}`);
+
+    // Frozen, so two pictures of the same thing are the same picture.
+    await ui.page.evaluate(() => document.getAnimations().forEach((a) => { a.pause(); a.currentTime = 0; }));
+    const clip = await ui.page.$eval(".block-agent .typing", (el) => {
+      const box = el.closest(".block").getBoundingClientRect();
+      return { x: Math.floor(box.left) - 2, y: Math.floor(box.top) - 2, width: Math.ceil(box.width) + 4, height: Math.ceil(box.height) + 4 };
+    });
+    const under = await ui.page.screenshot({ clip });
+    const hidden = await ui.page.addStyleTag({ content: ".composer-wrap { visibility: hidden !important; }" });
+    const alone = await ui.page.screenshot({ clip });
+    await hidden.evaluate((style) => style.remove());
+    assert(under.equals(alone), "the glass over the composer blurs the agent's working line");
+    await ui.shot("chrome-glass-at-rest");
+
+    // Scrolled away from the end, text is on its way under the field: the reach is back.
+    await ui.page.evaluate(() => { document.querySelector(".transcript").scrollTop -= 200; });
+    await ui.page.dispatchEvent(".transcript", "scroll");
+    assert((await glass()) === "1", `scrolled up, the glass reaches ${await glass()}`);
+    const softened = await ui.page.$eval(".composer-wrap", (el) => getComputedStyle(el, "::before").maskImage);
+    assert(/rgb\(0, 0, 0\) 44px/.test(softened), `the glass does not build up over the text: ${softened}`);
   },
 };

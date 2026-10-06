@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useFollow } from "./follow";
 import { t, tf } from "./i18n";
 
 import type { CodeStreamState } from "./store";
@@ -11,11 +12,8 @@ import type { CodeStreamState } from "./store";
  */
 export function LiveCodePanel({ code }: { code: CodeStreamState }): JSX.Element | null {
   const bodyRef = React.useRef<HTMLDivElement>(null);
-
-  React.useLayoutEffect(() => {
-    const el = bodyRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [code.code]);
+  // On the cursor, until the reader scrolls up to read what was written.
+  const follow = useFollow(bodyRef);
 
   if (!code.visible) return null;
   const lines = code.code ? code.code.split("\n").length : code.lines;
@@ -33,7 +31,7 @@ export function LiveCodePanel({ code }: { code: CodeStreamState }): JSX.Element 
         </span>
       </div>
       {code.reason && <div className="livecode-reason">{code.reason}</div>}
-      <div className="livecode-body" ref={bodyRef}>
+      <div className="livecode-body" ref={bodyRef} {...follow.handlers}>
         {code.code || "…"}
       </div>
     </div>

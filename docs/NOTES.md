@@ -3,6 +3,180 @@
 Decisions, trade-offs and loose ends. One entry per block of work, newest at
 the top.
 
+## 2026-10-05 - The Android Studio package carries its backend
+
+### What was done
+
+- **Installing the package is all there is to do.**
+  `./gradlew buildPlugin` now makes the backend for the target system and puts it in the plugin's `bin/`, where the plugin looks first.
+  It is the VS Code extension's backend, asked of the extension's own scripts by `intellij-plugin/scripts/stage-backend.mjs`: the frozen executable for Linux and Windows, the folder with its own Python for macOS.
+  One package for each system, named for it; `-Ptarget=none` builds one without a backend, `-PbackendDir` ships one made elsewhere.
+- **A backend that is still starting is waited for.**
+  The macOS backend unpacks its Python the first time it runs.
+  What is asked of a bridge that has said nothing yet now counts its time from the bridge's first word, for up to five minutes, and what the backend's launcher says meanwhile goes to the panel.
+- **A setup script for a Linux machine**, `intellij-plugin/setup.sh`: the system packages by apt, dnf or pacman, a Node.js of the build's own where the distribution's is too old, the backend in `.venv`, the installed Android Studio in `local.properties`, and the first build.
+- **The build runs on JDK 21 whichever Java starts it** (`gradle/gradle-daemon-jvm.properties`), and bundles the panel with the Node.js `nodeDir` names when there is one.
+- **Two faults in how the build ran npm**, found on the way.
+  A variable set on the task while the build was configured made the configuration cache keep the whole environment, PATH included, as it was that day.
+  And the install was skipped whenever `node_modules` existed, after one that was cut short as after a pull that changed the lock file.
+
+### Decisions
+
+- **Made when the package is built, not fetched when it is first run.**
+  As with the extension: nothing to download on the user's machine, no Python asked of it, and a package that works without a network.
+  The cost is one package for each system, most of it backend.
+- **The sandbox IDE gets no packaged backend.**
+  It runs the one being worked on, from the repository's `.venv`; freezing one for every run would turn seconds into minutes.
+- **The plugin waits for a slow start, and the extension does not.**
+  The extension's Mac installer unpacks the Python when it installs; a plugin has no installer, so its client waits instead.
+  The two sides differ here on purpose.
+- **The distribution's packages first, and nodejs.org only where they will not do.**
+  A setup script that adds a package source to the system would outlive the build it was run for.
+
+### Checked
+
+- 46 unit tests, three of them new, for the wait.
+- **macOS, for real.**
+  The package built on this machine, unpacked into an Android Studio 2026.2.1 sandbox with no other backend to be found: the one inside unpacked its Python and answered a question about the selection.
+- **The setup script, mostly simulated.**
+  Its syntax under dash, and its decisions against stand-ins for apt, dnf and pacman: a bare Ubuntu 24.04, an Ubuntu 22.04 (Node.js 12, Python 3.10), a Debian 12 without JDK 21, Fedora with and without it, Arch, an unknown system, no terminal to ask, nothing missing, an old Android Studio and none.
+  Run for real on this Mac where that is possible: the Node.js fetch, checked against the published sums, and the panel's `npm ci` and bundle with only that Node.js in reach.
+  The Linux archive was fetched, checked and unpacked here as well, and could not be run.
+- Not checked: the script on a Linux machine, and the Linux and Windows packages, which need Linux or Docker to make.
+  Their backend is the one the extension's packages already carry.
+
+### Loose ends
+
+- **The pipeline builds no plugin package**; `build-binaries.yml` has the backends it would put in them.
+- **On its home screen the panel says nothing while a backend unpacks**: the launcher's line shows inside a conversation only.
+
+## 2026-10-05 - Android Studio 2026: the embedded browser is a plugin
+
+### What happened
+
+- **The plugin did not open in the Android Studio people have.**
+  A colleague installed the package and the tool window threw `NoClassDefFoundError: com/intellij/ui/jcef/JBCefApp`.
+  It had been built and run against 2025.3.2 only, the release installed on the machine it was written on.
+  Google had shipped two since: 2026.1 (Quail) and 2026.2 (Rabbit).
+- **Where an IDE keeps its embedded browser changed with 2026.1.**
+  Up to 2025.3 the browser's classes are the IDE's and its Chromium is part of the Java runtime, which Android Studio ships without.
+  In 2026.1 the Chromium moved into a plugin of JetBrains' own, **Web Browser (JCEF)** (`com.intellij.modules.jcef`): one build per system, about 150 MB, in the Marketplace, and listed as compatible with Android Studio.
+  In 2026.2 the classes moved into that plugin too, and Android Studio has neither.
+  JetBrains' IDEs bundle it.
+
+### What was done
+
+- **The plugin names Web Browser (JCEF) as an optional dependency**, which is what puts its classes in reach once it is installed.
+  `web/EmbeddedBrowser.kt` tells apart an IDE with a browser, one whose browser plugin is missing, and one whose runtime has none, without naming a browser class: in an IDE without them a mention is an error wherever it is run into.
+- **The tool window offers the way out for each.**
+  From 2026.1, "Install Web Browser (JCEF)": the IDE's own installer, which picks the build for the system, then a restart.
+  On 2025.3, the boot runtime with JCEF, as before.
+- **The page's requests are answered through the browser's adapter class.**
+  The handler interface gained three methods; the adapter of each release answers them with "ask the older way".
+- **Read actions that 2026.2 does not deprecate**, and that 2025.3 has.
+- **The build knows which release it is building against**, from the installed IDE's `product-info.json` or from `platformVersion`.
+  From 2026.1 it fetches the browser plugin for the sandbox, in this machine's build; before, the runtime with JCEF that matches the installed IDE's own, read from that runtime's `release` file instead of written down.
+  `./gradlew runIde -PideDir= -PplatformVersion=2026.2.1.8` runs any release.
+- **A sandbox goes straight to the IDE.**
+  Android Studio 2026 asks a new user two more things, a Google sign-in and whether to send usage statistics, each in a dialog that blocks the project from opening.
+  The second is switched off for another reason too: its answer is written to `~/.android`, outside the sandbox, where it stands for the user's own Android Studio.
+
+### Decisions
+
+- **Optional, not required, and `sinceBuild` stays 253.**
+  A required dependency would keep the plugin from loading on 2025.3, where there is no such plugin and the browser is the IDE's.
+  Optional also lets the tool window open without it, to say how to get it.
+- **A button, not an install behind the user's back.**
+  It is a download of 150 MB and a restart: the user asks for it, and the IDE shows what it is about to fetch.
+- **The Marketplace is asked which build fits, and its answer corrected.**
+  `compatiblePlugin` finds the build line for an IDE; the Marketplace answers with any system's, so a rule swaps the suffix for this machine's.
+- **Built against whichever IDE is at hand, and the default stays the oldest supported.**
+  The same sources compile against 2025.3.2 and 2026.2.1 without a warning.
+
+### Checked
+
+- 43 unit tests, against both releases.
+- In sandboxes, the panel driven through the browser's debugging port and the IDE's window painted from inside:
+  - **2026.2.1 and 2026.1.4, each on the runtime it ships.**
+    Without the browser plugin the tool window offers it; installed by the IDE's installer it comes for the right system; after the restart the panel opens and answers a question about the selection.
+    On 2026.2.1 also an edit through approval, the diff tab from "proposed" to the file, the `M` in the project view and the status bar.
+  - **The package as built against 2025.3.2, unpacked into a 2026.2.1 sandbox**, which is what an install from disk does: the same.
+  - **2025.3.2** on the runtime with the browser: as before.
+- Not checked: Linux and Windows, the button's own click and the IDE's dialog (the installer was called the way the button calls it, without the dialog), and "Install Plugin from Disk" itself.
+
+### Loose ends
+
+- **Nothing runs the plugin against a release before its users do.**
+  The Plugin Verifier (`./gradlew verifyPlugin`) reports a class a release no longer has, and belongs in the pipeline once the plugin is built there.
+- **On macOS a sandbox's copy of the browser plugin cannot be written over once it has run**: the system seals its helper applications.
+  The build removes the copy before making a new one.
+- **Helper processes outlive an IDE that is killed**, and a debugging port is one IDE's: two sandboxes started with the same port answer as one.
+
+## 2026-10-05 - Android Studio plugin
+
+### What was done
+
+- **`intellij-plugin/`: the VS Code extension's counterpart for Android Studio**, and for any IDE on the IntelliJ Platform.
+  Kotlin, built with Gradle and the IntelliJ Platform Gradle Plugin against Android Studio 2025.3.2.
+- **The panel is not ported: it is the same bundle.**
+  The build runs `npm run build` in `vscode-extension/` and ships `dist/webview.js` inside the plugin.
+  `web/WebviewPage.kt` rebuilds around it what VS Code gives a webview: `acquireVsCodeApi()`, the default stylesheet VS Code puts under every webview, and the `--vscode-*` theme variables filled in from the IDE's theme and editor colour scheme (`web/ThemeVariables.kt`).
+- **The host is ported, file for file.**
+  `ChatHost` is `ChatViewProvider`, `BridgeSession` and `BridgeClient` keep their names, and the modules with no IDE import (`ResolveCommand`, `CrashPolicy`, `EditPlan`, `ChangeLedger`, `AgentStatus`, `EditorContext`) carry the same unit tests as their TypeScript originals.
+  The wire contract is still `vscode-extension/src/protocol.ts`.
+- **Native integrations:** the agent's edits in the IDE's diff viewer while they stream and after they land, the conversation's changes to open, review all at once and revert, `M`/`A` in the project view, a status bar widget, Settings | Tools | Code-AI, inline hints, and Restart, Focus Chat, Toggle Inline Hints and Show Backend Log as actions.
+- **The open files are context**, in both IDEs.
+  `EditorContext` gained `openFiles`: the other files open in tabs travel with the active one and its selection, and still do when a diff or a graph has the focus instead of a file.
+  The chip over the composer counts them and names them on hover.
+
+### Decisions
+
+- **The embedded browser, not a second UI.**
+  A Swing panel would be a second implementation of every screen, to keep in step for ever.
+  The cost is that Android Studio ships a runtime without the browser (JCEF): the tool window says so and opens the IDE's own "Choose Boot Java Runtime" for the one-time switch.
+- **A Kotlin host, not the TypeScript one in a sidecar.**
+  The agent's logic is already in the Python backend; the host is a thin layer of routing and IDE calls, and a Node runtime inside the plugin would cost more than the port.
+- **One thread for the host's state** (`HostThread`).
+  The TypeScript host leans on Node handling one event at a time; the port queues backend events, panel messages and timers on one thread to keep that, and hops to the EDT for the IDE.
+- **The plugin saves every file before a turn and refreshes the IDE's view of the disk after one.**
+  The agent reads and writes the disk with its own hands; IntelliJ users rarely save by hand, and the IDE only looks at the disk when its window is focused again.
+- **One preview diff tab.**
+  Showing a change takes the place of the one shown before, as VS Code's preview tab does.
+- **`https://code-ai.localhost` as the page's origin**, answered from the plugin's own resources.
+  A real origin makes it a secure context (clipboard) and nothing is ever fetched from the network.
+
+### Checked
+
+- 43 unit tests, the JSON-RPC client among them against a fake bridge over real pipes.
+- In a sandbox Android Studio 2025.3.2 on JetBrains Runtime 21.0.9 with JCEF, against the real backend: the panel renders in the IDE's colours, settings load, a question about the selection is answered with the selection in its context, an edit goes through approval and is written, the diff tab goes from "proposed" to the file itself, and the rail lists the change and opens its review.
+  The panel was driven through the browser's debugging port and the IDE's window painted from inside the IDE, so nothing was typed on a real keyboard.
+
+### Deferred
+
+- **The orchestrator graph editor** (`*.flow.json`): a `FileEditorProvider` over the `flow.js` bundle, which the build already ships.
+- **Explain mode's hover**: the explanation shows in the panel only.
+- **Updating itself, and the release pipeline.**
+  `build-binaries.yml` does not build the plugin, and the backend's updater only knows the VS Code package.
+  Until both do, `/update` answers with how to install a newer package.
+- **Other platforms and older IDEs.**
+  Run and checked on macOS only; `sinceBuild` is 253 because that is the only build it was compiled and run against.
+- **The keyboard inside the panel** (Escape, which the IDE uses to leave a tool window) was not exercised.
+
+## 2026-10-05 - Panel fixes found on the way
+
+- **The composer's working arc ran at an uneven pace.**
+  It was a conic gradient turned by an angle from the field's centre: 5px a step along the long sides against 140px round the ends.
+  It is now a dash on the field's outline (`webview/busy-ring.tsx`), moved by its offset.
+  A dash given a unitless length, or a `calc()` over one, is accepted and not interpolated: every value is a plain `px`.
+- **The composer's glass blurred the agent's working line.**
+  Its reach above the field is for text on its way under it; at the end of the conversation nothing is.
+  `--glass` (0 at the end, 1 once scrolled away) now scales that reach.
+- **Segments and menu rows did not follow their containers' corners.**
+  The radii went to 15px and what is drawn inside them stayed at 4px; each now takes its container's radius less the border and padding between the two edges.
+- **The approval's "Open diff" broke onto two lines** in a sidebar's width.
+- **A flaky spec**: `transcript.e2e` measured a box two frames into its entry animation.
+  It waits for the animation now.
+
 ## 2026-10-03 - Extension UI redesign, stage 7: outside the webview, and wrap-up
 
 ### What was done

@@ -4,6 +4,8 @@
 // it lets the user browse and reopen past conversations, and start fresh ones.
 
 import type { AppMode, ServerConversation } from "../src/protocol";
+import type { Place } from "./avatar-motion";
+import type { AvatarSkin } from "./avatar-skin";
 import type { Item } from "./store/transcript";
 
 export interface Conversation {
@@ -66,9 +68,14 @@ export function mergeHistory(
 export interface ExtPrefs {
   mode: AppMode;
   autoRunRefactor: boolean;
+  /** The avatar loose in the panel, and where it was last left. */
+  floatingAvatar: boolean;
+  avatarAt?: Place;
+  /** What the avatar wears: the season's, by the calendar, or one picked by hand. */
+  avatarSkin: "auto" | AvatarSkin;
 }
 
-export const DEFAULT_PREFS: ExtPrefs = { mode: "agent", autoRunRefactor: false };
+export const DEFAULT_PREFS: ExtPrefs = { mode: "agent", autoRunRefactor: false, floatingAvatar: true, avatarSkin: "auto" };
 
 export interface PersistedState {
   conversations: Conversation[];

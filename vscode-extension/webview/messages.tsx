@@ -4,7 +4,10 @@ import { t, tf } from "./i18n";
 
 import type { Block } from "./blocks";
 import { Codicon } from "./codicon";
-import { IconBrand, IconUser } from "./icons";
+import { AgentAvatar } from "./agent-avatar";
+import type { AvatarPose } from "./avatar-pose";
+import { useFollow } from "./follow";
+import { IconUser } from "./icons";
 import { Markdown } from "./markdown";
 import type { SessionState } from "./store/session";
 import { Item, workingLabel } from "./store/transcript";
@@ -30,6 +33,7 @@ export function BlockView({
   avatarPending,
   onAvatarSignIn,
   done,
+  pose = null,
   onOpenDiff,
   onTerminal,
   children,
@@ -45,6 +49,7 @@ export function BlockView({
   onAvatarSignIn?: () => void;
   /** The turn is over and this box holds its answer: it turns green. */
   done?: boolean;
+  pose?: AvatarPose | null;
   children?: React.ReactNode;
 }): JSX.Element {
   const user = block.speaker === "user";
@@ -64,9 +69,15 @@ export function BlockView({
             onSignIn={onAvatarSignIn}
           />
         ) : (
-          <span className="avatar avatar-assistant">
-            <IconBrand size={14} />
-          </span>
+          pose ? (
+            <span className="avatar avatar-live">
+              <AgentAvatar pose={pose} size={28} fx />
+            </span>
+          ) : (
+            <span className="avatar avatar-assistant">
+              <AgentAvatar pose={null} size={14} />
+            </span>
+          )
         )}
         <span className="block-name">{user ? t("You") : "Code-AI"}</span>
       </div>
@@ -171,7 +182,7 @@ export function ItemView({
     case "assistant":
       return (
         <div className="assistant-text">
-          <Markdown text={item.text} />
+          <Markdown text={item.text} streaming={item.streaming} />
         </div>
       );
     case "working":
@@ -212,12 +223,7 @@ function ThinkingRow({ text, streaming }: { text: string; streaming?: boolean })
 
   // Follow the text as it arrives; stop the moment the reader scrolls up, so
   // reading something is never interrupted by the next delta.
-  const [follow, setFollow] = React.useState(true);
-  React.useEffect(() => {
-    const el = body.current;
-    if (!el || !open || !streaming || !follow) return;
-    el.scrollTop = el.scrollHeight;
-  }, [text, open, streaming, follow]);
+  const follow = useFollow(body, { active: open && !!streaming });
 
   return (
     <div className={`thinking ${open ? "open" : ""} ${streaming ? "live" : ""}`}>
@@ -228,14 +234,7 @@ function ThinkingRow({ text, streaming }: { text: string; streaming?: boolean })
         {streaming && <span className="thinking-live" aria-label={t("in progress")} />}
       </button>
       {open && (
-        <div
-          ref={body}
-          className="thinking-body"
-          onScroll={(e) => {
-            const el = e.currentTarget;
-            setFollow(el.scrollHeight - el.scrollTop - el.clientHeight < 24);
-          }}
-        >
+        <div ref={body} className="thinking-body" {...follow.handlers}>
           {text}
         </div>
       )}
