@@ -1,3 +1,179 @@
+// ---- idle ----
+// Timed the way it is thought about, in seconds, and turned into keyframes
+// below. Three things hold all through it. The eyes lead, the head follows
+// late and heavy, the leaf arrives last and swings to a stop. Nothing starts or
+// stops together with anything else. And every arrival goes a little past and
+// comes back, which is what reads as weight.
+
+/** One pass of the idle, in seconds: long enough not to read as a loop. */
+export const IDLE_LOOP_S = 12;
+const IDLE = IDLE_LOOP_S;
+
+/** At `at` seconds the part is at `transform`, and eases on to the next step as `ease` says. */
+type Step = [at: number, transform: string, ease?: string];
+
+// Chromium 102 has no linear(), so every curve is a cubic-bezier and the
+// overshoots are keyframes of their own.
+const SNAP = "cubic-bezier(.2,.75,.25,1)"; // a saccade: all its speed at the start
+const SETTLE = "cubic-bezier(.35,0,.3,1)"; // coming back from having gone too far
+const HEAVY = "cubic-bezier(.42,0,.16,1)"; // a mass getting under way, then easing in
+const SWING = "cubic-bezier(.37,0,.63,1)"; // a pendulum, extreme to extreme
+const SHUT = "cubic-bezier(.5,0,1,1)"; // a lid falling
+const OPEN = "cubic-bezier(0,0,.25,1)"; // and lifting, slower than it fell
+
+function timeline(name: string, steps: Step[]): string {
+  const frames = steps.map(([at, transform, ease]) => {
+    const percent = Math.round((at / IDLE) * 100000) / 1000;
+    return `${percent}% { transform: ${transform};${ease ? ` animation-timing-function: ${ease};` : ""} }`;
+  });
+  return `@keyframes ${name} { ${frames.join(" ")} }`;
+}
+
+const look = (x: number, y = 0) => `translate(${x}px, ${y}px)`;
+const lid = (wide: number, open: number) => `scale(${wide}, ${open})`;
+const turn = (deg: number, x = 0, y = 0) => `rotate(${deg}deg) translate(${x}px, ${y}px)`;
+const lean = (deg: number) => `rotate(${deg}deg)`;
+
+/** A blink from `at`: shut fast, a beat closed, open slower and a touch too wide. */
+function blink(at: number, wideFrom: number, wideTo = wideFrom, rest = 1): Step[] {
+  return [
+    [at, lid(wideFrom, rest), SHUT],
+    [at + 0.075, lid((wideFrom + wideTo) / 2, 0.08)],
+    [at + 0.115, lid(wideTo, 0.08), OPEN],
+    [at + 0.265, lid(wideTo, 1.07), SETTLE],
+    [at + 0.36, lid(wideTo, 1)],
+  ];
+}
+
+// Where it looks: ahead, left, across to the right, back, then up at nothing.
+// A glance is a saccade - there in a sixth of a second, a little past, back.
+const GAZE = timeline("av-i-gaze", [
+  [0, look(0)],
+  [2.86, look(0), SETTLE],
+  [2.92, look(0.12), SNAP],
+  [3.07, look(-1.7, 0.05), SETTLE],
+  [3.24, look(-1.55, 0.05)],
+  [4.52, look(-1.55, 0.05), SETTLE],
+  [4.6, look(-1.72, 0.05), SNAP],
+  [4.8, look(1.75, 0.02), SETTLE],
+  [4.98, look(1.6, 0.02)],
+  [6.45, look(1.6, 0.02), SNAP],
+  [6.62, look(-0.22), SETTLE],
+  [6.8, look(0)],
+  [9.8, look(0), SWING],
+  [10.18, look(0.42, -0.78), SWING],
+  [10.95, look(0.38, -0.74), SWING],
+  [11.21, look(0, 0.04), SETTLE],
+  [11.36, look(0)],
+  [IDLE, look(0)],
+]);
+
+/**
+ * One eye: its lids, and how wide it is drawn. People blink as they shift
+ * their gaze, so the two big glances each hide inside a blink; the eye on the
+ * side the head turns to is foreshortened, which is what makes a flat face
+ * read as turning.
+ */
+function eye(name: string, lookingLeft: number, lookingRight: number): string {
+  return timeline(name, [
+    [0, lid(1, 1)],
+    ...blink(2.9, 1, lookingLeft),
+    ...blink(4.58, lookingLeft, lookingRight),
+    [6.45, lid(lookingRight, 1), SETTLE],
+    [6.65, lid(1, 1)],
+    // Two in a row, the first cut short by the second.
+    [8.3, lid(1, 1), SHUT],
+    [8.37, lid(1, 0.08)],
+    [8.4, lid(1, 0.08), OPEN],
+    [8.53, lid(1, 0.94)],
+    ...blink(8.58, 1),
+    // Looking up opens them a little; the blink brings the gaze back down.
+    [9.8, lid(1, 1), SWING],
+    [10.18, lid(1, 1.05)],
+    ...blink(10.97, 1, 1, 1.05),
+    [IDLE, lid(1, 1)],
+  ]);
+}
+
+// The head sets off some 80 ms after the eyes and takes three times as long.
+const HEAD = timeline("av-i-head", [
+  [0, turn(0)],
+  [2.94, turn(0), SETTLE],
+  [3.02, turn(0.5, 0.06, 0.05), HEAVY],
+  [3.4, turn(-3, -0.39), SETTLE],
+  [3.66, turn(-2.6, -0.34), SWING],
+  [4.62, turn(-2.5, -0.33), SETTLE],
+  [4.7, turn(-3, -0.38, 0.05), HEAVY],
+  [5.14, turn(3.25, 0.42), SETTLE],
+  [5.42, turn(2.8, 0.36), SWING],
+  [6.5, turn(2.7, 0.35), HEAVY],
+  [6.92, turn(-0.6, -0.07), SETTLE],
+  [7.2, turn(0)],
+  [9.88, turn(0), SWING],
+  [10.4, turn(1.6, 0.1, -0.12), SWING],
+  [11.02, turn(1.5, 0.1, -0.1), SWING],
+  [11.5, turn(-0.2), SETTLE],
+  [11.74, turn(0)],
+  [IDLE, turn(0)],
+]);
+
+// The leaf is dragged the other way when the head sets off, then swings
+// through and back, less each time. Between turns it barely stirs.
+const LEAF = timeline("av-i-leaf", [
+  [0, lean(0), SWING],
+  [0.9, lean(-0.8), SWING],
+  [2, lean(0.7), SWING],
+  [3.02, lean(0.4), SWING],
+  [3.2, lean(6.5), SWING],
+  [3.52, lean(-6), SWING],
+  [3.82, lean(3), SWING],
+  [4.1, lean(-1.6), SWING],
+  [4.36, lean(0.5), SWING],
+  [4.7, lean(0.3), SWING],
+  [4.92, lean(-8.5), SWING],
+  [5.28, lean(7.5), SWING],
+  [5.6, lean(-3.8), SWING],
+  [5.9, lean(1.9), SWING],
+  [6.18, lean(-0.8), SWING],
+  [6.52, lean(0), SWING],
+  [6.72, lean(5), SWING],
+  [7.06, lean(-4.2), SWING],
+  [7.36, lean(2), SWING],
+  [7.64, lean(-0.9), SWING],
+  [7.9, lean(0), SWING],
+  [8.9, lean(0.8), SWING],
+  [9.92, lean(-0.3), SWING],
+  [10.2, lean(-3.2), SWING],
+  [10.62, lean(2.2), SWING],
+  [11.02, lean(-0.9), SWING],
+  [11.34, lean(3), SWING],
+  [11.62, lean(-1.6), SWING],
+  [11.84, lean(0.5), SWING],
+  [IDLE, lean(0)],
+]);
+
+const IDLE_STYLE = `
+.agent-av-breath { transform-origin: 12px 20.4px; }
+.agent-av[data-pose=idle] .agent-av-breath { animation: av-i-breathe 3.4s ${SWING} infinite alternate; }
+.agent-av[data-pose=idle] .agent-av-eyes { animation: av-i-gaze ${IDLE}s ${SWING} infinite; }
+.agent-av[data-pose=idle] .agent-av-eye { transform-origin: 50% 60%; animation: av-i-eye-l ${IDLE}s ${SWING} infinite; }
+.agent-av[data-pose=idle] .agent-av-eye:nth-child(2) { animation-name: av-i-eye-r; }
+.agent-av[data-pose=idle] .agent-av-rig { animation: av-i-head ${IDLE}s ${SWING} infinite; }
+.agent-av[data-pose=idle] .agent-av-leaf { animation: av-i-leaf ${IDLE}s ${SWING} infinite; }
+/* Each avatar starts somewhere else in the loop (--av-phase, set per element):
+   several of them falling idle at once would otherwise blink as one. */
+.agent-av[data-pose=idle] .agent-av-eyes,
+.agent-av[data-pose=idle] .agent-av-eye,
+.agent-av[data-pose=idle] .agent-av-rig,
+.agent-av[data-pose=idle] .agent-av-leaf { animation-delay: var(--av-phase, 0s); }
+@keyframes av-i-breathe { from { transform: scale(1, 1); } to { transform: scale(1.016, .972); } }
+${GAZE}
+${eye("av-i-eye-l", 0.86, 1.02)}
+${eye("av-i-eye-r", 1.02, 0.86)}
+${HEAD}
+${LEAF}
+`;
+
 export const AVATAR_STYLE = `
 .agent-av { display: block; flex: none; overflow: visible; }
 .agent-av * { transform-box: view-box; }
@@ -56,15 +232,7 @@ export const AVATAR_STYLE = `
 .brand-live .agent-av { position: absolute; left: -1px; top: -4px; }
 .brand-live .agent-av-ring { stroke: var(--bg-rail); }
 
-.agent-av[data-pose=idle] .agent-av-rig { animation: av-i-breathe 3.4s ease-in-out infinite alternate; }
-.agent-av[data-pose=idle] .agent-av-eyes { animation: av-i-glance 7.5s ease-in-out infinite; }
-.agent-av[data-pose=idle] .agent-av-eye { animation: av-i-blink 5.2s infinite; }
-.agent-av[data-pose=idle] .agent-av-leaf { animation: av-i-leaf 3.4s ease-in-out infinite alternate; }
-@keyframes av-i-breathe { from { transform: scale(1,1); } to { transform: scale(1.015,.97); } }
-@keyframes av-i-glance { 0%,58%,100% { transform: translate(0,0); } 63%,72% { transform: translate(-1.1px,.2px); } 77%,88% { transform: translate(1.1px,-.2px); } }
-@keyframes av-i-blink { 0%,86%,89%,92%,100% { transform: scaleY(1); } 87.5%,90.5% { transform: scaleY(.12); } }
-@keyframes av-i-leaf { from { transform: rotate(-3deg); } to { transform: rotate(4deg); } }
-
+${IDLE_STYLE}
 /* ---- inertia: what a movement asks of the body (avatar-motion.ts sets these) ---- */
 .agent-av-inertia {
   transform-origin: 12px 20.4px;

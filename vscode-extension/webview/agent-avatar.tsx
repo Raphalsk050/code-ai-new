@@ -2,6 +2,7 @@ import * as React from "react";
 
 import type { AvatarPose } from "./avatar-pose";
 import { type AvatarSkin, useAvatarSkin } from "./avatar-skin";
+import { IDLE_LOOP_S } from "./styles/avatar";
 
 const FACE = "M12 3.6c5.3 0 8.6 3.1 8.6 8.2 0 5.4-3.4 8.6-8.6 8.6s-8.6-3.2-8.6-8.6c0-5.1 3.3-8.2 8.6-8.2z";
 const LEAF = "M12.4 3.9C12 2 13.6.6 16.1.9c.1 2-1.4 3.4-3.7 3z";
@@ -60,9 +61,12 @@ export function AgentAvatar({
   // Under about a pixel per unit a mouth or a rind is a smudge, not a detail.
   const detail = size / (fx ? FX_UNITS : GLYPH_UNITS) >= 0.9;
   const carved = dress === "halloween";
+  // Where in the idle's loop this one starts; see --av-phase in the stylesheet.
+  const phase = React.useRef(`${(-Math.random() * IDLE_LOOP_S).toFixed(2)}s`).current;
   return (
     <svg
       className={`agent-av${className ? " " + className : ""}`}
+      style={{ "--av-phase": phase } as React.CSSProperties}
       data-pose={pose ?? undefined}
       data-skin={dress === "default" ? undefined : dress}
       width={size}
@@ -108,45 +112,48 @@ export function AgentAvatar({
       </defs>
       <g className="agent-av-inertia">
         <g className="agent-av-rig">
-          {carved && <path className="agent-av-glow" d={FACE} />}
-          {carved && <path className="agent-av-stump" d={STUMP} />}
-          {dress !== "christmas" && (
-            <g className="agent-av-leaf-lag">
-              {dress === "easter" ? (
-                <g className="agent-av-leaf">
-                  <path d={EAR_L} />
-                  <path d={EAR_R} />
-                  <path className="agent-av-blush" d={EAR_IN_L} />
-                  <path className="agent-av-blush" d={EAR_IN_R} />
-                </g>
-              ) : (
-                <path className="agent-av-leaf agent-av-stem" d={LEAF} />
-              )}
-            </g>
-          )}
-          <path className="agent-av-face" d={FACE} mask={`url(#${mask})`} />
-          {carved && detail && (
-            <g className="agent-av-lobes" clipPath={`url(#${outline})`} mask={`url(#${mask})`}>
-              <path d={LOBE_L} />
-              <path d={LOBE_R} />
-            </g>
-          )}
-          {dress === "easter" && detail && <path className="agent-av-blush" d={NOSE} />}
-          {dress === "christmas" && (
-            <g className="agent-av-hat-set">
-              <path className="agent-av-hat" d={HAT_BODY} />
-              <path className="agent-av-hat-fold" d={HAT_FOLD} />
-              <g className="agent-av-leaf-lag agent-av-hat-lag">
-                <g className="agent-av-leaf agent-av-hat-tail">
-                  <path className="agent-av-hat" d={HAT_TAIL} />
-                  <circle className="agent-av-snow-shade" cx="1.3" cy="3.7" r="1.9" />
-                  <circle className="agent-av-snow" cx="1.1" cy="3.45" r="1.6" />
-                </g>
+          {/* A layer of its own for breathing: it runs on its own clock, under whatever the head is doing. */}
+          <g className="agent-av-breath">
+            {carved && <path className="agent-av-glow" d={FACE} />}
+            {carved && <path className="agent-av-stump" d={STUMP} />}
+            {dress !== "christmas" && (
+              <g className="agent-av-leaf-lag">
+                {dress === "easter" ? (
+                  <g className="agent-av-leaf">
+                    <path d={EAR_L} />
+                    <path d={EAR_R} />
+                    <path className="agent-av-blush" d={EAR_IN_L} />
+                    <path className="agent-av-blush" d={EAR_IN_R} />
+                  </g>
+                ) : (
+                  <path className="agent-av-leaf agent-av-stem" d={LEAF} />
+                )}
               </g>
-              <path className="agent-av-band agent-av-band-shade" d={HAT_BAND_SHADE} />
-              <path className="agent-av-band" d={HAT_BAND} />
-            </g>
-          )}
+            )}
+            <path className="agent-av-face" d={FACE} mask={`url(#${mask})`} />
+            {carved && detail && (
+              <g className="agent-av-lobes" clipPath={`url(#${outline})`} mask={`url(#${mask})`}>
+                <path d={LOBE_L} />
+                <path d={LOBE_R} />
+              </g>
+            )}
+            {dress === "easter" && detail && <path className="agent-av-blush" d={NOSE} />}
+            {dress === "christmas" && (
+              <g className="agent-av-hat-set">
+                <path className="agent-av-hat" d={HAT_BODY} />
+                <path className="agent-av-hat-fold" d={HAT_FOLD} />
+                <g className="agent-av-leaf-lag agent-av-hat-lag">
+                  <g className="agent-av-leaf agent-av-hat-tail">
+                    <path className="agent-av-hat" d={HAT_TAIL} />
+                    <circle className="agent-av-snow-shade" cx="1.3" cy="3.7" r="1.9" />
+                    <circle className="agent-av-snow" cx="1.1" cy="3.45" r="1.6" />
+                  </g>
+                </g>
+                <path className="agent-av-band agent-av-band-shade" d={HAT_BAND_SHADE} />
+                <path className="agent-av-band" d={HAT_BAND} />
+              </g>
+            )}
+          </g>
         </g>
       </g>
       {fx && (

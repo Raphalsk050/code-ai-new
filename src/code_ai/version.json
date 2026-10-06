@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 36,
-  "patch": 7,
-  "build": 86,
+  "patch": 8,
+  "build": 87,
   "updated": "2026-10-06",
-  "note": "Avatar proposals: the hat's fur band redrawn"
+  "note": "Avatar: a new idle, timed in seconds, with the eyes leading and the leaf following through"
 }
