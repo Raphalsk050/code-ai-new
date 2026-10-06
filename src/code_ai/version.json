@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 36,
-  "patch": 3,
-  "build": 82,
-  "updated": "2026-10-04",
-  "note": "Animated agent avatar"
+  "patch": 4,
+  "build": 83,
+  "updated": "2026-10-06",
+  "note": "Avatar proposals: seasonal skins, inertia and a floating avatar, on a preview page"
 }

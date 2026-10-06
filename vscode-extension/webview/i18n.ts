@@ -725,6 +725,8 @@ const PT: Record<string, string> = {
   "Context: {0} of {1} tokens · {2} spent in the session": "Contexto: {0} de {1} tokens · {2} gastos na sessão",
   "click to compact": "clique para compactar",
   "Go to the latest message": "Ir para a última mensagem",
+  "Code-AI. Drag to move, arrow keys to push, Home to send back.":
+    "Code-AI. Arraste para mover, setas para empurrar, Home para mandar de volta.",
   "Reconnect to send": "Reconecte para enviar",
   "Reply or steer the agent…": "Responder ou redirecionar o agente…",
   "Ask, request a change, or type / for commands": "Pergunte, peça uma mudança ou digite / para comandos",

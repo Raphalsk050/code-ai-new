@@ -65,6 +65,65 @@ export const AVATAR_STYLE = `
 @keyframes av-i-blink { 0%,86%,89%,92%,100% { transform: scaleY(1); } 87.5%,90.5% { transform: scaleY(.12); } }
 @keyframes av-i-leaf { from { transform: rotate(-3deg); } to { transform: rotate(4deg); } }
 
+/* ---- inertia: what a movement asks of the body (avatar-motion.ts sets these) ---- */
+.agent-av-inertia {
+  transform-origin: 12px 20.4px;
+  transform: rotate(var(--av-tilt, 0deg)) scale(var(--av-sx, 1), var(--av-sy, 1));
+}
+.agent-av-leaf-lag { transform-origin: 12.6px 3.9px; transform: rotate(var(--av-leaf-lag, 0deg)); }
+.agent-av-look { transform: translate(var(--av-look-x, 0px), var(--av-look-y, 0px)); }
+
+/* ---- skins ---- */
+/* The face, the eyes and the flat fill are the mark and stay. A skin changes
+   what is on the head and adds at most two colours, taken from the theme
+   where the theme has one. */
+.agent-av {
+  --av-pumpkin: #ee8732;
+  --av-ember: #ffd166;
+  --av-snow: color-mix(in srgb, var(--fg) 12%, #fff);
+  --av-blush: #f2a0bd;
+}
+.agent-av[data-skin=halloween] .agent-av-face { fill: var(--av-pumpkin); }
+.agent-av[data-skin=halloween] .agent-av-stem { fill: var(--success); }
+.agent-av-glow { fill: var(--av-ember); }
+.agent-av[data-pose] .agent-av-glow { animation: av-flicker 3.1s infinite; }
+.agent-av-ribs { fill: none; stroke: #000; stroke-opacity: .1; stroke-width: .5; stroke-linecap: round; }
+@keyframes av-flicker { 0%,16%,24%,54%,66%,100% { opacity: 1; } 20% { opacity: .78; } 58% { opacity: .64; } 62% { opacity: .9; } }
+.agent-av-hat { fill: var(--danger); }
+.agent-av-snow { fill: var(--av-snow); }
+.agent-av-brim { fill: none; stroke: var(--av-snow); stroke-width: 2.7; stroke-linecap: round; }
+.agent-av-blush { fill: var(--av-blush); }
+
+/* ---- floating ---- */
+/* On the same glass as the composer, so it reads as part of the panel and
+   stays legible over whatever is under it. */
+.av-float {
+  position: absolute; left: 0; top: 0; z-index: 30;
+  width: 48px; height: 48px; display: grid; place-items: center;
+  color: var(--accent); cursor: grab; touch-action: none;
+  -webkit-user-select: none; user-select: none; will-change: transform;
+}
+.av-float-puck {
+  position: absolute; inset: 0; border-radius: 50%;
+  background: var(--surface-input-glass);
+  border: 1px solid var(--border-strong);
+  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+  box-shadow: 0 8px 18px -8px var(--shadow);
+  transition: transform var(--dur-base) var(--ease-spring), box-shadow var(--dur-base) var(--ease-out),
+    border-color var(--dur-base) var(--ease-out);
+}
+.av-float .agent-av { position: relative; pointer-events: none; }
+.av-float .agent-av-ring { stroke: var(--surface-input); }
+.av-float[data-busy] .av-float-puck { border-color: color-mix(in srgb, var(--accent) 55%, var(--border-strong)); }
+.av-float[data-held] { cursor: grabbing; }
+.av-float[data-held] .av-float-puck { transform: scale(1.08); box-shadow: 0 16px 28px -12px var(--shadow); }
+.av-float:focus-visible { outline: none; }
+.av-float:focus-visible .av-float-puck { outline: 1px solid var(--focus); outline-offset: 2px; }
+.av-float[data-bare] .av-float-puck {
+  background: none; border-color: transparent; box-shadow: none;
+  -webkit-backdrop-filter: none; backdrop-filter: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .agent-av * { animation: none !important; }
   .agent-av[data-pose=search] .agent-av-eyes { transform: translate(-1.6px,.2px); }
