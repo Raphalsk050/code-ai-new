@@ -82,16 +82,18 @@ export function AgentAvatar({
                   <rect className="agent-av-eye" x="13.3" y="9.6" width="2.5" height="4.8" rx="1.25" />
                 </>
               )}
+              {/* In with the eyes: a carving looks around as one piece, and
+                  eyes looking down would otherwise run into the grin. */}
+              {carved && detail && (
+                <>
+                  <path d={GRIN} stroke="#000" strokeWidth=".6" strokeLinejoin="round" />
+                  {/* Two teeth: white in a mask leaves the face there. */}
+                  <rect x="9.9" y="15.1" width="1.7" height="1.7" rx=".35" fill="#fff" />
+                  <rect x="12.6" y="17" width="1.7" height="2.4" rx=".35" fill="#fff" />
+                </>
+              )}
             </g>
           </g>
-          {carved && detail && (
-            <>
-              <path d={GRIN} fill="#000" stroke="#000" strokeWidth=".6" strokeLinejoin="round" />
-              {/* Two teeth: white in a mask leaves the face there. */}
-              <rect x="9.9" y="15.1" width="1.7" height="1.7" rx=".35" fill="#fff" />
-              <rect x="12.6" y="17" width="1.7" height="2.4" rx=".35" fill="#fff" />
-            </>
-          )}
         </mask>
         {carved && detail && (
           <clipPath id={outline}>

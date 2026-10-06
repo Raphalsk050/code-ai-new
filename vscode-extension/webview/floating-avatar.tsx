@@ -12,8 +12,8 @@ const DEFAULT_SIZE = 72;
 const GLYPH_SHARE = 0.8;
 /** Kept clear of the container's edges. */
 const MARGIN = 8;
-/** Its own corner is the bottom right, this far up: above the composer. */
-const HOME_INSET = { right: 8, bottom: 150 };
+/** Its own corner is the bottom right: clear of the rail's strip, above the composer. */
+const HOME_INSET = { right: 52, bottom: 150 };
 /** What an arrow key gives it, in px/s: a push, not a step. */
 const NUDGE = 520;
 /** Returning home is a spring too, softer than the body's. */
