@@ -248,13 +248,21 @@ ${IDLE_STYLE}
 .agent-av {
   --av-pumpkin: #ee8732;
   --av-ember: #ffd166;
-  --av-snow: color-mix(in srgb, var(--fg) 12%, #fff);
-  --av-snow-shade: color-mix(in srgb, var(--av-snow) 80%, #5d6f86);
+  /* Plain first: Chromium before 111 has no color-mix(), and a colour that
+     does not resolve would leave the fur in the glyph's own. */
+  --av-snow: #ececec;
+  --av-snow-shade: #cdd2d9;
   --av-blush: #f2a0bd;
+}
+@supports (color: color-mix(in srgb, red, blue)) {
+  .agent-av {
+    --av-snow: color-mix(in srgb, var(--fg) 12%, #fff);
+    --av-snow-shade: color-mix(in srgb, var(--av-snow) 80%, #5d6f86);
+  }
 }
 .agent-av[data-skin=halloween] .agent-av-face { fill: var(--av-pumpkin); }
 .agent-av[data-skin=halloween] .agent-av-stem { fill: var(--success); }
-.agent-av-stump { fill: color-mix(in srgb, var(--av-pumpkin) 55%, #4a2c0a); }
+.agent-av-stump { fill: #a45e20; fill: color-mix(in srgb, var(--av-pumpkin) 55%, #4a2c0a); }
 .agent-av-glow { fill: var(--av-ember); }
 .agent-av[data-pose] .agent-av-glow { animation: av-flicker 3.1s infinite; }
 /* A shade, not a colour: black over whatever the rind is. */
@@ -288,7 +296,7 @@ ${IDLE_STYLE}
 }
 .av-float-puck {
   position: absolute; inset: 0; border-radius: 50%;
-  background: var(--surface-input-glass);
+  background: var(--surface-input);
   border: 1px solid var(--border-strong);
   -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
   box-shadow: 0 8px 18px -8px var(--shadow);
@@ -296,6 +304,10 @@ ${IDLE_STYLE}
     border-color var(--dur-base) var(--ease-out);
 }
 .av-float .agent-av { position: relative; pointer-events: none; }
+/* The glass is a color-mix() token: solid where there is none to mix. */
+@supports (color: color-mix(in srgb, red, blue)) {
+  .av-float-puck { background: var(--surface-input-glass); }
+}
 .av-float .agent-av-ring { stroke: var(--surface-input); }
 .av-float[data-busy] .av-float-puck { border-color: color-mix(in srgb, var(--accent) 55%, var(--border-strong)); }
 .av-float[data-held] { cursor: grabbing; }
