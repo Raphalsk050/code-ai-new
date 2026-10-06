@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 37,
-  "patch": 2,
-  "build": 84,
-  "updated": "2026-10-05",
-  "note": "The Android Studio package carries its backend, and a setup script for Linux"
+  "patch": 3,
+  "build": 85,
+  "updated": "2026-10-06",
+  "note": "Treat web page text as data, not instructions"
 }

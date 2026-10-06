@@ -48,6 +48,7 @@ from code_ai.tools.browser.install import (
     package_missing_message,
     prepare_driver,
 )
+from code_ai.tools.output import WEB_FENCE, defuse_untrusted_in, fence_untrusted
 
 # How long a navigation or an action may take before it is called a failure.
 # A page that has not settled in this long is either very slow or waiting on
@@ -503,6 +504,10 @@ class BrowserSession:
         if self._downloads:
             payload["downloads"] = list(self._downloads)
             self._downloads.clear()
+        # Every string here is the page's: title, labels, a dialog's message.
+        payload = defuse_untrusted_in(payload)
+        if payload["text"]:
+            payload["text"] = fence_untrusted(payload["text"], tag=WEB_FENCE)
         if screenshot:
             payload["screenshot_png"] = await page.screenshot(type="png", full_page=full_page)
         return payload
