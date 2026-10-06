@@ -99,18 +99,18 @@ def build_notes(subjects: list[str]) -> str:
             seen.add(change.text.lower())
             changes.append(change)
 
-    lines: list[str] = []
+    sections: list[str] = []
     for title, (kinds, limit) in _SECTIONS.items():
         picked = [change for change in changes if change.kind in kinds]
         if picked:
-            lines += [f"### {title}"]
-            lines += [
-                f"- {change.area}: {change.text}" if change.area else f"- {change.text}"
+            items = [
+                f"- **{change.area}:** {change.text}" if change.area else f"- {change.text}"
                 for change in picked[:limit]
             ]
-    if not lines:
-        lines = ["Maintenance build: no user-facing changes."]
-    return "\n".join(lines) + "\n"
+            sections.append("\n".join([f"## {title}", "", *items]))
+    if not sections:
+        return "Maintenance build: no user-facing changes.\n"
+    return "\n\n".join(sections) + "\n"
 
 
 def _git(*args: str) -> str:
@@ -230,7 +230,8 @@ def main(argv: list[str] | None = None) -> int:
         print(release_version(version))
     elif args.command == "notes":
         release = release_version(version)
-        print(release_title(version))
+        # The whole release as one document: its title, then its body.
+        print(f"# {release_title(version)}\n")
         print(build_notes(commit_subjects(previous_tag(release))), end="")
     else:
         missing = [str(asset) for asset in args.assets if not asset.is_file()]

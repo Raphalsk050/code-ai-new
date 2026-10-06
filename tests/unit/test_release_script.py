@@ -51,14 +51,16 @@ def test_the_title_carries_the_build_and_the_notes_are_three_short_sections() ->
     assert release.release_title(_VERSION) == "Code-AI v0.27.1 - build 60"
     notes = release.build_notes(subjects)
 
-    assert notes.startswith("### Features\n- MCP: Capability 0\n")
-    assert "- MCP: Capability 6" not in notes
-    assert (
-        "- MCP: Capability 5\n"
-        "### Improvement\n- Remove the old layer\n- Android Studio: Read the project once\n"
-        "### Fixes\n- VS Code: Read the pipe as UTF-8\n"
-    ) in notes
-    assert notes.endswith("- VS Code: Read the pipe as UTF-8\n")
+    assert notes.startswith("## Features\n\n- **MCP:** Capability 0\n")
+    assert "Capability 6" not in notes
+    # A heading, a blank line, the list; and a blank line between sections.
+    assert notes.endswith(
+        "- **MCP:** Capability 5\n"
+        "\n"
+        "## Improvement\n\n- Remove the old layer\n- **Android Studio:** Read the project once\n"
+        "\n"
+        "## Fixes\n\n- **VS Code:** Read the pipe as UTF-8\n"
+    )
 
 
 def test_a_build_with_nothing_to_announce_says_so() -> None:
@@ -179,7 +181,7 @@ def test_a_new_version_creates_its_release_and_uploads_the_assets(monkeypatch, t
     assert created["target_commitish"] == "abc123"
     assert created["name"] == "Code-AI v0.27.1 - build 60"
     assert created["prerelease"] is True
-    assert "Terminal: A thing" in created["body"]
+    assert created["body"] == "## Features\n\n- **Terminal:** A thing\n"
     # The asset of the same name the release already had is replaced.
     assert ("DELETE", "/repos/company/code-ai/releases/assets/70") in methods
     upload = calls[-1]

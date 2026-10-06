@@ -74,5 +74,5 @@ export function UpdateButton(props: {
 
 /** The top of the release notes, enough for a tooltip, without the Markdown marks. */
 function firstLines(notes: string): string {
-  return notes.replace(/^#+\s*/gm, "").replace(/\*\*/g, "").split("\n").slice(0, 12).join("\n").trim();
+  return notes.replace(/^#+\s*/gm, "").replace(/\*\*/g, "").replace(/\n{2,}/g, "\n").split("\n").slice(0, 12).join("\n").trim();
 }
