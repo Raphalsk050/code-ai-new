@@ -29,11 +29,18 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 VERSION_FILE = REPO / "src" / "code_ai" / "version.json"
 
-# Each section, and how many lines it gets before the rest is summed up in one.
-_SECTIONS = {"feat": ("What's new", 6), "perf": ("Faster", 3), "fix": ("Fixed", 5)}
+# Each section: the kinds of commit it gathers, and the most lines it gets.
+# Fixes are left out on purpose: the notes say what is new, not what was wrong.
+_SECTIONS = {
+    "Features": (("feat",), 6),
+    "Improvement": (("perf", "refactor"), 3),
+}
+_KINDS = {kind for kinds, _ in _SECTIONS.values() for kind in kinds}
 _AREAS = {
     "tui": "Terminal",
     "vscode": "VS Code",
+    "extension": "VS Code",
+    "intellij": "Android Studio",
     "bridge": "VS Code",
     "settings": "Settings",
     "graph": "Graph editor",
@@ -47,6 +54,9 @@ _AREAS = {
     "tools": "Tools",
     "build": "Build",
 }
+# Commits the notes leave out: work that was added and taken out again before
+# any release carried it.
+_UNLISTED = ("1298468baec2", "d2e19994e101")
 _SUBJECT = re.compile(r"^(?P<kind>[a-z]+)(?:\((?P<scope>[^)]*)\))?!?:\s*(?P<text>.+)$")
 
 
@@ -69,7 +79,7 @@ def release_version(data: dict) -> str:
 def parse_subject(subject: str) -> Change | None:
     """A user-facing change from a conventional commit subject, or None."""
     match = _SUBJECT.match(subject.strip())
-    if not match or match["kind"] not in _SECTIONS:
+    if not match or match["kind"] not in _KINDS:
         return None
     scope = (match["scope"] or "").split(",")[0].strip()
     area = _AREAS.get(scope, scope.capitalize())
@@ -77,8 +87,13 @@ def parse_subject(subject: str) -> Change | None:
     return Change(match["kind"], area, text[:1].upper() + text[1:])
 
 
-def build_notes(version: dict, subjects: list[str]) -> str:
-    """Release notes a reader takes in at a glance: what changed, by area."""
+def release_title(version: dict) -> str:
+    """``Code-AI vX.Y.Z - build N``: the release's name."""
+    return f"Code-AI v{release_version(version)} - build {version.get('build', 0)}"
+
+
+def build_notes(subjects: list[str]) -> str:
+    """The release's body: what changed, by kind and by area. The title carries the version."""
     changes: list[Change] = []
     seen: set[str] = set()
     for subject in subjects:
@@ -87,34 +102,18 @@ def build_notes(version: dict, subjects: list[str]) -> str:
             seen.add(change.text.lower())
             changes.append(change)
 
-    lines = [f"**Code-AI v{release_version(version)}** · build {version.get('build', 0)}"]
-    if version.get("note"):
-        lines += ["", str(version["note"]).strip()]
-    left_out = 0
-    for kind, (title, limit) in _SECTIONS.items():
-        picked = [change for change in changes if change.kind == kind]
-        left_out += max(0, len(picked) - limit)
+    sections: list[str] = []
+    for title, (kinds, limit) in _SECTIONS.items():
+        picked = [change for change in changes if change.kind in kinds]
         if picked:
-            lines += ["", f"**{title}**"]
-            lines += [
-                f"- {change.area}: {change.text}" if change.area else f"- {change.text}"
+            items = [
+                f"- **{change.area}:** {change.text}" if change.area else f"- {change.text}"
                 for change in picked[:limit]
             ]
-    if not changes:
-        lines += ["", "Maintenance build: no user-facing changes."]
-    if left_out:
-        lines += ["", f"Plus {left_out} smaller change{'s' if left_out != 1 else ''}."]
-    lines += [
-        "",
-        "**Downloads**: `code-ai-win` (Windows), `code-ai-linux` (Linux), "
-        "`code-ai-vscode` (VS Code extension, the agent included), "
-        "`code-ai-mac` (macOS: the command and the VS Code extension in one).",
-        "",
-        "**macOS**: `code-ai-mac-arm64` for Apple chips (M1 and later), `code-ai-mac-x64` "
-        "for Intel. Install from the Terminal with "
-        f"`sh ~/Downloads/code-ai-mac-arm64-v{release_version(version)}.sh`.",
-    ]
-    return "\n".join(lines) + "\n"
+            sections.append("\n".join([f"## {title}", "", *items]))
+    if not sections:
+        return "Maintenance build: nothing new to announce.\n"
+    return "\n\n".join(sections) + "\n"
 
 
 def _git(*args: str) -> str:
@@ -134,7 +133,8 @@ def previous_tag(current: str) -> str:
 
 def commit_subjects(since: str) -> list[str]:
     span = f"{since}..HEAD" if since else "HEAD"
-    return _git("log", "--no-merges", "--format=%s", "-n", "200", span).splitlines()
+    log = _git("log", "--no-merges", "--format=%H %s", "-n", "200", span).splitlines()
+    return [line.partition(" ")[2] for line in log if not line.startswith(_UNLISTED)]
 
 
 # --- GitHub ---------------------------------------------------------------
@@ -187,8 +187,8 @@ def publish(assets: list[Path], *, prerelease: bool) -> str:
         os.environ["GITHUB_REPOSITORY"],
         os.environ["GITHUB_TOKEN"],
     )
-    notes = build_notes(version, commit_subjects(previous_tag(release)))
-    fields = {"name": f"Code-AI v{release}", "body": notes, "prerelease": prerelease}
+    notes = build_notes(commit_subjects(previous_tag(release)))
+    fields = {"name": release_title(version), "body": notes, "prerelease": prerelease}
 
     existing = github.call("GET", f"/releases/tags/{tag}")
     if isinstance(existing, dict) and existing.get("id"):
@@ -234,7 +234,9 @@ def main(argv: list[str] | None = None) -> int:
         print(release_version(version))
     elif args.command == "notes":
         release = release_version(version)
-        print(build_notes(version, commit_subjects(previous_tag(release))), end="")
+        # The whole release as one document: its title, then its body.
+        print(f"# {release_title(version)}\n")
+        print(build_notes(commit_subjects(previous_tag(release))), end="")
     else:
         missing = [str(asset) for asset in args.assets if not asset.is_file()]
         if missing:

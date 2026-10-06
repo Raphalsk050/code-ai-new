@@ -635,7 +635,7 @@ jobs:
 
   # ---- the release -----------------------------------------------------------
   # Every build becomes the release for its version (tag vX.Y.Z), with short
-  # notes from the feat/fix/perf commits since the previous release
+  # notes from the feat and perf/refactor commits since the previous release
   # (scripts/release.py). The default branch and tags publish a release; other
   # branches a pre-release. Building a version again moves its tag and replaces
   # the assets.

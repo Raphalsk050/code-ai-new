@@ -28,36 +28,54 @@ def test_only_user_facing_commits_become_changes() -> None:
     change = release.parse_subject("feat(tui): paint every theme in its own colours")
 
     assert change == release.Change("feat", "Terminal", "Paint every theme in its own colours")
-    assert release.parse_subject("fix(vscode): keep working after the backend fails").area == (
-        "VS Code"
+    assert release.parse_subject("perf(vscode): draw the transcript once").area == "VS Code"
+    assert release.parse_subject("feat(intellij): host the chat in a tool window").area == (
+        "Android Studio"
     )
-    for subject in ("chore: bump", "test(tui): cover it", "i18n(core): English", "Merge x"):
+    assert release.parse_subject("refactor(extension): take the avatar out").area == "VS Code"
+    # Fixes are not announced either.
+    for subject in ("fix(vscode): keep working", "chore: bump", "test(tui): cover it", "Merge x"):
         assert release.parse_subject(subject) is None
 
 
-def test_the_notes_lead_with_the_version_and_stay_short() -> None:
+def test_the_title_carries_the_build_and_the_notes_are_two_short_sections() -> None:
     subjects = [f"feat(mcp): capability {n}" for n in range(9)] + [
         "fix(bridge): read the pipe as UTF-8",
+        "refactor: remove the old layer",
+        "perf(intellij): read the project once",
         "chore: tidy",
         "feat(mcp): capability 1",
     ]
 
-    notes = release.build_notes(_VERSION, subjects)
+    assert release.release_title(_VERSION) == "Code-AI v0.27.1 - build 60"
+    notes = release.build_notes(subjects)
 
-    assert notes.startswith("**Code-AI v0.27.1** · build 60\n\nRetries, not failures\n")
-    assert "- MCP: Capability 0" in notes
-    assert "- MCP: Capability 6" not in notes
-    assert "**Fixed**\n- VS Code: Read the pipe as UTF-8" in notes
-    assert "Plus 3 smaller changes." in notes
-    assert "code-ai-vscode" in notes
-    # A Mac user gets the exact command for this release.
-    assert "`sh ~/Downloads/code-ai-mac-arm64-v0.27.1.sh`" in notes
+    assert notes.startswith("## Features\n\n- **MCP:** Capability 0\n")
+    assert "Capability 6" not in notes
+    # A heading, a blank line, the list; and a blank line between sections.
+    assert notes.endswith(
+        "- **MCP:** Capability 5\n"
+        "\n"
+        "## Improvement\n\n- Remove the old layer\n- **Android Studio:** Read the project once\n"
+    )
+    assert "Fixes" not in notes and "Read the pipe" not in notes
 
 
 def test_a_build_with_nothing_to_announce_says_so() -> None:
-    notes = release.build_notes({**_VERSION, "note": ""}, ["chore: tidy", "test: more"])
+    assert release.build_notes(["fix: a crash", "chore: tidy", "test: more"]) == (
+        "Maintenance build: nothing new to announce.\n"
+    )
 
-    assert "Maintenance build" in notes
+
+def test_a_commit_the_notes_leave_out_never_reaches_them(monkeypatch) -> None:
+    log = (
+        "a" * 40 + " feat(tui): a thing\n"
+        + release._UNLISTED[0] + "0" * 28 + " feat: something that was taken out again\n"
+        + "b" * 40 + " fix: another\n"
+    )
+    monkeypatch.setattr(release, "_git", lambda *args: log)
+
+    assert release.commit_subjects("v0.27.0") == ["feat(tui): a thing", "fix: another"]
 
 
 def test_the_extension_ships_under_the_product_version(tmp_path) -> None:
@@ -170,9 +188,9 @@ def test_a_new_version_creates_its_release_and_uploads_the_assets(monkeypatch, t
     created = json.loads(calls[1][2])
     assert created["tag_name"] == "v0.27.1"
     assert created["target_commitish"] == "abc123"
-    assert created["name"] == "Code-AI v0.27.1"
+    assert created["name"] == "Code-AI v0.27.1 - build 60"
     assert created["prerelease"] is True
-    assert "Terminal: A thing" in created["body"]
+    assert created["body"] == "## Features\n\n- **Terminal:** A thing\n"
     # The asset of the same name the release already had is replaced.
     assert ("DELETE", "/repos/company/code-ai/releases/assets/70") in methods
     upload = calls[-1]
