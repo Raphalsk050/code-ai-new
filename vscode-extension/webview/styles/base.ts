@@ -14,7 +14,7 @@ body {
   background: var(--bg);
 }
 
-.app { display: flex; flex-direction: column; height: 100vh; }
+.app { position: relative; display: flex; flex-direction: column; height: 100vh; }
 
 /* ---- top bar ---- */
 /* The workspace's git branch, beside the title: quiet, and cut short when narrow. */

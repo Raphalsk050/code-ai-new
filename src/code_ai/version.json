@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 38,
+  "minor": 39,
   "patch": 0,
-  "build": 86,
+  "build": 90,
   "updated": "2026-10-06",
-  "note": "Typeset formulas, stop the streaming flicker, leave the scroll to the reader"
+  "note": "Bring the floating avatar, its costumes and the physical idle to the Android Studio plugin"
 }

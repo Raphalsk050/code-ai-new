@@ -52,6 +52,11 @@ import { applyMention, mentionPrefix, rankPaths } from "./mentions";
 import { agentKey, Block, endsOnAnswer, groupBlocks } from "./blocks";
 import { useFollow } from "./follow";
 import { activityLabel, BlockView, formatElapsed, TypingIndicator } from "./messages";
+import { useSteadyPose } from "./agent-avatar";
+import { isPlace } from "./avatar-motion";
+import { avatarPose } from "./avatar-pose";
+import { seasonalSkin, setAvatarSkin } from "./avatar-skin";
+import { FloatingAvatar } from "./floating-avatar";
 import { PromptPin, usePromptPin } from "./prompt-pin";
 import { ripple } from "./motion";
 import { QuestionsCard } from "./questions-card";
@@ -142,8 +147,18 @@ function App(): JSX.Element {
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
   const pendingReconstructRef = React.useRef<string | null>(null);
 
-  const prefs: ExtPrefs = persisted.prefs ?? DEFAULT_PREFS;
+  // State saved by an older build has no word on what came after it.
+  const prefs: ExtPrefs = { ...DEFAULT_PREFS, ...persisted.prefs };
   const mode = prefs.mode;
+
+  // The season's costume unless one was picked by hand. A panel left open
+  // overnight has to notice the date by itself.
+  React.useEffect(() => {
+    const dress = () => setAvatarSkin(prefs.avatarSkin === "auto" ? seasonalSkin(new Date()) : prefs.avatarSkin);
+    dress();
+    const hourly = window.setInterval(dress, 3_600_000);
+    return () => window.clearInterval(hourly);
+  }, [prefs.avatarSkin]);
 
   // -- host messages -------------------------------------------------------
   React.useEffect(() => {
@@ -397,6 +412,7 @@ function App(): JSX.Element {
   const items = state.transcript.items;
   const lastItem = items[items.length - 1];
   const showTyping = busy && lastItem?.kind !== "assistant";
+  const pose = useSteadyPose(busy ? avatarPose(state.session, lastItem) : "idle");
   const blocks = React.useMemo(() => groupBlocks(items), [items]);
   const pinText = React.useMemo(() => {
     const found = pin.target && items.find((item) => item.id === pin.target?.message);
@@ -799,6 +815,17 @@ function App(): JSX.Element {
     />
   );
 
+  // Over every screen, where it was last left. Keyed, so it is the same one on
+  // each of them and going from one to another does not put it back.
+  const floater = prefs.floatingAvatar && (
+    <FloatingAvatar
+      key="floater"
+      pose={pose}
+      start={isPlace(prefs.avatarAt) ? prefs.avatarAt : undefined}
+      onRest={(avatarAt) => updatePrefs({ avatarAt })}
+    />
+  );
+
   // -- screens -------------------------------------------------------------
   if (screen === "settings") {
     return (
@@ -826,6 +853,7 @@ function App(): JSX.Element {
           mcp={mcp}
           onMcpAction={runMcpAction}
         />
+        {floater}
       </div>
     );
   }
@@ -841,6 +869,7 @@ function App(): JSX.Element {
           onSettings={openSettings}
           update={updateButton}
         />
+        {floater}
       </div>
     );
   }
@@ -968,6 +997,7 @@ function App(): JSX.Element {
         title={history.find((h) => h.id === activeId)?.title || t("New conversation")}
         branch={branch}
         busy={busy}
+        pose={pose}
         offline={!connected}
         activity={`${activityLabel(state.session)} · ${formatElapsed(state.session.heartbeat)}`}
         narrow={width !== "md"}
@@ -1005,6 +1035,7 @@ function App(): JSX.Element {
                         avatarPending={avatar.pending}
                         onAvatarSignIn={avatar.signIn && !avatar.src ? signInForPicture : undefined}
                         done={done && block === lastBlock}
+                        pose={i === shownBlocks.length - 1 && block.speaker === "agent" ? pose : null}
                         onOpenDiff={editorDiff ? openDiff : undefined}
                         onTerminal={showTerminal}
                       >
@@ -1194,6 +1225,7 @@ function App(): JSX.Element {
         />
       </div>
 
+      {floater}
     </div>
   );
 }

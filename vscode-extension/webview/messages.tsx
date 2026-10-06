@@ -4,8 +4,10 @@ import { t, tf } from "./i18n";
 
 import type { Block } from "./blocks";
 import { Codicon } from "./codicon";
+import { AgentAvatar } from "./agent-avatar";
+import type { AvatarPose } from "./avatar-pose";
 import { useFollow } from "./follow";
-import { IconBrand, IconUser } from "./icons";
+import { IconUser } from "./icons";
 import { Markdown } from "./markdown";
 import type { SessionState } from "./store/session";
 import { Item, workingLabel } from "./store/transcript";
@@ -31,6 +33,7 @@ export function BlockView({
   avatarPending,
   onAvatarSignIn,
   done,
+  pose = null,
   onOpenDiff,
   onTerminal,
   children,
@@ -46,6 +49,7 @@ export function BlockView({
   onAvatarSignIn?: () => void;
   /** The turn is over and this box holds its answer: it turns green. */
   done?: boolean;
+  pose?: AvatarPose | null;
   children?: React.ReactNode;
 }): JSX.Element {
   const user = block.speaker === "user";
@@ -65,9 +69,15 @@ export function BlockView({
             onSignIn={onAvatarSignIn}
           />
         ) : (
-          <span className="avatar avatar-assistant">
-            <IconBrand size={14} />
-          </span>
+          pose ? (
+            <span className="avatar avatar-live">
+              <AgentAvatar pose={pose} size={28} fx />
+            </span>
+          ) : (
+            <span className="avatar avatar-assistant">
+              <AgentAvatar pose={null} size={14} />
+            </span>
+          )
         )}
         <span className="block-name">{user ? t("You") : "Code-AI"}</span>
       </div>
