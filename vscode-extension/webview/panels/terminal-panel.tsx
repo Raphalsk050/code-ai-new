@@ -2,6 +2,7 @@ import * as React from "react";
 
 import { parseAnsi, stripAnsi } from "../ansi";
 import { Codicon } from "../codicon";
+import { useFollow } from "../follow";
 import { t, tf } from "../i18n";
 import { IconBrand } from "../icons";
 import type { CommandBlock, TerminalState } from "../store";
@@ -34,11 +35,8 @@ export function TerminalPanel({
     if (focusNonce > 0) inputRef.current?.focus();
   }, [focusNonce]);
 
-  // Newest at the bottom, like a terminal.
-  React.useLayoutEffect(() => {
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [terminal.screen, terminal.blocks]);
+  // Newest at the bottom, like a terminal - until the reader scrolls back.
+  const follow = useFollow(scrollRef);
 
   React.useEffect(() => {
     if (!menu) return;
@@ -127,7 +125,7 @@ export function TerminalPanel({
         </div>
       </div>
 
-      <div className="term-body" ref={scrollRef}>
+      <div className="term-body" ref={scrollRef} {...follow.handlers}>
         {blocks.length > 0 ? (
           <div className="term-blocks">
             {blocks.map((block) => (

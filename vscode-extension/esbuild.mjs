@@ -2,6 +2,8 @@ import { copyFileSync, mkdirSync } from "node:fs";
 
 import esbuild from "esbuild";
 
+import { webviewPlugins } from "./scripts/webview-build.mjs";
+
 const watch = process.argv.includes("--watch");
 
 /** Extension host bundle: CommonJS for Node, with `vscode` left external. */
@@ -24,6 +26,7 @@ const webviewConfig = {
   platform: "browser",
   format: "iife",
   target: "es2021",
+  plugins: webviewPlugins,
   sourcemap: true,
 };
 

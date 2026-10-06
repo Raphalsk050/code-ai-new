@@ -1386,7 +1386,8 @@ function renderHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
   const csp =
     `default-src 'none'; ` +
     `img-src ${webview.cspSource} https: data:; ` +
-    `font-src ${webview.cspSource}; ` +
+    // data: for the formula fonts, which travel inside the bundle.
+    `font-src ${webview.cspSource} data:; ` +
     `style-src ${webview.cspSource} 'unsafe-inline'; ` +
     `script-src 'nonce-${nonce}';`;
   return `<!DOCTYPE html>

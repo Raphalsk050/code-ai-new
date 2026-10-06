@@ -1,3 +1,4 @@
+import KATEX_STYLE from "katex-style";
 import * as React from "react";
 import { createRoot } from "react-dom/client";
 
@@ -49,6 +50,7 @@ import { INITIAL_MCP, McpViewState } from "./mcp-settings";
 import { MentionMenu } from "./mention-menu";
 import { applyMention, mentionPrefix, rankPaths } from "./mentions";
 import { agentKey, Block, endsOnAnswer, groupBlocks } from "./blocks";
+import { useFollow } from "./follow";
 import { activityLabel, BlockView, formatElapsed, TypingIndicator } from "./messages";
 import { PromptPin, usePromptPin } from "./prompt-pin";
 import { ripple } from "./motion";
@@ -123,8 +125,6 @@ function App(): JSX.Element {
   const [reveal, setReveal] = React.useState<{ section: "terminal"; nonce: number } | null>(null);
   const [terminalFocus, setTerminalFocus] = React.useState(0);
   const [railDocked, setRailDocked] = React.useState(true);
-  // Scrolled up away from the newest message: the composer offers a way back.
-  const [atBottom, setAtBottom] = React.useState(true);
   // Edits are shown in the editor's diff view: no live code or diff in here.
   const [editorDiff, setEditorDiff] = React.useState(false);
   // What the agent changed in this conversation, from the host.
@@ -140,7 +140,6 @@ function App(): JSX.Element {
   const [rootRef, width] = useContainerWidth<HTMLDivElement>();
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
-  const pinnedRef = React.useRef(true);
   const pendingReconstructRef = React.useRef<string | null>(null);
 
   const prefs: ExtPrefs = persisted.prefs ?? DEFAULT_PREFS;
@@ -347,14 +346,11 @@ function App(): JSX.Element {
   }, []);
 
   // -- autoscroll / auto-grow ---------------------------------------------
-  const pin = usePromptPin(scrollRef, pinnedRef);
-  const jumpToLatest = () => {
-    const el = scrollRef.current;
-    if (!el) return;
-    pinnedRef.current = true;
-    setAtBottom(true);
-    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-  };
+  const follow = useFollow(scrollRef, { page: true });
+  const pin = usePromptPin(scrollRef, follow.following);
+  const jumpToLatest = () => follow.rejoin(true);
+  // A conversation opens on its newest message, wherever the last one was left.
+  React.useLayoutEffect(() => follow.rejoin(), [activeId, screen, mode]);
   // The composer floats over the transcript; the transcript keeps that much
   // room at its end so the newest line is never under the glass.
   const composerRef = React.useRef<HTMLDivElement>(null);
@@ -384,18 +380,11 @@ function App(): JSX.Element {
     return () => observer.disconnect();
   }, [screen, mode]);
   const onScroll = () => {
-    const el = scrollRef.current;
-    if (!el) return;
-    pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-    setAtBottom(pinnedRef.current);
+    follow.handlers.onScroll();
     syncGlass();
     pin.onScroll();
   };
-  React.useLayoutEffect(() => {
-    const el = scrollRef.current;
-    if (el && pinnedRef.current) el.scrollTop = el.scrollHeight;
-    syncGlass();
-  });
+  React.useLayoutEffect(syncGlass);
   React.useEffect(() => {
     const ta = textareaRef.current;
     if (!ta) return;
@@ -700,6 +689,8 @@ function App(): JSX.Element {
     setDraft("");
     setImages([]);
     setMenuDismissed(false);
+    // Sending is asking to see the answer: back to the end, wherever they were.
+    follow.rejoin();
   };
 
   const onComposerKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -995,7 +986,7 @@ function App(): JSX.Element {
         <div className="workarea">
           {mode === "agent" ? (
             <div className="chat-col">
-              <div className="transcript" ref={scrollRef} onScroll={onScroll}>
+              <div className="transcript" ref={scrollRef} {...follow.handlers} onScroll={onScroll}>
                 <PromptPin target={pin.target} text={pinText} avatar={avatar.src} onGo={pin.go} />
                 <div className="transcript-inner">
                   {shownBlocks.length === 0 ? (
@@ -1035,7 +1026,7 @@ function App(): JSX.Element {
                 onDragLeave={() => setDropping(false)}
                 onDrop={onComposerDrop}
               >
-                {!atBottom && (
+                {follow.away && (
                   <button
                     className="jump-btn"
                     title={t("Go to the latest message")}
@@ -1238,7 +1229,8 @@ function ctxTitleOf(context: EditorContext | null): string {
 }
 
 const styleTag = document.createElement("style");
-styleTag.textContent = STYLE;
+// KaTeX's first: the panel's own rules come after it and win.
+styleTag.textContent = `${KATEX_STYLE}\n${STYLE}`;
 document.head.appendChild(styleTag);
 
 createRoot(document.getElementById("root")!).render(<App />);

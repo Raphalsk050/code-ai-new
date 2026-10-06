@@ -11,6 +11,7 @@ from rich.markdown import Markdown
 from rich.text import Text
 from textual.content import Content
 
+from code_ai.ui.terminal.math_text import render_math_in_markdown
 from code_ai.ui.terminal.palette import active_palette, markdown_theme, syntax_theme
 
 try:
@@ -686,6 +687,8 @@ def markdown_to_content(body: str, width: int) -> Content:
     """
     width = max(20, width)
     palette = active_palette()
+    # A terminal cannot typeset a formula, but it need not show its markup.
+    body = render_math_in_markdown(body)
     # Headings, inline code and code blocks in the theme's colours; Rich's
     # defaults are ANSI names that Textual maps through its monokai table.
     console = Console(width=width, theme=markdown_theme(palette))

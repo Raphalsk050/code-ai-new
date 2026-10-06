@@ -16,6 +16,8 @@ import { fileURLToPath } from "node:url";
 import esbuild from "esbuild";
 import { glob } from "node:fs/promises";
 
+import { webviewPlugins } from "./webview-build.mjs";
+
 const root = fileURLToPath(new URL("..", import.meta.url));
 const out = mkdtempSync(join(tmpdir(), "code-ai-webview-tests-"));
 
@@ -37,6 +39,7 @@ await esbuild.build({
   format: "esm",
   target: "node18",
   external: ["node:*"],
+  plugins: webviewPlugins,
   sourcemap: "inline",
 });
 

@@ -142,8 +142,9 @@ body {
 
 /* ---- markdown ---- */
 .markdown { word-wrap: break-word; }
-.markdown > *:first-child { margin-top: 0; }
-.markdown > *:last-child { margin-bottom: 0; }
+/* One .md-block per top-level element; margins collapse through it. */
+.markdown > .md-block:first-child > :first-child { margin-top: 0; }
+.markdown > .md-block:last-child > :last-child { margin-bottom: 0; }
 .markdown p { margin: 0 0 10px; }
 .markdown ul, .markdown ol { margin: 0 0 10px; padding-left: 22px; }
 .markdown li { margin: 2px 0; }
@@ -181,6 +182,15 @@ body {
 }
 .markdown table { border-collapse: collapse; margin: 0 0 10px; }
 .markdown th, .markdown td { border: 1px solid var(--border); padding: 4px 9px; }
+/* ---- formulas ---- */
+.markdown .katex { font-size: 1.12em; }
+/* A long one scrolls inside its own line instead of widening the message. */
+.math-display { margin: 0 0 10px; padding: 4px 0; overflow-x: auto; overflow-y: hidden; text-align: center; }
+.math-display > .katex-display { margin: 0; }
+.math-inline > .katex-display { margin: 6px 0; overflow-x: auto; overflow-y: hidden; }
+/* Not LaTeX, or not finished yet: the source, as written. */
+.markdown code.math-source { white-space: pre-wrap; color: var(--fg-muted); }
+.math-pending { text-align: left; }
 
 /* ---- working note ---- */
 .working-note {

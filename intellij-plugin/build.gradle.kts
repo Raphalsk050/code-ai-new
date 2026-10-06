@@ -259,7 +259,11 @@ val buildWebview by tasks.registering(Exec::class) {
     npm("run", "build")
     inputs.dir(vscodeExtension.dir("webview"))
     inputs.dir(vscodeExtension.dir("src"))
-    inputs.files(vscodeExtension.file("esbuild.mjs"), vscodeExtension.file("package-lock.json"))
+    inputs.files(
+        vscodeExtension.file("esbuild.mjs"),
+        vscodeExtension.file("scripts/webview-build.mjs"),
+        vscodeExtension.file("package-lock.json"),
+    )
     outputs.files(vscodeExtension.file("dist/webview.js"), vscodeExtension.file("dist/flow.js"))
     outputs.dir(vscodeExtension.dir("dist/codicons"))
 }
