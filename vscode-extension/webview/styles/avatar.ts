@@ -85,13 +85,24 @@ export const AVATAR_STYLE = `
 }
 .agent-av[data-skin=halloween] .agent-av-face { fill: var(--av-pumpkin); }
 .agent-av[data-skin=halloween] .agent-av-stem { fill: var(--success); }
+.agent-av-stump { fill: color-mix(in srgb, var(--av-pumpkin) 55%, #4a2c0a); }
 .agent-av-glow { fill: var(--av-ember); }
 .agent-av[data-pose] .agent-av-glow { animation: av-flicker 3.1s infinite; }
-.agent-av-ribs { fill: none; stroke: #000; stroke-opacity: .1; stroke-width: .5; stroke-linecap: round; }
+/* A shade, not a colour: black over whatever the rind is. */
+.agent-av-lobes { fill: #000; fill-opacity: .11; }
 @keyframes av-flicker { 0%,16%,24%,54%,66%,100% { opacity: 1; } 20% { opacity: .78; } 58% { opacity: .64; } 62% { opacity: .9; } }
 .agent-av-hat { fill: var(--danger); }
+.agent-av-hat-fold { fill: #000; fill-opacity: .16; }
 .agent-av-snow { fill: var(--av-snow); }
-.agent-av-brim { fill: none; stroke: var(--av-snow); stroke-width: 2.7; stroke-linecap: round; }
+.agent-av-brim { fill: none; stroke: var(--av-snow); stroke-width: 2.9; stroke-linecap: round; }
+/* The tail turns where it folds over the hat, not where the leaf grew. It
+   hangs where the leaf stood, so what trails behind a movement is the other
+   way round, and less of it. */
+.agent-av-leaf.agent-av-hat-tail { transform-origin: 8.4px -1px; }
+.agent-av-leaf-lag.agent-av-hat-lag {
+  transform-origin: 8.4px -1px;
+  transform: rotate(calc(var(--av-leaf-lag, 0deg) * -.5));
+}
 .agent-av-blush { fill: var(--av-blush); }
 
 /* ---- floating ---- */
@@ -99,7 +110,7 @@ export const AVATAR_STYLE = `
    stays legible over whatever is under it. */
 .av-float {
   position: absolute; left: 0; top: 0; z-index: 30;
-  width: 48px; height: 48px; display: grid; place-items: center;
+  display: grid; place-items: center;
   color: var(--accent); cursor: grab; touch-action: none;
   -webkit-user-select: none; user-select: none; will-change: transform;
 }

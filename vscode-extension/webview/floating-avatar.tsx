@@ -6,7 +6,10 @@ import type { AvatarPose } from "./avatar-pose";
 import type { AvatarSkin } from "./avatar-skin";
 import { t } from "./i18n";
 
-const SIZE = 48;
+/** Large enough to read as the agent in the room, not as one more button. */
+const DEFAULT_SIZE = 72;
+/** How much of the base the glyph's box takes. */
+const GLYPH_SHARE = 0.8;
 /** Kept clear of the container's edges. */
 const MARGIN = 8;
 /** Its own corner is the bottom right, this far up: above the composer. */
@@ -51,6 +54,7 @@ const still = (): Spring => ({ x: 0, v: 0 });
  * The avatar loose in the panel: picked up, dropped anywhere, thrown. Lives
  * inside a positioned container and never leaves it.
  *
+ * @param size how wide it is, base included, in px
  * @param start where it is first put, in the container's pixels; the bottom
  *   right corner when left out
  * @param inertia off, it goes where the pointer goes and stops when let go
@@ -59,6 +63,7 @@ const still = (): Spring => ({ x: 0, v: 0 });
 export function FloatingAvatar({
   pose,
   skin,
+  size = DEFAULT_SIZE,
   start,
   inertia = true,
   bare = false,
@@ -66,6 +71,7 @@ export function FloatingAvatar({
 }: {
   pose: AvatarPose | null;
   skin?: AvatarSkin;
+  size?: number;
   start?: Point;
   inertia?: boolean;
   bare?: boolean;
@@ -85,8 +91,8 @@ export function FloatingAvatar({
     const box = ref.current?.offsetParent as HTMLElement | null;
     const width = box?.clientWidth ?? window.innerWidth;
     const height = box?.clientHeight ?? window.innerHeight;
-    return { left: MARGIN, top: MARGIN, right: width - SIZE - MARGIN, bottom: height - SIZE - MARGIN };
-  }, []);
+    return { left: MARGIN, top: MARGIN, right: width - size - MARGIN, bottom: height - size - MARGIN };
+  }, [size]);
 
   const home = React.useCallback((): Point => {
     const edge = bounds();
@@ -177,24 +183,29 @@ export function FloatingAvatar({
     s.frame = requestAnimationFrame(tick);
   }, [tick]);
 
-  // First placement, and again whenever the container changes size under it.
+  // Placed once: `start` is where it begins, not somewhere it is sent back to.
+  const placed = React.useRef(false);
   React.useLayoutEffect(() => {
-    const el = ref.current;
-    const box = el?.offsetParent;
-    if (!el || !box) return;
-    const s = sim.current;
+    if (placed.current || !ref.current?.offsetParent) return;
+    placed.current = true;
     const corner = home();
-    Object.assign(s, clampTo(bounds(), start?.x ?? corner.x, start?.y ?? corner.y));
+    Object.assign(sim.current, clampTo(bounds(), start?.x ?? corner.x, start?.y ?? corner.y));
     paint();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => {
-      Object.assign(s, clampTo(bounds(), s.x, s.y));
+  });
+  // Kept inside whenever the container changes size under it, or it does.
+  React.useLayoutEffect(() => {
+    const box = ref.current?.offsetParent;
+    if (!box) return;
+    const fit = () => {
+      Object.assign(sim.current, clampTo(bounds(), sim.current.x, sim.current.y));
       paint();
-    });
+    };
+    fit();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(fit);
     observer.observe(box);
     return () => observer.disconnect();
-    // `start` is where it begins, not somewhere it is sent back to.
-  }, [bounds, home, paint]);
+  }, [bounds, paint]);
   React.useEffect(() => () => cancelAnimationFrame(sim.current.frame), []);
 
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -248,6 +259,7 @@ export function FloatingAvatar({
     <div
       ref={ref}
       className="av-float"
+      style={{ width: size, height: size }}
       role="button"
       tabIndex={0}
       aria-label={t("Code-AI. Drag to move, arrow keys to push, Home to send back.")}
@@ -265,7 +277,7 @@ export function FloatingAvatar({
       }}
     >
       <span className="av-float-puck" />
-      <AgentAvatar pose={pose} size={36} fx skin={skin} />
+      <AgentAvatar pose={pose} size={Math.round(size * GLYPH_SHARE)} fx skin={skin} />
     </div>
   );
 }

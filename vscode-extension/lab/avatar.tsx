@@ -133,6 +133,7 @@ function Lab({ layer }: { layer: HTMLElement }): JSX.Element {
   const [skin, setSkin] = React.useState<AvatarSkin>("default");
   const [pose, setPose] = React.useState<AvatarPose>("think");
   const [inertia, setInertia] = React.useState("on");
+  const [size, setSize] = React.useState("72");
   const [base, setBase] = React.useState("glass");
   const [theme, setTheme] = React.useState("dark");
   const [floating, setFloating] = React.useState("on");
@@ -152,6 +153,7 @@ function Lab({ layer }: { layer: HTMLElement }): JSX.Element {
         createPortal(
           <FloatingAvatar
             pose={pose}
+            size={Number(size)}
             inertia={inertia === "on"}
             bare={base === "bare"}
             start={remembered()}
@@ -187,6 +189,7 @@ function Lab({ layer }: { layer: HTMLElement }): JSX.Element {
           bate de leve na borda e a folha chega atrasada. Setas empurram, duplo clique manda de volta ao canto.
         </p>
         <Choice label="Avatar" value={floating} options={[["on", "Flutuando"], ["off", "Escondido"]]} onPick={setFloating} />
+        <Choice label="Tamanho" value={size} options={[["56", "56 px"], ["72", "72 px"], ["96", "96 px"]]} onPick={setSize} />
         <Choice label="Inércia" value={inertia} options={[["on", "Ligada"], ["off", "Desligada"]]} onPick={setInertia} />
         <Choice label="Base" value={base} options={[["glass", "Vidro"], ["bare", "Sem base"]]} onPick={setBase} />
       </section>

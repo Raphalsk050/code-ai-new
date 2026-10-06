@@ -10,16 +10,22 @@ const FX_BOX = "-1 -4 28 28";
 const GLYPH_UNITS = 21.32;
 const FX_UNITS = 28;
 
-// Halloween: the face carved. Eyes stay where the eyes are.
-const CARVED_EYE_L = "M9.45 9.3l2 4.4h-4z";
-const CARVED_EYE_R = "M14.55 9.3l2 4.4h-4z";
-const CARVED_MOUTH = "M6.9 15.2l1.75 1.05 1.65-1.15 1.7 1.15 1.7-1.15 1.65 1.15 1.75-1.05c-.5 2.1-2.45 3.5-5.1 3.5s-4.6-1.4-5.1-3.5z";
-const RIB_L = "M9.2 4.3c-2.5 3.7-2.5 11.9 0 15.6";
-const RIB_R = "M14.8 4.3c2.5 3.7 2.5 11.9 0 15.6";
+// Halloween: the face carved and lit from inside. The eyes stay where the
+// eyes are; the corners are rounded in the mask, like everything in the mark.
+const CARVED_EYE_L = "M9.45 9.4l1.8 4.1h-3.6z";
+const CARVED_EYE_R = "M14.55 9.4l1.8 4.1h-3.6z";
+const GRIN = "M6.9 15Q12 16.6 17.1 15C15.6 19.6 8.4 19.6 6.9 15Z";
+// The outer segments of the rind, a shade down. Cut to the face where drawn.
+const LOBE_L = "M9.2 4.3c-2.5 3.7-2.5 11.9 0 15.6H2V4.3z";
+const LOBE_R = "M14.8 4.3c2.5 3.7 2.5 11.9 0 15.6H22V4.3z";
+const STUMP = "M10.3 4.6l.5-2.4c.1-.6 1.5-.7 1.7-.1l.4 2.5z";
 
-// Christmas: the hat takes the leaf's place, and its sway.
-const HAT_CAP = "M5.6 6.9C6.3 2.5 9.6-.8 13.4-.9c3.3-.1 5.7 2 6.4 5.3l-1.6 2.5z";
-const HAT_BRIM = "M5.2 7.6C6.8 5.3 9.2 4.2 12 4.2s5.2 1.1 6.8 3.4";
+// Christmas: a hat where the leaf was. The tail falls to the left, clear of
+// the thought and the lens on the right, and sways as the leaf did.
+const HAT_BODY = "M18.6 7.4C18 2.6 14.6-2.6 9.2-3.1 6.9-3.3 5.5-1.6 5.5.6L5.4 7.4z";
+const HAT_FOLD = "M6.2 1.2C7.9.8 9.6-.9 10.6-2.9c.2 2.7-1.4 5.1-3.5 6-.6-.5-.9-1.2-.9-1.9z";
+const HAT_TAIL = "M10.6-2.9C6.2-4 1.9-1.4.7 3l1.8 1.5c.8-1.7 2.2-2.9 3.7-3.3C7.9.8 9.6-.9 10.6-2.9z";
+const HAT_BRIM = "M5 8C6.5 5.5 9.1 4.4 12 4.4s5.5 1.1 7 3.6";
 
 // Easter: two ears where the leaf was.
 const EAR_L = "M10.3 5.1C7.9 3.2 6.6-.3 7.6-3.2c2.3.8 4.3 4 4.5 7.9z";
@@ -43,10 +49,12 @@ export function AgentAvatar({
   className?: string;
 }): JSX.Element {
   const mask = "agent-av-" + React.useId().replace(/:/g, "");
+  const outline = mask + "-o";
   const worn = useAvatarSkin();
   const dress = skin ?? worn;
-  // Under about a pixel per unit a mouth or a rib is a smudge, not a detail.
+  // Under about a pixel per unit a mouth or a rind is a smudge, not a detail.
   const detail = size / (fx ? FX_UNITS : GLYPH_UNITS) >= 0.9;
+  const carved = dress === "halloween";
   return (
     <svg
       className={`agent-av${className ? " " + className : ""}`}
@@ -63,11 +71,11 @@ export function AgentAvatar({
           <rect x="-4" y="-6" width="34" height="34" fill="#fff" />
           <g className="agent-av-look">
             <g className="agent-av-eyes" fill="#000">
-              {dress === "halloween" ? (
-                <>
+              {carved ? (
+                <g stroke="#000" strokeWidth=".6" strokeLinejoin="round">
                   <path className="agent-av-eye" d={CARVED_EYE_L} />
                   <path className="agent-av-eye" d={CARVED_EYE_R} />
-                </>
+                </g>
               ) : (
                 <>
                   <rect className="agent-av-eye" x="8.2" y="9.6" width="2.5" height="4.8" rx="1.25" />
@@ -76,12 +84,25 @@ export function AgentAvatar({
               )}
             </g>
           </g>
-          {dress === "halloween" && detail && <path d={CARVED_MOUTH} fill="#000" />}
+          {carved && detail && (
+            <>
+              <path d={GRIN} fill="#000" stroke="#000" strokeWidth=".6" strokeLinejoin="round" />
+              {/* Two teeth: white in a mask leaves the face there. */}
+              <rect x="9.9" y="15.1" width="1.7" height="1.7" rx=".35" fill="#fff" />
+              <rect x="12.6" y="17" width="1.7" height="2.4" rx=".35" fill="#fff" />
+            </>
+          )}
         </mask>
+        {carved && detail && (
+          <clipPath id={outline}>
+            <path d={FACE} />
+          </clipPath>
+        )}
       </defs>
       <g className="agent-av-inertia">
         <g className="agent-av-rig">
-          {dress === "halloween" && <path className="agent-av-glow" d={FACE} />}
+          {carved && <path className="agent-av-glow" d={FACE} />}
+          {carved && <path className="agent-av-stump" d={STUMP} />}
           {dress !== "christmas" && (
             <g className="agent-av-leaf-lag">
               {dress === "easter" ? (
@@ -97,19 +118,21 @@ export function AgentAvatar({
             </g>
           )}
           <path className="agent-av-face" d={FACE} mask={`url(#${mask})`} />
-          {dress === "halloween" && detail && (
-            <g className="agent-av-ribs">
-              <path d={RIB_L} />
-              <path d={RIB_R} />
+          {carved && detail && (
+            <g className="agent-av-lobes" clipPath={`url(#${outline})`} mask={`url(#${mask})`}>
+              <path d={LOBE_L} />
+              <path d={LOBE_R} />
             </g>
           )}
           {dress === "easter" && detail && <path className="agent-av-blush" d={NOSE} />}
           {dress === "christmas" && (
             <>
-              <g className="agent-av-leaf-lag">
-                <g className="agent-av-leaf">
-                  <path className="agent-av-hat" d={HAT_CAP} />
-                  <circle className="agent-av-snow" cx="19.7" cy="4.7" r="1.65" />
+              <path className="agent-av-hat" d={HAT_BODY} />
+              <path className="agent-av-hat-fold" d={HAT_FOLD} />
+              <g className="agent-av-leaf-lag agent-av-hat-lag">
+                <g className="agent-av-leaf agent-av-hat-tail">
+                  <path className="agent-av-hat" d={HAT_TAIL} />
+                  <circle className="agent-av-snow" cx="1.5" cy="4.3" r="1.9" />
                 </g>
               </g>
               <path className="agent-av-brim" d={HAT_BRIM} />
