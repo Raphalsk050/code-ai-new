@@ -22,10 +22,15 @@ const STUMP = "M10.3 4.6l.5-2.4c.1-.6 1.5-.7 1.7-.1l.4 2.5z";
 
 // Christmas: a hat where the leaf was. The tail falls to the left, clear of
 // the thought and the lens on the right, and sways as the leaf did.
-const HAT_BODY = "M18.6 7.4C18 2.6 14.6-2.6 9.2-3.1 6.9-3.3 5.5-1.6 5.5.6L5.4 7.4z";
+// The body ends on the band's own line, so no red shows under the fur.
+const HAT_BODY = "M18.6 6.9C18 2.4 14.6-2.6 9.2-3.1 6.9-3.3 5.9-1.4 6.2 1.2 5.2 2.6 4.9 4.9 5.3 6.9 8 5 16 5 18.6 6.9z";
 const HAT_FOLD = "M6.2 1.2C7.9.8 9.6-.9 10.6-2.9c.2 2.7-1.4 5.1-3.5 6-.6-.5-.9-1.2-.9-1.9z";
 const HAT_TAIL = "M10.6-2.9C6.2-4 1.9-1.4.7 3l1.8 1.5c.8-1.7 2.2-2.9 3.7-3.3C7.9.8 9.6-.9 10.6-2.9z";
-const HAT_BRIM = "M5 8C6.5 5.5 9.1 4.4 12 4.4s5.5 1.1 7 3.6";
+// The fur band: a thick stroke along a shallow arc, a little wider than the
+// head. Its shade is the same band half a unit lower, drawn underneath, so
+// what shows is a rim along the bottom that follows the round ends.
+const HAT_BAND = "M4.6 7.05C7.4 4.65 16.6 4.65 19.4 7.05";
+const HAT_BAND_SHADE = "M4.6 7.6C7.4 5.2 16.6 5.2 19.4 7.6";
 
 // Easter: two ears where the leaf was.
 const EAR_L = "M10.3 5.1C7.9 3.2 6.6-.3 7.6-3.2c2.3.8 4.3 4 4.5 7.9z";
@@ -128,17 +133,19 @@ export function AgentAvatar({
           )}
           {dress === "easter" && detail && <path className="agent-av-blush" d={NOSE} />}
           {dress === "christmas" && (
-            <>
+            <g className="agent-av-hat-set">
               <path className="agent-av-hat" d={HAT_BODY} />
               <path className="agent-av-hat-fold" d={HAT_FOLD} />
               <g className="agent-av-leaf-lag agent-av-hat-lag">
                 <g className="agent-av-leaf agent-av-hat-tail">
                   <path className="agent-av-hat" d={HAT_TAIL} />
-                  <circle className="agent-av-snow" cx="1.5" cy="4.3" r="1.9" />
+                  <circle className="agent-av-snow-shade" cx="1.3" cy="3.7" r="1.9" />
+                  <circle className="agent-av-snow" cx="1.1" cy="3.45" r="1.6" />
                 </g>
               </g>
-              <path className="agent-av-brim" d={HAT_BRIM} />
-            </>
+              <path className="agent-av-band agent-av-band-shade" d={HAT_BAND_SHADE} />
+              <path className="agent-av-band" d={HAT_BAND} />
+            </g>
           )}
         </g>
       </g>

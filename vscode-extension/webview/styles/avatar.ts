@@ -81,6 +81,7 @@ export const AVATAR_STYLE = `
   --av-pumpkin: #ee8732;
   --av-ember: #ffd166;
   --av-snow: color-mix(in srgb, var(--fg) 12%, #fff);
+  --av-snow-shade: color-mix(in srgb, var(--av-snow) 80%, #5d6f86);
   --av-blush: #f2a0bd;
 }
 .agent-av[data-skin=halloween] .agent-av-face { fill: var(--av-pumpkin); }
@@ -94,7 +95,10 @@ export const AVATAR_STYLE = `
 .agent-av-hat { fill: var(--danger); }
 .agent-av-hat-fold { fill: #000; fill-opacity: .16; }
 .agent-av-snow { fill: var(--av-snow); }
-.agent-av-brim { fill: none; stroke: var(--av-snow); stroke-width: 2.9; stroke-linecap: round; }
+.agent-av-snow-shade { fill: var(--av-snow-shade); }
+.agent-av-band { fill: none; stroke: var(--av-snow); stroke-width: 3.1; stroke-linecap: round; }
+.agent-av-band.agent-av-band-shade { stroke: var(--av-snow-shade); }
+.agent-av-hat-set { transform-origin: 12px 7px; transform: rotate(var(--av-hat-tilt, 0deg)); }
 /* The tail turns where it folds over the hat, not where the leaf grew. It
    hangs where the leaf stood, so what trails behind a movement is the other
    way round, and less of it. */
