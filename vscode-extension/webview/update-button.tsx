@@ -72,7 +72,7 @@ export function UpdateButton(props: {
   );
 }
 
-/** The top of the release notes, enough for a tooltip. */
+/** The top of the release notes, enough for a tooltip, without the Markdown marks. */
 function firstLines(notes: string): string {
-  return notes.split("\n").slice(0, 12).join("\n").trim();
+  return notes.replace(/^#+\s*/gm, "").replace(/\*\*/g, "").split("\n").slice(0, 12).join("\n").trim();
 }

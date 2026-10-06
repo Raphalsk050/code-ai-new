@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 39,
-  "patch": 1,
-  "build": 91,
+  "patch": 2,
+  "build": 92,
   "updated": "2026-10-06",
-  "note": "Keep the avatar lab page out of the VS Code package"
+  "note": "Release notes as Features, Improvement and Fixes under a title with the build"
 }
