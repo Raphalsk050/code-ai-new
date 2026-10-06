@@ -54,6 +54,9 @@ _AREAS = {
     "tools": "Tools",
     "build": "Build",
 }
+# Commits the notes leave out: work that was added and taken out again before
+# any release carried it.
+_UNLISTED = ("1298468baec2", "d2e19994e101")
 _SUBJECT = re.compile(r"^(?P<kind>[a-z]+)(?:\((?P<scope>[^)]*)\))?!?:\s*(?P<text>.+)$")
 
 
@@ -130,7 +133,8 @@ def previous_tag(current: str) -> str:
 
 def commit_subjects(since: str) -> list[str]:
     span = f"{since}..HEAD" if since else "HEAD"
-    return _git("log", "--no-merges", "--format=%s", "-n", "200", span).splitlines()
+    log = _git("log", "--no-merges", "--format=%H %s", "-n", "200", span).splitlines()
+    return [line.partition(" ")[2] for line in log if not line.startswith(_UNLISTED)]
 
 
 # --- GitHub ---------------------------------------------------------------

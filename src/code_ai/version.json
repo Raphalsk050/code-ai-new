@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 39,
-  "patch": 3,
-  "build": 93,
+  "patch": 4,
+  "build": 94,
   "updated": "2026-10-06",
-  "note": "Release body as spaced sections with the area in bold"
+  "note": "Leave out of the release notes what was added and removed between releases"
 }

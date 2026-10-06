@@ -69,6 +69,17 @@ def test_a_build_with_nothing_to_announce_says_so() -> None:
     )
 
 
+def test_a_commit_the_notes_leave_out_never_reaches_them(monkeypatch) -> None:
+    log = (
+        "a" * 40 + " feat(tui): a thing\n"
+        + release._UNLISTED[0] + "0" * 28 + " feat: something that was taken out again\n"
+        + "b" * 40 + " fix: another\n"
+    )
+    monkeypatch.setattr(release, "_git", lambda *args: log)
+
+    assert release.commit_subjects("v0.27.0") == ["feat(tui): a thing", "fix: another"]
+
+
 def test_the_extension_ships_under_the_product_version(tmp_path) -> None:
     (tmp_path / "package.json").write_text(
         '{\r\n  "name": "code-ai",\r\n  "version": "0.13.2",\r\n  "engines": {}\r\n}\r\n',
