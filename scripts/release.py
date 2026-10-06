@@ -30,10 +30,10 @@ REPO = Path(__file__).resolve().parents[1]
 VERSION_FILE = REPO / "src" / "code_ai" / "version.json"
 
 # Each section: the kinds of commit it gathers, and the most lines it gets.
+# Fixes are left out on purpose: the notes say what is new, not what was wrong.
 _SECTIONS = {
     "Features": (("feat",), 6),
     "Improvement": (("perf", "refactor"), 3),
-    "Fixes": (("fix",), 5),
 }
 _KINDS = {kind for kinds, _ in _SECTIONS.values() for kind in kinds}
 _AREAS = {
@@ -112,7 +112,7 @@ def build_notes(subjects: list[str]) -> str:
             ]
             sections.append("\n".join([f"## {title}", "", *items]))
     if not sections:
-        return "Maintenance build: no user-facing changes.\n"
+        return "Maintenance build: nothing new to announce.\n"
     return "\n\n".join(sections) + "\n"
 
 

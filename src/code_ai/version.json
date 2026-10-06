@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 39,
-  "patch": 4,
-  "build": 94,
+  "patch": 5,
+  "build": 95,
   "updated": "2026-10-06",
-  "note": "Leave out of the release notes what was added and removed between releases"
+  "note": "Release notes without the Fixes section"
 }

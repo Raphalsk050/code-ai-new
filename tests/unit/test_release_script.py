@@ -28,18 +28,17 @@ def test_only_user_facing_commits_become_changes() -> None:
     change = release.parse_subject("feat(tui): paint every theme in its own colours")
 
     assert change == release.Change("feat", "Terminal", "Paint every theme in its own colours")
-    assert release.parse_subject("fix(vscode): keep working after the backend fails").area == (
-        "VS Code"
-    )
+    assert release.parse_subject("perf(vscode): draw the transcript once").area == "VS Code"
     assert release.parse_subject("feat(intellij): host the chat in a tool window").area == (
         "Android Studio"
     )
     assert release.parse_subject("refactor(extension): take the avatar out").area == "VS Code"
-    for subject in ("chore: bump", "test(tui): cover it", "i18n(core): English", "Merge x"):
+    # Fixes are not announced either.
+    for subject in ("fix(vscode): keep working", "chore: bump", "test(tui): cover it", "Merge x"):
         assert release.parse_subject(subject) is None
 
 
-def test_the_title_carries_the_build_and_the_notes_are_three_short_sections() -> None:
+def test_the_title_carries_the_build_and_the_notes_are_two_short_sections() -> None:
     subjects = [f"feat(mcp): capability {n}" for n in range(9)] + [
         "fix(bridge): read the pipe as UTF-8",
         "refactor: remove the old layer",
@@ -58,14 +57,13 @@ def test_the_title_carries_the_build_and_the_notes_are_three_short_sections() ->
         "- **MCP:** Capability 5\n"
         "\n"
         "## Improvement\n\n- Remove the old layer\n- **Android Studio:** Read the project once\n"
-        "\n"
-        "## Fixes\n\n- **VS Code:** Read the pipe as UTF-8\n"
     )
+    assert "Fixes" not in notes and "Read the pipe" not in notes
 
 
 def test_a_build_with_nothing_to_announce_says_so() -> None:
-    assert release.build_notes(["chore: tidy", "test: more"]) == (
-        "Maintenance build: no user-facing changes.\n"
+    assert release.build_notes(["fix: a crash", "chore: tidy", "test: more"]) == (
+        "Maintenance build: nothing new to announce.\n"
     )
 
 
