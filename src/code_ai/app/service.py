@@ -670,6 +670,25 @@ class CodeAIApplication:
             self.conversation_store.delete(self._conversation_id)
         return True
 
+    async def answer_followup_now(self, text: str) -> bool:
+        """Hand a message that was waiting its turn to the turn that is running.
+
+        It stops waiting for an answer of its own and steers instead: the
+        running turn reads it at its next step. False when it is not in the
+        line any more, or nothing is running to hand it to.
+        """
+        message = text.strip()
+        task = self._current_task
+        if message not in self._followups or task is None or task.done():
+            return False
+        position = self._followups.index(message) + 1
+        self._followups.pop(position - 1)
+        self.orchestrator.queue_user_message(message)
+        await self.event_bus.emit(
+            "user.message.promoted", {"text": message, "position": position}, source="app"
+        )
+        return True
+
     async def forget_last_exchange(self) -> str | None:
         """Forget the newest thing the user said and its answer; what it said, or None."""
         said = self.orchestrator.conversation.last_said()

@@ -838,6 +838,7 @@ const PT: Record<string, string> = {
   Halloween: "Halloween",
   Christmas: "Natal",
   Easter: "Páscoa",
+  "Answer now": "Responder agora",
   "Delete this message and its answer": "Excluir esta mensagem e a resposta dela",
   "Click again to delete": "Clique de novo para excluir",
   "Delete?": "Excluir?",

@@ -19,6 +19,8 @@ interface ItemActions {
   onOpenDiff?: (path: string) => void;
   /** Brings up the terminal, offered on a command that failed. */
   onTerminal?: () => void;
+  /** Hands a message waiting for a turn of its own to the turn that is running. */
+  onAnswerNow?: (text: string) => void;
 }
 
 /**
@@ -36,6 +38,7 @@ function BlockViewPlain({
   pose = null,
   onOpenDiff,
   onTerminal,
+  onAnswerNow,
   onDelete,
   children,
 }: ItemActions & {
@@ -94,7 +97,13 @@ function BlockViewPlain({
               ))}
             </ToolGroup>
           ) : (
-            <ItemView key={entry.item.id} item={entry.item} onOpenDiff={onOpenDiff} onTerminal={onTerminal} />
+            <ItemView
+              key={entry.item.id}
+              item={entry.item}
+              onOpenDiff={onOpenDiff}
+              onTerminal={onTerminal}
+              onAnswerNow={onAnswerNow}
+            />
           )
         )}
         {children}
@@ -126,6 +135,7 @@ function sameBlock(a: BlockProps, b: BlockProps): boolean {
     !a.onAvatarSignIn === !b.onAvatarSignIn &&
     !a.onOpenDiff === !b.onOpenDiff &&
     !a.onTerminal === !b.onTerminal &&
+    !a.onAnswerNow === !b.onAnswerNow &&
     !a.onDelete === !b.onDelete
   );
 }
@@ -226,6 +236,7 @@ function ItemViewPlain({
   item,
   onOpenDiff,
   onTerminal,
+  onAnswerNow,
 }: ItemActions & { item: Item }): JSX.Element | null {
   switch (item.kind) {
     case "user":
@@ -257,8 +268,23 @@ function ItemViewPlain({
           onTerminal={onTerminal && toolKind(item.name) === "run" ? onTerminal : undefined}
         />
       );
-    case "notice":
-      return <NoticeRow level={item.level} text={item.text} />;
+    case "notice": {
+      // Waiting for a turn of its own: it can go to the running one instead.
+      const waiting = item.queued;
+      return (
+        <NoticeRow
+          level={item.level}
+          text={item.text}
+          action={
+            waiting !== undefined && onAnswerNow ? (
+              <button type="button" className="notice-action" onClick={() => onAnswerNow(waiting)}>
+                {t("Answer now")}
+              </button>
+            ) : undefined
+          }
+        />
+      );
+    }
     case "turn":
       return <TurnFooter item={item} onOpen={onOpenDiff} />;
     default:
@@ -268,7 +294,11 @@ function ItemViewPlain({
 
 export const ItemView = React.memo(
   ItemViewPlain,
-  (a, b) => a.item === b.item && !a.onOpenDiff === !b.onOpenDiff && !a.onTerminal === !b.onTerminal
+  (a, b) =>
+    a.item === b.item &&
+    !a.onOpenDiff === !b.onOpenDiff &&
+    !a.onTerminal === !b.onTerminal &&
+    !a.onAnswerNow === !b.onAnswerNow
 );
 
 function WorkingRow({ text }: { text: string }) {
@@ -303,13 +333,14 @@ function ThinkingRow({ text, streaming }: { text: string; streaming?: boolean })
   );
 }
 
-function NoticeRow({ level, text }: { level: string; text: string }) {
+function NoticeRow({ level, text, action }: { level: string; text: string; action?: React.ReactNode }) {
   const icon =
     level === "error" ? <Codicon name="error" size={14} /> : level === "warning" ? <Codicon name="warning" size={14} /> : null;
   return (
     <div className={`notice notice-${level}`}>
       {icon}
       <span>{text}</span>
+      {action}
     </div>
   );
 }

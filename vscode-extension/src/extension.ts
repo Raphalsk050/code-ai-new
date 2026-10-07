@@ -771,6 +771,14 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           if (message.id === this.activeConversation) this.activeConversation = undefined;
           client?.send("deleteConversation", { conversation_id: message.id });
           break;
+        case "answerNow":
+          client?.request("answerNow", { text: message.text }).catch((err) =>
+            this.webview?.postMessage({
+              type: "event",
+              event: syntheticError(`could not hand the message over: ${String(err)}`),
+            })
+          );
+          break;
         case "deleteMessage":
           client
             ?.request<{ deleted?: boolean }>("deleteMessage", {

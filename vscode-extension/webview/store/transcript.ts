@@ -34,7 +34,8 @@ export type Item =
       added?: number;
       removed?: number;
     }
-  | { kind: "notice"; id: string; level: NoticeLevel; text: string }
+  /** `queued`: the message this note is under, while it waits for a turn of its own. */
+  | { kind: "notice"; id: string; level: NoticeLevel; text: string; queued?: string }
   | {
       kind: "turn";
       id: string;
@@ -175,6 +176,26 @@ export function workingLabel(status: string): string {
 
 function push(items: Item[], item: Item): Item[] {
   return [...items, item];
+}
+
+const STEERING_NOTE = "queued: waiting for the current step to finish";
+/** The line under a message that waits for a turn of its own, by its place in the line. */
+const waitingNote = (place: number) =>
+  `queued: answered once the running turn ends${place > 1 ? ` (#${place} in the queue)` : ""}`;
+
+/** `text` leaves the line: its note becomes `note`, and the ones still waiting move up. */
+function leaveQueue(items: Item[], text: string, note: string): Item[] {
+  let left = false;
+  let place = 0;
+  return items.map((item) => {
+    if (item.kind !== "notice" || item.queued === undefined) return item;
+    if (!left && item.queued === text) {
+      left = true;
+      return { kind: "notice", id: item.id, level: item.level, text: note };
+    }
+    place += 1;
+    return item.text === waitingNote(place) ? item : { ...item, text: waitingNote(place) };
+  });
 }
 
 /** Server log levels worth interrupting the chat for; the rest stay on the settings card. */
@@ -381,33 +402,50 @@ function applyItems(state: TranscriptState, event: EventEnvelope): Pick<Transcri
   const items = state.items;
 
   switch (event.event_type) {
-    case "user.message":
-      return { items: push(items, { kind: "user", id, text: String(p.text ?? "") }) };
+    case "user.message": {
+      // One that waited its turn: the turn has come, so it is in no line any more.
+      const text = String(p.text ?? "");
+      const waited = items.some((item) => item.kind === "notice" && item.queued === text);
+      const base = waited ? leaveQueue(items, text, "queued: its turn has come") : items;
+      return { items: push(base, { kind: "user", id, text }) };
+    }
     case "user.message.queued":
       return {
         items: push(push(items, { kind: "user", id, text: String(p.text ?? "") }), {
           kind: "notice",
           id: id + "-q",
           level: "info",
-          text: "queued: waiting for the current step to finish",
+          text: STEERING_NOTE,
         }),
       };
+    // Asked to be answered now: it steers the running turn instead of waiting for its own.
+    case "user.message.promoted":
+      return { items: leaveQueue(items, String(p.text ?? ""), STEERING_NOTE) };
     // Waiting its turn rather than steering the running one: the bubble is the
     // same, the note says it will be answered on its own.
     case "user.message.enqueued": {
-      const position = Number(p.position ?? 0);
-      const place = position > 1 ? ` (#${position} in the queue)` : "";
+      const text = String(p.text ?? "");
       return {
-        items: push(push(items, { kind: "user", id, text: String(p.text ?? "") }), {
+        items: push(push(items, { kind: "user", id, text }), {
           kind: "notice",
           id: id + "-w",
           level: "info",
-          text: `queued: answered once the running turn ends${place}`,
+          text: waitingNote(Number(p.position ?? 0)),
+          queued: text,
         }),
       };
     }
 
     case "user.message.delivered": {
+      // The newest note still waiting on a step: the turn has gone on since, so it is not always last.
+      for (let i = items.length - 1; i >= 0; i--) {
+        const item = items[i];
+        if (item.kind === "notice" && item.text === STEERING_NOTE) {
+          const copy = items.slice();
+          copy[i] = { ...item, text: "queued: delivered to the model" };
+          return { items: copy };
+        }
+      }
       const last = items[items.length - 1];
       if (last && last.kind === "notice" && last.text.startsWith("queued:")) {
         const copy = items.slice();

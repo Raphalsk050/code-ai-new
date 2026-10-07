@@ -366,3 +366,38 @@ test("the workspace branch lands in the session, not in the transcript", () => {
   assert.equal(state.transcript.items.length, initialAppState.transcript.items.length);
   assert.equal(feed([["workspace.branch", { branch: "" }]]).session.branch, "");
 });
+
+const notes = (state: ReturnType<typeof feed>) =>
+  state.transcript.items.flatMap((item) => (item.kind === "notice" ? [[item.text, item.queued]] : []));
+
+test("a message waiting its turn can be handed to the running one, and the line moves up", () => {
+  const state = feed([
+    ["user.message", { text: "primeira" }],
+    ["user.message.enqueued", { text: "a", position: 1 }],
+    ["user.message.enqueued", { text: "b", position: 2 }],
+    ["user.message.enqueued", { text: "c", position: 3 }],
+    ["user.message.promoted", { text: "b", position: 2 }],
+  ]);
+  assert.deepEqual(notes(state), [
+    ["queued: answered once the running turn ends", "a"],
+    ["queued: waiting for the current step to finish", undefined],
+    ["queued: answered once the running turn ends (#2 in the queue)", "c"],
+  ]);
+  // Delivered: its note says so, though others came after it.
+  const delivered = applyEvent(state, ev("user.message.delivered", { text: "b" }));
+  assert.equal(notes(delivered)[1][0], "queued: delivered to the model");
+  assert.equal(notes(delivered)[2][1], "c");
+});
+
+test("a message whose own turn has come is in no line any more", () => {
+  const state = feed([
+    ["user.message", { text: "primeira" }],
+    ["user.message.enqueued", { text: "a", position: 1 }],
+    ["user.message.enqueued", { text: "b", position: 2 }],
+    ["user.message", { text: "a" }],
+  ]);
+  assert.deepEqual(notes(state), [
+    ["queued: its turn has come", undefined],
+    ["queued: answered once the running turn ends", "b"],
+  ]);
+});

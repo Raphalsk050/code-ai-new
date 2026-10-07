@@ -801,6 +801,8 @@ function App(): JSX.Element {
   const resolveApproval = (callId: string, scope: ApprovalScope, reason?: string) =>
     send({ type: "resolveApproval", call_id: callId, scope, reason });
   const openDiff = React.useCallback((path: string) => send({ type: "openDiff", path }), []);
+  // A message waiting for a turn of its own goes to the turn that is running instead.
+  const answerNow = React.useCallback((text: string) => send({ type: "answerNow", text }), []);
 
   // One of the user's boxes, deleted with what the agent answered it. The
   // backend finds the message by counting back from the newest one the user
@@ -1092,6 +1094,7 @@ function App(): JSX.Element {
                         pose={i === shownBlocks.length - 1 && block.speaker === "agent" ? pose : null}
                         onOpenDiff={editorDiff ? openDiff : undefined}
                         onTerminal={showTerminal}
+                        onAnswerNow={answerNow}
                         onDelete={block.speaker === "user" && !busy ? deleteBlock : undefined}
                       >
                         {i === shownBlocks.length - 1 && block.speaker === "agent" ? live : null}

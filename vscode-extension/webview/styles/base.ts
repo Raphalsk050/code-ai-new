@@ -249,6 +249,13 @@ body {
 .notice-error { color: var(--danger); }
 .notice-plan { color: var(--accent); }
 .notice-permission { color: var(--fg-muted); }
+/* What can be done about the note, said on the note. */
+.notice-action {
+  margin-left: 8px; padding: 1px 9px; border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill); background: none; color: var(--accent);
+  font: inherit; font-size: var(--fs-label); cursor: pointer;
+}
+.notice-action:hover { background: var(--hover); }
 
 /* ---- diff ---- */
 .diff-wrap { margin-top: 12px; border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; }

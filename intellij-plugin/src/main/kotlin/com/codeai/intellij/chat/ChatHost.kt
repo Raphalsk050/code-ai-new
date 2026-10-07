@@ -259,6 +259,11 @@ internal class ChatHost(private val project: Project) : Disposable {
                 if (message.text("id") == activeConversation) activeConversation = null
                 client?.send("deleteConversation", json("conversation_id" to message.text("id")))
             }
+            "answerNow" ->
+                client?.request("answerNow", json("text" to message.text("text")))?.then(
+                    { },
+                    { error -> postEvent(syntheticError("could not hand the message over: ${asError(error)}")) },
+                )
             "deleteMessage" ->
                 client?.request(
                     "deleteMessage",

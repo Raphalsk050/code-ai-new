@@ -234,6 +234,11 @@ class BridgeServer:
         )
         return {"deleted": deleted}
 
+    async def _h_answer_now(self, params: dict[str, Any]) -> dict[str, Any]:
+        """A message waiting for a turn of its own steers the running one instead."""
+        promoted = await self._app.answer_followup_now(str(params.get("text") or ""))
+        return {"promoted": promoted}
+
     async def _h_delete_message(self, params: dict[str, Any]) -> dict[str, Any]:
         """Forget one of the user's messages, with the answer it got."""
         deleted = await self._app.delete_exchange(
@@ -598,6 +603,7 @@ class BridgeServer:
         "loadConversation": _h_load_conversation,
         "deleteConversation": _h_delete_conversation,
         "deleteMessage": _h_delete_message,
+        "answerNow": _h_answer_now,
         "getSettings": _h_get_settings,
         "listModels": _h_list_models,
         "updateSettings": _h_update_settings,
