@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 39,
-  "patch": 6,
-  "build": 96,
-  "updated": "2026-10-06",
-  "note": "Android Studio plugin, floating avatar and the new release notes on main"
+  "minor": 40,
+  "patch": 0,
+  "build": 97,
+  "updated": "2026-10-07",
+  "note": "Tell the agent when its context window fills up, and fit tool results to the room left"
 }
