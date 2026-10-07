@@ -293,12 +293,28 @@ export function FloatingAvatar({
       paint();
     };
     fit();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(fit);
-    observer.observe(box);
+    // On its seat it is part of the page: it scrolls with what it sits on, off
+    // the screen if that goes. Scroll events do not bubble; capturing hears them all.
+    const carry = () => {
+      const s = sim.current;
+      const to = s.dock ? seat() : null;
+      if (!s.dock || !to) return;
+      if (!s.held) {
+        s.x += to.x - s.dock.x;
+        s.y += to.y - s.dock.y;
+      }
+      s.dock = to;
+      paint();
+    };
+    box.addEventListener("scroll", carry, true);
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(fit);
+    observer?.observe(box);
     // The composer grows with what is typed into it.
-    if (wall) observer.observe(wall);
-    return () => observer.disconnect();
+    if (wall) observer?.observe(wall);
+    return () => {
+      box.removeEventListener("scroll", carry, true);
+      observer?.disconnect();
+    };
   }, [bounds, paint, room, scene, seat]);
   React.useEffect(() => () => cancelAnimationFrame(sim.current.frame), []);
 

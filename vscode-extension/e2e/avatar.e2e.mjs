@@ -119,6 +119,32 @@ export const tests = {
     await ui.shot("avatar-seated");
   },
 
+  async "on its seat it scrolls with the home screen, and comes back with it"(ui, assert) {
+    // A panel short enough for the home screen to scroll, as a long history makes it.
+    await ui.page.setViewportSize({ width: 900, height: 300 });
+    await ui.page.waitForTimeout(150);
+    await settle(ui);
+    assert(near(faceOf(await settle(ui)), await seatOf(ui)), "it is not on its seat to begin with");
+    const scrollTo = (top) =>
+      ui.page.evaluate((top) => {
+        const home = document.querySelector(".home");
+        home.scrollTop = top;
+        return new Promise((done) => requestAnimationFrame(() => done(home.scrollTop)));
+      }, top);
+
+    const scrolled = await scrollTo(120);
+    assert(scrolled > 40, `the home screen does not scroll here (${scrolled})`);
+    const away = await ui.page.locator(FLOAT).boundingBox();
+    assert(near(faceOf(away), await seatOf(ui)), "it stayed behind, over what scrolled under it");
+
+    // Moved while the page is scrolled, it still goes back to its seat, not off the screen for good.
+    await scrollTo(30);
+    await drag(ui, 150, 60);
+    assert(near(faceOf(await settle(ui)), await seatOf(ui)), "let go, it did not go back to its seat");
+    await scrollTo(0);
+    assert(near(faceOf(await ui.page.locator(FLOAT).boundingBox()), await seatOf(ui)), "scrolled back, it is not where it sat");
+  },
+
   async "the composer is a floor: it is never under the glass"(ui, assert) {
     await openChat(ui);
     await drag(ui, -200, 400);

@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 40,
-  "patch": 2,
-  "build": 107,
+  "patch": 3,
+  "build": 108,
   "updated": "2026-10-07",
-  "note": "The terminal looks for an update even before the releases repository is set"
+  "note": "On the home screen the avatar scrolls with its seat instead of staying over the history"
 }
