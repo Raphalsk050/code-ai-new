@@ -1,6 +1,7 @@
 // The settings panel's MCP section, end to end: what it asks the host for,
 // and what each button puts on the wire.
 
+import { choose } from "./dropdown.mjs";
 import { settingsSnapshot } from "./harness.mjs";
 
 const SECRET = "ghp_real_token";
@@ -291,7 +292,7 @@ export const tests = {
 
     await ui.page.fill('.elicit-field:has-text("Organisation") input', "code-ai");
     await ui.page.check('.elicit-field:has-text("Private") input');
-    await ui.page.selectOption('.elicit-field:has-text("Labels") select', "bug");
+    await choose(ui, '.elicit-field:has-text("Labels")', "bug");
     await ui.page.click('.elicit-card button:has-text("Send")');
 
     const [sent] = await ui.toHost("mcpElicitation");

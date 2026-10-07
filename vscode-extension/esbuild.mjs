@@ -18,6 +18,11 @@ const extensionConfig = {
   sourcemap: true,
 };
 
+// What is packaged runs React's production build. Its development build checks
+// every property of every element on every render, and a long conversation pays
+// for that on each token. `--watch` keeps the development build and its warnings.
+const shipped = watch ? {} : { minify: true, define: { "process.env.NODE_ENV": '"production"' } };
+
 /** Webview bundle: browser IIFE, React inlined. */
 const webviewConfig = {
   entryPoints: ["webview/index.tsx"],
@@ -28,6 +33,7 @@ const webviewConfig = {
   target: "es2021",
   plugins: webviewPlugins,
   sourcemap: true,
+  ...shipped,
 };
 
 /** Orchestrator-graph editor bundle: its own webview, same shape as the chat. */
@@ -39,6 +45,7 @@ const flowConfig = {
   format: "iife",
   target: "es2021",
   sourcemap: true,
+  ...shipped,
 };
 
 const configs = [extensionConfig, webviewConfig, flowConfig];

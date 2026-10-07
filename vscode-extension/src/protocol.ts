@@ -65,6 +65,8 @@ export type BridgeMethod =
   | "listConversations"
   | "loadConversation"
   | "deleteConversation"
+  | "deleteMessage"
+  | "answerNow"
   | "explainCode"
   | "inlineComplete"
   | "analyzeRefactor"
@@ -414,6 +416,10 @@ export type WebviewToHost =
   | { type: "listConversations" }
   | { type: "loadConversation"; id: string }
   | { type: "deleteConversation"; id: string }
+  /** One of the user's messages, counted from the newest, with the answer(s) it got. */
+  | { type: "deleteMessage"; text: string; fromEnd: number; count: number }
+  /** A message waiting for a turn of its own is handed to the turn that is running. */
+  | { type: "answerNow"; text: string }
   | { type: "getSettings" }
   | { type: "updateSettings"; updates: Record<string, unknown> }
   | { type: "listModels" }

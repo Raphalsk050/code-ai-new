@@ -5,7 +5,7 @@
 
 import type { AppMode, ServerConversation } from "../src/protocol";
 import type { Place } from "./avatar-motion";
-import type { AvatarSkin } from "./avatar-skin";
+import type { AvatarColor, AvatarSkin } from "./avatar-skin";
 import type { Item } from "./store/transcript";
 
 export interface Conversation {
@@ -73,9 +73,13 @@ export interface ExtPrefs {
   avatarAt?: Place;
   /** What the avatar wears: the season's, by the calendar, or one picked by hand. */
   avatarSkin: "auto" | AvatarSkin;
+  /** The glyph's colour: the theme's accent, or one picked by hand. */
+  avatarColor: AvatarColor;
+  /** Whether the floating avatar looks at the pointer while it is idle. */
+  avatarWatches: boolean;
 }
 
-export const DEFAULT_PREFS: ExtPrefs = { mode: "agent", autoRunRefactor: false, floatingAvatar: true, avatarSkin: "auto" };
+export const DEFAULT_PREFS: ExtPrefs = { mode: "agent", autoRunRefactor: false, floatingAvatar: true, avatarSkin: "auto", avatarColor: "theme", avatarWatches: true };
 
 export interface PersistedState {
   conversations: Conversation[];

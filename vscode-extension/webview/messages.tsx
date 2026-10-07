@@ -19,6 +19,8 @@ interface ItemActions {
   onOpenDiff?: (path: string) => void;
   /** Brings up the terminal, offered on a command that failed. */
   onTerminal?: () => void;
+  /** Hands a message waiting for a turn of its own to the turn that is running. */
+  onAnswerNow?: (text: string) => void;
 }
 
 /**
@@ -26,7 +28,7 @@ interface ItemActions {
  * like a chat, the agent's take the width its work needs. `children` is what is
  * still live at the end of the agent's turn - the typing line, an approval.
  */
-export function BlockView({
+function BlockViewPlain({
   block,
   avatar,
   avatarProblem,
@@ -36,9 +38,13 @@ export function BlockView({
   pose = null,
   onOpenDiff,
   onTerminal,
+  onAnswerNow,
+  onDelete,
   children,
 }: ItemActions & {
   block: Block;
+  /** Set on a box of the user's that may be deleted, with what it was answered. */
+  onDelete?: (block: Block) => void;
   /** The user's picture, as a data: URI; the icon stands in without one. */
   avatar?: string;
   /** Why there is no picture, shown on the icon's hover. */
@@ -80,6 +86,7 @@ export function BlockView({
           )
         )}
         <span className="block-name">{user ? t("You") : "Code-AI"}</span>
+        {user && onDelete && <DeleteButton onDelete={() => onDelete(block)} />}
       </div>
       <div className="block-body">
         {foldTools(block.items).map((entry) =>
@@ -90,7 +97,13 @@ export function BlockView({
               ))}
             </ToolGroup>
           ) : (
-            <ItemView key={entry.item.id} item={entry.item} onOpenDiff={onOpenDiff} onTerminal={onTerminal} />
+            <ItemView
+              key={entry.item.id}
+              item={entry.item}
+              onOpenDiff={onOpenDiff}
+              onTerminal={onTerminal}
+              onAnswerNow={onAnswerNow}
+            />
           )
         )}
         {children}
@@ -98,6 +111,59 @@ export function BlockView({
     </section>
   );
 }
+
+type BlockProps = React.ComponentProps<typeof BlockViewPlain>;
+
+/**
+ * A box whose messages are the same objects as last time has nothing new to
+ * draw. Without this every box of the conversation was drawn again on each
+ * token of an answer and on each key typed into the composer.
+ */
+function sameBlock(a: BlockProps, b: BlockProps): boolean {
+  return (
+    a.block.key === b.block.key &&
+    a.block.speaker === b.block.speaker &&
+    a.block.items.length === b.block.items.length &&
+    a.block.items.every((item, i) => item === b.block.items[i]) &&
+    a.done === b.done &&
+    a.pose === b.pose &&
+    a.children === b.children &&
+    a.avatar === b.avatar &&
+    a.avatarProblem === b.avatarProblem &&
+    a.avatarPending === b.avatarPending &&
+    // The handlers only send and set state: one made earlier does what a new one would.
+    !a.onAvatarSignIn === !b.onAvatarSignIn &&
+    !a.onOpenDiff === !b.onOpenDiff &&
+    !a.onTerminal === !b.onTerminal &&
+    !a.onAnswerNow === !b.onAnswerNow &&
+    !a.onDelete === !b.onDelete
+  );
+}
+
+/** Deleting cannot be undone, so it takes two clicks: the first one asks. */
+function DeleteButton({ onDelete }: { onDelete: () => void }): JSX.Element {
+  const [asking, setAsking] = React.useState(false);
+  React.useEffect(() => {
+    if (!asking) return;
+    const back = window.setTimeout(() => setAsking(false), 3000);
+    return () => window.clearTimeout(back);
+  }, [asking]);
+  const label = asking ? t("Click again to delete") : t("Delete this message and its answer");
+  return (
+    <button
+      type="button"
+      className={`block-delete${asking ? " asking" : ""}`}
+      title={label}
+      aria-label={label}
+      onClick={() => (asking ? onDelete() : setAsking(true))}
+    >
+      <Codicon name="trash" size={13} />
+      {asking && <span>{t("Delete?")}</span>}
+    </button>
+  );
+}
+
+export const BlockView = React.memo(BlockViewPlain, sameBlock);
 
 /**
  * The user's GitHub picture when the backend found one, the icon otherwise -
@@ -166,10 +232,11 @@ export function UserAvatar({
   );
 }
 
-export function ItemView({
+function ItemViewPlain({
   item,
   onOpenDiff,
   onTerminal,
+  onAnswerNow,
 }: ItemActions & { item: Item }): JSX.Element | null {
   switch (item.kind) {
     case "user":
@@ -201,14 +268,38 @@ export function ItemView({
           onTerminal={onTerminal && toolKind(item.name) === "run" ? onTerminal : undefined}
         />
       );
-    case "notice":
-      return <NoticeRow level={item.level} text={item.text} />;
+    case "notice": {
+      // Waiting for a turn of its own: it can go to the running one instead.
+      const waiting = item.queued;
+      return (
+        <NoticeRow
+          level={item.level}
+          text={item.text}
+          action={
+            waiting !== undefined && onAnswerNow ? (
+              <button type="button" className="notice-action" onClick={() => onAnswerNow(waiting)}>
+                {t("Answer now")}
+              </button>
+            ) : undefined
+          }
+        />
+      );
+    }
     case "turn":
       return <TurnFooter item={item} onOpen={onOpenDiff} />;
     default:
       return null;
   }
 }
+
+export const ItemView = React.memo(
+  ItemViewPlain,
+  (a, b) =>
+    a.item === b.item &&
+    !a.onOpenDiff === !b.onOpenDiff &&
+    !a.onTerminal === !b.onTerminal &&
+    !a.onAnswerNow === !b.onAnswerNow
+);
 
 function WorkingRow({ text }: { text: string }) {
   return <div className="working-note">{text}</div>;
@@ -242,13 +333,14 @@ function ThinkingRow({ text, streaming }: { text: string; streaming?: boolean })
   );
 }
 
-function NoticeRow({ level, text }: { level: string; text: string }) {
+function NoticeRow({ level, text, action }: { level: string; text: string; action?: React.ReactNode }) {
   const icon =
     level === "error" ? <Codicon name="error" size={14} /> : level === "warning" ? <Codicon name="warning" size={14} /> : null;
   return (
     <div className={`notice notice-${level}`}>
       {icon}
       <span>{text}</span>
+      {action}
     </div>
   );
 }

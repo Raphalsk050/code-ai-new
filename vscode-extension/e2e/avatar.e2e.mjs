@@ -1,10 +1,11 @@
 // The avatar loose in the panel: where it sits, how it is moved, what it wears.
 
+import { choose } from "./dropdown.mjs";
 import { settingsSnapshot } from "./harness.mjs";
 
 const FLOAT = ".av-float";
 const GRIP = ".av-float-grip";
-const COSTUME = '.settings-field:has(.settings-field-label:text-is("Avatar costume")) select';
+const COSTUME = '.settings-field:has(.settings-field-label:text-is("Avatar costume"))';
 
 /** Where its box is once it has stopped moving. */
 async function settle(ui) {
@@ -49,6 +50,13 @@ async function openSettings(ui) {
 
 const near = (a, b) => Math.abs(a.x - b.x) < 1.5 && Math.abs(a.y - b.y) < 1.5;
 
+/** The middle of its face, and of the seat the home screen keeps for it. */
+const faceOf = (box) => ({ x: box.x + box.width * 0.464, y: box.y + box.height * 0.571 });
+async function seatOf(ui) {
+  const seat = await ui.page.locator(".spark-dock").boundingBox();
+  return { x: seat.x + seat.width / 2, y: seat.y + seat.height / 2 };
+}
+
 export const tests = {
   async "it floats in its corner and goes where it is carried"(ui, assert) {
     const home = await openChat(ui);
@@ -84,7 +92,7 @@ export const tests = {
 
   async "where it was left is remembered, on every screen"(ui, assert) {
     await openChat(ui);
-    await drag(ui, -200, -300);
+    await drag(ui, -200, -450);
     const left = await settle(ui);
     await ui.page.waitForFunction(() => window.__state?.prefs?.avatarAt);
     const place = await ui.page.evaluate(() => window.__state.prefs.avatarAt);
@@ -92,18 +100,42 @@ export const tests = {
 
     await ui.page.click('button[title="Back to the history"]');
     await ui.page.waitForSelector(".home-new");
-    assert(near(await settle(ui), left), "going home put it back in its corner");
+    assert(near(faceOf(await settle(ui)), await seatOf(ui)), "on the home screen it did not take its seat");
     await ui.page.click(".home-new");
     await ui.page.waitForSelector(".composer");
-    assert(near(await settle(ui), left), "a new conversation put it back in its corner");
+    assert(near(await settle(ui), left), "back in a conversation it did not return to where it was left");
+    const kept = await ui.page.evaluate(() => window.__state.prefs.avatarAt);
+    assert(JSON.stringify(kept) === JSON.stringify(place), "its seat was remembered as its place");
+  },
+
+  async "on the home screen it sits where the mark was, and goes back there when moved"(ui, assert) {
+    const seated = await settle(ui);
+    assert(near(faceOf(seated), await seatOf(ui)), "it is not on its seat");
+    assert(!(await ui.page.$(".home-hero .spark .agent-av")), "the mark is still drawn under it");
+
+    await drag(ui, 200, 260);
+    assert(near(await settle(ui), seated), "let go, it did not go back to its seat");
+    assert(!(await ui.page.evaluate(() => window.__state?.prefs?.avatarAt)), "a seat is not a place to remember");
+    await ui.shot("avatar-seated");
+  },
+
+  async "the composer is a floor: it is never under the glass"(ui, assert) {
+    await openChat(ui);
+    await drag(ui, -200, 400);
+    const rest = await settle(ui);
+    const composer = await ui.page.locator(".composer-wrap").boundingBox();
+    assert(rest.y + rest.height <= composer.y + 0.5, `it went ${rest.y + rest.height - composer.y}px under the composer`);
   },
 
   async "a panel that changes size keeps it by the same corner"(ui, assert) {
+    const floor = async () => (await ui.page.locator(".composer-wrap").boundingBox()).y;
     const before = await openChat(ui);
+    const above = (await floor()) - before.y;
     await ui.page.setViewportSize({ width: 620, height: 700 });
     await ui.page.waitForTimeout(100);
     const after = await settle(ui);
-    assert(near({ x: 900 - before.x, y: 900 - before.y }, { x: 620 - after.x, y: 700 - after.y }), "it did not follow its corner");
+    // Its corner is the right edge and the composer's top, wherever those now are.
+    assert(near({ x: 900 - before.x, y: above }, { x: 620 - after.x, y: (await floor()) - after.y }), "it did not follow its corner");
   },
 
   async "only the face takes the pointer"(ui, assert) {
@@ -134,11 +166,55 @@ export const tests = {
 
   async "it wears what the settings say"(ui, assert) {
     await openSettings(ui);
-    await ui.page.selectOption(COSTUME, "halloween");
+    await choose(ui, COSTUME,"halloween");
     await ui.page.waitForSelector(`${FLOAT} .agent-av[data-skin="halloween"]`);
     await ui.shot("avatar-costume");
-    await ui.page.selectOption(COSTUME, "default");
+    await choose(ui, COSTUME,"default");
     await ui.page.waitForSelector(`${FLOAT} .agent-av:not([data-skin])`);
+  },
+
+  async "idle, it looks at the pointer, and stops when told not to"(ui, assert) {
+    const box = await openChat(ui);
+    const look = () => ui.page.$eval(FLOAT, (el) => parseFloat(el.style.getPropertyValue("--av-look-x") || "0"));
+    const face = { x: box.x + box.width * 0.46, y: box.y + box.height * 0.57 };
+
+    await ui.page.mouse.move(face.x - 300, face.y);
+    await ui.page.waitForFunction(() => document.querySelector(".av-float").hasAttribute("data-watching"));
+    await settle(ui);
+    await ui.page.waitForTimeout(600);
+    assert((await look()) < -1.2, `the eyes did not go left: ${await look()}`);
+
+    await ui.page.mouse.move(face.x + 80, face.y - 200);
+    await ui.page.waitForTimeout(700);
+    assert((await look()) > 0.3, `the eyes did not come across: ${await look()}`);
+    await ui.shot("avatar-watching");
+
+    // The pointer leaves the page: back to its own business.
+    await ui.page.evaluate(() => document.documentElement.dispatchEvent(new MouseEvent("mouseleave")));
+    await ui.page.waitForFunction(() => !document.querySelector(".av-float").hasAttribute("data-watching"));
+    await ui.page.waitForTimeout(700);
+    assert(Math.abs(await look()) < 0.05, `the eyes stayed where the pointer was: ${await look()}`);
+
+    await ui.page.click('button[title="Back to the history"]');
+    await openSettings(ui);
+    await ui.page.click('button[role="switch"][aria-label="Avatar looks at the pointer"]');
+    await ui.page.mouse.move(200, 200);
+    await ui.page.waitForTimeout(500);
+    assert(!(await ui.page.$(`${FLOAT}[data-watching]`)), "it watches although it was told not to");
+    assert((await ui.page.evaluate(() => window.__state.prefs.avatarWatches)) === false, "the choice was not saved");
+  },
+
+  async "it is drawn in the colour picked in the settings"(ui, assert) {
+    await openSettings(ui);
+    assert(!(await ui.page.$(".agent-av[data-color]")), "a colour before one was picked");
+    await ui.page.click('.swatch[aria-label="Green"]');
+    await ui.page.waitForSelector(`${FLOAT} .agent-av[data-color="green"]`);
+    const drawn = await ui.page.$eval(`${FLOAT} .agent-av`, (el) => getComputedStyle(el).color);
+    assert(drawn === "rgb(46, 160, 67)", `drawn in ${drawn}`);
+    assert((await ui.page.evaluate(() => window.__state.prefs.avatarColor)) === "green", "the choice was not saved");
+    await ui.shot("avatar-colour");
+    await ui.page.click(`.swatch[aria-label="Theme's accent"]`);
+    await ui.page.waitForSelector(`${FLOAT} .agent-av:not([data-color])`);
   },
 
   async "left to the calendar, it dresses for the season"(ui, assert) {

@@ -234,6 +234,20 @@ class BridgeServer:
         )
         return {"deleted": deleted}
 
+    async def _h_answer_now(self, params: dict[str, Any]) -> dict[str, Any]:
+        """A message waiting for a turn of its own steers the running one instead."""
+        promoted = await self._app.answer_followup_now(str(params.get("text") or ""))
+        return {"promoted": promoted}
+
+    async def _h_delete_message(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Forget one of the user's messages, with the answer it got."""
+        deleted = await self._app.delete_exchange(
+            str(params.get("text") or ""),
+            int(params.get("from_end") or 0),
+            max(1, int(params.get("count") or 1)),
+        )
+        return {"deleted": deleted}
+
     async def _h_explain_code(self, params: dict[str, Any]) -> dict[str, Any]:
         markdown = await self._app.explain_code(
             code=str(params.get("code") or ""),
@@ -531,8 +545,13 @@ class BridgeServer:
         if not updates.configured():
             return {"configured": False, "message": updates.UNSET_MESSAGE}
         verify = self._app.session.config.ssl_verification
+        # The front end names its platform, so a release without its package
+        # is not offered as one it could install.
+        target = str(params.get("target") or "")
         try:
-            release = await updates.check(verify_ssl=verify)
+            release = await updates.check(
+                verify_ssl=verify, carrying=("vsix", target) if target else None
+            )
         except updates.LoginRequired as exc:
             # Not a failure: the front end offers to sign in.
             return {"needsLogin": True, "host": updates.login_host(), "message": str(exc)}
@@ -550,9 +569,13 @@ class BridgeServer:
         if not updates.configured():
             raise ValueError(updates.UNSET_MESSAGE)
         verify = self._app.session.config.ssl_verification
-        release = await updates.check(verify_ssl=verify)
+        # The same pick the check made: the newest release that has the package.
+        release = await updates.check(verify_ssl=verify, carrying=("vsix", target))
         if release is None:
-            raise ValueError("Code-AI is already up to date.")
+            newest = await updates.check(verify_ssl=verify)
+            if newest is None:
+                raise ValueError("Code-AI is already up to date.")
+            raise ValueError(f"Release v{newest.version} has no VS Code package for {target}.")
         asset = updates.asset_for(release, "vsix", target)
         if asset is None:
             raise ValueError(f"Release v{release.version} has no VS Code package for {target}.")
@@ -579,6 +602,8 @@ class BridgeServer:
         "listConversations": _h_list_conversations,
         "loadConversation": _h_load_conversation,
         "deleteConversation": _h_delete_conversation,
+        "deleteMessage": _h_delete_message,
+        "answerNow": _h_answer_now,
         "getSettings": _h_get_settings,
         "listModels": _h_list_models,
         "updateSettings": _h_update_settings,

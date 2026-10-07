@@ -122,7 +122,13 @@ export function ChipMenu<V extends string>({
                 aria-selected={o.value === value}
                 className={`chip-opt ${i === active ? "active" : ""} ${o.value === value ? "selected" : ""}`}
                 onPointerEnter={() => setActive(i)}
-                onClick={() => pick(o.value)}
+                // On the press, not the click: nothing that happens between the
+                // two (the list redrawn, focus moving) can lose the choice.
+                onMouseDown={(e) => {
+                  if (e.button !== 0) return;
+                  e.preventDefault();
+                  pick(o.value);
+                }}
               >
                 <span className="chip-check">{o.value === value && <Codicon name="check" size={14} />}</span>
                 <span className="chip-opt-label">{o.label}</span>

@@ -2,7 +2,7 @@ import * as React from "react";
 
 import type { AvatarPose } from "./avatar-pose";
 import { IDLE_LOOP_S } from "./avatar-rig";
-import { type AvatarSkin, useAvatarSkin } from "./avatar-skin";
+import { type AvatarSkin, useAvatarColor, useAvatarSkin } from "./avatar-skin";
 
 const FACE = "M12 3.6c5.3 0 8.6 3.1 8.6 8.2 0 5.4-3.4 8.6-8.6 8.6s-8.6-3.2-8.6-8.6c0-5.1 3.3-8.2 8.6-8.2z";
 const LEAF = "M12.4 3.9C12 2 13.6.6 16.1.9c.1 2-1.4 3.4-3.7 3z";
@@ -60,6 +60,7 @@ export function AgentAvatar({
   const mask = "agent-av-" + React.useId().replace(/:/g, "");
   const outline = mask + "-o";
   const worn = useAvatarSkin();
+  const tint = useAvatarColor();
   const dress = skin ?? worn;
   // Under about a pixel per unit a mouth or a rind is a smudge, not a detail.
   const detail = size / (fx ? FX_UNITS : GLYPH_UNITS) >= 0.9;
@@ -72,6 +73,7 @@ export function AgentAvatar({
       style={{ "--av-phase": phase } as React.CSSProperties}
       data-pose={pose ?? undefined}
       data-skin={dress === "default" ? undefined : dress}
+      data-color={tint === "theme" ? undefined : tint}
       width={size}
       height={size}
       viewBox={fx ? FX_BOX : GLYPH_BOX}

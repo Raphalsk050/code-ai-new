@@ -3,8 +3,9 @@ import * as React from "react";
 import { t, tf } from "./i18n";
 
 import type { AppMode, EditorSettings, McpAction, Settings, ToolSpec } from "../src/protocol";
-import { AVATAR_SKINS } from "./avatar-skin";
+import { AVATAR_COLOR_VALUE, AVATAR_COLORS, AVATAR_SKINS, type AvatarColor } from "./avatar-skin";
 import { Codicon } from "./codicon";
+import { Dropdown } from "./dropdown";
 import { ExtPrefs } from "./history";
 import { McpSection, McpViewState } from "./mcp-settings";
 import { Draft, draftFromSettings, keepRefusedEdits } from "./settings-draft";
@@ -414,17 +415,13 @@ export function SettingsScreen({
         hint: t("The panel and the agent's answers both follow this."),
         keys: ["language"],
         control: (
-          <select
+          <Dropdown
             className="language-select"
+            label={t("Language")}
             value={String(draft.language ?? "en")}
-            onChange={(e) => set("language", e.target.value)}
-          >
-            {languageOptions(String(draft.language ?? "en")).map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
+            options={languageOptions(String(draft.language ?? "en"))}
+            onChange={(v) => set("language", v)}
+          />
         ),
       },
       {
@@ -450,6 +447,20 @@ export function SettingsScreen({
         ),
       },
       {
+        id: "avatar_watches",
+        category: "agent",
+        label: t("Avatar looks at the pointer"),
+        hint: t("While it is idle, its eyes follow your mouse over the panel."),
+        keys: [],
+        control: (
+          <Switch
+            checked={prefs.avatarWatches}
+            onChange={(v) => onPrefsChange({ avatarWatches: v })}
+            label={t("Avatar looks at the pointer")}
+          />
+        ),
+      },
+      {
         id: "avatar_skin",
         category: "agent",
         label: t("Avatar costume"),
@@ -467,6 +478,33 @@ export function SettingsScreen({
               easter: t("Easter"),
             }}
             onChange={(v) => onPrefsChange({ avatarSkin: v as ExtPrefs["avatarSkin"] })}
+          />
+        ),
+      },
+      {
+        id: "avatar_color",
+        category: "agent",
+        label: t("Avatar colour"),
+        hint: t("The theme's accent, or a colour of your own."),
+        keys: [],
+        control: (
+          <Swatches
+            value={prefs.avatarColor}
+            options={AVATAR_COLORS}
+            colors={AVATAR_COLOR_VALUE}
+            labels={{
+              theme: t("Theme's accent"),
+              blue: t("Blue"),
+              green: t("Green"),
+              purple: t("Purple"),
+              pink: t("Pink"),
+              orange: t("Orange"),
+              red: t("Red"),
+              teal: t("Teal"),
+              yellow: t("Yellow"),
+              grey: t("Grey"),
+            }}
+            onChange={(v) => onPrefsChange({ avatarColor: v })}
           />
         ),
       },
@@ -886,13 +924,11 @@ function Choice({
   const all = options.includes(value) || !value ? options : [...options, value];
   if (all.length > 4) {
     return (
-      <select value={value} onChange={(e) => onChange(e.target.value)}>
-        {all.map((option) => (
-          <option key={option} value={option}>
-            {labels?.[option] ?? option}
-          </option>
-        ))}
-      </select>
+      <Dropdown
+        value={value}
+        options={all.map((option) => ({ value: option, label: labels?.[option] ?? option }))}
+        onChange={onChange}
+      />
     );
   }
   return (
@@ -908,6 +944,39 @@ function Choice({
         >
           {labels?.[option] ?? option}
         </button>
+      ))}
+    </div>
+  );
+}
+
+/** A few colours to pick one from, each shown as what it is. */
+function Swatches<T extends string>({
+  value,
+  options,
+  colors,
+  labels,
+  onChange,
+}: {
+  value: T;
+  options: readonly T[];
+  colors: Record<T, string>;
+  labels: Record<T, string>;
+  onChange: (value: T) => void;
+}): JSX.Element {
+  return (
+    <div className="swatches" role="radiogroup">
+      {options.map((option) => (
+        <button
+          key={option}
+          type="button"
+          role="radio"
+          className="swatch"
+          aria-checked={option === value}
+          aria-label={labels[option]}
+          title={labels[option]}
+          style={{ "--swatch": colors[option] } as React.CSSProperties}
+          onClick={() => onChange(option)}
+        />
       ))}
     </div>
   );

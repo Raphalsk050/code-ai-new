@@ -55,7 +55,7 @@ import { activityLabel, BlockView, formatElapsed, TypingIndicator } from "./mess
 import { useSteadyPose } from "./agent-avatar";
 import { isPlace } from "./avatar-motion";
 import { avatarPose } from "./avatar-pose";
-import { seasonalSkin, setAvatarSkin } from "./avatar-skin";
+import { seasonalSkin, setAvatarColor, setAvatarSkin } from "./avatar-skin";
 import { FloatingAvatar } from "./floating-avatar";
 import { PromptPin, usePromptPin } from "./prompt-pin";
 import { ripple } from "./motion";
@@ -90,6 +90,8 @@ function clientEvent(event_type: string, payload: Record<string, any> = {}): Eve
 }
 
 type Screen = "home" | "chat" | "settings";
+/** How long after the last streamed piece the transcript is saved. */
+const PERSIST_AFTER_MS = 400;
 
 // Backend states a turn ends well in; ERROR, FAILED and CANCELLED end it too,
 // but not with an answer worth marking done.
@@ -159,6 +161,7 @@ function App(): JSX.Element {
     const hourly = window.setInterval(dress, 3_600_000);
     return () => window.clearInterval(hourly);
   }, [prefs.avatarSkin]);
+  React.useEffect(() => setAvatarColor(prefs.avatarColor), [prefs.avatarColor]);
 
   // -- host messages -------------------------------------------------------
   React.useEffect(() => {
@@ -329,14 +332,40 @@ function App(): JSX.Element {
   }, [screen, state.session.status]);
 
   // -- persist the active transcript to local history ----------------------
+  // A new message is saved at once. Text streaming into the last one is saved a
+  // moment after it stops: each save serialises the whole history, and an
+  // answer arrives in hundreds of pieces.
+  const pendingSave = React.useRef<(() => void) | null>(null);
+  const savedCount = React.useRef(-1);
   React.useEffect(() => {
     if (screen !== "chat" || mode !== "agent" || !activeId) return;
-    setPersisted((prev) => {
-      const next = upsertActive(prev, activeId, state.transcript.items);
-      vscode.setState(next);
-      return next;
-    });
+    const items = state.transcript.items;
+    const save = () => {
+      pendingSave.current = null;
+      savedCount.current = items.length;
+      setPersisted((prev) => {
+        const next = upsertActive(prev, activeId, items);
+        vscode.setState(next);
+        return next;
+      });
+    };
+    if (items.length !== savedCount.current) {
+      save();
+      return;
+    }
+    pendingSave.current = save;
+    const timer = window.setTimeout(save, PERSIST_AFTER_MS);
+    return () => window.clearTimeout(timer);
   }, [state.transcript.items, screen, activeId, mode]);
+  // Leaving the conversation, or the panel going away: what was waiting is saved now.
+  React.useEffect(() => {
+    const flush = () => pendingSave.current?.();
+    window.addEventListener("pagehide", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      flush();
+    };
+  }, [screen, activeId, mode]);
 
   // Esc hands the keyboard to the interactive terminal and back, the binding
   // the TUI has. Registered on the document because the terminal input lives
@@ -772,6 +801,29 @@ function App(): JSX.Element {
   const resolveApproval = (callId: string, scope: ApprovalScope, reason?: string) =>
     send({ type: "resolveApproval", call_id: callId, scope, reason });
   const openDiff = React.useCallback((path: string) => send({ type: "openDiff", path }), []);
+  // A message waiting for a turn of its own goes to the turn that is running instead.
+  const answerNow = React.useCallback((text: string) => send({ type: "answerNow", text }), []);
+
+  // One of the user's boxes, deleted with what the agent answered it. The
+  // backend finds the message by counting back from the newest one the user
+  // sent: older ones may have been folded into a summary there, newer ones not.
+  const itemsRef = React.useRef(state.transcript.items);
+  itemsRef.current = state.transcript.items;
+  const deleteBlock = React.useCallback((block: Block) => {
+    const said = (item: Item): item is Item & { kind: "user" } =>
+      item.kind === "user" && !/^(\[runtime\]|Compressed context summary\.)/.test(item.text);
+    const all = itemsRef.current.filter(said);
+    const mine = block.items.filter(said);
+    const last = mine.length ? all.findIndex((item) => item.id === mine[mine.length - 1].id) : -1;
+    if (last >= 0) {
+      send({ type: "deleteMessage", text: mine[0].text, fromEnd: all.length - 1 - last, count: mine.length });
+    }
+    if (block.items.length) {
+      dispatch(
+        clientEvent("client.dropExchange", { first: block.items[0].id, last: block.items[block.items.length - 1].id })
+      );
+    }
+  }, []);
   const setPermission = (m: PermissionMode) => send({ type: "setPermissionMode", mode: m });
 
   const applyRefactor = (markdown: string) => {
@@ -822,6 +874,9 @@ function App(): JSX.Element {
       key="floater"
       pose={pose}
       start={isPlace(prefs.avatarAt) ? prefs.avatarAt : undefined}
+      watch={prefs.avatarWatches}
+      dock={screen === "home" ? ".spark-dock" : undefined}
+      scene={`${screen}:${mode}`}
       onRest={(avatarAt) => updatePrefs({ avatarAt })}
     />
   );
@@ -868,6 +923,7 @@ function App(): JSX.Element {
           onDelete={deleteConversation}
           onSettings={openSettings}
           update={updateButton}
+          docked={prefs.floatingAvatar}
         />
         {floater}
       </div>
@@ -1038,6 +1094,8 @@ function App(): JSX.Element {
                         pose={i === shownBlocks.length - 1 && block.speaker === "agent" ? pose : null}
                         onOpenDiff={editorDiff ? openDiff : undefined}
                         onTerminal={showTerminal}
+                        onAnswerNow={answerNow}
+                        onDelete={block.speaker === "user" && !busy ? deleteBlock : undefined}
                       >
                         {i === shownBlocks.length - 1 && block.speaker === "agent" ? live : null}
                       </BlockView>

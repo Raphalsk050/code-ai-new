@@ -1,4 +1,11 @@
 import { bakeIdle, IDLE_LOOP_S } from "../avatar-rig";
+import { AVATAR_COLOR_VALUE, AVATAR_COLORS } from "../avatar-skin";
+
+// The theme's accent unless one was picked: the glyph is drawn in its own
+// colour, so the choice only has to be that colour.
+const COLOR_STYLE = AVATAR_COLORS.filter((color) => color !== "theme")
+  .map((color) => `.agent-av[data-color=${color}] { color: ${AVATAR_COLOR_VALUE[color]}; }`)
+  .join("\n");
 
 // ---- idle ----
 // The motion is not written here. avatar-rig.ts acts the idle out with a
@@ -92,6 +99,9 @@ ${IDLE_STYLE}
 .agent-av-leaf-lag { transform-origin: 12.6px 3.9px; transform: rotate(var(--av-leaf-lag, 0deg)); }
 .agent-av-look { transform: translate(var(--av-look-x, 0px), var(--av-look-y, 0px)); }
 
+/* ---- colours ---- */
+${COLOR_STYLE}
+
 /* ---- skins ---- */
 /* The face, the eyes and the flat fill are the mark and stay. A skin changes
    what is on the head and adds at most two colours, taken from the theme
@@ -140,7 +150,7 @@ ${IDLE_STYLE}
 /* Loose over the panel with nothing under it but its shadow. Only the face
    takes the pointer: the rest of its box lets a click through to the panel. */
 .av-float {
-  position: absolute; left: 0; top: 0; z-index: 4;
+  position: absolute; left: 0; top: 0; z-index: 2;
   color: var(--accent); pointer-events: none;
   -webkit-user-select: none; user-select: none; will-change: transform;
 }
@@ -156,8 +166,10 @@ ${IDLE_STYLE}
 .av-float[data-held] .av-float-grip { cursor: grabbing; }
 .av-float[data-held] .agent-av { transform: scale(1.06); filter: drop-shadow(0 10px 12px var(--shadow)); }
 .av-float-grip:focus-visible { outline: 1px solid var(--focus); outline-offset: 3px; }
-/* Typing, and the menus that open from it, come before the avatar. */
-.composer-wrap:focus-within { z-index: 5; }
+/* Watching the pointer, the eyes are its to move: the idle's own glances stand down. */
+.av-float[data-watching] .agent-av[data-pose=idle] .agent-av-eyes { animation: none; }
+/* Its seat on the home screen, where the mark stands when it does not float. */
+.spark-dock { height: 62px; }
 
 @media (prefers-reduced-motion: reduce) {
   .agent-av * { animation: none !important; }

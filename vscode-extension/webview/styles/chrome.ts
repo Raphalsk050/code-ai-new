@@ -196,6 +196,31 @@ button.context-meter:hover { background: var(--hover); }
 .chip-opt.selected .chip-opt-label { color: var(--fg-strong); font-weight: 600; }
 .chip-opt-hint { grid-column: 2; color: var(--fg-muted); font-size: var(--fs-label); }
 .chip-check { display: grid; place-items: center; color: var(--accent); }
+
+/* ---- dropdown: a select the page draws itself ---- */
+.dropdown { position: relative; min-width: 0; width: 100%; }
+.dropdown-button {
+  display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; height: 28px;
+  box-sizing: border-box; padding: 0 9px; font-family: inherit; font-size: var(--fs-small);
+  color: var(--fg); background: var(--surface-input); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm); text-align: left; cursor: pointer;
+}
+.dropdown-button > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dropdown-button > .codicon { flex: none; color: var(--fg-muted); }
+.dropdown-button:focus-visible, .dropdown-button.open { outline: none; border-color: var(--focus); }
+.dropdown-pop {
+  position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 30;
+  max-height: 240px; overflow-y: auto; padding: 4px;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--surface);
+  box-shadow: 0 8px 24px var(--shadow);
+}
+.dropdown-pop.up { top: auto; bottom: calc(100% + 4px); }
+.dropdown-opt {
+  padding: 4px 8px; border-radius: var(--radius-sm); cursor: pointer; font-size: var(--fs-small);
+  color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dropdown-opt.active { background: var(--accent-soft); }
+.dropdown-opt.selected { color: var(--fg-strong); font-weight: 600; }
 .chip-note { padding: 6px 8px; font-size: var(--fs-small); color: var(--fg-muted); display: flex; align-items: center; gap: 6px; }
 .chip-note.bad { color: var(--danger); }
 

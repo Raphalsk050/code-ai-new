@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 39,
-  "patch": 6,
-  "build": 96,
-  "updated": "2026-10-06",
-  "note": "Android Studio plugin, floating avatar and the new release notes on main"
+  "patch": 15,
+  "build": 105,
+  "updated": "2026-10-07",
+  "note": "Avatar colours, pointer watching, a seat on the home screen, deleting a message, answer-now, faster long conversations, sturdier updates and dropdowns"
 }

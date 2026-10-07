@@ -42,8 +42,32 @@ export function seasonalSkin(date: Date): AvatarSkin {
   return "default";
 }
 
+export type AvatarColor = "theme" | "blue" | "green" | "purple" | "pink" | "orange" | "red" | "teal" | "yellow" | "grey";
+/**
+ * What each colour is. The theme's accent comes first and is the default; the
+ * rest are fixed mid-tones, so each reads on a dark panel and on a light one.
+ */
+export const AVATAR_COLOR_VALUE: Record<AvatarColor, string> = {
+  theme: "var(--accent)",
+  blue: "#3b82f6",
+  green: "#2ea043",
+  purple: "#a371f7",
+  pink: "#e85aad",
+  orange: "#f0883e",
+  red: "#f85149",
+  teal: "#2bb3a3",
+  yellow: "#d4a72c",
+  grey: "var(--fg-muted)",
+};
+export const AVATAR_COLORS = Object.keys(AVATAR_COLOR_VALUE) as AvatarColor[];
+
 let worn: AvatarSkin = "default";
+let tint: AvatarColor = "theme";
 const listeners = new Set<() => void>();
+const subscribe = (listener: () => void) => {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+};
 
 /** Dress every avatar on the page at once. */
 export function setAvatarSkin(skin: AvatarSkin): void {
@@ -54,11 +78,16 @@ export function setAvatarSkin(skin: AvatarSkin): void {
 
 /** What the page's avatars wear, unless one is told otherwise. */
 export function useAvatarSkin(): AvatarSkin {
-  return React.useSyncExternalStore(
-    (listener) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-    () => worn
-  );
+  return React.useSyncExternalStore(subscribe, () => worn);
+}
+
+/** Colour every avatar on the page at once. */
+export function setAvatarColor(color: AvatarColor): void {
+  if (color === tint) return;
+  tint = color;
+  listeners.forEach((listener) => listener());
+}
+
+export function useAvatarColor(): AvatarColor {
+  return React.useSyncExternalStore(subscribe, () => tint);
 }

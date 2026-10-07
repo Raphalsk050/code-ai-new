@@ -151,7 +151,10 @@ def render_suggestions(prefix: str, *, extra: Sequence[SlashCommand] = ()) -> st
 _HELP_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "Session",
-        ("/help", "/doctor", "/status", "/compact", "/clear", "/quit", "/cancel", "/update"),
+        (
+            "/help", "/doctor", "/status", "/compact", "/forget", "/clear", "/quit", "/cancel",
+            "/update",
+        ),
     ),
     ("Planning", ("/auto", "/plan", "/act", "/mode", "/deep-plan", "/plan-status", "/replan")),
     ("Goals", ("/goal",)),

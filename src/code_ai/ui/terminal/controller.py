@@ -49,6 +49,20 @@ class TerminalController:
             f"{result.previous_tokens} → {result.active_tokens} tokens."
         )
 
+    async def forget(self) -> str:
+        """Take the user's newest message, and its answer, out of the conversation."""
+        try:
+            said = await self.app.forget_last_exchange()
+        except RuntimeError as exc:
+            return f"command> {exc}"
+        if said is None:
+            return "command> Nothing to forget: you have not said anything yet."
+        first_line = said.strip().splitlines()[0][:80]
+        return (
+            f'command> Forgot "{first_line}" and its answer. They stay on screen, '
+            "but the agent no longer sees them."
+        )
+
     async def cancel(self) -> None:
         await self.app.cancel_current_turn()
 

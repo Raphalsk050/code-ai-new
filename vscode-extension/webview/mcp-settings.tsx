@@ -1,5 +1,6 @@
 import * as React from "react";
 
+import { Dropdown } from "./dropdown";
 import { t, tf } from "./i18n";
 
 import type { McpAction, McpList, McpServerInfo } from "../src/protocol";
@@ -372,14 +373,16 @@ function ServerEditor({
         />
       </Labeled>
       <Labeled label={t("Transport")}>
-        <select
+        <Dropdown
+          label={t("Transport")}
           value={form.transport}
-          onChange={(e) => set("transport", e.target.value as ServerForm["transport"])}
-        >
-          <option value="stdio">{t("stdio - a program on this machine")}</option>
-          <option value="http">{t("http - a server at a URL")}</option>
-          <option value="sse">{t("sse - older servers at a URL")}</option>
-        </select>
+          options={[
+            { value: "stdio", label: t("stdio - a program on this machine") },
+            { value: "http", label: t("http - a server at a URL") },
+            { value: "sse", label: t("sse - older servers at a URL") },
+          ]}
+          onChange={(v) => set("transport", v as ServerForm["transport"])}
+        />
       </Labeled>
       {form.transport === "stdio" ? (
         <>
@@ -437,14 +440,16 @@ function ServerEditor({
         </>
       )}
       <Labeled label={t("Its tools in the agent's list")}>
-        <select
+        <Dropdown
+          label={t("Its tools in the agent's list")}
           value={form.defer}
-          onChange={(e) => set("defer", e.target.value as ServerForm["defer"])}
-        >
-          <option value="auto">{t("all of them, or on demand past 12")}</option>
-          <option value="always">{t("on demand: the agent loads them when it needs them")}</option>
-          <option value="never">{t("always all of them")}</option>
-        </select>
+          options={[
+            { value: "auto", label: t("all of them, or on demand past 12") },
+            { value: "always", label: t("on demand: the agent loads them when it needs them") },
+            { value: "never", label: t("always all of them") },
+          ]}
+          onChange={(v) => set("defer", v as ServerForm["defer"])}
+        />
       </Labeled>
       <label className="tool-switch mcp-trust">
         <input type="checkbox" checked={form.trust} onChange={(e) => set("trust", e.target.checked)} />
