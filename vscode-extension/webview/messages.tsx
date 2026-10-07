@@ -26,7 +26,7 @@ interface ItemActions {
  * like a chat, the agent's take the width its work needs. `children` is what is
  * still live at the end of the agent's turn - the typing line, an approval.
  */
-export function BlockView({
+function BlockViewPlain({
   block,
   avatar,
   avatarProblem,
@@ -99,6 +99,34 @@ export function BlockView({
   );
 }
 
+type BlockProps = React.ComponentProps<typeof BlockViewPlain>;
+
+/**
+ * A box whose messages are the same objects as last time has nothing new to
+ * draw. Without this every box of the conversation was drawn again on each
+ * token of an answer and on each key typed into the composer.
+ */
+function sameBlock(a: BlockProps, b: BlockProps): boolean {
+  return (
+    a.block.key === b.block.key &&
+    a.block.speaker === b.block.speaker &&
+    a.block.items.length === b.block.items.length &&
+    a.block.items.every((item, i) => item === b.block.items[i]) &&
+    a.done === b.done &&
+    a.pose === b.pose &&
+    a.children === b.children &&
+    a.avatar === b.avatar &&
+    a.avatarProblem === b.avatarProblem &&
+    a.avatarPending === b.avatarPending &&
+    // The handlers only send and set state: one made earlier does what a new one would.
+    !a.onAvatarSignIn === !b.onAvatarSignIn &&
+    !a.onOpenDiff === !b.onOpenDiff &&
+    !a.onTerminal === !b.onTerminal
+  );
+}
+
+export const BlockView = React.memo(BlockViewPlain, sameBlock);
+
 /**
  * The user's GitHub picture when the backend found one, the icon otherwise -
  * and then the icon says why on hover, since a missing picture is otherwise
@@ -166,7 +194,7 @@ export function UserAvatar({
   );
 }
 
-export function ItemView({
+function ItemViewPlain({
   item,
   onOpenDiff,
   onTerminal,
@@ -209,6 +237,11 @@ export function ItemView({
       return null;
   }
 }
+
+export const ItemView = React.memo(
+  ItemViewPlain,
+  (a, b) => a.item === b.item && !a.onOpenDiff === !b.onOpenDiff && !a.onTerminal === !b.onTerminal
+);
 
 function WorkingRow({ text }: { text: string }) {
   return <div className="working-note">{text}</div>;

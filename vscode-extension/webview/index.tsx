@@ -90,6 +90,8 @@ function clientEvent(event_type: string, payload: Record<string, any> = {}): Eve
 }
 
 type Screen = "home" | "chat" | "settings";
+/** How long after the last streamed piece the transcript is saved. */
+const PERSIST_AFTER_MS = 400;
 
 // Backend states a turn ends well in; ERROR, FAILED and CANCELLED end it too,
 // but not with an answer worth marking done.
@@ -330,14 +332,40 @@ function App(): JSX.Element {
   }, [screen, state.session.status]);
 
   // -- persist the active transcript to local history ----------------------
+  // A new message is saved at once. Text streaming into the last one is saved a
+  // moment after it stops: each save serialises the whole history, and an
+  // answer arrives in hundreds of pieces.
+  const pendingSave = React.useRef<(() => void) | null>(null);
+  const savedCount = React.useRef(-1);
   React.useEffect(() => {
     if (screen !== "chat" || mode !== "agent" || !activeId) return;
-    setPersisted((prev) => {
-      const next = upsertActive(prev, activeId, state.transcript.items);
-      vscode.setState(next);
-      return next;
-    });
+    const items = state.transcript.items;
+    const save = () => {
+      pendingSave.current = null;
+      savedCount.current = items.length;
+      setPersisted((prev) => {
+        const next = upsertActive(prev, activeId, items);
+        vscode.setState(next);
+        return next;
+      });
+    };
+    if (items.length !== savedCount.current) {
+      save();
+      return;
+    }
+    pendingSave.current = save;
+    const timer = window.setTimeout(save, PERSIST_AFTER_MS);
+    return () => window.clearTimeout(timer);
   }, [state.transcript.items, screen, activeId, mode]);
+  // Leaving the conversation, or the panel going away: what was waiting is saved now.
+  React.useEffect(() => {
+    const flush = () => pendingSave.current?.();
+    window.addEventListener("pagehide", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      flush();
+    };
+  }, [screen, activeId, mode]);
 
   // Esc hands the keyboard to the interactive terminal and back, the binding
   // the TUI has. Registered on the document because the terminal input lives

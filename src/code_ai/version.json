@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 39,
-  "patch": 10,
-  "build": 100,
+  "patch": 11,
+  "build": 101,
   "updated": "2026-10-07",
-  "note": "The avatar flies to the home screen's mark and never goes under the composer"
+  "note": "A long conversation no longer slows the panel: production React, settled messages are not redrawn"
 }

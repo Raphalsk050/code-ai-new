@@ -112,7 +112,12 @@ export function FloatingAvatar({
   const live = React.useRef({ inertia, onRest, watch: watch && (pose === "idle" || pose === null) });
   live.current = { inertia, onRest, watch: watch && (pose === "idle" || pose === null) };
 
-  const room = React.useCallback(() => ref.current?.offsetParent as HTMLElement | null, []);
+  // Asked for once per layout: reading offsetParent on every frame makes the browser lay the page out for it.
+  const roomRef = React.useRef<HTMLElement | null>(null);
+  const room = React.useCallback(
+    () => (roomRef.current ??= (ref.current?.offsetParent as HTMLElement | null) ?? null),
+    []
+  );
   // How far down it may go, measured when the layout changes and not every frame.
   const floor = React.useRef<number | null>(null);
   const bounds = React.useCallback((): Bounds => {
@@ -270,6 +275,7 @@ export function FloatingAvatar({
   // The room changes size under it, or it does: at rest it keeps its place,
   // caught in flight it is only kept inside.
   React.useLayoutEffect(() => {
+    roomRef.current = null;
     const box = room();
     if (!box) return;
     const wall = box.querySelector<HTMLElement>(FLOOR);
