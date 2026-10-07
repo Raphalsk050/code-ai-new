@@ -13,6 +13,7 @@ from functools import partial
 from typing import Any
 
 from code_ai.config.models import AppConfig
+from code_ai.context.awareness import ContextAwareness, cut_note, result_room
 from code_ai.context.compression import CompressionResult, ContextCompressor
 from code_ai.context.conversation import ConversationState
 from code_ai.context.usage import UsageLedger
@@ -473,6 +474,8 @@ class _TurnState:
     # Whether this turn already told the model a checklist-only response wastes
     # a round trip. Once is advice; every time is noise.
     bookkeeping_noted: bool = False
+    # How many calls the round being run holds: they share the room left in the window.
+    round_calls: int = 1
     # Whether the next request thinks at the full reasoning_effort. Cleared by a
     # clean tool round, set again by an error, a correction or a new message.
     think_hard: bool = True
@@ -634,6 +637,7 @@ class AgentOrchestrator:
         # tokens the model is generating and each tool result move it live.
         self._context_now = 0
         self._context_shown = 0.0
+        self._awareness = ContextAwareness()
         # Groups the host cannot serve (backend missing, wrong platform), with
         # the reason. Withdrawn from the request for the session: the same
         # error came back four times running when the model was left to retry.
@@ -2557,6 +2561,7 @@ class AgentOrchestrator:
         await self.set_state(AgentState.EXECUTING_TOOL, phase="executing_tools")
         calls = response.tool_calls
         state.tool_calls_executed += len(calls)
+        state.round_calls = len(calls)
 
         # Evaluate policy for the whole batch against one consistent snapshot so a
         # planner transition triggered by an early call cannot retroactively deny a
@@ -2637,6 +2642,7 @@ class AgentOrchestrator:
             return await self._finish_turn(
                 questionnaire.render_text(), response, state, announce_final=True
             )
+        self._tell_about_the_window()
         return None
 
     @staticmethod
@@ -2862,12 +2868,22 @@ class AgentOrchestrator:
             # Compact, and in UTF-8: indentation was a quarter of a search
             # result, and \uXXXX for each accented letter a tenth of a file -
             # tokens the model paid for on every request after.
-            content = bound_text(
-                json.dumps(
-                    payload, sort_keys=True, default=str, ensure_ascii=False, separators=(",", ":")
-                ),
-                self.config.budgets.max_tool_output_chars,
+            whole = json.dumps(
+                payload, sort_keys=True, default=str, ensure_ascii=False, separators=(",", ":")
             )
+            # No more than the window has room for: a result that forces a
+            # compaction by itself costs more than asking for it in slices.
+            room = result_room(
+                used=self._context_now,
+                limit=self._compaction_point(),
+                ceiling=self.config.budgets.max_tool_output_chars,
+                calls=state.round_calls,
+            )
+            content = bound_text(whole, room)
+            if len(whole) > room:
+                content += "\n\n" + build_runtime_note(
+                    cut_note(room, len(whole)), supplementary=False
+                )
             await self.event_bus.emit(
                 "tool.call.completed",
                 {
@@ -3196,6 +3212,27 @@ class AgentOrchestrator:
         return ""
 
     # ------------------------------------------------------------------ #
+    # What the model is told about its window
+    # ------------------------------------------------------------------ #
+    def _compaction_point(self) -> int:
+        """The token count past which the next request compacts."""
+        return int(self.compressor.budget * self.compressor.threshold)
+
+    def _tell_about_the_window(self) -> None:
+        """A word to the model when the round just run took the window past a mark.
+
+        On the newest tool result and nowhere else: what is already in the
+        conversation stays byte for byte what the server cached.
+        """
+        note = self._awareness.note(
+            used=self._context_now,
+            limit=self._compaction_point(),
+            window=self.compressor.budget,
+        )
+        if note:
+            self._add_round_note(build_runtime_note(note, supplementary=False))
+
+    # ------------------------------------------------------------------ #
     # Event helpers
     # ------------------------------------------------------------------ #
     async def emit_context_usage(self, compression: CompressionResult) -> None:
@@ -3207,6 +3244,7 @@ class AgentOrchestrator:
         """
         self._context_now = compression.active_tokens
         self._context_shown = time.monotonic()
+        self._awareness.settle(used=compression.active_tokens, limit=self._compaction_point())
         await self.event_bus.emit(
             "usage.updated",
             {

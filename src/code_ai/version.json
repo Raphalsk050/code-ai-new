@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 39,
-  "patch": 15,
-  "build": 105,
+  "minor": 40,
+  "patch": 1,
+  "build": 106,
   "updated": "2026-10-07",
-  "note": "Avatar colours, pointer watching, a seat on the home screen, deleting a message, answer-now, faster long conversations, sturdier updates and dropdowns"
+  "note": "Context awareness for the agent joins the avatar, update and panel work on main"
 }
