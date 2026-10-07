@@ -4,8 +4,10 @@ import { AgentAvatar } from "./agent-avatar";
 import {
   type Body, type Bounds, clampTo, glide, leanFor, type Place, placeOf, pointOf, settled, type Spring, stepSpring,
 } from "./avatar-motion";
+import { type Felt, Nerves, onStroke, UNFELT } from "./avatar-nerves";
 import type { AvatarPose } from "./avatar-pose";
 import type { AvatarSkin } from "./avatar-skin";
+import { caretPoint } from "./caret-point";
 import { t } from "./i18n";
 
 /** Its box. The face is six tenths of it: the agent in the room, not one more button. */
@@ -28,6 +30,8 @@ const FACE_AT = { x: 0.464, y: 0.571 };
 const WATCH = { x: 1.6, y: 1.2, tilt: 5 };
 /** Livelier than the body's own: the eyes get there fast and a little past. */
 const GLANCE = { stiffness: 190, damping: 15 };
+/** As far as an eye goes and stays on the face, when more than one thing is asking. */
+const EYE_MOST = { x: 2.2, y: 1.6 };
 
 /** The system was asked for less motion: no throw, no lean, no glide home. */
 function wantsLessMotion(): boolean {
@@ -58,11 +62,19 @@ interface Sim extends Body {
   lookY: Spring;
   sx: Spring;
   sy: Spring;
+  /** What typing does to it, and what that came to on the last frame. */
+  nerves: Nerves;
+  felt: Felt;
+  /** Where the typing is: the field, and its caret in the room's pixels, read again when `stale`. */
+  field: HTMLTextAreaElement | null;
+  caret: { x: number; y: number } | null;
+  stale: boolean;
   last: number;
   frame: number;
 }
 
 const still = (): Spring => ({ x: 0, v: 0 });
+const within = (value: number, most: number) => Math.max(-most, Math.min(most, value));
 const same = (a: Place, b: Place) => a.right === b.right && a.bottom === b.bottom && a.x === b.x && a.y === b.y;
 
 /**
@@ -106,6 +118,7 @@ export function FloatingAvatar({
     x: 0, y: 0, vx: 0, vy: 0, held: false, grabX: 0, grabY: 0, wantX: 0, wantY: 0, home: null, dock: null, gaze: null, watching: false, moved: false,
     place: start ?? HOME,
     tilt: still(), leaf: still(), lookX: still(), lookY: still(), sx: { x: 1, v: 0 }, sy: { x: 1, v: 0 },
+    nerves: new Nerves(), felt: UNFELT, field: null, caret: null, stale: false,
     last: 0, frame: 0,
   });
   // At work it has its own things to look at; the pointer gets its eyes when it is idle.
@@ -143,13 +156,16 @@ export function FloatingAvatar({
     const el = ref.current;
     if (!el) return;
     const s = sim.current;
-    el.style.transform = `translate3d(${s.x.toFixed(2)}px, ${s.y.toFixed(2)}px, 0)`;
-    el.style.setProperty("--av-tilt", `${s.tilt.x.toFixed(2)}deg`);
-    el.style.setProperty("--av-leaf-lag", `${s.leaf.x.toFixed(2)}deg`);
-    el.style.setProperty("--av-look-x", `${s.lookX.x.toFixed(3)}px`);
-    el.style.setProperty("--av-look-y", `${s.lookY.x.toFixed(3)}px`);
-    el.style.setProperty("--av-sx", s.sx.x.toFixed(4));
-    el.style.setProperty("--av-sy", s.sy.x.toFixed(4));
+    // Its weight and its nerves move the same parts: one is added to the other.
+    const felt = s.felt;
+    el.style.transform = `translate3d(${s.x.toFixed(2)}px, ${(s.y + felt.hop).toFixed(2)}px, 0)`;
+    el.style.setProperty("--av-tilt", `${(s.tilt.x + felt.tilt).toFixed(2)}deg`);
+    el.style.setProperty("--av-leaf-lag", `${(s.leaf.x + felt.leaf).toFixed(2)}deg`);
+    el.style.setProperty("--av-look-x", `${within(s.lookX.x + felt.lookX, EYE_MOST.x).toFixed(3)}px`);
+    el.style.setProperty("--av-look-y", `${within(s.lookY.x + felt.lookY, EYE_MOST.y).toFixed(3)}px`);
+    el.style.setProperty("--av-sx", (s.sx.x * felt.sx).toFixed(4));
+    el.style.setProperty("--av-sy", (s.sy.x * felt.sy).toFixed(4));
+    el.style.setProperty("--av-nerves", felt.nerves.toFixed(3));
   }, []);
 
   const tick = React.useCallback(
@@ -230,6 +246,16 @@ export function FloatingAvatar({
         s.sy.v -= dent * 6;
         s.sx.v += dent * 6;
       }
+      if (s.stale) {
+        // Read once a key, not once a frame: it lays the text out again.
+        const box = room()?.getBoundingClientRect();
+        const at = s.field?.isConnected ? caretPoint(s.field) : null;
+        s.caret = box && at ? { x: at.x - box.left, y: at.y - box.top } : null;
+        s.stale = false;
+      }
+      const felt = s.nerves.step(now, dt, { x: s.x + size * FACE_AT.x, y: s.y + size * FACE_AT.y, size }, s.caret);
+      if (felt.rapt !== s.felt.rapt) ref.current?.toggleAttribute("data-rapt", felt.rapt);
+      s.felt = felt;
       paint();
 
       const moving = !!(s.held || s.home || s.vx || s.vy);
@@ -247,7 +273,7 @@ export function FloatingAvatar({
         settled(s.tilt, to.tilt, 0.05) && settled(s.leaf, 0, 0.05) &&
         settled(s.lookX, to.lookX) && settled(s.lookY, to.lookY) &&
         settled(s.sx, to.sx, 0.002) && settled(s.sy, to.sy, 0.002);
-      if (moving || !calm) {
+      if (moving || !calm || s.nerves.stirred(now)) {
         s.frame = requestAnimationFrame(tick);
         return;
       }
@@ -357,6 +383,18 @@ export function FloatingAvatar({
   }, [watch, room, wake]);
   // Set to work, or told not to watch: the eyes go back by themselves.
   React.useEffect(() => wake(), [pose, watch, wake]);
+  // The keys, as the composer reports them: a hop to each, its eyes where they land.
+  React.useEffect(
+    () =>
+      onStroke((kind, field) => {
+        const s = sim.current;
+        if (kind === "calm") s.nerves.calm();
+        else if (!wantsLessMotion()) s.nerves.key(kind, performance.now());
+        if (field) Object.assign(s, { field, stale: true });
+        wake();
+      }),
+    [wake]
+  );
 
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     const box = room()?.getBoundingClientRect();

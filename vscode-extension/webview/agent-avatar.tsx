@@ -40,6 +40,12 @@ const EAR_IN_L = "M10.2 3.9C8.9 2.5 8.1.5 8.4-1.4c1.2.9 2.2 2.8 2.5 5z";
 const EAR_IN_R = "M13.8 3.9c1.3-1.4 2.1-3.4 1.8-5.3-1.2.9-2.2 2.8-2.5 5z";
 const NOSE = "M11.1 14.9h1.8l-.9 1.1z";
 
+// Anxious: a drop of sweat, drawn about its own middle. It comes out on the
+// temple, or below the fur when there is a hat.
+const DROP = "M0-1.35C.75-.35 1 .25 1 .7a1 1 0 0 1-2 0C-1 .25-.75-.35 0-1.35z";
+const DROP_AT = "translate(19.7 5.8)";
+const DROP_AT_HAT = "translate(20.2 9.2)";
+
 export function AgentAvatar({
   pose,
   size = 16,
@@ -157,6 +163,15 @@ export function AgentAvatar({
                 </g>
                 <path className="agent-av-band agent-av-band-shade" d={HAT_BAND_SHADE} />
                 <path className="agent-av-band" d={HAT_BAND} />
+              </g>
+            )}
+            {/* The one effect that rides the head: the others stand beside it. */}
+            {fx && (
+              <g className="agent-av-fx agent-av-fx-sweat" transform={dress === "christmas" ? DROP_AT_HAT : DROP_AT}>
+                <g className="agent-av-sweat">
+                  <path className="agent-av-drop-ring" d={DROP} />
+                  <path className="agent-av-drop" d={DROP} />
+                </g>
               </g>
             )}
           </g>

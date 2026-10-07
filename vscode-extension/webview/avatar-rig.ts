@@ -6,6 +6,8 @@
 // body gives under it like jelly, and what grows on the head is carried along
 // and thrown by it. The run is sampled once, when the module loads, and handed
 // to CSS as keyframes: weight, with no script running while the panel sits idle.
+//
+// The rig is not the idle's alone: avatar-anxious.ts acts another loop with it.
 
 /** One pass of the idle, in seconds: long enough not to read as a loop. */
 export const IDLE_LOOP_S = 14;
@@ -87,9 +89,9 @@ export class Carried {
   }
 }
 
-const clamp = (value: number, low: number, high: number) => Math.min(Math.max(value, low), high);
+export const clamp = (value: number, low: number, high: number) => Math.min(Math.max(value, low), high);
 /** A limit that is neared and never hit: straight through the middle, flat towards `limit`. */
-const soft = (value: number, limit: number) => limit * Math.tanh(value / limit);
+export const soft = (value: number, limit: number) => limit * Math.tanh(value / limit);
 
 // ---- the parts and their manners ----
 
@@ -124,20 +126,20 @@ const GIVE = 0.2;
 const GIVE_MOST = 0.1;
 
 /** What grows on the head, and how hard the head's turning and its rise and fall throw it. */
-interface Hung {
+export interface Hung {
   f: number;
   zeta: number;
   sway: number;
   heave: number;
 }
 // The leaf stands on a stem, barely damped: still swinging when all else has stopped.
-const LEAF: Hung = { f: 1.55, zeta: 0.13, sway: 2.3, heave: 6 };
+export const LEAF: Hung = { f: 1.55, zeta: 0.13, sway: 2.3, heave: 6 };
 // Ears are stiffer, and standing straight up they do not care for a nod.
-const EARS: Hung = { f: 2.1, zeta: 0.2, sway: 1.5, heave: 0 };
+export const EARS: Hung = { f: 2.1, zeta: 0.2, sway: 1.5, heave: 0 };
 // The hat's tail hangs with a weight on its end: slower, and thrown the other way.
-const TAIL: Hung = { f: 1.15, zeta: 0.17, sway: -0.5, heave: -5.5 };
+export const TAIL: Hung = { f: 1.15, zeta: 0.17, sway: -0.5, heave: -5.5 };
 /** The tail has the head under it: this many degrees in, and no further. */
-const TAIL_IN = 8;
+export const TAIL_IN = 8;
 
 // The lids fall faster than they lift, and lift a little too far.
 const LID_SHUT: Dynamics = { f: 11, zeta: 1, r: 0 };
@@ -194,7 +196,7 @@ interface Intent {
   shake: number;
 }
 
-const within = (t: number, from: number, to: number) => t >= from && t < to;
+export const within = (t: number, from: number, to: number) => t >= from && t < to;
 
 function intentAt(t: number): Intent {
   let gaze = GAZE[0];
@@ -236,14 +238,30 @@ export interface Pose {
   tail: number;
 }
 
-const STEP = 1 / 240;
+export const STEP = 1 / 240;
 export const SAMPLES_PER_S = 60;
 
 /**
- * The idle, simulated. It runs the loop three times and keeps the third, by
- * which time every part is in the rhythm it will keep, so the last frame meets
- * the first.
+ * A loop, simulated: `at` moves every part one step on and says how it all
+ * stands. The loop is run three times and the third kept, by which time every
+ * part is in the rhythm it will keep, so the last frame meets the first.
  */
+export function run(seconds: number, at: (t: number) => Pose): Pose[] {
+  const poses: Pose[] = [];
+  const perSample = Math.round(1 / (STEP * SAMPLES_PER_S));
+  const steps = Math.round(seconds / STEP);
+  for (let pass = 0; pass < 3; pass++) {
+    for (let i = 0; i < steps; i++) {
+      const pose = at(i * STEP);
+      if (pass === 2 && i % perSample === 0) poses.push(pose);
+    }
+  }
+  // The loop closes on its own first frame.
+  poses.push(poses[0]);
+  return poses;
+}
+
+/** The idle, simulated. */
 export function simulateIdle(): Pose[] {
   const gazeX = new SecondOrder(EYES);
   const gazeY = new SecondOrder(EYES);
@@ -260,67 +278,56 @@ export function simulateIdle(): Pose[] {
   const ears = new Carried(EARS.f, EARS.zeta);
   const tail = new Carried(TAIL.f, TAIL.zeta);
 
-  const poses: Pose[] = [];
-  const perSample = Math.round(1 / (STEP * SAMPLES_PER_S));
-  const steps = Math.round(IDLE_LOOP_S / STEP);
-  for (let pass = 0; pass < 3; pass++) {
-    for (let i = 0; i < steps; i++) {
-      const t = i * STEP;
-      const intent = intentAt(t);
-      const phase = (2 * Math.PI * t) / IDLE_LOOP_S;
+  return run(IDLE_LOOP_S, (t) => {
+    const intent = intentAt(t);
+    const phase = (2 * Math.PI * t) / IDLE_LOOP_S;
 
-      // The eyes go first, and the head goes where they went.
-      const gx = gazeX.step(STEP, intent.gazeX);
-      const gy = gazeY.step(STEP, intent.gazeY);
-      const hx = turn.step(STEP, gx);
-      const hy = rise.step(STEP, gy * 0.6 + intent.nod);
-      const air = breath.tune(intent.inhale > breath.value ? INHALE : EXHALE).step(STEP, intent.inhale);
-      const open = lid.tune(intent.lid < lid.value ? LID_SHUT : LID_OPEN).step(STEP, intent.lid);
-      const shut = 1 - clamp(open, 0, 1);
+    // The eyes go first, and the head goes where they went.
+    const gx = gazeX.step(STEP, intent.gazeX);
+    const gy = gazeY.step(STEP, intent.gazeY);
+    const hx = turn.step(STEP, gx);
+    const hy = rise.step(STEP, gy * 0.6 + intent.nod);
+    const air = breath.tune(intent.inhale > breath.value ? INHALE : EXHALE).step(STEP, intent.inhale);
+    const open = lid.tune(intent.lid < lid.value ? LID_SHUT : LID_OPEN).step(STEP, intent.lid);
+    const shut = 1 - clamp(open, 0, 1);
 
-      // A held pose that is quite still reads as dead: a slow sway stays under everything.
-      const rot =
-        hx * TURN_DEG + tilt.step(STEP, intent.tilt) + shimmy.step(STEP, intent.shake) * SHIMMY_DEG + 0.3 * Math.sin(2 * phase + 0.6);
-      // A turn goes along an arc, lowest where it is fastest.
-      const speed = turn.velocity ** 2;
-      const duck = arc.step(STEP, (DUCK * speed) / (speed + DUCK_SPEED ** 2));
-      const ty = hy * LIFT + duck - air * BREATH_RISE + 0.05 * Math.sin(5 * phase);
+    // A held pose that is quite still reads as dead: a slow sway stays under everything.
+    const rot =
+      hx * TURN_DEG + tilt.step(STEP, intent.tilt) + shimmy.step(STEP, intent.shake) * SHIMMY_DEG + 0.3 * Math.sin(2 * phase + 0.6);
+    // A turn goes along an arc, lowest where it is fastest.
+    const speed = turn.velocity ** 2;
+    const duck = arc.step(STEP, (DUCK * speed) / (speed + DUCK_SPEED ** 2));
+    const ty = hy * LIFT + duck - air * BREATH_RISE + 0.05 * Math.sin(5 * phase);
 
-      // Squash and stretch are the body's lag, and what it gains one way it
-      // loses the other. A blink presses it a little; a breath fills it.
-      const sy = 1 - soft(body.lag(STEP, ty) * GIVE, GIVE_MOST) + air * BREATH_SWELL - 0.02 * shut;
-      const thrown = (part: Carried, by: Hung) => part.lag(STEP, by.sway * rot + by.heave * ty);
-      const breeze = 1.3 * Math.sin(3 * phase) + 0.7 * Math.sin(8 * phase + 1.1);
-      const leafNow = perk.step(STEP, intent.perk) + breeze + thrown(leaf, LEAF);
-      const earsNow = thrown(ears, EARS);
-      const swing = thrown(tail, TAIL);
+    // Squash and stretch are the body's lag, and what it gains one way it
+    // loses the other. A blink presses it a little; a breath fills it.
+    const sy = 1 - soft(body.lag(STEP, ty) * GIVE, GIVE_MOST) + air * BREATH_SWELL - 0.02 * shut;
+    const thrown = (part: Carried, by: Hung) => part.lag(STEP, by.sway * rot + by.heave * ty);
+    const breeze = 1.3 * Math.sin(3 * phase) + 0.7 * Math.sin(8 * phase + 1.1);
+    const leafNow = perk.step(STEP, intent.perk) + breeze + thrown(leaf, LEAF);
+    const earsNow = thrown(ears, EARS);
+    const swing = thrown(tail, TAIL);
 
-      // The eye has only so far to go: it nears its limit, it does not hit it.
-      const eyeX = soft(gx - EYES_YIELD * hx, EYE_REACH);
-      const towards = (side: number) => clamp((side * eyeX) / 2, 0, 1);
-      if (pass === 2 && i % perSample === 0) {
-        poses.push({
-          rot,
-          tx: hx * SHIFT,
-          ty,
-          sx: 1 / Math.sqrt(sy),
-          sy,
-          eyeX,
-          eyeY: gy - 0.35 * hy + 0.3 * shut,
-          lid: clamp(open, 0.04, 1.3),
-          // The eye on the side it turns to is foreshortened: a flat face reads as turning.
-          wideL: 1 - 0.12 * towards(-1) + 0.03 * towards(1),
-          wideR: 1 - 0.12 * towards(1) + 0.03 * towards(-1),
-          leaf: leafNow,
-          ears: earsNow,
-          tail: swing < 0 ? soft(swing, TAIL_IN) : swing,
-        });
-      }
-    }
-  }
-  // The loop closes on its own first frame.
-  poses.push(poses[0]);
-  return poses;
+    // The eye has only so far to go: it nears its limit, it does not hit it.
+    const eyeX = soft(gx - EYES_YIELD * hx, EYE_REACH);
+    const towards = (side: number) => clamp((side * eyeX) / 2, 0, 1);
+    return {
+      rot,
+      tx: hx * SHIFT,
+      ty,
+      sx: 1 / Math.sqrt(sy),
+      sy,
+      eyeX,
+      eyeY: gy - 0.35 * hy + 0.3 * shut,
+      lid: clamp(open, 0.04, 1.3),
+      // The eye on the side it turns to is foreshortened: a flat face reads as turning.
+      wideL: 1 - 0.12 * towards(-1) + 0.03 * towards(1),
+      wideR: 1 - 0.12 * towards(1) + 0.03 * towards(-1),
+      leaf: leafNow,
+      ears: earsNow,
+      tail: swing < 0 ? soft(swing, TAIL_IN) : swing,
+    };
+  });
 }
 
 // ---- baking ----
@@ -365,23 +372,28 @@ function keyframes(name: string, poses: Pose[], columns: (pose: Pose) => number[
   return `@keyframes ${name}{${frames.join("")}}`;
 }
 
-/** The idle as CSS: one set of keyframes for each part that moves. */
-export function bakeIdle(poses: Pose[] = simulateIdle()): string {
+/** A run as CSS: one set of keyframes for each part that moves, named `prefix`-head and so on. */
+export function bake(prefix: string, poses: Pose[]): string {
   const swing = (name: string, of: (pose: Pose) => number) =>
     keyframes(name, poses, (p) => [of(p)], [0.25], ([angle]) => `rotate(${n(angle, 2)}deg)`);
   return [
     keyframes(
-      "av-i-head",
+      `${prefix}-head`,
       poses,
       (p) => [p.rot, p.tx, p.ty, p.sx, p.sy],
       [0.08, 0.02, 0.02, 0.003, 0.003],
       ([rot, tx, ty, sx, sy]) => `rotate(${n(rot)}deg) translate(${n(tx)}px,${n(ty)}px) scale(${n(sx, 4)},${n(sy, 4)})`
     ),
-    keyframes("av-i-gaze", poses, (p) => [p.eyeX, p.eyeY], [0.02, 0.02], ([x, y]) => `translate(${n(x)}px,${n(y)}px)`),
-    keyframes("av-i-eye-l", poses, (p) => [p.wideL, p.lid], [0.01, 0.02], ([wide, lid]) => `scale(${n(wide)},${n(lid)})`),
-    keyframes("av-i-eye-r", poses, (p) => [p.wideR, p.lid], [0.01, 0.02], ([wide, lid]) => `scale(${n(wide)},${n(lid)})`),
-    swing("av-i-leaf", (p) => p.leaf),
-    swing("av-i-ears", (p) => p.ears),
-    swing("av-i-tail", (p) => p.tail),
+    keyframes(`${prefix}-gaze`, poses, (p) => [p.eyeX, p.eyeY], [0.02, 0.02], ([x, y]) => `translate(${n(x)}px,${n(y)}px)`),
+    keyframes(`${prefix}-eye-l`, poses, (p) => [p.wideL, p.lid], [0.01, 0.02], ([wide, lid]) => `scale(${n(wide)},${n(lid)})`),
+    keyframes(`${prefix}-eye-r`, poses, (p) => [p.wideR, p.lid], [0.01, 0.02], ([wide, lid]) => `scale(${n(wide)},${n(lid)})`),
+    swing(`${prefix}-leaf`, (p) => p.leaf),
+    swing(`${prefix}-ears`, (p) => p.ears),
+    swing(`${prefix}-tail`, (p) => p.tail),
   ].join("\n");
+}
+
+/** The idle as CSS. */
+export function bakeIdle(poses: Pose[] = simulateIdle()): string {
+  return bake("av-i", poses);
 }

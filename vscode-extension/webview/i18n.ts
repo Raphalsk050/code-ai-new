@@ -845,6 +845,9 @@ const PT: Record<string, string> = {
   "Avatar looks at the pointer": "O avatar olha para o mouse",
   "While it is idle, its eyes follow your mouse over the panel.":
     "Parado, os olhos dele acompanham o seu mouse sobre o painel.",
+  "Avatar gets anxious while you type": "O avatar fica ansioso enquanto você digita",
+  "It watches what you write and fidgets, then relaxes when you stop or send.":
+    "Ele acompanha o que você escreve e se agita, depois relaxa quando você para ou envia.",
   "Avatar colour": "Cor do avatar",
   "The theme's accent, or a colour of your own.": "O destaque do tema, ou uma cor sua.",
   "Theme's accent": "Destaque do tema",

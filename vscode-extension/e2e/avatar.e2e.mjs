@@ -5,6 +5,31 @@ import { settingsSnapshot } from "./harness.mjs";
 
 const FLOAT = ".av-float";
 const GRIP = ".av-float-grip";
+const FIELD = ".composer textarea";
+const ANXIOUS = `${FLOAT} .agent-av[data-pose="anxious"]`;
+const IDLE = `${FLOAT} .agent-av[data-pose="idle"]`;
+
+let seq = 0;
+function envelope(event_type, payload = {}) {
+  seq += 1;
+  return {
+    type: "event",
+    event: {
+      event_id: `a${seq}`, event_type, event_version: 1, session_id: "s",
+      sequence: seq, timestamp: "", source: "app", payload,
+    },
+  };
+}
+
+/** One of the numbers the floating avatar is drawn by. */
+const drawn = (ui, name) => ui.page.$eval(FLOAT, (el, prop) => parseFloat(el.style.getPropertyValue(prop) || "0"), name);
+/** What moves a glyph's eyes: the name of a loop, or none when a script has them. */
+const eyes = (ui, scope) => ui.page.$eval(`${scope} .agent-av-eyes`, (el) => getComputedStyle(el).animationName);
+
+async function type(ui, text) {
+  await ui.page.click(FIELD);
+  await ui.page.keyboard.type(text, { delay: 60 });
+}
 const COSTUME = '.settings-field:has(.settings-field-label:text-is("Avatar costume"))';
 
 /** Where its box is once it has stopped moving. */
@@ -252,5 +277,102 @@ export const tests = {
     await ui.page.reload();
     await ui.page.waitForSelector(`${FLOAT} .agent-av:not([data-skin])`);
     assert(!(await ui.page.$(".agent-av[data-skin]")), "a costume out of season");
+  },
+
+  async "typed at, it is anxious and watches the caret"(ui, assert) {
+    await openChat(ui);
+    assert((await ui.page.$$(`${FLOAT} .agent-av-fx-sweat`)).length === 1, "it has no drop to sweat");
+    await type(ui, "Refactor the parser");
+    await ui.page.waitForSelector(ANXIOUS);
+    await ui.page.waitForSelector(`${FLOAT}[data-rapt]`);
+    await ui.page.waitForTimeout(400);
+    // The composer is below it, and what is written there to its left.
+    const look = { x: await drawn(ui, "--av-look-x"), y: await drawn(ui, "--av-look-y") };
+    assert(look.x < -0.4 && look.y > 0.2, `it looks to ${look.x}, ${look.y}`);
+    assert((await drawn(ui, "--av-nerves")) > 0.2, "typing did not wind it up");
+    assert((await eyes(ui, FLOAT)) === "none", "the loop moves its eyes while it watches the caret");
+    // The one in the header has no keys to count: it plays the loop.
+    await ui.page.waitForSelector('.brand-live .agent-av[data-pose="anxious"]');
+    assert((await eyes(ui, ".brand-live")) === "av-a-gaze", `the small one plays ${await eyes(ui, ".brand-live")}`);
+    await ui.shot("avatar-anxious");
+  },
+
+  async "more typing winds it up until it sweats"(ui, assert) {
+    await openChat(ui);
+    const sweat = () => ui.page.$eval(`${FLOAT} .agent-av-fx-sweat`, (el) => parseFloat(getComputedStyle(el).opacity));
+    await type(ui, "Re");
+    await ui.page.waitForSelector(ANXIOUS);
+    const early = await drawn(ui, "--av-nerves");
+    assert((await sweat()) === 0, "it sweats at the first key");
+    await ui.page.keyboard.type("factor the parser of the arguments, but run the tests before you do", { delay: 60 });
+    const late = await drawn(ui, "--av-nerves");
+    assert(late > early + 0.3 && late <= 1, `from ${early} to ${late}`);
+    await ui.page.waitForFunction(
+      (float) => parseFloat(getComputedStyle(document.querySelector(`${float} .agent-av-fx-sweat`)).opacity) > 0.9,
+      FLOAT
+    );
+    await ui.shot("avatar-anxious-sweat");
+  },
+
+  async "when the keys stop it looks up, and after a while gives up"(ui, assert) {
+    await openChat(ui);
+    await type(ui, "Refactor");
+    await ui.page.waitForTimeout(1300);
+    assert((await drawn(ui, "--av-look-y")) < -0.2, `it does not look up: ${await drawn(ui, "--av-look-y")}`);
+    await ui.page.waitForSelector(IDLE, { timeout: 8000 });
+    await ui.page.waitForSelector(`${FLOAT}:not([data-rapt])`);
+    // Idle again, it would look at the pointer, which the typing left on the composer.
+    await ui.page.evaluate(() => document.documentElement.dispatchEvent(new MouseEvent("mouseleave")));
+    await ui.page.waitForTimeout(900);
+    assert(Math.abs(await drawn(ui, "--av-look-y")) < 0.05, "its eyes stayed on the text");
+  },
+
+  async "erased to nothing or sent, there is nothing left to be anxious about"(ui, assert) {
+    await openChat(ui);
+    await type(ui, "abc");
+    await ui.page.waitForSelector(ANXIOUS);
+    for (let i = 0; i < 3; i++) await ui.page.keyboard.press("Backspace");
+    await ui.page.waitForSelector(IDLE, { timeout: 1500 });
+
+    await ui.page.keyboard.type("hello", { delay: 60 });
+    await ui.page.waitForSelector(ANXIOUS);
+    await ui.page.keyboard.press("Enter");
+    await ui.page.waitForSelector(`${FLOAT} .agent-av:not([data-pose="anxious"])`, { timeout: 1500 });
+    assert((await ui.toHost("submit")).length === 1, "it was not sent");
+    await ui.page.waitForSelector(`${FLOAT}:not([data-rapt])`);
+  },
+
+  async "at work it has other things to do than be anxious"(ui, assert) {
+    await openChat(ui);
+    await ui.fromHost(envelope("status.changed", { state: "CALLING_MODEL" }));
+    await ui.page.waitForSelector(`${FLOAT} .agent-av[data-pose="think"]`);
+    await type(ui, "and then run the tests");
+    await ui.page.waitForTimeout(300);
+    assert(await ui.page.$(`${FLOAT} .agent-av[data-pose="think"]`), "typing took it from its work");
+    assert(!(await ui.page.$(`${FLOAT}[data-rapt]`)), "it watches the caret while it works");
+  },
+
+  async "told not to be anxious, it is not"(ui, assert) {
+    await openSettings(ui);
+    await ui.page.click('button[role="switch"][aria-label="Avatar gets anxious while you type"]');
+    assert((await ui.page.evaluate(() => window.__state.prefs.avatarAnxious)) === false, "the choice was not saved");
+    await ui.page.click('button[title="Back"]');
+    await openChat(ui);
+    await type(ui, "Refactor the parser");
+    await ui.page.waitForTimeout(300);
+    assert(await ui.page.$(IDLE), "it is anxious although it was told not to be");
+    assert(!(await ui.page.$(`${FLOAT}[data-rapt]`)), "it watches the caret although it was told not to");
+  },
+
+  async "asked for less motion, it takes the pose and holds it still"(ui, assert) {
+    await ui.page.emulateMedia({ reducedMotion: "reduce" });
+    await openChat(ui);
+    await type(ui, "Refactor the parser");
+    await ui.page.waitForSelector(ANXIOUS);
+    await ui.page.waitForTimeout(300);
+    assert(!(await ui.page.$(`${FLOAT}[data-rapt]`)), "it follows the caret");
+    assert((await drawn(ui, "--av-nerves")) === 0, "the keys wound it up");
+    const moving = await ui.page.$eval(`${FLOAT} .agent-av`, (el) => el.getAnimations({ subtree: true }).length);
+    assert(moving === 0, `${moving} animations still run`);
   },
 };

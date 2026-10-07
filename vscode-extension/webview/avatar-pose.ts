@@ -2,8 +2,9 @@ import type { SessionState } from "./store/session";
 import type { Item } from "./store/transcript";
 import { ToolKind, toolKind } from "./tool-target";
 
-export type AvatarPose = "idle" | "search" | "type" | "think";
-export type WorkPose = Exclude<AvatarPose, "idle">;
+export type AvatarPose = "idle" | "search" | "type" | "think" | "anxious";
+/** What it does while the agent works; idle and anxious are for while it waits on the user. */
+export type WorkPose = Exclude<AvatarPose, "idle" | "anxious">;
 
 const TOOL_POSE: Record<ToolKind, WorkPose> = {
   read: "search",

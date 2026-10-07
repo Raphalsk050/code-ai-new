@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 41,
+  "minor": 42,
   "patch": 0,
-  "build": 110,
+  "build": 111,
   "updated": "2026-10-07",
-  "note": "Releases carry the Android Studio plugin, built by the pipeline for each system"
+  "note": "The avatar gets anxious while you type: eyes on the caret, a hop at each key, a look up when you stop"
 }

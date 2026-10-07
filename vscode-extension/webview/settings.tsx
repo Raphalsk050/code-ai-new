@@ -461,6 +461,20 @@ export function SettingsScreen({
         ),
       },
       {
+        id: "avatar_anxious",
+        category: "agent",
+        label: t("Avatar gets anxious while you type"),
+        hint: t("It watches what you write and fidgets, then relaxes when you stop or send."),
+        keys: [],
+        control: (
+          <Switch
+            checked={prefs.avatarAnxious}
+            onChange={(v) => onPrefsChange({ avatarAnxious: v })}
+            label={t("Avatar gets anxious while you type")}
+          />
+        ),
+      },
+      {
         id: "avatar_skin",
         category: "agent",
         label: t("Avatar costume"),

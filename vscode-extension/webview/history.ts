@@ -77,9 +77,11 @@ export interface ExtPrefs {
   avatarColor: AvatarColor;
   /** Whether the floating avatar looks at the pointer while it is idle. */
   avatarWatches: boolean;
+  /** Whether the avatar gets anxious while the user types. */
+  avatarAnxious: boolean;
 }
 
-export const DEFAULT_PREFS: ExtPrefs = { mode: "agent", autoRunRefactor: false, floatingAvatar: true, avatarSkin: "auto", avatarColor: "theme", avatarWatches: true };
+export const DEFAULT_PREFS: ExtPrefs = { mode: "agent", autoRunRefactor: false, floatingAvatar: true, avatarSkin: "auto", avatarColor: "theme", avatarWatches: true, avatarAnxious: true };
 
 export interface PersistedState {
   conversations: Conversation[];

@@ -1,3 +1,4 @@
+import { ANXIOUS_LOOP_S, bakeAnxious, ROUND, WIDE } from "../avatar-anxious";
 import { bakeIdle, IDLE_LOOP_S } from "../avatar-rig";
 import { AVATAR_COLOR_VALUE, AVATAR_COLORS } from "../avatar-skin";
 
@@ -30,6 +31,41 @@ const IDLE_STYLE = `
 .agent-av[data-pose=idle] .agent-av-leaf { animation-delay: var(--av-phase, 0s); }
 @keyframes av-i-breathe { from { transform: scale(1, 1); } to { transform: scale(1.016, .972); } }
 ${bakeIdle()}
+`;
+
+// ---- anxious ----
+// Acted by the same rig, to another script (avatar-anxious.ts). Two things
+// are not in the bake: the shiver, too fast for keyframes, and the drop.
+const ANXIOUS_STYLE = `
+.agent-av[data-pose=anxious] .agent-av-eyes { animation: av-a-gaze ${ANXIOUS_LOOP_S}s linear infinite; }
+.agent-av[data-pose=anxious] .agent-av-eye { transform-origin: 50% 60%; animation: av-a-eye-l ${ANXIOUS_LOOP_S}s linear infinite; }
+.agent-av[data-pose=anxious] .agent-av-eye:nth-child(2) { animation-name: av-a-eye-r; }
+.agent-av[data-pose=anxious] .agent-av-rig { animation: av-a-head ${ANXIOUS_LOOP_S}s linear infinite; }
+.agent-av[data-pose=anxious] .agent-av-leaf { animation: av-a-leaf ${ANXIOUS_LOOP_S}s linear infinite; }
+.agent-av[data-skin=easter][data-pose=anxious] .agent-av-leaf { animation-name: av-a-ears; }
+.agent-av[data-pose=anxious] .agent-av-leaf.agent-av-hat-tail { animation-name: av-a-tail; }
+/* --av-nerves is how wound up it is, 0 to 1. The floating one counts the keys
+   (avatar-nerves.ts); the others have no such count and are simply tense. */
+.agent-av[data-pose=anxious] .agent-av-breath { animation: av-a-shiver .08s linear infinite alternate; }
+@keyframes av-a-shiver {
+  from { transform: translate(calc(var(--av-nerves, .7) * -.15px), 0); }
+  to { transform: translate(calc(var(--av-nerves, .7) * .15px), 0); }
+}
+/* The drop comes once it has waited a while: the mark's own flat fill, kept
+   off the face by a ring of the ground's colour. */
+.agent-av-drop { fill: currentColor; }
+.agent-av-drop-ring { fill: var(--bg); stroke: var(--bg); stroke-width: 1.1; stroke-linejoin: round; }
+.agent-av-sweat { transform-box: fill-box; transform-origin: 50% 20%; }
+.agent-av[data-pose=anxious] .agent-av-fx-sweat { opacity: calc((var(--av-nerves, 1) - .5) * 5); }
+.agent-av[data-pose=anxious] .agent-av-sweat { animation: av-a-drop 2.6s infinite; }
+@keyframes av-a-drop {
+  0% { transform: translate(0,0) scale(.3); opacity: 0; animation-timing-function: cubic-bezier(.3,1.5,.6,1); }
+  12% { transform: translate(0,0) scale(1); opacity: 1; }
+  32% { transform: translate(.05px,.35px) scale(1); opacity: 1; animation-timing-function: cubic-bezier(.55,0,.9,.6); }
+  80% { transform: translate(1.25px,4.7px) scale(.92,1.14); opacity: 1; }
+  90%, 100% { transform: translate(1.3px,5.3px) scale(.7,1.25); opacity: 0; }
+}
+${bakeAnxious()}
 `;
 
 export const AVATAR_STYLE = `
@@ -89,8 +125,10 @@ export const AVATAR_STYLE = `
 .brand-live { position: relative; }
 .brand-live .agent-av { position: absolute; left: -1px; top: -4px; }
 .brand-live .agent-av-ring { stroke: var(--bg-rail); }
+.brand-live .agent-av-drop-ring { fill: var(--bg-rail); stroke: var(--bg-rail); }
 
 ${IDLE_STYLE}
+${ANXIOUS_STYLE}
 /* ---- inertia: what a movement asks of the body (avatar-motion.ts sets these) ---- */
 .agent-av-inertia {
   transform-origin: 12px 20.4px;
@@ -168,6 +206,8 @@ ${COLOR_STYLE}
 .av-float-grip:focus-visible { outline: 1px solid var(--focus); outline-offset: 3px; }
 /* Watching the pointer, the eyes are its to move: the idle's own glances stand down. */
 .av-float[data-watching] .agent-av[data-pose=idle] .agent-av-eyes { animation: none; }
+/* Typed at, they are on the caret, and so do the anxious loop's. */
+.av-float[data-rapt] .agent-av[data-pose=anxious] .agent-av-eyes { animation: none; }
 /* Its seat on the home screen, where the mark stands when it does not float. */
 .spark-dock { height: 62px; }
 
@@ -176,5 +216,7 @@ ${COLOR_STYLE}
   .agent-av[data-pose=search] .agent-av-eyes { transform: translate(-1.6px,.2px); }
   .agent-av[data-pose=type] .agent-av-eyes { transform: translate(0,1.3px); }
   .agent-av[data-pose=think] .agent-av-eyes { transform: translate(1.1px,-1.5px); }
+  .agent-av[data-pose=anxious] .agent-av-eyes { transform: translate(0,1.25px); }
+  .agent-av[data-pose=anxious] .agent-av-eye { transform: scale(${ROUND},${WIDE}); }
 }
 `;

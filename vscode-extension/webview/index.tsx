@@ -54,6 +54,7 @@ import { useFollow } from "./follow";
 import { activityLabel, BlockView, formatElapsed, TypingIndicator } from "./messages";
 import { useSteadyPose } from "./agent-avatar";
 import { isPlace } from "./avatar-motion";
+import { stroke, useRapt } from "./avatar-nerves";
 import { avatarPose } from "./avatar-pose";
 import { seasonalSkin, setAvatarColor, setAvatarSkin } from "./avatar-skin";
 import { FloatingAvatar } from "./floating-avatar";
@@ -441,7 +442,14 @@ function App(): JSX.Element {
   const items = state.transcript.items;
   const lastItem = items[items.length - 1];
   const showTyping = busy && lastItem?.kind !== "assistant";
-  const pose = useSteadyPose(busy ? avatarPose(state.session, lastItem) : "idle");
+  // At work it has its own things to do; waiting on the user, it is anxious while they type.
+  const rapt = useRapt();
+  const pose = useSteadyPose(busy ? avatarPose(state.session, lastItem) : rapt ? "anxious" : "idle");
+  // Nothing written, the agent set to work, or told not to be: nothing to be anxious about.
+  const anxious = prefs.avatarAnxious && !busy;
+  React.useEffect(() => {
+    if (!draft || !anxious) stroke("calm");
+  }, [draft, anxious]);
   const blocks = React.useMemo(() => groupBlocks(items), [items]);
   const pinText = React.useMemo(() => {
     const found = pin.target && items.find((item) => item.id === pin.target?.message);
@@ -707,6 +715,7 @@ function App(): JSX.Element {
   const submit = (steer = false) => {
     const text = draft.trim();
     if (!text) return;
+    if (anxious) stroke("send");
     const resolved = resolveCommand(catalog, text);
     if (resolved) {
       runCommand(resolved.command, resolved.argument);
@@ -1202,6 +1211,10 @@ function App(): JSX.Element {
                         setDraft(e.target.value);
                         setMenuDismissed(false);
                         updateMention(e.target.value, e.target.selectionStart ?? 0);
+                        if (anxious) {
+                          const how = (e.nativeEvent as InputEvent).inputType ?? "";
+                          stroke(how.startsWith("delete") ? "erase" : "char", e.target);
+                        }
                       }}
                       onClick={(e) =>
                         updateMention(
