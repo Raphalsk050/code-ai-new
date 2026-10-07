@@ -137,7 +137,10 @@ class BridgeClientTest {
 
     @Test
     fun `disposing asks the bridge to shut down`() {
-        start().dispose()
+        val bridge = start()
+        // Up first: one that is still starting is ended before it reads the request.
+        bridge.request("echo").await()
+        bridge.dispose()
         assertEquals(0, exit.await())
     }
 }

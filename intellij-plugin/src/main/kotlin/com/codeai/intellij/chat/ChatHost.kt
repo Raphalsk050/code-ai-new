@@ -23,6 +23,7 @@ import com.codeai.intellij.settings.CodeAiSettings
 import com.codeai.intellij.status.AgentStatusService
 import com.codeai.intellij.util.array
 import com.codeai.intellij.util.json
+import com.codeai.intellij.util.number
 import com.codeai.intellij.util.obj
 import com.codeai.intellij.util.present
 import com.codeai.intellij.util.string
