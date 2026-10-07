@@ -150,7 +150,7 @@ ${COLOR_STYLE}
 /* Loose over the panel with nothing under it but its shadow. Only the face
    takes the pointer: the rest of its box lets a click through to the panel. */
 .av-float {
-  position: absolute; left: 0; top: 0; z-index: 4;
+  position: absolute; left: 0; top: 0; z-index: 2;
   color: var(--accent); pointer-events: none;
   -webkit-user-select: none; user-select: none; will-change: transform;
 }
@@ -168,8 +168,8 @@ ${COLOR_STYLE}
 .av-float-grip:focus-visible { outline: 1px solid var(--focus); outline-offset: 3px; }
 /* Watching the pointer, the eyes are its to move: the idle's own glances stand down. */
 .av-float[data-watching] .agent-av[data-pose=idle] .agent-av-eyes { animation: none; }
-/* Typing, and the menus that open from it, come before the avatar. */
-.composer-wrap:focus-within { z-index: 5; }
+/* Its seat on the home screen, where the mark stands when it does not float. */
+.spark-dock { height: 62px; }
 
 @media (prefers-reduced-motion: reduce) {
   .agent-av * { animation: none !important; }

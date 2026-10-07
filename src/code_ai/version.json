@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 39,
-  "patch": 9,
-  "build": 99,
+  "patch": 10,
+  "build": 100,
   "updated": "2026-10-07",
-  "note": "The floating avatar looks at the pointer while idle; a setting turns it off"
+  "note": "The avatar flies to the home screen's mark and never goes under the composer"
 }

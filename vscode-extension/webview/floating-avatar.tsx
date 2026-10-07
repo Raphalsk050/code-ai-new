@@ -12,8 +12,12 @@ import { t } from "./i18n";
 const DEFAULT_SIZE = 88;
 /** Kept clear of the container's edges. */
 const MARGIN = 8;
-/** Its own corner is the bottom right: clear of the rail's strip, above the composer. */
-const HOME: Place = { right: true, bottom: true, x: 32, y: 150 };
+/** Its own corner is the bottom right: clear of the rail's strip, just above the composer. */
+const HOME: Place = { right: true, bottom: true, x: 32, y: 6 };
+/** What it never goes under: beneath the composer's glass it could be neither seen nor picked up. */
+const FLOOR = ".composer-wrap";
+/** Going to where it sits on a screen: quicker than going home, and a little past. */
+const DOCKING = { stiffness: 95, damping: 12 };
 /** What an arrow key gives it, in px/s: a push, not a step. */
 const NUDGE = 520;
 /** Going home is a spring too, softer than the body's. */
@@ -39,6 +43,8 @@ interface Sim extends Body {
   wantX: number;
   wantY: number;
   home: { x: number; y: number } | null;
+  /** Where this screen has it sit, if it has a seat for it: it goes back there whenever let go. */
+  dock: { x: number; y: number } | null;
   /** Where the pointer is, in the room's pixels; null while it is off the page. */
   gaze: { x: number; y: number } | null;
   watching: boolean;
@@ -68,6 +74,9 @@ const same = (a: Place, b: Place) => a.right === b.right && a.bottom === b.botto
  * @param start where it is first put; its own corner when left out
  * @param inertia off, it goes where the pointer goes and stops when let go
  * @param watch off, it does not look at the pointer
+ * @param dock selector of the seat this screen keeps for it; while one is on
+ *   screen it sits there, and goes back to its own place when there is none
+ * @param scene anything that changes when the panel's layout does
  * @param onRest called with where it came to rest, for remembering it
  */
 export function FloatingAvatar({
@@ -77,6 +86,8 @@ export function FloatingAvatar({
   start,
   inertia = true,
   watch = true,
+  dock,
+  scene = "",
   onRest,
 }: {
   pose: AvatarPose | null;
@@ -85,12 +96,14 @@ export function FloatingAvatar({
   start?: Place;
   inertia?: boolean;
   watch?: boolean;
+  dock?: string;
+  scene?: string;
   onRest?: (place: Place) => void;
 }): JSX.Element {
   const ref = React.useRef<HTMLDivElement>(null);
   const [held, setHeld] = React.useState(false);
   const sim = React.useRef<Sim>({
-    x: 0, y: 0, vx: 0, vy: 0, held: false, grabX: 0, grabY: 0, wantX: 0, wantY: 0, home: null, gaze: null, watching: false, moved: false,
+    x: 0, y: 0, vx: 0, vy: 0, held: false, grabX: 0, grabY: 0, wantX: 0, wantY: 0, home: null, dock: null, gaze: null, watching: false, moved: false,
     place: start ?? HOME,
     tilt: still(), leaf: still(), lookX: still(), lookY: still(), sx: { x: 1, v: 0 }, sy: { x: 1, v: 0 },
     last: 0, frame: 0,
@@ -100,12 +113,26 @@ export function FloatingAvatar({
   live.current = { inertia, onRest, watch: watch && (pose === "idle" || pose === null) };
 
   const room = React.useCallback(() => ref.current?.offsetParent as HTMLElement | null, []);
+  // How far down it may go, measured when the layout changes and not every frame.
+  const floor = React.useRef<number | null>(null);
   const bounds = React.useCallback((): Bounds => {
     const box = room();
     const width = box?.clientWidth ?? window.innerWidth;
-    const height = box?.clientHeight ?? window.innerHeight;
+    const height = Math.min(box?.clientHeight ?? window.innerHeight, floor.current ?? Infinity);
     return { left: MARGIN, top: MARGIN, right: width - size - MARGIN, bottom: height - size - MARGIN };
   }, [room, size]);
+  /** Where the screen's seat puts it: its face on the middle of the seat. */
+  const seat = React.useCallback((): { x: number; y: number } | null => {
+    const box = room();
+    const at = dock ? box?.querySelector<HTMLElement>(dock) : null;
+    if (!box || !at) return null;
+    const outer = box.getBoundingClientRect();
+    const inner = at.getBoundingClientRect();
+    return {
+      x: inner.left + inner.width / 2 - outer.left - size * FACE_AT.x,
+      y: inner.top + inner.height / 2 - outer.top - size * FACE_AT.y,
+    };
+  }, [dock, room, size]);
 
   const paint = React.useCallback(() => {
     const el = ref.current;
@@ -135,6 +162,14 @@ export function FloatingAvatar({
         s.vy += ((to.y - s.y) / dt - s.vy) * 0.5;
         s.x = to.x;
         s.y = to.y;
+      } else if (s.dock) {
+        // Its seat on this screen: it is carried there by a spring, weight and all.
+        const x = stepSpring({ x: s.x, v: s.vx }, s.dock.x, dt, DOCKING.stiffness, DOCKING.damping);
+        const y = stepSpring({ x: s.y, v: s.vy }, s.dock.y, dt, DOCKING.stiffness, DOCKING.damping);
+        Object.assign(s, { x: x.x, vx: x.v, y: y.x, vy: y.v });
+        if (wantsLessMotion() || (settled(x, s.dock.x, 0.3) && settled(y, s.dock.y, 0.3))) {
+          Object.assign(s, { x: s.dock.x, y: s.dock.y, vx: 0, vy: 0 });
+        }
       } else if (s.home && wantsLessMotion()) {
         Object.assign(s, { x: s.home.x, y: s.home.y, vx: 0, vy: 0, home: null });
       } else if (s.home) {
@@ -193,8 +228,9 @@ export function FloatingAvatar({
       paint();
 
       const moving = !!(s.held || s.home || s.vx || s.vy);
-      if (s.moved && !moving) {
-        // Where it came to rest, whatever its eyes go on doing.
+      if (s.moved && !moving && !s.dock) {
+        // Where it came to rest, whatever its eyes go on doing. A seat is the
+        // screen's, not somewhere it was put: that is not remembered.
         const place = placeOf(bounds(), s.x, s.y);
         if (!same(place, s.place)) {
           s.place = place;
@@ -236,19 +272,43 @@ export function FloatingAvatar({
   React.useLayoutEffect(() => {
     const box = room();
     if (!box) return;
+    const wall = box.querySelector<HTMLElement>(FLOOR);
     const fit = () => {
       const s = sim.current;
+      floor.current = wall ? wall.getBoundingClientRect().top - box.getBoundingClientRect().top : null;
       const flying = s.held || s.home || s.vx || s.vy;
-      Object.assign(s, flying ? clampTo(bounds(), s.x, s.y) : pointOf(bounds(), s.place));
+      if (s.dock) {
+        // The seat moved with the layout: so does it, unless it is on its way there.
+        s.dock = seat() ?? s.dock;
+        if (!flying) Object.assign(s, s.dock);
+      } else {
+        Object.assign(s, flying ? clampTo(bounds(), s.x, s.y) : pointOf(bounds(), s.place));
+      }
       paint();
     };
     fit();
     if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(fit);
     observer.observe(box);
+    // The composer grows with what is typed into it.
+    if (wall) observer.observe(wall);
     return () => observer.disconnect();
-  }, [bounds, paint, room]);
+  }, [bounds, paint, room, scene, seat]);
   React.useEffect(() => () => cancelAnimationFrame(sim.current.frame), []);
+
+  // A screen with a seat for it: it goes there. One without: back to its own place.
+  React.useLayoutEffect(() => {
+    const s = sim.current;
+    const to = seat();
+    if (to) {
+      const moved = !s.dock || Math.abs(s.dock.x - to.x) > 0.5 || Math.abs(s.dock.y - to.y) > 0.5;
+      Object.assign(s, { dock: to, home: null });
+      if (moved) wake();
+    } else if (s.dock) {
+      Object.assign(s, { dock: null, home: pointOf(bounds(), s.place) });
+      wake();
+    }
+  });
 
   // The pointer, wherever it is on the page: what it looks at when it has nothing else to do.
   React.useEffect(() => {

@@ -13,6 +13,7 @@ export function HomeScreen({
   onDelete,
   onSettings,
   update,
+  docked = false,
 }: {
   entries: HistoryEntry[];
   onNew: () => void;
@@ -21,6 +22,8 @@ export function HomeScreen({
   onSettings: () => void;
   /** The update (or sign-in) button: the panel opens here, so it shows here too. */
   update?: React.ReactNode;
+  /** The floating avatar comes to sit where the mark is: the mark makes room. */
+  docked?: boolean;
 }): JSX.Element {
   const list = entries;
   return (
@@ -32,8 +35,8 @@ export function HomeScreen({
         </button>
       </div>
       <div className="home-hero">
-        <div className="spark">
-          <AgentAvatar pose="idle" size={30} />
+        <div className={`spark${docked ? " spark-dock" : ""}`}>
+          {!docked && <AgentAvatar pose="idle" size={30} />}
         </div>
         <h2>Code-AI</h2>
         <div className="home-sub">{t("Pick up a conversation or start another.")}</div>

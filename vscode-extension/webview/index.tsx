@@ -824,6 +824,8 @@ function App(): JSX.Element {
       pose={pose}
       start={isPlace(prefs.avatarAt) ? prefs.avatarAt : undefined}
       watch={prefs.avatarWatches}
+      dock={screen === "home" ? ".spark-dock" : undefined}
+      scene={`${screen}:${mode}`}
       onRest={(avatarAt) => updatePrefs({ avatarAt })}
     />
   );
@@ -870,6 +872,7 @@ function App(): JSX.Element {
           onDelete={deleteConversation}
           onSettings={openSettings}
           update={updateButton}
+          docked={prefs.floatingAvatar}
         />
         {floater}
       </div>

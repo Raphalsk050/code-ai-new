@@ -100,7 +100,9 @@ export const tests = {
           const r = el.getBoundingClientRect();
           return r.left + r.width / 2;
         };
-        return Math.abs(mid(document.querySelector(`${scope} .spark svg`)) - mid(document.querySelector(`${scope} h2`)));
+        // On the home screen the mark's place is a seat the floating avatar comes to.
+        const mark = document.querySelector(`${scope} .spark svg`) ?? document.querySelector(`${scope} .spark`);
+        return Math.abs(mid(mark) - mid(document.querySelector(`${scope} h2`)));
       }, scope);
     const home = await offCentre(".home-hero");
     assert(home <= 1, `the home avatar is ${home}px off the title's centre`);
@@ -113,7 +115,8 @@ export const tests = {
     // By the body's path wherever it sits: the animated avatar draws its leaf
     // first, so the first path under a mark is not always the body.
     const draws = async (where) => (await ui.page.$(`${where} path[d^="${BRAND}"]`)) !== null;
-    assert(await draws(".home-hero .spark"), "the home hero does not draw the new glyph");
+    // The floating avatar is the home screen's mark: it sits where the still one stood.
+    assert((await draws(".home-hero .spark")) || (await draws(".av-float")), "the home screen does not draw the new glyph");
     await ui.shot("home-hero");
     await openChat(ui);
     for (const where of [".empty .spark", ".statusbar .brand-mark", ".composer-opts .chip"]) {
