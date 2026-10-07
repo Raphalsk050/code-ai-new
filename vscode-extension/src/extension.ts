@@ -771,6 +771,31 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           if (message.id === this.activeConversation) this.activeConversation = undefined;
           client?.send("deleteConversation", { conversation_id: message.id });
           break;
+        case "deleteMessage":
+          client
+            ?.request<{ deleted?: boolean }>("deleteMessage", {
+              text: message.text,
+              from_end: message.fromEnd,
+              count: message.count,
+            })
+            .then((answer) => {
+              if (answer?.deleted) return;
+              // Off the screen either way; the agent's memory of it is another matter.
+              void this.webview?.postMessage({
+                type: "event",
+                event: syntheticNotice(
+                  "That message had already been folded into the conversation's summary: " +
+                    "it is off the list, but the summary still holds what it said."
+                ),
+              });
+            })
+            .catch((err) =>
+              this.webview?.postMessage({
+                type: "event",
+                event: syntheticError(`could not delete the message: ${String(err)}`),
+              })
+            );
+          break;
         case "getSettings":
           // The panel asks this as it mounts, so it is listening by now: what
           // was posted while it was still loading may never have reached it.

@@ -37,6 +37,7 @@ SLASH_COMMANDS = [
     ),
     SlashCommand("/status", "Show current session and provider state."),
     SlashCommand("/compact", "Request context compression."),
+    SlashCommand("/forget", "Forget your last message and its answer."),
     SlashCommand("/auto", "Switch planner mode to auto."),
     SlashCommand("/plan", "Switch planner mode to plan."),
     SlashCommand("/act", "Switch planner mode to act."),

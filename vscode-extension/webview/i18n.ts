@@ -838,6 +838,9 @@ const PT: Record<string, string> = {
   Halloween: "Halloween",
   Christmas: "Natal",
   Easter: "Páscoa",
+  "Delete this message and its answer": "Excluir esta mensagem e a resposta dela",
+  "Click again to delete": "Clique de novo para excluir",
+  "Delete?": "Excluir?",
   "Avatar looks at the pointer": "O avatar olha para o mouse",
   "While it is idle, its eyes follow your mouse over the panel.":
     "Parado, os olhos dele acompanham o seu mouse sobre o painel.",

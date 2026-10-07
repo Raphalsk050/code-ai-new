@@ -65,6 +65,7 @@ export type BridgeMethod =
   | "listConversations"
   | "loadConversation"
   | "deleteConversation"
+  | "deleteMessage"
   | "explainCode"
   | "inlineComplete"
   | "analyzeRefactor"
@@ -414,6 +415,8 @@ export type WebviewToHost =
   | { type: "listConversations" }
   | { type: "loadConversation"; id: string }
   | { type: "deleteConversation"; id: string }
+  /** One of the user's messages, counted from the newest, with the answer(s) it got. */
+  | { type: "deleteMessage"; text: string; fromEnd: number; count: number }
   | { type: "getSettings" }
   | { type: "updateSettings"; updates: Record<string, unknown> }
   | { type: "listModels" }

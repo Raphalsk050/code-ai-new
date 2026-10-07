@@ -81,6 +81,16 @@ body {
   font-size: var(--fs-small); font-weight: 600; opacity: .9;
 }
 .block-user .block-head { flex-direction: row-reverse; }
+/* Out of the way until the box is pointed at; once it asks, it stays to be answered. */
+.block-delete {
+  display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px; border: none;
+  border-radius: var(--radius-pill); background: none; color: var(--fg-muted);
+  font: inherit; font-size: var(--fs-label); cursor: pointer; opacity: 0;
+  transition: opacity var(--dur-base) var(--ease-out);
+}
+.block:hover .block-delete, .block-delete:focus-visible, .block-delete.asking { opacity: 1; }
+.block-delete:hover { color: var(--fg); background: var(--hover); }
+.block-delete.asking, .block-delete.asking:hover { color: var(--danger); }
 .block-body { min-width: 0; }
 .block-body > :first-child { margin-top: 0; }
 .block-body > :last-child { margin-bottom: 0; }

@@ -36,9 +36,12 @@ function BlockViewPlain({
   pose = null,
   onOpenDiff,
   onTerminal,
+  onDelete,
   children,
 }: ItemActions & {
   block: Block;
+  /** Set on a box of the user's that may be deleted, with what it was answered. */
+  onDelete?: (block: Block) => void;
   /** The user's picture, as a data: URI; the icon stands in without one. */
   avatar?: string;
   /** Why there is no picture, shown on the icon's hover. */
@@ -80,6 +83,7 @@ function BlockViewPlain({
           )
         )}
         <span className="block-name">{user ? t("You") : "Code-AI"}</span>
+        {user && onDelete && <DeleteButton onDelete={() => onDelete(block)} />}
       </div>
       <div className="block-body">
         {foldTools(block.items).map((entry) =>
@@ -121,7 +125,31 @@ function sameBlock(a: BlockProps, b: BlockProps): boolean {
     // The handlers only send and set state: one made earlier does what a new one would.
     !a.onAvatarSignIn === !b.onAvatarSignIn &&
     !a.onOpenDiff === !b.onOpenDiff &&
-    !a.onTerminal === !b.onTerminal
+    !a.onTerminal === !b.onTerminal &&
+    !a.onDelete === !b.onDelete
+  );
+}
+
+/** Deleting cannot be undone, so it takes two clicks: the first one asks. */
+function DeleteButton({ onDelete }: { onDelete: () => void }): JSX.Element {
+  const [asking, setAsking] = React.useState(false);
+  React.useEffect(() => {
+    if (!asking) return;
+    const back = window.setTimeout(() => setAsking(false), 3000);
+    return () => window.clearTimeout(back);
+  }, [asking]);
+  const label = asking ? t("Click again to delete") : t("Delete this message and its answer");
+  return (
+    <button
+      type="button"
+      className={`block-delete${asking ? " asking" : ""}`}
+      title={label}
+      aria-label={label}
+      onClick={() => (asking ? onDelete() : setAsking(true))}
+    >
+      <Codicon name="trash" size={13} />
+      {asking && <span>{t("Delete?")}</span>}
+    </button>
   );
 }
 

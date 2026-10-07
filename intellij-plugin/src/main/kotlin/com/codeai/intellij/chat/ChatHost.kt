@@ -259,6 +259,28 @@ internal class ChatHost(private val project: Project) : Disposable {
                 if (message.text("id") == activeConversation) activeConversation = null
                 client?.send("deleteConversation", json("conversation_id" to message.text("id")))
             }
+            "deleteMessage" ->
+                client?.request(
+                    "deleteMessage",
+                    json(
+                        "text" to message.text("text"),
+                        "from_end" to (message.number("fromEnd")?.toInt() ?: 0),
+                        "count" to (message.number("count")?.toInt() ?: 1),
+                    ),
+                )?.then(
+                    { answer ->
+                        // Off the screen either way; the agent's memory of it is another matter.
+                        if (!answer.asObject().truthy("deleted")) {
+                            postEvent(
+                                syntheticNotice(
+                                    "That message had already been folded into the conversation's summary: " +
+                                        "it is off the list, but the summary still holds what it said."
+                                )
+                            )
+                        }
+                    },
+                    { error -> postEvent(syntheticError("could not delete the message: ${asError(error)}")) },
+                )
             "getSettings" -> client?.request("getSettings")?.then(
                 { settings -> post(json("type" to "settings", "settings" to settings)) },
                 { error ->

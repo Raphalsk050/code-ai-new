@@ -234,6 +234,15 @@ class BridgeServer:
         )
         return {"deleted": deleted}
 
+    async def _h_delete_message(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Forget one of the user's messages, with the answer it got."""
+        deleted = await self._app.delete_exchange(
+            str(params.get("text") or ""),
+            int(params.get("from_end") or 0),
+            max(1, int(params.get("count") or 1)),
+        )
+        return {"deleted": deleted}
+
     async def _h_explain_code(self, params: dict[str, Any]) -> dict[str, Any]:
         markdown = await self._app.explain_code(
             code=str(params.get("code") or ""),
@@ -588,6 +597,7 @@ class BridgeServer:
         "listConversations": _h_list_conversations,
         "loadConversation": _h_load_conversation,
         "deleteConversation": _h_delete_conversation,
+        "deleteMessage": _h_delete_message,
         "getSettings": _h_get_settings,
         "listModels": _h_list_models,
         "updateSettings": _h_update_settings,

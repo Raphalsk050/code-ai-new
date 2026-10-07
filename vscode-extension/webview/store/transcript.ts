@@ -312,6 +312,15 @@ export function applyTranscript(state: TranscriptState, event: EventEnvelope): T
       return initialTranscript;
     case "client.load":
       return { ...initialTranscript, items: (event.payload?.items as Item[]) ?? [], tokens: state.tokens };
+    case "client.dropExchange": {
+      // The user's messages from `first` to `last`, and all the agent did until the user spoke again.
+      const start = state.items.findIndex((item) => item.id === event.payload?.first);
+      const last = state.items.findIndex((item) => item.id === event.payload?.last);
+      if (start < 0 || last < start) return state;
+      let end = last + 1;
+      while (end < state.items.length && state.items[end].kind !== "user") end += 1;
+      return { ...state, items: [...state.items.slice(0, start), ...state.items.slice(end)], requestStart: -1 };
+    }
     case "model.request.started":
       return { ...state, requestStart: state.items.length };
     case "model.request.retrying":

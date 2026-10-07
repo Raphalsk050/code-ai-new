@@ -801,6 +801,27 @@ function App(): JSX.Element {
   const resolveApproval = (callId: string, scope: ApprovalScope, reason?: string) =>
     send({ type: "resolveApproval", call_id: callId, scope, reason });
   const openDiff = React.useCallback((path: string) => send({ type: "openDiff", path }), []);
+
+  // One of the user's boxes, deleted with what the agent answered it. The
+  // backend finds the message by counting back from the newest one the user
+  // sent: older ones may have been folded into a summary there, newer ones not.
+  const itemsRef = React.useRef(state.transcript.items);
+  itemsRef.current = state.transcript.items;
+  const deleteBlock = React.useCallback((block: Block) => {
+    const said = (item: Item): item is Item & { kind: "user" } =>
+      item.kind === "user" && !/^(\[runtime\]|Compressed context summary\.)/.test(item.text);
+    const all = itemsRef.current.filter(said);
+    const mine = block.items.filter(said);
+    const last = mine.length ? all.findIndex((item) => item.id === mine[mine.length - 1].id) : -1;
+    if (last >= 0) {
+      send({ type: "deleteMessage", text: mine[0].text, fromEnd: all.length - 1 - last, count: mine.length });
+    }
+    if (block.items.length) {
+      dispatch(
+        clientEvent("client.dropExchange", { first: block.items[0].id, last: block.items[block.items.length - 1].id })
+      );
+    }
+  }, []);
   const setPermission = (m: PermissionMode) => send({ type: "setPermissionMode", mode: m });
 
   const applyRefactor = (markdown: string) => {
@@ -1071,6 +1092,7 @@ function App(): JSX.Element {
                         pose={i === shownBlocks.length - 1 && block.speaker === "agent" ? pose : null}
                         onOpenDiff={editorDiff ? openDiff : undefined}
                         onTerminal={showTerminal}
+                        onDelete={block.speaker === "user" && !busy ? deleteBlock : undefined}
                       >
                         {i === shownBlocks.length - 1 && block.speaker === "agent" ? live : null}
                       </BlockView>

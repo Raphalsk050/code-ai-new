@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 39,
-  "patch": 11,
-  "build": 101,
+  "patch": 12,
+  "build": 102,
   "updated": "2026-10-07",
-  "note": "A long conversation no longer slows the panel: production React, settled messages are not redrawn"
+  "note": "Delete one of your messages with its answer: a button in the panel, /forget in the terminal"
 }

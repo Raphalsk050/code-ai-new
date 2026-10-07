@@ -651,6 +651,32 @@ class CodeAIApplication:
             self._conversation_id = None
         return deleted
 
+    async def delete_exchange(self, text: str, from_end: int = 0, count: int = 1) -> bool:
+        """Forget one of the user's messages and what the agent did about it.
+
+        False when that message is no longer in the conversation as itself: an
+        older one, folded into the summary by a compaction.
+        """
+        task = self._current_task
+        if task is not None and not task.done():
+            raise RuntimeError("A turn is running: stop it before deleting a message.")
+        conversation = self.orchestrator.conversation
+        if not conversation.drop_exchange(text, from_end, count):
+            return False
+        if any(message.role != "system" for message in conversation.messages):
+            self._persist_conversation()
+        elif self.conversation_store and self._conversation_id:
+            # Nothing left to save: the stored copy would bring it all back.
+            self.conversation_store.delete(self._conversation_id)
+        return True
+
+    async def forget_last_exchange(self) -> str | None:
+        """Forget the newest thing the user said and its answer; what it said, or None."""
+        said = self.orchestrator.conversation.last_said()
+        if said is None or not await self.delete_exchange(said):
+            return None
+        return said
+
     async def _cancel_running_turn(self) -> None:
         """Ask the running turn to stop, and wait a bounded time for it to.
 
