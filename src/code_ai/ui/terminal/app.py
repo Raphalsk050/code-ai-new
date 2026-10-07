@@ -2027,8 +2027,6 @@ def create_terminal_app(application, *, config_path: Path | None = None):
             release, or before the network was up, never hearing of it.
             """
             await asyncio.sleep(_UPDATE_CHECK_DELAY_S)
-            if not updates.configured():
-                return
             failures = 0
             while True:
                 try:
@@ -2051,6 +2049,9 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                     failures += 1
                 if release is not None:
                     break
+                if not updates.configured():
+                    # No repository to ask: looking again would only ask nobody again.
+                    return
                 await asyncio.sleep(updates.next_check_delay(failures))
             self._update_release = release
             self._show_update_button(f"⬆ Update to v{release.version}")

@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 40,
-  "patch": 1,
-  "build": 106,
+  "patch": 2,
+  "build": 107,
   "updated": "2026-10-07",
-  "note": "Context awareness for the agent joins the avatar, update and panel work on main"
+  "note": "The terminal looks for an update even before the releases repository is set"
 }
