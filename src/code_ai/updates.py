@@ -143,20 +143,36 @@ def asset_for(release: Release, kind: str, target: str) -> Asset | None:
     return next((asset for asset in release.assets if asset.name == wanted), None)
 
 
-def pick_newest(releases: list[dict[str, Any]], *, include_prereleases: bool) -> Release | None:
-    """The highest-versioned published release in a GitHub releases listing."""
-    best: tuple[tuple[int, int, int], dict[str, Any]] | None = None
+def pick_newest(
+    releases: list[dict[str, Any]],
+    *,
+    include_prereleases: bool,
+    carrying: tuple[str, str] | None = None,
+) -> Release | None:
+    """The highest-versioned published release in a GitHub releases listing.
+
+    With ``carrying`` - an asset's kind and target, as :func:`asset_name` takes
+    them - a release without that file is passed over: it is still being
+    uploaded, or that platform's build failed, and either way there is nothing
+    in it to install. An older one that has the file is still an update.
+    """
+    found: list[tuple[tuple[int, int, int], dict[str, Any]]] = []
     for item in releases:
         if item.get("draft") or (item.get("prerelease") and not include_prereleases):
             continue
         version = parse_version(str(item.get("tag_name") or ""))
-        if version and (best is None or version > best[0]):
-            best = (version, item)
-    if best is None:
-        return None
-    item = best[1]
+        if version:
+            found.append((version, item))
+    for version, item in sorted(found, key=lambda entry: entry[0], reverse=True):
+        release = _release_of(version, item)
+        if carrying is None or asset_for(release, *carrying) is not None:
+            return release
+    return None
+
+
+def _release_of(version: tuple[int, int, int], item: dict[str, Any]) -> Release:
     return Release(
-        version=".".join(map(str, best[0])),
+        version=".".join(map(str, version)),
         tag=str(item.get("tag_name") or ""),
         name=str(item.get("name") or ""),
         notes=str(item.get("body") or ""),
@@ -328,7 +344,22 @@ async def _signed_get(
         _refused.add(credential.secret)
 
 
-async def newest_release(*, verify_ssl: bool) -> Release | None:
+# How long to wait before looking again, in seconds: an hour after a look that
+# got an answer; after one that did not, soon and then less and less often.
+_CHECK_EVERY_S = 3600.0
+_RETRY_AFTER_S = (30.0, 120.0, 600.0, 1800.0)
+
+
+def next_check_delay(failures: int) -> float:
+    """Seconds until the next look, after ``failures`` looks in a row got no answer."""
+    if failures <= 0:
+        return _CHECK_EVERY_S
+    return _RETRY_AFTER_S[min(failures, len(_RETRY_AFTER_S)) - 1]
+
+
+async def newest_release(
+    *, verify_ssl: bool, carrying: tuple[str, str] | None = None
+) -> Release | None:
     """The newest release the repository publishes, whatever its version."""
     if not configured():
         return None
@@ -347,12 +378,12 @@ async def newest_release(*, verify_ssl: bool) -> Release | None:
         listing = response.json()
     if not isinstance(listing, list):
         return None
-    return pick_newest(listing, include_prereleases=INCLUDE_PRERELEASES)
+    return pick_newest(listing, include_prereleases=INCLUDE_PRERELEASES, carrying=carrying)
 
 
-async def check(*, verify_ssl: bool) -> Release | None:
+async def check(*, verify_ssl: bool, carrying: tuple[str, str] | None = None) -> Release | None:
     """A release newer than this build, or None."""
-    release = await newest_release(verify_ssl=verify_ssl)
+    release = await newest_release(verify_ssl=verify_ssl, carrying=carrying)
     return release if is_newer(release, current_version()) else None
 
 

@@ -52,6 +52,37 @@ def test_the_newest_published_release_wins() -> None:
     assert updates.pick_newest([], include_prereleases=True) is None
 
 
+def test_a_release_without_this_platforms_file_is_passed_over() -> None:
+    listing = [
+        # Still uploading: the release is there, its Windows package is not yet.
+        _release("v0.31.0", assets=("code-ai-vscode-v0.31.0-linux-x64.vsix",)),
+        _release(
+            "v0.30.0",
+            assets=("code-ai-vscode-v0.30.0-win32-x64.vsix", "code-ai-win-v0.30.0.exe"),
+        ),
+        _release("v0.29.0", assets=("code-ai-vscode-v0.29.0-win32-x64.vsix",)),
+    ]
+
+    def pick(carrying: tuple[str, str] | None):
+        return updates.pick_newest(listing, include_prereleases=True, carrying=carrying)
+
+    assert pick(None).version == "0.31.0"
+    assert pick(("vsix", "win32-x64")).version == "0.30.0"
+    assert pick(("vsix", "linux-x64")).version == "0.31.0"
+    assert pick(("binary", "win")).version == "0.30.0"
+    assert pick(("vsix", "darwin-arm64")) is None
+
+
+def test_a_look_that_got_no_answer_is_tried_again_soon_then_less_often() -> None:
+    delays = [updates.next_check_delay(failures) for failures in range(7)]
+
+    assert delays[0] == 3600
+    assert delays[1] == 30
+    assert delays[1:5] == sorted(delays[1:5])
+    # Never rarer than a look that worked.
+    assert max(delays[1:]) == delays[4] == delays[6] <= delays[0]
+
+
 def test_only_a_higher_version_is_an_update() -> None:
     release = updates.pick_newest([_release("v0.28.1")], include_prereleases=True)
 

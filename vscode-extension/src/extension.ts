@@ -7,6 +7,7 @@ import type { BridgeClient } from "./bridge-client";
 import { EditDiffs } from "./edit-diff";
 import { formatEditorContext, otherOpenFiles } from "./editor-context";
 import { SessionChanges } from "./session-changes";
+import { FIRST_CHECK_MS, nextCheckDelay } from "./update-schedule";
 import { initialAgentStatus, reduceAgentStatus, statusView } from "./agent-status";
 import {
   BridgeSession,
@@ -44,9 +45,8 @@ const MAX_TURN_RESENDS = 20;
 // Backend states that end a turn (synthetic DISCONNECTED does not: that is the
 // crash the turn has to survive).
 const TURN_ENDED = new Set(["READY", "FAILED", "CLOSED"]);
-// A new release is looked for shortly after start, then this often.
-const UPDATE_FIRST_CHECK_MS = 5_000;
-const UPDATE_CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
+// A new release is looked for shortly after start; update-schedule.ts says when again.
+const UPDATE_FIRST_CHECK_MS = FIRST_CHECK_MS;
 
 /** What getProfile and signInForPicture answer (see updates.Profile.describe). */
 interface ProfileAnswer {
@@ -208,7 +208,9 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   /** The newer release the backend found, once it has found one. */
   private update?: UpdateInfo;
   private updateProblem?: string;
-  private updateTimer?: ReturnType<typeof setInterval>;
+  private updateTimer?: ReturnType<typeof setTimeout>;
+  /** Looks in a row that got no answer: what the next one is timed by. */
+  private updateFailures = 0;
   private updating = false;
   private signingIn = false;
   /** Set while the releases host wants a login; the button offers it. */
@@ -770,6 +772,10 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           client?.send("deleteConversation", { conversation_id: message.id });
           break;
         case "getSettings":
+          // The panel asks this as it mounts, so it is listening by now: what
+          // was posted while it was still loading may never have reached it.
+          this.postUpdate();
+          this.postProfile();
           client
             ?.request("getSettings")
             .then((settings) => this.webview?.postMessage({ type: "settings", settings }))
@@ -1052,24 +1058,41 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     });
 
     this.bridge.ensureStarted();
+    // A backend the graph editor started before this view existed never told
+    // it so: without this, that window would not look for updates at all.
+    if (!this.updateTimer) this.scheduleUpdateChecks();
     // Learn whether inline hints are on so the provider and status bar are
     // correct straight away (and after a restart re-reads edited config).
     this.refreshInlineSettings();
   }
 
-  /** Look for a newer release now, and on a timer from then on. */
-  private scheduleUpdateChecks(): void {
-    setTimeout(() => void this.checkForUpdate(), UPDATE_FIRST_CHECK_MS);
-    if (!this.updateTimer) {
-      this.updateTimer = setInterval(() => void this.checkForUpdate(), UPDATE_CHECK_EVERY_MS);
-    }
+  /**
+   * Look for a newer release soon, and keep looking: one timer, re-armed by
+   * each look. A look that got no answer - the backend still starting, the
+   * network not up yet - is tried again soon instead of hours later.
+   */
+  private scheduleUpdateChecks(delayMs = UPDATE_FIRST_CHECK_MS): void {
+    if (this.updateTimer) clearTimeout(this.updateTimer);
+    this.updateTimer = setTimeout(() => {
+      this.updateTimer = undefined;
+      void this.checkForUpdate().finally(() => {
+        // Unless something armed it meanwhile (a backend that just restarted).
+        if (!this.updateTimer) this.scheduleUpdateChecks(nextCheckDelay(this.updateFailures));
+      });
+    }, delayMs);
   }
 
   private async checkForUpdate(): Promise<UpdateInfo | undefined> {
     const client = this.client;
-    if (!client) return undefined;
+    if (!client) {
+      this.updateFailures += 1;
+      return undefined;
+    }
     try {
-      const found = await client.request<UpdateInfo>("checkForUpdate", {}, 60_000);
+      // The platform goes along, so a release still missing this one's package is not offered.
+      const target = `${process.platform}-${process.arch}`;
+      const found = await client.request<UpdateInfo>("checkForUpdate", { target }, 60_000);
+      this.updateFailures = 0;
       this.updateProblem = found?.configured === false ? found.message || "Updates are off." : undefined;
       // Only while no sign-in is under way: its own answer is the one to show.
       if (!this.signingIn) {
@@ -1084,6 +1107,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       return found?.version ? found : undefined;
     } catch (err) {
       // Kept for /update to show; a background check stays quiet.
+      this.updateFailures += 1;
       this.updateProblem = String(err).replace(/^Error: /, "");
       console.debug("[code-ai] update check failed", err);
       return undefined;

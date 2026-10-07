@@ -2016,29 +2016,39 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 button.label = label
 
         async def _check_for_update(self) -> None:
-            """Look for a newer release once the screen has settled.
+            """Look for a newer release once the screen has settled, and keep looking.
 
             Silent when it cannot reach GitHub: an offline machine or a blocked
-            proxy is not something to report on every start.
+            proxy is not something to report on every start. It looks again
+            all the same - one look at start left a session that opened before a
+            release, or before the network was up, never hearing of it.
             """
             await asyncio.sleep(_UPDATE_CHECK_DELAY_S)
-            try:
-                release = await updates.check(
-                    verify_ssl=application.session.config.ssl_verification
-                )
-            except updates.LoginRequired:
-                self._update_needs_login = True
-                self._show_update_button(_SIGN_IN_LABEL)
-                self._append_conversation_line(
-                    f"update> Code-AI updates come from {updates.login_host()}: sign in "
-                    "once with the button above, or /update."
-                )
+            if not updates.configured():
                 return
-            except Exception:  # noqa: BLE001 - see the docstring
-                logger.debug("Update check failed", exc_info=True)
-                return
-            if release is None:
-                return
+            failures = 0
+            while True:
+                try:
+                    release = await updates.check(
+                        verify_ssl=application.session.config.ssl_verification,
+                        carrying=("binary", updates.platform_key()),
+                    )
+                    failures = 0
+                except updates.LoginRequired:
+                    self._update_needs_login = True
+                    self._show_update_button(_SIGN_IN_LABEL)
+                    self._append_conversation_line(
+                        f"update> Code-AI updates come from {updates.login_host()}: sign in "
+                        "once with the button above, or /update."
+                    )
+                    return
+                except Exception:  # noqa: BLE001 - see the docstring
+                    logger.debug("Update check failed", exc_info=True)
+                    release = None
+                    failures += 1
+                if release is not None:
+                    break
+                await asyncio.sleep(updates.next_check_delay(failures))
             self._update_release = release
             self._show_update_button(f"⬆ Update to v{release.version}")
             self._append_conversation_line(
