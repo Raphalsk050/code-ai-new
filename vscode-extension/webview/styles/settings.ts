@@ -153,6 +153,16 @@ export const SETTINGS_STYLE = `
 .settings-toggle-hint { font-size: var(--fs-small); color: var(--fg-muted); }
 .settings-toggle .switch { margin-top: 1px; }
 
+/* ---- colour swatches ---- */
+.swatches { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.swatch {
+  width: 20px; height: 20px; padding: 0; border-radius: 50%; cursor: pointer;
+  background: var(--swatch); border: 2px solid var(--bg); box-shadow: 0 0 0 1px var(--border-strong);
+}
+.swatch:hover { box-shadow: 0 0 0 1px var(--fg-muted); }
+.swatch[aria-checked=true] { box-shadow: 0 0 0 2px var(--fg-strong); }
+.swatch:focus-visible { outline: 1px solid var(--focus); outline-offset: 3px; }
+
 /* ---- floating save bar, the composer's glass ---- */
 .save-bar {
   position: absolute; left: 0; right: 0; bottom: var(--space-4); margin: 0 auto; z-index: 5;

@@ -1,4 +1,11 @@
 import { bakeIdle, IDLE_LOOP_S } from "../avatar-rig";
+import { AVATAR_COLOR_VALUE, AVATAR_COLORS } from "../avatar-skin";
+
+// The theme's accent unless one was picked: the glyph is drawn in its own
+// colour, so the choice only has to be that colour.
+const COLOR_STYLE = AVATAR_COLORS.filter((color) => color !== "theme")
+  .map((color) => `.agent-av[data-color=${color}] { color: ${AVATAR_COLOR_VALUE[color]}; }`)
+  .join("\n");
 
 // ---- idle ----
 // The motion is not written here. avatar-rig.ts acts the idle out with a
@@ -91,6 +98,9 @@ ${IDLE_STYLE}
 }
 .agent-av-leaf-lag { transform-origin: 12.6px 3.9px; transform: rotate(var(--av-leaf-lag, 0deg)); }
 .agent-av-look { transform: translate(var(--av-look-x, 0px), var(--av-look-y, 0px)); }
+
+/* ---- colours ---- */
+${COLOR_STYLE}
 
 /* ---- skins ---- */
 /* The face, the eyes and the flat fill are the mark and stay. A skin changes

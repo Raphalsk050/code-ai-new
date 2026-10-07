@@ -141,6 +141,19 @@ export const tests = {
     await ui.page.waitForSelector(`${FLOAT} .agent-av:not([data-skin])`);
   },
 
+  async "it is drawn in the colour picked in the settings"(ui, assert) {
+    await openSettings(ui);
+    assert(!(await ui.page.$(".agent-av[data-color]")), "a colour before one was picked");
+    await ui.page.click('.swatch[aria-label="Green"]');
+    await ui.page.waitForSelector(`${FLOAT} .agent-av[data-color="green"]`);
+    const drawn = await ui.page.$eval(`${FLOAT} .agent-av`, (el) => getComputedStyle(el).color);
+    assert(drawn === "rgb(46, 160, 67)", `drawn in ${drawn}`);
+    assert((await ui.page.evaluate(() => window.__state.prefs.avatarColor)) === "green", "the choice was not saved");
+    await ui.shot("avatar-colour");
+    await ui.page.click(`.swatch[aria-label="Theme's accent"]`);
+    await ui.page.waitForSelector(`${FLOAT} .agent-av:not([data-color])`);
+  },
+
   async "left to the calendar, it dresses for the season"(ui, assert) {
     await ui.page.clock.setFixedTime(new Date(2026, 11, 10, 12));
     await ui.page.reload();

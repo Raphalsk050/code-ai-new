@@ -55,7 +55,7 @@ import { activityLabel, BlockView, formatElapsed, TypingIndicator } from "./mess
 import { useSteadyPose } from "./agent-avatar";
 import { isPlace } from "./avatar-motion";
 import { avatarPose } from "./avatar-pose";
-import { seasonalSkin, setAvatarSkin } from "./avatar-skin";
+import { seasonalSkin, setAvatarColor, setAvatarSkin } from "./avatar-skin";
 import { FloatingAvatar } from "./floating-avatar";
 import { PromptPin, usePromptPin } from "./prompt-pin";
 import { ripple } from "./motion";
@@ -159,6 +159,7 @@ function App(): JSX.Element {
     const hourly = window.setInterval(dress, 3_600_000);
     return () => window.clearInterval(hourly);
   }, [prefs.avatarSkin]);
+  React.useEffect(() => setAvatarColor(prefs.avatarColor), [prefs.avatarColor]);
 
   // -- host messages -------------------------------------------------------
   React.useEffect(() => {

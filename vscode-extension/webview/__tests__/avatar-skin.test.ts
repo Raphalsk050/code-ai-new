@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { easterSunday, seasonalSkin } from "../avatar-skin";
+import { AVATAR_COLOR_VALUE, AVATAR_COLORS, easterSunday, seasonalSkin } from "../avatar-skin";
+import { AVATAR_STYLE } from "../styles/avatar";
 
 const on = (year: number, month: number, day: number) => seasonalSkin(new Date(year, month - 1, day, 15, 30));
 const ymd = (date: Date) => [date.getFullYear(), date.getMonth() + 1, date.getDate()];
@@ -41,5 +42,13 @@ test("easter is holy week, whichever month it lands in", () => {
 test("the rest of the year it wears nothing", () => {
   for (const [month, day] of [[1, 1], [2, 14], [6, 12], [9, 7], [10, 6]]) {
     assert.equal(on(2026, month, day), "default", `${month}/${day}`);
+  }
+});
+
+test("every colour but the theme's own has a rule that draws the glyph in it", () => {
+  assert.equal(AVATAR_COLORS[0], "theme");
+  for (const color of AVATAR_COLORS) {
+    const rule = `.agent-av[data-color=${color}] { color: ${AVATAR_COLOR_VALUE[color]}; }`;
+    assert.equal(AVATAR_STYLE.includes(rule), color !== "theme", color);
   }
 });
