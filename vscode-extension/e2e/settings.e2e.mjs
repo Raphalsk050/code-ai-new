@@ -7,6 +7,7 @@
 // user was replacing. The panel rewrote its whole form from that snapshot and
 // reported "Saved", so a refusal read as the save button wiping the edit.
 
+import { choose, held, listed } from "./dropdown.mjs";
 import { settingsSnapshot } from "./harness.mjs";
 
 const SAVE = ".settings-save";
@@ -223,9 +224,7 @@ export const tests = {
     await openPanel(ui);
     await goTo(ui, "Agent");
 
-    const options = await ui.page.$$eval(".language-select option", (items) =>
-      items.map((item) => ({ value: item.value, label: item.textContent.trim() }))
-    );
+    const options = await listed(ui, ".language-select");
     assert(options.length === 2, `the dropdown had ${options.length} options`);
     assert(
       options[0].value === "en" && options[0].label === "English",
@@ -236,7 +235,7 @@ export const tests = {
       `second option was ${JSON.stringify(options[1])}`
     );
     assert(
-      (await ui.page.inputValue(".language-select")) === "en",
+      (await held(ui, ".language-select")) === "en",
       "the dropdown did not show the language the backend reported"
     );
     // The field sits below the fold, so the shot has to go to it.
@@ -251,12 +250,10 @@ export const tests = {
     await openPanel(ui, settingsSnapshot({ language: "es-ES" }));
     await goTo(ui, "Agent");
 
-    const values = await ui.page.$$eval(".language-select option", (items) =>
-      items.map((item) => item.value)
-    );
+    const values = (await listed(ui, ".language-select")).map((option) => option.value);
     assert(values.includes("es-ES"), `the dropdown dropped the stored value: ${values}`);
     assert(
-      (await ui.page.inputValue(".language-select")) === "es-ES",
+      (await held(ui, ".language-select")) === "es-ES",
       "the stored language was not selected"
     );
   },
@@ -272,7 +269,7 @@ export const tests = {
     );
 
     await goTo(ui, "Agent");
-    await ui.page.selectOption(".language-select", "pt-BR");
+    await choose(ui, ".language-select","pt-BR");
     assert((await ui.page.textContent(SAVE)).trim() === "Save", "an edit does not offer Save");
     await ui.page.click(SAVE);
 
@@ -301,7 +298,7 @@ export const tests = {
       `the status read ${await ui.page.textContent(STATUS)}`
     );
     assert(
-      (await ui.page.inputValue(".language-select")) === "pt-BR",
+      (await held(ui, ".language-select")) === "pt-BR",
       "the dropdown lost the language that was just saved"
     );
     await ui.page.locator(".language-select").scrollIntoViewIfNeeded();
@@ -317,7 +314,7 @@ export const tests = {
     );
 
     await goTo(ui, "Agente");
-    await ui.page.selectOption(".language-select", "en");
+    await choose(ui, ".language-select","en");
     await ui.page.click(SAVE);
     await ui.fromHost({
       type: "settingsUpdated",
@@ -339,7 +336,7 @@ export const tests = {
     const snapshot = await openPanel(ui);
 
     await goTo(ui, "Agent");
-    await ui.page.selectOption(".language-select", "pt-BR");
+    await choose(ui, ".language-select","pt-BR");
     await ui.page.click(SAVE);
     // The backend refused it, so its snapshot still says English.
     await ui.fromHost({
@@ -357,7 +354,7 @@ export const tests = {
       "the panel translated itself on a refusal"
     );
     assert(
-      (await ui.page.inputValue(".language-select")) === "pt-BR",
+      (await held(ui, ".language-select")) === "pt-BR",
       "the refused choice must survive so it can be corrected"
     );
   },

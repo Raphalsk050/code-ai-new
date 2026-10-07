@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 39,
-  "patch": 13,
-  "build": 103,
+  "patch": 14,
+  "build": 104,
   "updated": "2026-10-07",
-  "note": "A message waiting in the queue can be answered now"
+  "note": "Dropdowns the panel draws itself, so the mouse picks from them in the IDE plugin too"
 }

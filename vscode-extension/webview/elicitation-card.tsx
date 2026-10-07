@@ -1,5 +1,6 @@
 import * as React from "react";
 
+import { Dropdown } from "./dropdown";
 import { t, tf } from "./i18n";
 
 import {
@@ -113,19 +114,20 @@ function FieldInput({
   }
   if (field.enum) {
     return (
-      <label className="elicit-field">
+      // Not a <label>: one wrapped around the list would press the button again on every pick.
+      <div className="elicit-field">
         {label}
-        <select value={String(value ?? "")} onChange={(e) => onChange(e.target.value)}>
-          {!field.required && <option value="">{t("(none)")}</option>}
-          {field.required && !value && <option value="">{t("(choose)")}</option>}
-          {field.enum.map((option, index) => (
-            <option key={option} value={option}>
-              {field.enum_names?.[index] ?? option}
-            </option>
-          ))}
-        </select>
+        <Dropdown
+          value={String(value ?? "")}
+          options={[
+            ...(!field.required ? [{ value: "", label: t("(none)") }] : []),
+            ...(field.required && !value ? [{ value: "", label: t("(choose)") }] : []),
+            ...field.enum.map((option, index) => ({ value: option, label: field.enum_names?.[index] ?? option })),
+          ]}
+          onChange={onChange}
+        />
         {hint}
-      </label>
+      </div>
     );
   }
   const type =

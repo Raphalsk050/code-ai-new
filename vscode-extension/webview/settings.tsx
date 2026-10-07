@@ -5,6 +5,7 @@ import { t, tf } from "./i18n";
 import type { AppMode, EditorSettings, McpAction, Settings, ToolSpec } from "../src/protocol";
 import { AVATAR_COLOR_VALUE, AVATAR_COLORS, AVATAR_SKINS, type AvatarColor } from "./avatar-skin";
 import { Codicon } from "./codicon";
+import { Dropdown } from "./dropdown";
 import { ExtPrefs } from "./history";
 import { McpSection, McpViewState } from "./mcp-settings";
 import { Draft, draftFromSettings, keepRefusedEdits } from "./settings-draft";
@@ -414,17 +415,13 @@ export function SettingsScreen({
         hint: t("The panel and the agent's answers both follow this."),
         keys: ["language"],
         control: (
-          <select
+          <Dropdown
             className="language-select"
+            label={t("Language")}
             value={String(draft.language ?? "en")}
-            onChange={(e) => set("language", e.target.value)}
-          >
-            {languageOptions(String(draft.language ?? "en")).map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
+            options={languageOptions(String(draft.language ?? "en"))}
+            onChange={(v) => set("language", v)}
+          />
         ),
       },
       {
@@ -927,13 +924,11 @@ function Choice({
   const all = options.includes(value) || !value ? options : [...options, value];
   if (all.length > 4) {
     return (
-      <select value={value} onChange={(e) => onChange(e.target.value)}>
-        {all.map((option) => (
-          <option key={option} value={option}>
-            {labels?.[option] ?? option}
-          </option>
-        ))}
-      </select>
+      <Dropdown
+        value={value}
+        options={all.map((option) => ({ value: option, label: labels?.[option] ?? option }))}
+        onChange={onChange}
+      />
     );
   }
   return (

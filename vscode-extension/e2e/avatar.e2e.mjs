@@ -1,10 +1,11 @@
 // The avatar loose in the panel: where it sits, how it is moved, what it wears.
 
+import { choose } from "./dropdown.mjs";
 import { settingsSnapshot } from "./harness.mjs";
 
 const FLOAT = ".av-float";
 const GRIP = ".av-float-grip";
-const COSTUME = '.settings-field:has(.settings-field-label:text-is("Avatar costume")) select';
+const COSTUME = '.settings-field:has(.settings-field-label:text-is("Avatar costume"))';
 
 /** Where its box is once it has stopped moving. */
 async function settle(ui) {
@@ -165,10 +166,10 @@ export const tests = {
 
   async "it wears what the settings say"(ui, assert) {
     await openSettings(ui);
-    await ui.page.selectOption(COSTUME, "halloween");
+    await choose(ui, COSTUME,"halloween");
     await ui.page.waitForSelector(`${FLOAT} .agent-av[data-skin="halloween"]`);
     await ui.shot("avatar-costume");
-    await ui.page.selectOption(COSTUME, "default");
+    await choose(ui, COSTUME,"default");
     await ui.page.waitForSelector(`${FLOAT} .agent-av:not([data-skin])`);
   },
 
