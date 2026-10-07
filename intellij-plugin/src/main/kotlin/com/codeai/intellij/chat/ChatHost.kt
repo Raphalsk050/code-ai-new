@@ -898,9 +898,9 @@ internal class ChatHost(private val project: Project) : Disposable {
     }
 
     /**
-     * The backend's updater fetches the package VS Code installs. This plugin
-     * is not published with the releases yet, so there is nothing for it to
-     * fetch: say how the plugin is updated instead of failing half-way.
+     * The backend's updater fetches the package VS Code installs, and nothing
+     * here installs the plugin's own from a release yet: say how the plugin
+     * is updated instead of failing half-way.
      */
     private fun explainUpdates() {
         Notify.info(

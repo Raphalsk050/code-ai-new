@@ -1,8 +1,8 @@
 name: Build standalone binaries
 
 # One-file executables for Linux and Windows, a macOS build with its own
-# Python, the VSCode extension carrying each, and a GitHub release with all of
-# them. Users run them with no Python installed.
+# Python, the VSCode extension and the Android Studio plugin carrying each, and
+# a GitHub release with all of them. Users run them with no Python installed.
 #
 # code-linux is the company's only runner: GitHub-hosted ones are unreachable
 # from that network, and upload-artifact is pinned to v3 because v4 does not
@@ -579,6 +579,213 @@ jobs:
           path: out/mac/x64/*.sh
           if-no-files-found: error
 
+  # ---- the Android Studio plugin -----------------------------------------------
+  # The same panel and the same backend as the VSCode extension, in a package an
+  # IntelliJ-based IDE installs from disk: one for each system, carrying the
+  # backend built above (intellij-plugin/scripts/release-packages.sh). It is
+  # extra, as macOS is: when it fails, the release ships without it. The
+  # release waits for it all the same, hence the time limit: the first build on
+  # a runner downloads the IDE, and one that hangs must not hold a release up.
+
+  plugin:
+    name: Android Studio plugin
+    needs: [linux, windows, macos]
+    if: >-
+      !cancelled() && inputs.runner != 'ubuntu-latest'
+      && needs.linux.result == 'success' && needs.windows.result == 'success'
+    runs-on: code-linux
+    timeout-minutes: 90
+    outputs:
+      mac: ${{ steps.package.outputs.mac }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the version
+        run: |
+          v() { sed -n "s/.*\"$1\": *\([0-9]*\).*/\1/p" src/code_ai/version.json; }
+          echo "CODE_AI_VERSION=$(v major).$(v minor).$(v patch)" >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@v3
+        with:
+          name: code-ai-linux-v${{ env.CODE_AI_VERSION }}
+          path: out
+
+      - uses: actions/download-artifact@v3
+        with:
+          name: code-ai-win-v${{ env.CODE_AI_VERSION }}
+          path: out
+
+      - uses: actions/download-artifact@v3
+        if: needs.macos.result == 'success'
+        with:
+          name: internal-mac-bundle-v${{ env.CODE_AI_VERSION }}
+          path: out
+
+      # Two containers, as the tools come. Node bundles the panel and lays each
+      # backend out as its package carries it; Java then builds the packages,
+      # told the panel is bundled already, having no Node to do it with. What
+      # Gradle downloads - the IDE it builds against is over a gigabyte - stays
+      # on the runner between builds. CODE_AI_TRUST_NETWORK is this job's
+      # PIP_TRUSTED_HOST: Java has no switch for a proxy that re-signs TLS.
+      - name: Build the packages
+        id: package
+        run: |
+          chmod +x "out/code-ai-linux-v$CODE_AI_VERSION"
+          CODE_AI_PLUGIN_TARGETS="linux-x64 win32-x64"
+          for arch in arm64 x64; do
+            bundle="out/code-ai-mac-$arch-v$CODE_AI_VERSION.tar.gz"
+            if [ -f "$bundle" ]; then
+              tar -xzf "$bundle" -C out
+              CODE_AI_PLUGIN_TARGETS="$CODE_AI_PLUGIN_TARGETS darwin-$arch"
+            fi
+          done
+          export CODE_AI_PLUGIN_TARGETS
+          case "$CODE_AI_PLUGIN_TARGETS" in *darwin*) echo "mac=true" >> "$GITHUB_OUTPUT" ;; esac
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e npm_config_cache=/tmp/npm \
+            -e PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
+            -e CODE_AI_VERSION \
+            -e CODE_AI_PLUGIN_TARGETS \
+            -v "$PWD":/work -w /work \
+            node:20-bookworm \
+            bash -euxc '
+              cd vscode-extension
+              npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+              npm run build
+              cd ..
+              sh intellij-plugin/scripts/release-packages.sh stage out \
+                "$CODE_AI_VERSION" $CODE_AI_PLUGIN_TARGETS
+            '
+          cache="$HOME/.cache/code-ai-ci/gradle"
+          mkdir -p "$cache"
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e GRADLE_USER_HOME=/cache \
+            -e CODE_AI_TRUST_NETWORK=1 \
+            -e CODE_AI_PANEL_BUNDLED=1 \
+            -v "$cache":/cache \
+            -v "$PWD":/work -w /work \
+            eclipse-temurin:21-jdk \
+            sh intellij-plugin/scripts/release-packages.sh build out \
+              "$CODE_AI_VERSION" $CODE_AI_PLUGIN_TARGETS
+          find out/plugin -type f | sort
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: code-ai-android-studio-v${{ env.CODE_AI_VERSION }}-win32-x64
+          path: out/plugin/win32-x64/*.zip
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: code-ai-android-studio-v${{ env.CODE_AI_VERSION }}-linux-x64
+          path: out/plugin/linux-x64/*.zip
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v3
+        if: steps.package.outputs.mac == 'true'
+        with:
+          name: code-ai-android-studio-v${{ env.CODE_AI_VERSION }}-darwin-arm64
+          path: out/plugin/darwin-arm64/*.zip
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v3
+        if: steps.package.outputs.mac == 'true'
+        with:
+          name: code-ai-android-studio-v${{ env.CODE_AI_VERSION }}-darwin-x64
+          path: out/plugin/darwin-x64/*.zip
+          if-no-files-found: error
+
+  plugin-public:
+    name: Android Studio plugin (GitHub-hosted)
+    needs: [linux-public, windows-public, macos-public]
+    if: >-
+      !cancelled() && inputs.runner == 'ubuntu-latest'
+      && needs.linux-public.result == 'success' && needs.windows-public.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      mac: ${{ steps.package.outputs.mac }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the version
+        run: |
+          v() { sed -n "s/.*\"$1\": *\([0-9]*\).*/\1/p" src/code_ai/version.json; }
+          echo "CODE_AI_VERSION=$(v major).$(v minor).$(v patch)" >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: code-ai-linux-v${{ env.CODE_AI_VERSION }}
+          path: out
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: code-ai-win-v${{ env.CODE_AI_VERSION }}
+          path: out
+
+      - uses: actions/download-artifact@v4
+        if: needs.macos-public.result == 'success'
+        with:
+          name: internal-mac-bundle-v${{ env.CODE_AI_VERSION }}
+          path: out
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      # Node and Java side by side here, so Gradle bundles the panel itself.
+      - name: Build the packages
+        id: package
+        run: |
+          chmod +x "out/code-ai-linux-v$CODE_AI_VERSION"
+          targets="linux-x64 win32-x64"
+          for arch in arm64 x64; do
+            bundle="out/code-ai-mac-$arch-v$CODE_AI_VERSION.tar.gz"
+            if [ -f "$bundle" ]; then
+              tar -xzf "$bundle" -C out
+              targets="$targets darwin-$arch"
+            fi
+          done
+          case "$targets" in *darwin*) echo "mac=true" >> "$GITHUB_OUTPUT" ;; esac
+          sh intellij-plugin/scripts/release-packages.sh stage out "$CODE_AI_VERSION" $targets
+          sh intellij-plugin/scripts/release-packages.sh build out "$CODE_AI_VERSION" $targets
+          find out/plugin -type f | sort
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: code-ai-android-studio-v${{ env.CODE_AI_VERSION }}-win32-x64
+          path: out/plugin/win32-x64/*.zip
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: code-ai-android-studio-v${{ env.CODE_AI_VERSION }}-linux-x64
+          path: out/plugin/linux-x64/*.zip
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: steps.package.outputs.mac == 'true'
+        with:
+          name: code-ai-android-studio-v${{ env.CODE_AI_VERSION }}-darwin-arm64
+          path: out/plugin/darwin-arm64/*.zip
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: steps.package.outputs.mac == 'true'
+        with:
+          name: code-ai-android-studio-v${{ env.CODE_AI_VERSION }}-darwin-x64
+          path: out/plugin/darwin-x64/*.zip
+          if-no-files-found: error
+
   # ---- the Mac check -----------------------------------------------------------
   # Installs the macOS build as a user does and starts it, on a real Mac: the
   # one step no Linux runner can take (scripts/check_mac_build.sh). On the
@@ -642,8 +849,9 @@ jobs:
 
   release:
     name: GitHub release
-    needs: [vsix, macos-check]
+    needs: [vsix, macos-check, plugin]
     # With or without a Mac check: see the step that leaves out what it refused.
+    # With or without the Android Studio plugin too.
     if: >-
       !cancelled() && inputs.runner != 'ubuntu-latest' && needs.vsix.result == 'success'
     runs-on: code-linux
@@ -704,11 +912,40 @@ jobs:
           name: code-ai-mac-x64-v${{ env.CODE_AI_VERSION }}
           path: out
 
+      - uses: actions/download-artifact@v3
+        if: needs.plugin.result == 'success'
+        with:
+          name: code-ai-android-studio-v${{ env.CODE_AI_VERSION }}-win32-x64
+          path: out
+
+      - uses: actions/download-artifact@v3
+        if: needs.plugin.result == 'success'
+        with:
+          name: code-ai-android-studio-v${{ env.CODE_AI_VERSION }}-linux-x64
+          path: out
+
+      - uses: actions/download-artifact@v3
+        if: needs.plugin.result == 'success' && needs.plugin.outputs.mac == 'true'
+        with:
+          name: code-ai-android-studio-v${{ env.CODE_AI_VERSION }}-darwin-arm64
+          path: out
+
+      - uses: actions/download-artifact@v3
+        if: needs.plugin.result == 'success' && needs.plugin.outputs.mac == 'true'
+        with:
+          name: code-ai-android-studio-v${{ env.CODE_AI_VERSION }}-darwin-x64
+          path: out
+
       - name: Leave out a macOS build the Mac turned down
         if: needs.macos-check.result != 'success' && needs.macos-check.result != 'skipped'
         run: |
-          rm -f out/*darwin*.vsix out/code-ai-mac-*.sh
+          rm -f out/*darwin*.vsix out/*darwin*.zip out/code-ai-mac-*.sh
           echo "::warning::The macOS check did not pass, so this release carries no macOS files."
+
+      - name: Say when the Android Studio plugin is missing
+        if: needs.plugin.result != 'success'
+        run: |
+          echo "::warning::The Android Studio plugin did not build, so this release carries none."
 
       - name: Publish the release
         env:
@@ -733,7 +970,7 @@ jobs:
 
   release-public:
     name: GitHub release (GitHub-hosted)
-    needs: [vsix-public, macos-check-public]
+    needs: [vsix-public, macos-check-public, plugin-public]
     if: >-
       !cancelled() && inputs.runner == 'ubuntu-latest' && needs.vsix-public.result == 'success'
     runs-on: ubuntu-latest
@@ -793,13 +1030,42 @@ jobs:
           name: code-ai-mac-x64-v${{ env.CODE_AI_VERSION }}
           path: out
 
+      - uses: actions/download-artifact@v4
+        if: needs.plugin-public.result == 'success'
+        with:
+          name: code-ai-android-studio-v${{ env.CODE_AI_VERSION }}-win32-x64
+          path: out
+
+      - uses: actions/download-artifact@v4
+        if: needs.plugin-public.result == 'success'
+        with:
+          name: code-ai-android-studio-v${{ env.CODE_AI_VERSION }}-linux-x64
+          path: out
+
+      - uses: actions/download-artifact@v4
+        if: needs.plugin-public.result == 'success' && needs.plugin-public.outputs.mac == 'true'
+        with:
+          name: code-ai-android-studio-v${{ env.CODE_AI_VERSION }}-darwin-arm64
+          path: out
+
+      - uses: actions/download-artifact@v4
+        if: needs.plugin-public.result == 'success' && needs.plugin-public.outputs.mac == 'true'
+        with:
+          name: code-ai-android-studio-v${{ env.CODE_AI_VERSION }}-darwin-x64
+          path: out
+
       - name: Leave out a macOS build the Mac turned down
         if: >-
           needs.macos-check-public.result != 'success'
           && needs.macos-check-public.result != 'skipped'
         run: |
-          rm -f out/*darwin*.vsix out/code-ai-mac-*.sh
+          rm -f out/*darwin*.vsix out/*darwin*.zip out/code-ai-mac-*.sh
           echo "::warning::The macOS check did not pass, so this release carries no macOS files."
+
+      - name: Say when the Android Studio plugin is missing
+        if: needs.plugin-public.result != 'success'
+        run: |
+          echo "::warning::The Android Studio plugin did not build, so this release carries none."
 
       - name: Publish the release
         env:
