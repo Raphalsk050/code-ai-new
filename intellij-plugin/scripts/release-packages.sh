@@ -12,7 +12,8 @@
 #
 # CODE_AI_PANEL_BUNDLED, when set, says vscode-extension/dist holds the panel
 # already: a build with no Node has Gradle take it as it is.
-# CODE_AI_TRUST_NETWORK, when set, is for a network that re-signs TLS.
+# CODE_AI_CA_BUNDLE, when set, names a PEM file of certificates for Java to
+# trust beside its own: the runner's, behind a proxy that re-signs TLS.
 set -eu
 
 [ $# -ge 4 ] || {
@@ -26,47 +27,44 @@ shift 3
 plugin=$(cd "$(dirname "$0")/.." && pwd)
 cd "$plugin"
 
-# Where Gradle downloads from: itself, its plugins, the libraries, the IDE.
-HOSTS="services.gradle.org github.com release-assets.githubusercontent.com
-  plugins.gradle.org repo.maven.apache.org cache-redirector.jetbrains.com
-  artifacts-caching-proxy.aws.intellij.net redirector.gvt1.com dl.google.com"
-
-# Java has no switch for a network that re-signs TLS, as pip and npm have.
-# Behind one, Gradle is given a copy of the usual certificates with the ones
-# those hosts present here added to it: the nearest Java comes to not checking.
-trust_network() {
-  [ -n "${CODE_AI_TRUST_NETWORK:-}" ] || return 0
-  java_home=${JAVA_HOME:-$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")}
-  scratch=$(mktemp -d)
-  store=$scratch/cacerts
-  cp "$java_home/lib/security/cacerts" "$store"
-  chmod u+w "$store"
-  for host in $HOSTS; do
-    # A host that does not answer has nothing to add, and Gradle will say so.
-    keytool -printcert -rfc -sslserver "$host" \
-      -J-Dsun.net.client.defaultConnectTimeout=15000 \
-      -J-Dsun.net.client.defaultReadTimeout=15000 2>/dev/null || true
-  done | awk -v prefix="$scratch/presented" '
-    /-----BEGIN CERTIFICATE-----/ { if (file) close(file); n += 1; file = prefix "-" n ".pem" }
-    file { print > file }
-  '
-  added=0
-  for pem in "$scratch"/presented-*.pem; do
-    [ -f "$pem" ] || continue
-    keytool -importcert -noprompt -alias "$(basename "$pem" .pem)" \
-      -file "$pem" -keystore "$store" -storepass changeit >/dev/null 2>&1 || continue
-    added=$((added + 1))
-  done
-  echo "Trusting the $added certificates this network presents"
-  JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:-} -Djavax.net.ssl.trustStore=$store -Djavax.net.ssl.trustStorePassword=changeit"
+# Behind a proxy that re-signs TLS, Java knows none of the certificates it is
+# shown: pip can be told to look away, Java cannot. It is handed the ones the
+# runner itself trusts instead, beside its own (scripts/BuildNetwork.java).
+trust_bundle() {
+  bundle=${CODE_AI_CA_BUNDLE:-}
+  [ -n "$bundle" ] || return 0
+  [ -f "$bundle" ] || {
+    echo "CODE_AI_CA_BUNDLE names $bundle, which is not a file" >&2
+    exit 2
+  }
+  store=$(mktemp -d)/trusted.p12
+  java scripts/BuildNetwork.java trust "$bundle" "$store"
+  JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:-} -Djavax.net.ssl.trustStore=$store -Djavax.net.ssl.trustStorePassword=changeit -Djavax.net.ssl.trustStoreType=PKCS12"
   export JAVA_TOOL_OPTIONS
+}
+
+# What the build's first downloads answer from here, said before Gradle asks:
+# when it is the network that says no, this is where it says why.
+report_network() {
+  gradle=$(sed -n 's/^distributionUrl=//p' gradle/wrapper/gradle-wrapper.properties | sed 's/\\:/:/')
+  platform=$(sed -n 's/.*"org.jetbrains.intellij.platform") version "\(.*\)".*/\1/p' build.gradle.kts)
+  portal=https://plugins.gradle.org/m2/org/jetbrains/intellij/platform/intellij-platform-gradle-plugin
+  jetbrains=https://cache-redirector.jetbrains.com/www.jetbrains.com/intellij-repository/releases
+  echo "The network, as this build finds it:"
+  java scripts/BuildNetwork.java report \
+    "Gradle=$gradle" \
+    "its plugins=$portal/$platform/intellij-platform-gradle-plugin-$platform.pom" \
+    "the libraries=https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-stdlib/maven-metadata.xml" \
+    "JetBrains' own=$jetbrains/com/jetbrains/intellij/java/java-compiler-ant-tasks/maven-metadata.xml" \
+    "the IDE=https://redirector.gvt1.com/edgedl/android/studio/patches/updates.xml" || true
 }
 
 gradle_args=""
 case "$step" in
   stage) ;;
   build)
-    trust_network
+    trust_bundle
+    report_network
     if [ -n "${CODE_AI_PANEL_BUNDLED:-}" ]; then
       [ -f ../vscode-extension/dist/webview.js ] || {
         echo "CODE_AI_PANEL_BUNDLED is set and vscode-extension/dist/webview.js is not there" >&2

@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 42,
-  "patch": 0,
-  "build": 111,
+  "patch": 1,
+  "build": 112,
   "updated": "2026-10-07",
-  "note": "The avatar gets anxious while you type: eyes on the caret, a hop at each key, a look up when you stop"
+  "note": "The plugin's build trusts the runner's own certificates and says what its downloads answer"
 }

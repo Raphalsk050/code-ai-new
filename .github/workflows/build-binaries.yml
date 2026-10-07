@@ -625,10 +625,17 @@ jobs:
       # backend out as its package carries it; Java then builds the packages,
       # told the panel is bundled already, having no Node to do it with. What
       # Gradle downloads - the IDE it builds against is over a gigabyte - stays
-      # on the runner between builds. CODE_AI_TRUST_NETWORK is this job's
-      # PIP_TRUSTED_HOST: Java has no switch for a proxy that re-signs TLS.
+      # on the runner between builds.
+      #
+      # The proxy re-signs TLS with a certificate the container does not have,
+      # and Java has no PIP_TRUSTED_HOST to look away with. It is handed the
+      # certificates the runner itself trusts, which should hold the proxy's.
+      # Where the runner keeps them somewhere else, the repository variable
+      # CODE_AI_CA_BUNDLE names the PEM file.
       - name: Build the packages
         id: package
+        env:
+          CODE_AI_CA_BUNDLE: ${{ vars.CODE_AI_CA_BUNDLE }}
         run: |
           chmod +x "out/code-ai-linux-v$CODE_AI_VERSION"
           CODE_AI_PLUGIN_TARGETS="linux-x64 win32-x64"
@@ -660,12 +667,25 @@ jobs:
             '
           cache="$HOME/.cache/code-ai-ci/gradle"
           mkdir -p "$cache"
+          ca="$CODE_AI_CA_BUNDLE"
+          if [ -n "$ca" ] && [ ! -f "$ca" ]; then
+            echo "::error::CODE_AI_CA_BUNDLE names $ca, which is not a file on this runner"
+            exit 1
+          fi
+          for known in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt \
+            /etc/ssl/ca-bundle.pem /etc/ssl/cert.pem; do
+            if [ -z "$ca" ] && [ -f "$known" ]; then ca="$known"; fi
+          done
+          set --
+          if [ -n "$ca" ]; then
+            set -- -v "$ca":/runner-ca.pem:ro -e CODE_AI_CA_BUNDLE=/runner-ca.pem
+          fi
           docker run --rm \
             --user "$(id -u):$(id -g)" \
             -e HOME=/tmp \
             -e GRADLE_USER_HOME=/cache \
-            -e CODE_AI_TRUST_NETWORK=1 \
             -e CODE_AI_PANEL_BUNDLED=1 \
+            "$@" \
             -v "$cache":/cache \
             -v "$PWD":/work -w /work \
             eclipse-temurin:21-jdk \
