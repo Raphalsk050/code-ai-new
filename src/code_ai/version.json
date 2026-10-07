@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 39,
-  "patch": 8,
-  "build": 98,
+  "patch": 9,
+  "build": 99,
   "updated": "2026-10-07",
-  "note": "Keep looking for an update: retried after a failed look, hourly, and only releases this platform can install"
+  "note": "The floating avatar looks at the pointer while idle; a setting turns it off"
 }

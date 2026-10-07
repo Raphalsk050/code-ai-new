@@ -450,6 +450,20 @@ export function SettingsScreen({
         ),
       },
       {
+        id: "avatar_watches",
+        category: "agent",
+        label: t("Avatar looks at the pointer"),
+        hint: t("While it is idle, its eyes follow your mouse over the panel."),
+        keys: [],
+        control: (
+          <Switch
+            checked={prefs.avatarWatches}
+            onChange={(v) => onPrefsChange({ avatarWatches: v })}
+            label={t("Avatar looks at the pointer")}
+          />
+        ),
+      },
+      {
         id: "avatar_skin",
         category: "agent",
         label: t("Avatar costume"),

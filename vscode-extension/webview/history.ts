@@ -75,9 +75,11 @@ export interface ExtPrefs {
   avatarSkin: "auto" | AvatarSkin;
   /** The glyph's colour: the theme's accent, or one picked by hand. */
   avatarColor: AvatarColor;
+  /** Whether the floating avatar looks at the pointer while it is idle. */
+  avatarWatches: boolean;
 }
 
-export const DEFAULT_PREFS: ExtPrefs = { mode: "agent", autoRunRefactor: false, floatingAvatar: true, avatarSkin: "auto", avatarColor: "theme" };
+export const DEFAULT_PREFS: ExtPrefs = { mode: "agent", autoRunRefactor: false, floatingAvatar: true, avatarSkin: "auto", avatarColor: "theme", avatarWatches: true };
 
 export interface PersistedState {
   conversations: Conversation[];

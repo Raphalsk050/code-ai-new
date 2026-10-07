@@ -166,6 +166,8 @@ ${COLOR_STYLE}
 .av-float[data-held] .av-float-grip { cursor: grabbing; }
 .av-float[data-held] .agent-av { transform: scale(1.06); filter: drop-shadow(0 10px 12px var(--shadow)); }
 .av-float-grip:focus-visible { outline: 1px solid var(--focus); outline-offset: 3px; }
+/* Watching the pointer, the eyes are its to move: the idle's own glances stand down. */
+.av-float[data-watching] .agent-av[data-pose=idle] .agent-av-eyes { animation: none; }
 /* Typing, and the menus that open from it, come before the avatar. */
 .composer-wrap:focus-within { z-index: 5; }
 

@@ -18,6 +18,12 @@ const HOME: Place = { right: true, bottom: true, x: 32, y: 150 };
 const NUDGE = 520;
 /** Going home is a spring too, softer than the body's. */
 const RETURN = { stiffness: 70, damping: 13 };
+/** Where the middle of the face is in its box. */
+const FACE_AT = { x: 0.464, y: 0.571 };
+/** Watching the pointer: how far the eyes go, in the glyph's units, and how far the head leans. */
+const WATCH = { x: 1.6, y: 1.2, tilt: 5 };
+/** Livelier than the body's own: the eyes get there fast and a little past. */
+const GLANCE = { stiffness: 190, damping: 15 };
 
 /** The system was asked for less motion: no throw, no lean, no glide home. */
 function wantsLessMotion(): boolean {
@@ -33,6 +39,11 @@ interface Sim extends Body {
   wantX: number;
   wantY: number;
   home: { x: number; y: number } | null;
+  /** Where the pointer is, in the room's pixels; null while it is off the page. */
+  gaze: { x: number; y: number } | null;
+  watching: boolean;
+  /** Whether the last frame had it on the move. */
+  moved: boolean;
   /** Where it rests, as the room's size will not change it. */
   place: Place;
   tilt: Spring;
@@ -56,6 +67,7 @@ const same = (a: Place, b: Place) => a.right === b.right && a.bottom === b.botto
  * @param size its box, in px
  * @param start where it is first put; its own corner when left out
  * @param inertia off, it goes where the pointer goes and stops when let go
+ * @param watch off, it does not look at the pointer
  * @param onRest called with where it came to rest, for remembering it
  */
 export function FloatingAvatar({
@@ -64,6 +76,7 @@ export function FloatingAvatar({
   size = DEFAULT_SIZE,
   start,
   inertia = true,
+  watch = true,
   onRest,
 }: {
   pose: AvatarPose | null;
@@ -71,17 +84,20 @@ export function FloatingAvatar({
   size?: number;
   start?: Place;
   inertia?: boolean;
+  watch?: boolean;
   onRest?: (place: Place) => void;
 }): JSX.Element {
   const ref = React.useRef<HTMLDivElement>(null);
   const [held, setHeld] = React.useState(false);
   const sim = React.useRef<Sim>({
-    x: 0, y: 0, vx: 0, vy: 0, held: false, grabX: 0, grabY: 0, wantX: 0, wantY: 0, home: null, place: start ?? HOME,
+    x: 0, y: 0, vx: 0, vy: 0, held: false, grabX: 0, grabY: 0, wantX: 0, wantY: 0, home: null, gaze: null, watching: false, moved: false,
+    place: start ?? HOME,
     tilt: still(), leaf: still(), lookX: still(), lookY: still(), sx: { x: 1, v: 0 }, sy: { x: 1, v: 0 },
     last: 0, frame: 0,
   });
-  const live = React.useRef({ inertia, onRest });
-  live.current = { inertia, onRest };
+  // At work it has its own things to look at; the pointer gets its eyes when it is idle.
+  const live = React.useRef({ inertia, onRest, watch: watch && (pose === "idle" || pose === null) });
+  live.current = { inertia, onRest, watch: watch && (pose === "idle" || pose === null) };
 
   const room = React.useCallback(() => ref.current?.offsetParent as HTMLElement | null, []);
   const bounds = React.useCallback((): Bounds => {
@@ -138,13 +154,36 @@ export function FloatingAvatar({
       }
 
       const lean = weighty ? leanFor(s.vx, s.vy) : leanFor(0, 0);
-      s.tilt = stepSpring(s.tilt, lean.tilt, dt, 150, 11);
+      const to = { tilt: lean.tilt, lookX: lean.lookX, lookY: lean.lookY, sx: lean.stretchX, sy: lean.stretchY };
+      const watching = !!s.gaze && live.current.watch && !s.held && !wantsLessMotion();
+      if (watching && s.gaze) {
+        // From the middle of the face to the pointer. A face's width away the
+        // eyes are at their limit; nearer, they turn in proportion.
+        const dx = s.gaze.x - (s.x + size * FACE_AT.x);
+        const dy = s.gaze.y - (s.y + size * FACE_AT.y);
+        const far = Math.hypot(dx, dy) || 1;
+        const pull = Math.min(1, far / (size * 0.9));
+        to.lookX = Math.max(-1.7, Math.min(1.7, to.lookX + (dx / far) * pull * WATCH.x));
+        to.lookY = Math.max(-1.4, Math.min(1.4, to.lookY + (dy / far) * pull * WATCH.y));
+        to.tilt += (dx / far) * pull * WATCH.tilt;
+        // The pointer right by it: it stands a little taller, all attention.
+        if (far < size * 0.7) {
+          to.sy += 0.045;
+          to.sx -= 0.025;
+        }
+      }
+      if (watching !== s.watching) {
+        s.watching = watching;
+        ref.current?.toggleAttribute("data-watching", watching);
+      }
+      const eyes = watching ? GLANCE : { stiffness: 130, damping: 17 };
+      s.tilt = stepSpring(s.tilt, to.tilt, dt, 150, 11);
       // Softer and less damped than the head: it gets there late and overshoots.
       s.leaf = stepSpring(s.leaf, lean.leaf, dt, 85, 5.5);
-      s.lookX = stepSpring(s.lookX, lean.lookX, dt, 130, 17);
-      s.lookY = stepSpring(s.lookY, lean.lookY, dt, 130, 17);
-      s.sx = stepSpring(s.sx, lean.stretchX, dt, 240, 13);
-      s.sy = stepSpring(s.sy, lean.stretchY, dt, 240, 13);
+      s.lookX = stepSpring(s.lookX, to.lookX, dt, eyes.stiffness, eyes.damping);
+      s.lookY = stepSpring(s.lookY, to.lookY, dt, eyes.stiffness, eyes.damping);
+      s.sx = stepSpring(s.sx, to.sx, dt, 240, 13);
+      s.sy = stepSpring(s.sy, to.sy, dt, 240, 13);
       if (hit && weighty) {
         // A wall flattens it for a moment; the spring gives the shape back.
         const dent = Math.min(hit / 2600, 0.5);
@@ -153,20 +192,26 @@ export function FloatingAvatar({
       }
       paint();
 
-      const moving = s.held || s.home || s.vx || s.vy;
+      const moving = !!(s.held || s.home || s.vx || s.vy);
+      if (s.moved && !moving) {
+        // Where it came to rest, whatever its eyes go on doing.
+        const place = placeOf(bounds(), s.x, s.y);
+        if (!same(place, s.place)) {
+          s.place = place;
+          live.current.onRest?.(place);
+        }
+      }
+      s.moved = moving;
       const calm =
-        settled(s.tilt, 0, 0.05) && settled(s.leaf, 0, 0.05) && settled(s.lookX, 0) && settled(s.lookY, 0) &&
-        settled(s.sx, 1, 0.002) && settled(s.sy, 1, 0.002);
+        settled(s.tilt, to.tilt, 0.05) && settled(s.leaf, 0, 0.05) &&
+        settled(s.lookX, to.lookX) && settled(s.lookY, to.lookY) &&
+        settled(s.sx, to.sx, 0.002) && settled(s.sy, to.sy, 0.002);
       if (moving || !calm) {
         s.frame = requestAnimationFrame(tick);
         return;
       }
       // At rest nothing runs: no frame is asked for until it is touched again.
       s.frame = 0;
-      const place = placeOf(bounds(), s.x, s.y);
-      if (same(place, s.place)) return;
-      s.place = place;
-      live.current.onRest?.(place);
     },
     [bounds, paint]
   );
@@ -193,7 +238,8 @@ export function FloatingAvatar({
     if (!box) return;
     const fit = () => {
       const s = sim.current;
-      Object.assign(s, s.frame ? clampTo(bounds(), s.x, s.y) : pointOf(bounds(), s.place));
+      const flying = s.held || s.home || s.vx || s.vy;
+      Object.assign(s, flying ? clampTo(bounds(), s.x, s.y) : pointOf(bounds(), s.place));
       paint();
     };
     fit();
@@ -203,6 +249,32 @@ export function FloatingAvatar({
     return () => observer.disconnect();
   }, [bounds, paint, room]);
   React.useEffect(() => () => cancelAnimationFrame(sim.current.frame), []);
+
+  // The pointer, wherever it is on the page: what it looks at when it has nothing else to do.
+  React.useEffect(() => {
+    if (!watch) return;
+    const seen = (event: PointerEvent) => {
+      const box = room()?.getBoundingClientRect();
+      if (!box) return;
+      sim.current.gaze = { x: event.clientX - box.left, y: event.clientY - box.top };
+      wake();
+    };
+    const gone = () => {
+      sim.current.gaze = null;
+      wake();
+    };
+    document.addEventListener("pointermove", seen);
+    document.documentElement.addEventListener("mouseleave", gone);
+    window.addEventListener("blur", gone);
+    return () => {
+      document.removeEventListener("pointermove", seen);
+      document.documentElement.removeEventListener("mouseleave", gone);
+      window.removeEventListener("blur", gone);
+      sim.current.gaze = null;
+    };
+  }, [watch, room, wake]);
+  // Set to work, or told not to watch: the eyes go back by themselves.
+  React.useEffect(() => wake(), [pose, watch, wake]);
 
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     const box = room()?.getBoundingClientRect();

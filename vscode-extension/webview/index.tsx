@@ -823,6 +823,7 @@ function App(): JSX.Element {
       key="floater"
       pose={pose}
       start={isPlace(prefs.avatarAt) ? prefs.avatarAt : undefined}
+      watch={prefs.avatarWatches}
       onRest={(avatarAt) => updatePrefs({ avatarAt })}
     />
   );

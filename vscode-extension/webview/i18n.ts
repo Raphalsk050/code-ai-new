@@ -838,6 +838,9 @@ const PT: Record<string, string> = {
   Halloween: "Halloween",
   Christmas: "Natal",
   Easter: "Páscoa",
+  "Avatar looks at the pointer": "O avatar olha para o mouse",
+  "While it is idle, its eyes follow your mouse over the panel.":
+    "Parado, os olhos dele acompanham o seu mouse sobre o painel.",
   "Avatar colour": "Cor do avatar",
   "The theme's accent, or a colour of your own.": "O destaque do tema, ou uma cor sua.",
   "Theme's accent": "Destaque do tema",

@@ -141,6 +141,37 @@ export const tests = {
     await ui.page.waitForSelector(`${FLOAT} .agent-av:not([data-skin])`);
   },
 
+  async "idle, it looks at the pointer, and stops when told not to"(ui, assert) {
+    const box = await openChat(ui);
+    const look = () => ui.page.$eval(FLOAT, (el) => parseFloat(el.style.getPropertyValue("--av-look-x") || "0"));
+    const face = { x: box.x + box.width * 0.46, y: box.y + box.height * 0.57 };
+
+    await ui.page.mouse.move(face.x - 300, face.y);
+    await ui.page.waitForFunction(() => document.querySelector(".av-float").hasAttribute("data-watching"));
+    await settle(ui);
+    await ui.page.waitForTimeout(600);
+    assert((await look()) < -1.2, `the eyes did not go left: ${await look()}`);
+
+    await ui.page.mouse.move(face.x + 80, face.y - 200);
+    await ui.page.waitForTimeout(700);
+    assert((await look()) > 0.3, `the eyes did not come across: ${await look()}`);
+    await ui.shot("avatar-watching");
+
+    // The pointer leaves the page: back to its own business.
+    await ui.page.evaluate(() => document.documentElement.dispatchEvent(new MouseEvent("mouseleave")));
+    await ui.page.waitForFunction(() => !document.querySelector(".av-float").hasAttribute("data-watching"));
+    await ui.page.waitForTimeout(700);
+    assert(Math.abs(await look()) < 0.05, `the eyes stayed where the pointer was: ${await look()}`);
+
+    await ui.page.click('button[title="Back to the history"]');
+    await openSettings(ui);
+    await ui.page.click('button[role="switch"][aria-label="Avatar looks at the pointer"]');
+    await ui.page.mouse.move(200, 200);
+    await ui.page.waitForTimeout(500);
+    assert(!(await ui.page.$(`${FLOAT}[data-watching]`)), "it watches although it was told not to");
+    assert((await ui.page.evaluate(() => window.__state.prefs.avatarWatches)) === false, "the choice was not saved");
+  },
+
   async "it is drawn in the colour picked in the settings"(ui, assert) {
     await openSettings(ui);
     assert(!(await ui.page.$(".agent-av[data-color]")), "a colour before one was picked");
