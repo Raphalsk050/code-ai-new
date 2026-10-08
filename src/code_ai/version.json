@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 42,
-  "patch": 1,
-  "build": 112,
+  "minor": 43,
+  "patch": 0,
+  "build": 113,
   "updated": "2026-10-07",
-  "note": "The plugin's build trusts the runner's own certificates and says what its downloads answer"
+  "note": "The floating avatar greets, waits to be answered, cheers, sleeps, minds being touched and hides from typing"
 }

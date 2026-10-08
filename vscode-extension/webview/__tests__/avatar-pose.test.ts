@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { avatarPose } from "../avatar-pose";
+import { avatarPose, turnMood } from "../avatar-pose";
 import type { Item } from "../store/transcript";
 
 const running = (...names: string[]) => ({
@@ -46,4 +46,28 @@ test("model output types, a silent model thinks", () => {
 
 test("a tool status with no tool listed falls back to the transcript", () => {
   assert.equal(avatarPose({ status: "EXECUTING_TOOL", runningTools: [] }, undefined), "think");
+});
+
+const said: Item = { kind: "user", id: "u", text: "do it" };
+const answer: Item = { kind: "assistant", id: "a", text: "done", streaming: false };
+const tool = { kind: "tool", id: "t", name: "edit_code" } as Item;
+
+test("a turn that did some work and ended well is one to be glad of", () => {
+  assert.equal(turnMood("READY", [said, tool, answer]), "went-well");
+  assert.equal(turnMood("IDLE", [said, tool, answer]), "went-well");
+});
+
+test("a plain answer is nothing to celebrate, nor is work from an earlier turn", () => {
+  assert.equal(turnMood("READY", [said, answer]), null);
+  assert.equal(turnMood("READY", [said, tool, answer, said, answer]), null);
+});
+
+test("a turn that broke is one to be sorry about, whatever it did", () => {
+  assert.equal(turnMood("ERROR", [said]), "went-wrong");
+  assert.equal(turnMood("FAILED", [said, tool]), "went-wrong");
+});
+
+test("a turn the user stopped, or one still going, is neither", () => {
+  assert.equal(turnMood("CANCELLED", [said, tool]), null);
+  assert.equal(turnMood("WAITING_APPROVAL", [said, tool]), null);
 });

@@ -475,6 +475,90 @@ export function SettingsScreen({
         ),
       },
       {
+        id: "avatar_greets",
+        category: "agent",
+        label: t("Avatar greets you"),
+        hint: t("A little jump and a wave when the panel opens or a conversation starts."),
+        keys: [],
+        control: (
+          <Switch
+            checked={prefs.avatarGreets}
+            onChange={(v) => onPrefsChange({ avatarGreets: v })}
+            label={t("Avatar greets you")}
+          />
+        ),
+      },
+      {
+        id: "avatar_waits",
+        category: "agent",
+        label: t("Avatar waits for your answer"),
+        hint: t("With an approval or a question pending it waves at the card, and is glad or sorry at what you answer."),
+        keys: [],
+        control: (
+          <Switch
+            checked={prefs.avatarWaits}
+            onChange={(v) => onPrefsChange({ avatarWaits: v })}
+            label={t("Avatar waits for your answer")}
+          />
+        ),
+      },
+      {
+        id: "avatar_cheers",
+        category: "agent",
+        label: t("Avatar celebrates and laments"),
+        hint: t("A jump when a task ends well, a droop when it ends in an error."),
+        keys: [],
+        control: (
+          <Switch
+            checked={prefs.avatarCheers}
+            onChange={(v) => onPrefsChange({ avatarCheers: v })}
+            label={t("Avatar celebrates and laments")}
+          />
+        ),
+      },
+      {
+        id: "avatar_sleeps",
+        category: "agent",
+        label: t("Avatar falls asleep"),
+        hint: t("After three minutes with no mouse and no key it nods off; any move wakes it."),
+        keys: [],
+        control: (
+          <Switch
+            checked={prefs.avatarSleeps}
+            onChange={(v) => onPrefsChange({ avatarSleeps: v })}
+            label={t("Avatar falls asleep")}
+          />
+        ),
+      },
+      {
+        id: "avatar_touch",
+        category: "agent",
+        label: t("Avatar reacts to touch"),
+        hint: t("Click it, stroke it with the pointer, or throw it hard at a wall."),
+        keys: [],
+        control: (
+          <Switch
+            checked={prefs.avatarTouch}
+            onChange={(v) => onPrefsChange({ avatarTouch: v })}
+            label={t("Avatar reacts to touch")}
+          />
+        ),
+      },
+      {
+        id: "avatar_hides",
+        category: "agent",
+        label: t("Avatar hides from your typing"),
+        hint: t("A few seconds of steady typing and it runs behind the composer, then peeks over the edge. Needs the anxious avatar on."),
+        keys: [],
+        control: (
+          <Switch
+            checked={prefs.avatarHides}
+            onChange={(v) => onPrefsChange({ avatarHides: v })}
+            label={t("Avatar hides from your typing")}
+          />
+        ),
+      },
+      {
         id: "avatar_skin",
         category: "agent",
         label: t("Avatar costume"),

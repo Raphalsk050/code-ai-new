@@ -54,8 +54,9 @@ import { useFollow } from "./follow";
 import { activityLabel, BlockView, formatElapsed, TypingIndicator } from "./messages";
 import { useSteadyPose } from "./agent-avatar";
 import { isPlace } from "./avatar-motion";
+import { cue } from "./avatar-acts";
 import { stroke, useRapt } from "./avatar-nerves";
-import { avatarPose } from "./avatar-pose";
+import { avatarPose, turnMood } from "./avatar-pose";
 import { seasonalSkin, setAvatarColor, setAvatarSkin } from "./avatar-skin";
 import { FloatingAvatar } from "./floating-avatar";
 import { PromptPin, usePromptPin } from "./prompt-pin";
@@ -97,6 +98,9 @@ const PERSIST_AFTER_MS = 400;
 // Backend states a turn ends well in; ERROR, FAILED and CANCELLED end it too,
 // but not with an answer worth marking done.
 const SETTLED = new Set(["READY", "IDLE"]);
+const TURN_OVER = new Set(["READY", "IDLE", "ERROR", "FAILED", "CANCELLED"]);
+// What waits on the user, for the avatar to wait by.
+const WAITS_ON = ".approval-card, .qcard";
 // Scrolled this far from the end, the glass over the composer is fully drawn.
 const GLASS_RAMP_PX = 24;
 // No backend to send to: the composer says so and will not send.
@@ -450,6 +454,15 @@ function App(): JSX.Element {
   React.useEffect(() => {
     if (!draft || !anxious) stroke("calm");
   }, [draft, anxious]);
+  // A turn over, the avatar is told how it went. Waiting on an approval is not over.
+  const inTurn = React.useRef(false);
+  React.useEffect(() => {
+    if (busy) inTurn.current = true;
+    if (busy || !inTurn.current || !TURN_OVER.has(state.session.status)) return;
+    inTurn.current = false;
+    const mood = turnMood(state.session.status, items);
+    if (mood) cue(mood);
+  }, [busy, state.session.status, items]);
   const blocks = React.useMemo(() => groupBlocks(items), [items]);
   const pinText = React.useMemo(() => {
     const found = pin.target && items.find((item) => item.id === pin.target?.message);
@@ -559,6 +572,7 @@ function App(): JSX.Element {
     setDraft("");
     updatePrefs({ mode: "agent" });
     setScreen("chat");
+    cue("greet");
   };
 
   const openConversation = (id: string) => {
@@ -807,8 +821,10 @@ function App(): JSX.Element {
     }
   };
 
-  const resolveApproval = (callId: string, scope: ApprovalScope, reason?: string) =>
+  const resolveApproval = (callId: string, scope: ApprovalScope, reason?: string) => {
+    cue(scope === "deny" ? "refused" : "answered");
     send({ type: "resolveApproval", call_id: callId, scope, reason });
+  };
   const openDiff = React.useCallback((path: string) => send({ type: "openDiff", path }), []);
   // A message waiting for a turn of its own goes to the turn that is running instead.
   const answerNow = React.useCallback((text: string) => send({ type: "answerNow", text }), []);
@@ -886,6 +902,19 @@ function App(): JSX.Element {
       watch={prefs.avatarWatches}
       dock={screen === "home" ? ".spark-dock" : undefined}
       scene={`${screen}:${mode}`}
+      manners={{
+        greets: prefs.avatarGreets,
+        waits: prefs.avatarWaits,
+        cheers: prefs.avatarCheers,
+        sleeps: prefs.avatarSleeps,
+        touch: prefs.avatarTouch,
+        hides: prefs.avatarHides,
+      }}
+      waitsOn={
+        state.approvals.pending || state.questions.pending.length > 0 || state.elicitations.pending.length > 0
+          ? WAITS_ON
+          : undefined
+      }
       onRest={(avatarAt) => updatePrefs({ avatarAt })}
     />
   );
@@ -958,16 +987,20 @@ function App(): JSX.Element {
         {state.questions.pending.length > 0 && (
           <QuestionsCard
             questions={state.questions.pending}
-            onAnswer={(text) => send({ type: "answerQuestions", text })}
+            onAnswer={(text) => {
+              cue("answered");
+              send({ type: "answerQuestions", text });
+            }}
           />
         )}
         {elicitation && (
           <ElicitationCard
             request={elicitation}
             error={elicitErrors[elicitation.id] ?? ""}
-            onAnswer={(action, content) =>
-              send({ type: "mcpElicitation", id: elicitation.id, action, content })
-            }
+            onAnswer={(action, content) => {
+              if (action === "accept") cue("answered");
+              send({ type: "mcpElicitation", id: elicitation.id, action, content });
+            }}
           />
         )}
       </>

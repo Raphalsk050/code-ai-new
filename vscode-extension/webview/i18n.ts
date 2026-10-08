@@ -848,6 +848,24 @@ const PT: Record<string, string> = {
   "Avatar gets anxious while you type": "O avatar fica ansioso enquanto você digita",
   "It watches what you write and fidgets, then relaxes when you stop or send.":
     "Ele acompanha o que você escreve e se agita, depois relaxa quando você para ou envia.",
+  "Avatar greets you": "O avatar cumprimenta você",
+  "A little jump and a wave when the panel opens or a conversation starts.":
+    "Um pulinho e um aceno quando o painel abre ou uma conversa começa.",
+  "Avatar waits for your answer": "O avatar espera a sua resposta",
+  "With an approval or a question pending it waves at the card, and is glad or sorry at what you answer.":
+    "Com uma aprovação ou uma pergunta pendente ele acena para o cartão, e fica feliz ou triste com a sua resposta.",
+  "Avatar celebrates and laments": "O avatar comemora e lamenta",
+  "A jump when a task ends well, a droop when it ends in an error.":
+    "Um pulo quando a tarefa termina bem; murcha quando ela termina em erro.",
+  "Avatar falls asleep": "O avatar dorme",
+  "After three minutes with no mouse and no key it nods off; any move wakes it.":
+    "Com três minutos sem mouse nem tecla ele cochila; qualquer movimento o acorda.",
+  "Avatar reacts to touch": "O avatar reage ao toque",
+  "Click it, stroke it with the pointer, or throw it hard at a wall.":
+    "Clique nele, faça carinho com o mouse ou arremesse com força na parede.",
+  "Avatar hides from your typing": "O avatar se esconde enquanto você digita",
+  "A few seconds of steady typing and it runs behind the composer, then peeks over the edge. Needs the anxious avatar on.":
+    "Com uns segundos de digitação sem parar ele corre para trás da caixa de texto e espia por cima da borda. Precisa do avatar ansioso ligado.",
   "Avatar colour": "Cor do avatar",
   "The theme's accent, or a colour of your own.": "O destaque do tema, ou uma cor sua.",
   "Theme's accent": "Destaque do tema",

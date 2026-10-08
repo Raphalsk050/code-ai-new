@@ -79,9 +79,18 @@ export interface ExtPrefs {
   avatarWatches: boolean;
   /** Whether the avatar gets anxious while the user types. */
   avatarAnxious: boolean;
+  /** What the floating avatar does of its own accord (avatar-acts.ts): each can be turned off. */
+  avatarGreets: boolean;
+  avatarWaits: boolean;
+  avatarCheers: boolean;
+  avatarSleeps: boolean;
+  avatarTouch: boolean;
+  avatarHides: boolean;
 }
 
-export const DEFAULT_PREFS: ExtPrefs = { mode: "agent", autoRunRefactor: false, floatingAvatar: true, avatarSkin: "auto", avatarColor: "theme", avatarWatches: true, avatarAnxious: true };
+export const DEFAULT_PREFS: ExtPrefs = { mode: "agent", autoRunRefactor: false, floatingAvatar: true, avatarSkin: "auto", avatarColor: "theme", avatarWatches: true, avatarAnxious: true,
+  avatarGreets: true, avatarWaits: true, avatarCheers: true, avatarSleeps: true, avatarTouch: true, avatarHides: true,
+};
 
 export interface PersistedState {
   conversations: Conversation[];

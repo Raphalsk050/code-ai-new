@@ -25,3 +25,17 @@ export function avatarPose(session: Pick<SessionState, "status" | "runningTools"
   if (last?.kind === "assistant" && last.streaming) return "type";
   return "think";
 }
+
+/**
+ * How the turn that just ended went, as the avatar takes it: glad of work
+ * that got done, sorry when it broke. A plain answer, or a turn the user
+ * stopped, is nothing to it.
+ */
+export function turnMood(status: string, items: Item[]): "went-well" | "went-wrong" | null {
+  if (status === "ERROR" || status === "FAILED") return "went-wrong";
+  if (status !== "READY" && status !== "IDLE") return null;
+  for (let i = items.length - 1; i >= 0 && items[i].kind !== "user"; i--) {
+    if (items[i].kind === "tool") return "went-well";
+  }
+  return null;
+}

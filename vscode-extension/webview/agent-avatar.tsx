@@ -46,6 +46,10 @@ const DROP = "M0-1.35C.75-.35 1 .25 1 .7a1 1 0 0 1-2 0C-1 .25-.75-.35 0-1.35z";
 const DROP_AT = "translate(19.7 5.8)";
 const DROP_AT_HAT = "translate(20.2 9.2)";
 
+// Glad: two arches where the eyes are, standing on the line a shut eye leaves.
+const ARCH_L = "M8.1 12.9Q9.45 8.9 10.8 12.9";
+const ARCH_R = "M13.2 12.9Q14.55 8.9 15.9 12.9";
+
 export function AgentAvatar({
   pose,
   size = 16,
@@ -112,6 +116,11 @@ export function AgentAvatar({
                   <rect x="12.6" y="17" width="1.7" height="2.4" rx=".35" fill="#fff" />
                 </>
               )}
+            </g>
+            {/* Cut in the same mask, and looking where the eyes look: only an act shows them. */}
+            <g className="agent-av-glad">
+              <path d={ARCH_L} />
+              <path d={ARCH_R} />
             </g>
           </g>
         </mask>

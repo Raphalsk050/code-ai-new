@@ -137,6 +137,34 @@ ${ANXIOUS_STYLE}
 .agent-av-leaf-lag { transform-origin: 12.6px 3.9px; transform: rotate(var(--av-leaf-lag, 0deg)); }
 .agent-av-look { transform: translate(var(--av-look-x, 0px), var(--av-look-y, 0px)); }
 
+/* ---- acts: what a script asks of it (avatar-acts.ts; the floating one sets these) ---- */
+/* Its eyes are the script's while it acts: there is no pose to blink them. */
+.av-float[data-act] .agent-av-eye {
+  transform-origin: 50% 60%; transform: scale(1, var(--av-lid, 1)); opacity: calc(1 - 1.6 * var(--av-glad, 0));
+}
+.agent-av-glad {
+  fill: none; stroke: #000; stroke-width: 1.3; stroke-linecap: round; opacity: var(--av-glad, 0);
+  transform-origin: 12px 12.9px; transform: scaleY(calc(.3 + .7 * var(--av-glad, 0)));
+}
+.av-float[data-act] .agent-av-fx-sweat { opacity: var(--av-sweat, 0); transition: none; }
+.av-float[data-act] .agent-av-sweat { animation: av-a-drop 2.6s infinite; }
+/* What stands beside it: sparks, stars, a heart, a mark. Each is put where it is, frame by frame. */
+.av-float-fx { position: absolute; inset: 0; overflow: visible; pointer-events: none; fill: currentColor; }
+.av-float-fx > g > * { opacity: 0; }
+.av-float-heart { fill: #e85aad; }
+/* Asleep, nothing asks for a frame: the breathing and the zs are these two loops. */
+.av-float[data-asleep] .agent-av-breath { animation: av-i-breathe 3.8s cubic-bezier(.37,0,.63,1) infinite alternate; }
+.av-float-zs path { fill: none; stroke: currentColor; stroke-width: .55; stroke-linecap: round; stroke-linejoin: round; }
+.av-float[data-asleep] .av-float-zs path { animation: av-z 2.6s linear infinite; }
+.av-float[data-asleep] .av-float-zs path:nth-child(2) { animation-delay: .87s; }
+.av-float[data-asleep] .av-float-zs path:nth-child(3) { animation-delay: 1.74s; }
+@keyframes av-z {
+  0% { transform: translate(19.6px, 3.2px) scale(.55); opacity: 0; }
+  25% { opacity: .8; }
+  60% { opacity: .9; }
+  100% { transform: translate(24.4px, -5.4px) scale(1.4); opacity: 0; }
+}
+
 /* ---- colours ---- */
 ${COLOR_STYLE}
 
@@ -212,7 +240,7 @@ ${COLOR_STYLE}
 .spark-dock { height: 62px; }
 
 @media (prefers-reduced-motion: reduce) {
-  .agent-av * { animation: none !important; }
+  .agent-av *, .av-float-fx * { animation: none !important; }
   .agent-av[data-pose=search] .agent-av-eyes { transform: translate(-1.6px,.2px); }
   .agent-av[data-pose=type] .agent-av-eyes { transform: translate(0,1.3px); }
   .agent-av[data-pose=think] .agent-av-eyes { transform: translate(1.1px,-1.5px); }

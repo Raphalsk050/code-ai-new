@@ -103,8 +103,10 @@ test("the stylesheet plays every part of it, with the shiver and the drop", () =
     assert.ok(AVATAR_STYLE.includes(`@keyframes ${name}`), `no keyframes named ${name}`);
     assert.ok(new RegExp(`animation(-name)?:[^;]*\\b${name}\\b`).test(AVATAR_STYLE), `${name} is never played`);
   }
-  // And nothing but the anxious pose plays them.
+  // And nothing but the anxious pose plays them, save the drop: an act sweats it too.
   const playing = AVATAR_STYLE.match(/[^{}]+\{[^{}]*\bav-a-[a-z-]+[^{}]*\}/g) ?? [];
-  assert.equal(playing.length, 9);
-  for (const rule of playing) assert.ok(rule.includes("[data-pose=anxious]"), rule);
+  assert.equal(playing.length, 10);
+  for (const rule of playing) {
+    assert.ok(rule.includes("[data-pose=anxious]") || /\[data-act\] \.agent-av-sweat/.test(rule), rule);
+  }
 });
