@@ -57,6 +57,12 @@ class VersionInfo:
 
         return f"{self.release}-{self.build}"
 
+    @property
+    def label(self) -> str:
+        """``vX.Y.Z · build W`` - the small print a front end shows."""
+
+        return f"v{self.release} · build {self.build}"
+
     def __str__(self) -> str:
         return self.full
 

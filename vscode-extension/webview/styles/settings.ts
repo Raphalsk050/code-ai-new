@@ -38,6 +38,7 @@ export const SETTINGS_STYLE = `
 }
 .settings-nav-item > span:not(.dirty-dot) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .settings-nav-item:hover { background: var(--hover); color: var(--fg); }
+.settings-nav .version-mark { margin-top: auto; padding: 8px 10px 0; }
 .settings-nav-item.active { background: var(--accent-soft); color: var(--fg-strong); }
 .settings-nav-item:focus-visible { outline: 1px solid var(--focus); outline-offset: -1px; }
 .settings-body { flex: 1; min-width: 0; overflow-y: auto; padding: var(--space-4) var(--space-5) 96px; }
@@ -186,6 +187,8 @@ export const SETTINGS_STYLE = `
 }
 .settings.narrow .settings-nav-item { width: auto; flex: none; padding: 4px 10px; border-radius: var(--radius-pill); }
 .settings.narrow .settings-nav-item > .codicon { display: none; }
+/* A row of tabs has no foot to put it at: the home screen and the composer still say it. */
+.settings.narrow .settings-nav .version-mark { display: none; }
 .settings.narrow .settings-body { padding: var(--space-3) var(--space-4) 96px; }
 .settings.narrow .setting-row { grid-template-columns: minmax(0, 1fr); }
 .settings.narrow .setting-row > .setting-control { grid-column: 1; grid-row: auto; justify-content: flex-start; margin-top: 6px; }

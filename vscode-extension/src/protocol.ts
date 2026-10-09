@@ -123,6 +123,8 @@ export interface Settings {
   workspace: string;
   /** The workspace's git branch; "" outside a repository. */
   branch?: string;
+  /** The backend's own version, "X.Y.Z-W"; a backend older than the panel says nothing. */
+  version?: string;
   /** Doctor: tools switched off, sub-agent models, concurrency, sampling. */
   disabled_tools: string[];
   subagent_models: string[];

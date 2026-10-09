@@ -338,6 +338,7 @@ button { font-family: inherit; cursor: pointer; }
   margin: 12px 0 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border);
 }
 .home-empty { color: var(--fg-muted); font-size: var(--fs-small); padding: 10px 2px; }
+.home-foot { margin-top: auto; padding: 0 18px 10px; text-align: center; }
 .history-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .history-item {
   display: flex; align-items: center; gap: 10px; padding: 9px 11px;

@@ -145,6 +145,13 @@ button.context-meter:hover { background: var(--hover); }
 }
 .ctx-remove:hover { color: var(--fg); background: var(--hover); }
 .hint { max-width: 820px; margin: 6px auto 0; color: var(--fg-muted); font-size: var(--fs-label); }
+.composer-hint { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); }
+/* Which build this is, for whoever has to say: there to be found, not to be read. */
+.version-mark {
+  flex: none; color: var(--fg-muted); font-size: var(--fs-label); font-variant-numeric: tabular-nums;
+  white-space: nowrap; opacity: .3; transition: opacity var(--dur-fast) var(--ease-out);
+}
+.version-mark:hover { opacity: .9; }
 
 /* the bar: options wrap on the left, model + send never wrap and never move */
 .composer-bar { display: flex; align-items: flex-end; gap: var(--space-2); padding: var(--space-2) var(--space-3) var(--space-3); }

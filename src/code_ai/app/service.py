@@ -46,6 +46,7 @@ from code_ai.tools.skills.common import SkillSource
 from code_ai.tools.terminal.manager import PersistentTerminalManager
 from code_ai.util.environment import command_environment, describe_environment
 from code_ai.util.git_branch import current_branch
+from code_ai.version import full_version
 
 logger = logging.getLogger(__name__)
 
@@ -877,6 +878,8 @@ class CodeAIApplication:
             "max_context_tokens": config.budgets.max_context_tokens,
             "workspace": str(config.workspace),
             "branch": self.branch,
+            # Which build is answering: the panel prints it small.
+            "version": full_version(),
             # What the terminal's /doctor edits, so a second front end does not
             # have to send the user back to the terminal to turn a tool off.
             "disabled_tools": list(config.disabled_tools),

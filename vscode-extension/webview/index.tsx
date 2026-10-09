@@ -59,6 +59,7 @@ import { stroke, useRapt } from "./avatar-nerves";
 import { avatarPose, turnMood } from "./avatar-pose";
 import { seasonalSkin, setAvatarColor, setAvatarSkin } from "./avatar-skin";
 import { FloatingAvatar } from "./floating-avatar";
+import { VersionMark } from "./version-mark";
 import { PromptPin, usePromptPin } from "./prompt-pin";
 import { ripple } from "./motion";
 import { QuestionsCard } from "./questions-card";
@@ -962,6 +963,7 @@ function App(): JSX.Element {
           onSettings={openSettings}
           update={updateButton}
           docked={prefs.floatingAvatar}
+          version={settings?.version}
         />
         {floater}
       </div>
@@ -1284,10 +1286,13 @@ function App(): JSX.Element {
                     )}
                   </div>
                 </div>
-                <div className="hint">
-                  {busy
-                    ? t("Enter answers later · Alt+Enter steers this turn · Esc terminal")
-                    : t("Enter sends · Shift+Enter new line · / commands · @ files · Esc terminal")}
+                <div className="hint composer-hint">
+                  <span>
+                    {busy
+                      ? t("Enter answers later · Alt+Enter steers this turn · Esc terminal")
+                      : t("Enter sends · Shift+Enter new line · / commands · @ files · Esc terminal")}
+                  </span>
+                  <VersionMark version={settings?.version} />
                 </div>
               </div>
             </div>

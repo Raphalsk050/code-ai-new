@@ -9,6 +9,7 @@ import { Dropdown } from "./dropdown";
 import { ExtPrefs } from "./history";
 import { McpSection, McpViewState } from "./mcp-settings";
 import { Draft, draftFromSettings, keepRefusedEdits } from "./settings-draft";
+import { VersionMark } from "./version-mark";
 
 /** State of the on-demand "list models" query for the model field. */
 export interface ModelsState {
@@ -921,6 +922,7 @@ export function SettingsScreen({
                 {dirtyCategories.has(c.id) && <span className="dirty-dot" />}
               </button>
             ))}
+            <VersionMark version={settings?.version} />
           </nav>
           <div className="settings-body">
             {failures.length > 0 && (

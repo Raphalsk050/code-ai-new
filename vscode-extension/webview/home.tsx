@@ -5,6 +5,7 @@ import { t, tf } from "./i18n";
 
 import { IconHistory, IconPlus, IconSettings, IconTrash } from "./icons";
 import { HistoryEntry, relativeTime } from "./history";
+import { VersionMark } from "./version-mark";
 
 export function HomeScreen({
   entries,
@@ -14,6 +15,7 @@ export function HomeScreen({
   onSettings,
   update,
   docked = false,
+  version,
 }: {
   entries: HistoryEntry[];
   onNew: () => void;
@@ -24,6 +26,8 @@ export function HomeScreen({
   update?: React.ReactNode;
   /** The floating avatar comes to sit where the mark is: the mark makes room. */
   docked?: boolean;
+  /** The backend's version, once it has said. */
+  version?: string;
 }): JSX.Element {
   const list = entries;
   return (
@@ -79,6 +83,9 @@ export function HomeScreen({
             ))}
           </ul>
         )}
+      </div>
+      <div className="home-foot">
+        <VersionMark version={version} />
       </div>
     </div>
   );

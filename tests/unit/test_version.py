@@ -139,3 +139,9 @@ def test_the_script_refuses_a_bump_with_no_note() -> None:
 
     assert result.returncode == 2
     assert VERSION_FILE.read_text(encoding="utf-8") == before
+
+
+def test_the_small_print_names_the_release_and_the_build() -> None:
+    info = code_ai.version.VersionInfo(major=0, minor=43, patch=0, build=113)
+
+    assert info.label == "v0.43.0 · build 113"

@@ -192,3 +192,9 @@ async def test_one_bad_value_does_not_abort_the_batch(app: CodeAIApplication) ->
 
     assert "language" in result["applied"]
     assert "max_concurrent_subagents" in result["errors"]
+
+
+def test_settings_say_which_build_is_answering(app: CodeAIApplication) -> None:
+    from code_ai.version import full_version
+
+    assert app.get_settings()["version"] == full_version()

@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 43,
-  "patch": 0,
-  "build": 113,
-  "updated": "2026-10-07",
-  "note": "The floating avatar greets, waits to be answered, cheers, sleeps, minds being touched and hides from typing"
+  "patch": 1,
+  "build": 114,
+  "updated": "2026-10-09",
+  "note": "The version shows in small print in the panel and on the terminal's tagline"
 }

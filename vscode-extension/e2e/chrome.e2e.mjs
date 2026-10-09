@@ -269,4 +269,35 @@ export const tests = {
     const softened = await ui.page.$eval(".composer-wrap", (el) => getComputedStyle(el, "::before").maskImage);
     assert(/rgb\(0, 0, 0\) 44px/.test(softened), `the glass does not build up over the text: ${softened}`);
   },
+
+  async "the version is in small print wherever the panel has a foot, and only once the backend has said it"(ui, assert) {
+    const marks = (scope) => ui.page.$$eval(`${scope} .version-mark`, (all) => all.map((el) => el.textContent));
+    assert((await marks(".home")).length === 0, "a version before the backend said one");
+    await ui.fromHost({ type: "settings", settings: settingsSnapshot({ version: "0.43.0-113" }) });
+    assert((await marks(".home")).join() === "v0.43.0 · build 113", `the home screen says ${await marks(".home")}`);
+    // There to be found, not to be read: far fainter than the muted text beside it, until it is pointed at.
+    const faint = await ui.page.$eval(".version-mark", (el) => parseFloat(getComputedStyle(el).opacity));
+    assert(faint > 0.1 && faint < 0.45, `drawn at ${faint}`);
+    const home = await ui.page.locator(".home .version-mark").boundingBox();
+    assert(home.y + home.height > ui.page.viewportSize().height - 40, "it is not at the foot of the home screen");
+    await ui.shot("version-mark-home");
+
+    await ui.page.click(".home-new");
+    await ui.page.waitForSelector(".composer-hint");
+    assert((await marks(".composer-hint")).join() === "v0.43.0 · build 113", "nothing under the composer");
+    const hint = await ui.page.locator(".composer-hint > span:first-child").boundingBox();
+    const mark = await ui.page.locator(".composer-hint .version-mark").boundingBox();
+    assert(mark.x >= hint.x + hint.width, "it runs into the hint beside it");
+    await ui.page.hover(".composer-hint .version-mark");
+    await ui.page.waitForFunction(() => parseFloat(getComputedStyle(document.querySelector(".composer-hint .version-mark")).opacity) > 0.8);
+    await ui.shot("version-mark-chat");
+
+    await ui.page.click('button[title="Settings"]');
+    await ui.page.waitForSelector(".settings-nav");
+    assert((await marks(".settings-nav")).join() === "v0.43.0 · build 113", "nothing in the settings");
+
+    // An older backend, or a version it garbled: no small print rather than a wrong one.
+    await ui.fromHost({ type: "settings", settings: settingsSnapshot({ version: "dev" }) });
+    assert((await marks("#root")).length === 0, "something that is not a version is shown as one");
+  },
 };

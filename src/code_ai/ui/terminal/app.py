@@ -93,6 +93,7 @@ from code_ai.ui.terminal.widgets import (
     working_label,
     working_label_style,
 )
+from code_ai.version import read_version
 
 logger = logging.getLogger(__name__)
 
@@ -1107,7 +1108,14 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                         load_code_ai_logo(application.session.config.terminal_banner_font),
                         id="logo",
                     )
-                    yield Static("Any model. Real tools. Local control.", id="subtitle")
+                    # The version rides the tagline, dimmed: there to be found, not read.
+                    yield Static(
+                        Text.assemble(
+                            "Any model. Real tools. Local control.",
+                            (f"   {read_version().label}", "dim"),
+                        ),
+                        id="subtitle",
+                    )
                     # Carries the configured model name and workspace folder,
                     # neither of which is ours to sanitise — a single bracket in
                     # either would otherwise raise MarkupError on every status

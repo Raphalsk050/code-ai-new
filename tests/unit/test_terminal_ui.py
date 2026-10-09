@@ -3197,3 +3197,18 @@ def test_cleared_tool_output_says_how_much_it_freed() -> None:
     assert view_model.conversation == [
         "context> old tool output cleared to free context (-18.2k tokens)"
     ]
+
+
+async def test_the_version_rides_the_tagline_dimmed(tmp_path) -> None:
+    from code_ai.version import read_version
+
+    terminal_app = create_terminal_app(FakeTerminalApplication(tmp_path))
+
+    async with terminal_app.run_test(size=(120, 40)):
+        tagline = terminal_app.query_one("#subtitle", Static).render()
+
+    assert str(tagline).startswith("Any model. Real tools. Local control.")
+    assert str(tagline).endswith(read_version().label)
+    # Small print: the tagline keeps its colour, the version is dimmed under it.
+    dimmed = [span for span in tagline.spans if "dim" in str(span.style)]
+    assert [str(tagline)[span.start : span.end].strip() for span in dimmed] == [read_version().label]

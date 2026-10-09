@@ -867,6 +867,8 @@ const PT: Record<string, string> = {
   "A few seconds of steady typing and it runs behind the composer, then peeks over the edge. Needs the anxious avatar on.":
     "Com uns segundos de digitação sem parar ele corre para trás da caixa de texto e espia por cima da borda. Precisa do avatar ansioso ligado.",
   "Avatar colour": "Cor do avatar",
+  "Code-AI version": "Versão do Code-AI",
+  "v{0} · build {1}": "v{0} · build {1}",
   "The theme's accent, or a colour of your own.": "O destaque do tema, ou uma cor sua.",
   "Theme's accent": "Destaque do tema",
   Blue: "Azul",
