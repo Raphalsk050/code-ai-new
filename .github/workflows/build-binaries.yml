@@ -632,10 +632,16 @@ jobs:
       # certificates the runner itself trusts, which should hold the proxy's.
       # Where the runner keeps them somewhere else, the repository variable
       # CODE_AI_CA_BUNDLE names the PEM file.
+      #
+      # Maven Central answers the proxy's address, which is everyone's, with
+      # HTTP 429. The build asks a mirror first, a public one it finds itself;
+      # the repository variable CODE_AI_MAVEN_MIRROR names another, the
+      # company's own.
       - name: Build the packages
         id: package
         env:
           CODE_AI_CA_BUNDLE: ${{ vars.CODE_AI_CA_BUNDLE }}
+          CODE_AI_MAVEN_MIRROR: ${{ vars.CODE_AI_MAVEN_MIRROR }}
         run: |
           chmod +x "out/code-ai-linux-v$CODE_AI_VERSION"
           CODE_AI_PLUGIN_TARGETS="linux-x64 win32-x64"
@@ -685,6 +691,7 @@ jobs:
             -e HOME=/tmp \
             -e GRADLE_USER_HOME=/cache \
             -e CODE_AI_PANEL_BUNDLED=1 \
+            -e CODE_AI_MAVEN_MIRROR \
             "$@" \
             -v "$cache":/cache \
             -v "$PWD":/work -w /work \

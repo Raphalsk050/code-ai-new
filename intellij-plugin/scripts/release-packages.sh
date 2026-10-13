@@ -14,6 +14,8 @@
 # already: a build with no Node has Gradle take it as it is.
 # CODE_AI_CA_BUNDLE, when set, names a PEM file of certificates for Java to
 # trust beside its own: the runner's, behind a proxy that re-signs TLS.
+# CODE_AI_MAVEN_MIRROR, when set, names the mirror of Maven Central to ask
+# first: a company's own, say. Left unset, a public one is found.
 set -eu
 
 [ $# -ge 4 ] || {
@@ -59,18 +61,36 @@ report_network() {
     "the IDE=https://redirector.gvt1.com/edgedl/android/studio/patches/updates.xml" || true
 }
 
-gradle_args=""
+# Maven Central turns a busy address away (HTTP 429), and a company's proxy is
+# one address for everyone behind it. The build asks a mirror first: the one
+# CODE_AI_MAVEN_MIRROR names or, with none named, the first of these to have
+# the file the build starts with. What a mirror lacks is still asked of Maven
+# Central, which Gradle is told to wait on for minutes, not its usual seconds.
+pick_mirror() {
+  if [ -z "${CODE_AI_MAVEN_MIRROR:-}" ]; then
+    kotlin=$(sed -n 's/.*"org.jetbrains.kotlin.jvm") version "\(.*\)".*/\1/p' build.gradle.kts)
+    CODE_AI_MAVEN_MIRROR=$(java scripts/BuildNetwork.java first \
+      "org/jetbrains/kotlin/kotlin-gradle-plugins-bom/$kotlin/kotlin-gradle-plugins-bom-$kotlin.pom" \
+      https://maven-central.storage-download.googleapis.com/maven2 \
+      https://cache-redirector.jetbrains.com/repo1.maven.org/maven2) || true
+  fi
+  export CODE_AI_MAVEN_MIRROR
+  echo "Maven Central's mirror: ${CODE_AI_MAVEN_MIRROR:-none answers, Maven Central itself is asked}"
+}
+
+gradle_args="-Dorg.gradle.internal.repository.max.tentatives=7 -Dorg.gradle.internal.repository.initial.backoff=2000"
 case "$step" in
   stage) ;;
   build)
     trust_bundle
     report_network
+    pick_mirror
     if [ -n "${CODE_AI_PANEL_BUNDLED:-}" ]; then
       [ -f ../vscode-extension/dist/webview.js ] || {
         echo "CODE_AI_PANEL_BUNDLED is set and vscode-extension/dist/webview.js is not there" >&2
         exit 1
       }
-      gradle_args="-x installWebviewDependencies -x buildWebview"
+      gradle_args="$gradle_args -x installWebviewDependencies -x buildWebview"
     fi
     ;;
   *)

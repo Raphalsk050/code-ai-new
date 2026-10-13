@@ -29,6 +29,9 @@ import javax.net.ssl.X509ExtendedTrustManager;
  *   report NAME=URL...   says what each URL answers, followed through its
  *                        redirects as a download is; when Java will not take
  *                        a certificate, who signed it
+ *   first FILE REPOSITORY...
+ *                        prints the first REPOSITORY that has FILE, and
+ *                        nothing when none of them does
  *
  * Nothing here trusts what it was not told to: `report` checks as any Java
  * program does, with the store the build was given.
@@ -45,8 +48,15 @@ public final class BuildNetwork {
                 String[] named = args[i].split("=", 2);
                 System.out.printf("  %-15s %s%n", named[0], answer(named[1]));
             }
+        } else if (args.length > 2 && args[0].equals("first")) {
+            for (int i = 2; i < args.length; i++) {
+                if (answer(args[i] + "/" + args[1]).startsWith("HTTP 2")) {
+                    System.out.println(args[i]);
+                    return;
+                }
+            }
         } else {
-            System.err.println("usage: BuildNetwork trust BUNDLE STORE | report NAME=URL...");
+            System.err.println("usage: BuildNetwork trust BUNDLE STORE | report NAME=URL... | first FILE REPOSITORY...");
             System.exit(2);
         }
     }

@@ -127,7 +127,13 @@ val sandboxRuntime: String? =
         ?: (if (browserIsPlugin) null else installedRuntime() ?: providers.gradleProperty("platformJbrVersion").orNull))
         ?.trim()?.takeIf { it.isNotEmpty() }
 
+/** A mirror of Maven Central to ask before it, as the plugins' own are (settings.gradle.kts). */
+val mavenMirror: String? =
+    providers.gradleProperty("mavenMirror").orElse(providers.environmentVariable("CODE_AI_MAVEN_MIRROR")).orNull
+        ?.trim()?.takeIf { it.isNotEmpty() }
+
 repositories {
+    mavenMirror?.let { maven(it) }
     mavenCentral()
     intellijPlatform {
         defaultRepositories()

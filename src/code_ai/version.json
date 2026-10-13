@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 43,
-  "patch": 1,
-  "build": 114,
-  "updated": "2026-10-09",
-  "note": "The version shows in small print in the panel and on the terminal's tagline"
+  "patch": 2,
+  "build": 115,
+  "updated": "2026-10-13",
+  "note": "The Android Studio plugin's build asks a mirror of Maven Central first"
 }
