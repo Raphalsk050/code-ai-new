@@ -25,20 +25,23 @@ export function easterSunday(year: number): Date {
   return new Date(year, month - 1, day);
 }
 
+/** The fewest days ahead of its date a seasonal skin goes on. */
+export const SEASON_LEAD_DAYS = 15;
+
 /**
- * The skin a date calls for: the week up to Halloween, December up to
- * Christmas day, Holy Week. Short on purpose - a costume worn for a month
- * stops being one.
+ * The skin a date calls for: Halloween and Easter from SEASON_LEAD_DAYS
+ * before, December up to Christmas day. Each comes off the day after.
  */
 export function seasonalSkin(date: Date): AvatarSkin {
-  const month = date.getMonth() + 1;
-  const day = date.getDate();
-  if (month === 10 && day >= 25) return "halloween";
-  if (month === 12 && day <= 25) return "christmas";
-  const easter = easterSunday(date.getFullYear());
-  const today = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
-  const days = Math.round((easter.getTime() - today) / 86_400_000);
-  if (days >= 0 && days <= 7) return "easter";
+  const year = date.getFullYear();
+  const today = new Date(year, date.getMonth(), date.getDate()).getTime();
+  const ahead = (day: Date) => {
+    const days = Math.round((day.getTime() - today) / 86_400_000);
+    return days >= 0 && days <= SEASON_LEAD_DAYS;
+  };
+  if (ahead(new Date(year, 9, 31))) return "halloween";
+  if (date.getMonth() === 11 && date.getDate() <= 25) return "christmas";
+  if (ahead(easterSunday(year))) return "easter";
   return "default";
 }
 
