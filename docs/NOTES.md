@@ -3,6 +3,36 @@
 Decisions, trade-offs and loose ends. One entry per block of work, newest at
 the top.
 
+## 2026-10-14 - No caps on a working turn; a long conversation stays fast
+
+### What was done
+
+- **The delivery check at the end of a turn is gone**, and so is the `complete_task` evidence gate: a prose answer ends the turn, and `complete_task` accepts a well-formed claim.
+- **No step, tool-call or turn-time cap by default** (0 is no cap; a value in config.json still applies). The stall detector, raised from 4 to 12 rounds, and the user's stop end a run that goes nowhere. Commands time out at 600 s by default.
+  Sub-agents get no cap either; the coordinator stops one only after 600 s (explorers) or 1800 s (workers) without an event from it.
+- **A stopped turn says why**: `turn.budget_exhausted` names the setting and its value, `turn.no_answer` marks an empty answer, and the panel and the terminal show both.
+- **The settings screen that never loaded**: the VS Code client counted a request's 20 s from when it was written, so a backend slow to start (the company's file encryption tool scanning what the frozen backend unpacks) lost the answer. Time now counts from the backend's first word, up to five minutes, as the IntelliJ client already did.
+- **The avatar blends between its loops and its acts** instead of jumping (`webview/avatar-blend.ts`).
+- **A long conversation no longer slows the panel or the editor.** Off-screen messages are neither laid out nor painted, no layout is forced per render, the avatar loops hold still when nobody is looking, conversations are kept by the host one file each, and a long one is drawn from the newest turns.
+- **Pictures in Markdown**: the panel shows workspace images named in answers and documents, and `read_file` on a Markdown file attaches the images its returned lines reference.
+
+### Decisions
+
+- **The single-file backend stays.** Shipping it as a folder would stop it unpacking itself on every start, the cost the encryption tool multiplies; the start allowance covers the symptom instead.
+- **The avatar loops pause while the panel is hidden, or while focus is elsewhere with no turn running.** With the panel focused they run, at about 10 ms a frame at 500 turns in headless software rendering; with them still, a frame costs under 1 ms.
+- **Graph nodes and imported agent definitions keep the step budgets they are given**: those are limits someone set on purpose.
+- **Remote images in Markdown are not fetched** by a file read.
+
+### Checked
+
+500-turn conversation, production bundle in headless Chromium, before -> after: idle frame 83.8 -> 10.3 ms, layers 2,213 -> 41, keystroke p95 280 -> 72 ms, main thread per streamed piece 125 -> 17.6 ms, long tasks while streaming 2,357 -> 11, a history save 2.2 MB -> 8.5 KB. `e2e/perf.e2e.mjs` guards each of these on 300 turns.
+
+### Loose ends
+
+- **No test runs in CI**: the pipeline only builds packages. The e2e suite, the performance specs with it, runs with `npm test`.
+- **The IntelliJ changes were not built here** (the JetBrains repository is not reachable from where they were written). `TranscriptStore.kt` was compiled and exercised against stand-ins for the IDE classes; the wiring in `ChatHost.kt` and `WebviewPanel.kt` was not.
+- **Opening a long conversation still renders all of its Markdown**, a slice per frame: highlight.js guessing the language of unlabelled fences and DOMPurify are most of it.
+
 ## 2026-10-05 - The Android Studio package carries its backend
 
 ### What was done
