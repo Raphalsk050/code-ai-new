@@ -332,6 +332,13 @@ function App(): JSX.Element {
     if (state.session.status !== "STARTING") send({ type: "listSlashCommands" });
   }, [state.session.status]);
 
+  // A request lost to a backend that died, or one restarted since, leaves the
+  // settings screen loading for ever: ask again once a live session reports in.
+  React.useEffect(() => {
+    if (!settings && !OFFLINE.has(state.session.status)) send({ type: "getSettings" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.session.status]);
+
   React.useEffect(() => {
     if (screen === "home") send({ type: "listConversations" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1374,4 +1381,7 @@ const styleTag = document.createElement("style");
 styleTag.textContent = `${KATEX_STYLE}\n${STYLE}`;
 document.head.appendChild(styleTag);
 
+// The icon font is fetched by the first screen that draws an icon, and its
+// icons stay blank until it lands; Home draws none, so fetch it now.
+void document.fonts?.load("16px codicon").catch(() => undefined);
 createRoot(document.getElementById("root")!).render(<App />);

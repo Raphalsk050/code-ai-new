@@ -12,14 +12,32 @@ import type { BridgeMethod, EventEnvelope } from "./protocol";
  *   - "exit"     (number | null)        the bridge process exited
  *   - "error"    (Error)                spawn failure
  */
+/** How long a request waits for its answer once the bridge is talking. */
+export const DEFAULT_TIMEOUT_MS = 20_000;
+/** How long a bridge may take to say its first word before what waits on it gives up. */
+export const START_ALLOWANCE_MS = 5 * 60_000;
+
+interface Pending {
+  settle: (err: Error | null, msg?: any) => void;
+  method: BridgeMethod;
+  timeoutMs: number;
+  timer?: ReturnType<typeof setTimeout>;
+}
+
 export class BridgeClient extends EventEmitter {
   private readonly proc: ChildProcessWithoutNullStreams;
   private buffer = "";
   private nextId = 1;
   private dead: string | null = null;
-  private readonly pending = new Map<number, (err: Error | null, msg?: any) => void>();
+  private started = false;
+  private readonly pending = new Map<number, Pending>();
 
-  constructor(command: string, args: string[], cwd?: string) {
+  constructor(
+    command: string,
+    args: string[],
+    cwd?: string,
+    private readonly startAllowanceMs = START_ALLOWANCE_MS
+  ) {
     super();
     // windowsHide: the frozen binary is a console application, so without it
     // Windows pops a console window in front of the editor on every spawn.
@@ -45,8 +63,22 @@ export class BridgeClient extends EventEmitter {
   /** Mark the bridge dead and reject every in-flight request right away. */
   private fail(reason: string): void {
     this.dead = reason;
-    for (const [, settle] of this.pending) settle(new Error(reason));
+    for (const [, waiting] of this.pending) {
+      clearTimeout(waiting.timer);
+      waiting.settle(new Error(reason));
+    }
     this.pending.clear();
+  }
+
+  /** Give a request so long to be answered, counted from now. */
+  private arm(id: number, waiting: Pending, delayMs: number): void {
+    clearTimeout(waiting.timer);
+    waiting.timer = setTimeout(() => {
+      if (!this.pending.delete(id)) return;
+      waiting.settle(
+        new Error(`Bridge request "${waiting.method}" timed out after ${Math.round(delayMs / 1000)}s`)
+      );
+    }, delayMs);
   }
 
   private onStdout(chunk: string): void {
@@ -62,13 +94,19 @@ export class BridgeClient extends EventEmitter {
       } catch {
         continue; // ignore non-JSON noise on stdout
       }
+      if (!this.started) {
+        this.started = true;
+        // What was asked while it started has its own time to be answered from here.
+        for (const [id, waiting] of this.pending) this.arm(id, waiting, waiting.timeoutMs);
+      }
       if (message.method === "event") {
         this.emit("event", message.params as EventEnvelope);
       } else if (message.id !== undefined) {
-        const settle = this.pending.get(message.id);
-        if (settle) {
+        const waiting = this.pending.get(message.id);
+        if (waiting) {
           this.pending.delete(message.id);
-          settle(null, message);
+          clearTimeout(waiting.timer);
+          waiting.settle(null, message);
         }
         this.emit("response", message);
       }
@@ -82,21 +120,31 @@ export class BridgeClient extends EventEmitter {
     return id;
   }
 
-  /** Send a request and resolve with its `result` (or reject on error/timeout). */
-  request<T = any>(method: BridgeMethod, params: Record<string, unknown> = {}, timeoutMs = 20000): Promise<T> {
+  /**
+   * Send a request and resolve with its `result` (or reject on error/timeout).
+   * A bridge that has not said a word yet is still starting, and a frozen one
+   * can take longer than any answer should: what is asked meanwhile counts its
+   * time from that first word, so a slow start is not a lost answer.
+   */
+  request<T = any>(
+    method: BridgeMethod,
+    params: Record<string, unknown> = {},
+    timeoutMs = DEFAULT_TIMEOUT_MS
+  ): Promise<T> {
     if (this.dead) return Promise.reject(new Error(this.dead));
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`Bridge request "${method}" timed out after ${Math.round(timeoutMs / 1000)}s`));
-      }, timeoutMs);
-      this.pending.set(id, (err, msg) => {
-        clearTimeout(timer);
-        if (err) reject(err);
-        else if (msg.error) reject(new Error(msg.error.message ?? "bridge error"));
-        else resolve(msg.result as T);
-      });
+      const waiting: Pending = {
+        method,
+        timeoutMs,
+        settle: (err, msg) => {
+          if (err) reject(err);
+          else if (msg.error) reject(new Error(msg.error.message ?? "bridge error"));
+          else resolve(msg.result as T);
+        },
+      };
+      this.pending.set(id, waiting);
+      this.arm(id, waiting, this.started ? timeoutMs : timeoutMs + this.startAllowanceMs);
       this.write({ jsonrpc: "2.0", id, method, params });
     });
   }
