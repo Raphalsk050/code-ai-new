@@ -327,6 +327,12 @@ export interface SlashCommandSpec {
   kind?: "command" | "workflow" | "skill" | "mcp";
 }
 
+/** A workspace folder on disk, and the URL the panel loads its files from. */
+export interface ResourceRoot {
+  path: string;
+  base: string;
+}
+
 export type HostToWebview =
   | { type: "event"; event: EventEnvelope }
   | { type: "slashCommands"; commands: SlashCommandSpec[] }
@@ -347,6 +353,8 @@ export type HostToWebview =
   | { type: "transcript"; id: string; items: unknown[] | null }
   /** The host lost what came before the last save: the next one has to carry it all. */
   | { type: "transcriptResend"; id: string }
+  /** Where the workspace's own files are served, for the pictures in an answer. */
+  | { type: "resourceRoots"; roots: ResourceRoot[] }
   | { type: "conversationLoaded"; id: string; messages: StoredMessage[] }
   | { type: "refactorStatus"; status: "analyzing" | "idle" }
   | { type: "refactorResult"; improvements: RefactorImprovement[]; path: string; language: string }

@@ -91,6 +91,29 @@ async function pin(ui) {
 }
 
 export const tests = {
+  async "a picture named by its path in the workspace loads from where the host serves it"(ui, assert) {
+    const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const served = mkdtempSync(join(tmpdir(), "code-ai-workspace-"));
+    mkdirSync(join(served, "docs"));
+    writeFileSync(join(served, "docs", "flow.png"), Buffer.from(PNG.split(",")[1], "base64"));
+    const base = `file://${served.replace(/\\/g, "/")}`;
+    await ui.fromHost({ type: "resourceRoots", roots: [{ path: "/home/ana/app", base }] });
+
+    await ui.page.click(".home-new");
+    await ui.page.waitForSelector(".composer");
+    const text = "![relative](docs/flow.png) ![absolute](/home/ana/app/docs/flow.png) ![outside](/etc/flow.png)";
+    await ui.fromHost(envelope("client.load", { items: [{ kind: "assistant", id: "a1", text, streaming: false }] }));
+    await ui.page.waitForFunction(() => document.querySelectorAll(".markdown img").length === 3);
+    await ui.page.waitForFunction(
+      () => [...document.querySelectorAll(".markdown img")].slice(0, 2).every((img) => img.complete && img.naturalWidth === 1)
+    );
+    const srcs = await ui.page.$$eval(".markdown img", (imgs) => imgs.map((img) => img.getAttribute("src")));
+    assert(srcs[0] === `${base}/docs/flow.png` && srcs[1] === `${base}/docs/flow.png`, JSON.stringify(srcs));
+    assert(srcs[2] === "/etc/flow.png", `a path outside the workspace was served: ${srcs[2]}`);
+  },
+
   async "the avatar sits centred over the title, on the home page and in a new chat"(ui, assert) {
     // The avatar is a block-level svg everywhere else; left as one here it
     // hugs the left edge of a column whose text is centred.

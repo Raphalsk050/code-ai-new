@@ -32,6 +32,7 @@ import com.codeai.intellij.util.text
 import com.codeai.intellij.util.toJson
 import com.codeai.intellij.util.truthy
 import com.codeai.intellij.web.TranscriptStore
+import com.codeai.intellij.web.WebviewPage
 import com.codeai.intellij.web.WebviewPanel
 import com.codeai.intellij.web.WebviewStateStore
 import com.google.gson.JsonArray
@@ -53,6 +54,7 @@ import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.util.concurrency.AppExecutorUtil
 import java.io.File
 import java.io.IOException
+import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ScheduledFuture
 
@@ -159,7 +161,7 @@ internal class ChatHost(private val project: Project) : Disposable {
 
     /** The chat, in the IDE's embedded browser. The panel belongs to `parent`. */
     fun createPanel(parent: Disposable): WebviewPanel {
-        val created = WebviewPanel(parent, "webview.js", object : WebviewPanel.Client {
+        val created = WebviewPanel(parent, "webview.js", workspace = project.basePath?.let { Path.of(it) }, client = object : WebviewPanel.Client {
             override fun savedState(): String? = saved.load()
 
             override fun saveState(json: String) = saved.save(json)
@@ -204,6 +206,7 @@ internal class ChatHost(private val project: Project) : Disposable {
         postEditorSettings()
         postSessionChanges(changes.summaries())
         postProfile()
+        postResourceRoots()
         bridge.ensureStartedNow()
         // Learn whether inline hints are on, so they are right straight away.
         refreshInlineSettings()
@@ -788,6 +791,12 @@ internal class ChatHost(private val project: Project) : Disposable {
     /** Where edits are reviewed: the IDE's diff, or the panel's own view. */
     private fun postEditorDiff() = post(json("type" to "editorDiff", "enabled" to diffs.enabled))
 
+    /** Where the project's files are served, for the pictures in answers and documents. */
+    private fun postResourceRoots() {
+        val base = project.basePath ?: return
+        val root = json("path" to base, "base" to WebviewPage.ORIGIN + WebviewPanel.WORKSPACE_PATH.trimEnd('/'))
+        post(json("type" to "resourceRoots", "roots" to listOf(root)))
+    }
 
     /** The plugin's own settings, as the panel's settings screen edits them. */
     private fun postEditorSettings() {

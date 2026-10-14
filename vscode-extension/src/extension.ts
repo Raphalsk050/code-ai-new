@@ -707,7 +707,11 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   resolveWebviewView(view: vscode.WebviewView): void {
     view.webview.options = {
       enableScripts: true,
-      localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, "dist")],
+      // The workspace too: pictures in answers and documents are its files.
+      localResourceRoots: [
+        vscode.Uri.joinPath(this.extensionUri, "dist"),
+        ...(vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri),
+      ],
     };
     // Render the UI first and unconditionally: the webview must never be blank,
     // even if the bridge fails to spawn. Bridge errors are surfaced as events
@@ -832,6 +836,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           // was posted while it was still loading may never have reached it.
           this.postUpdate();
           this.postProfile();
+          this.postResourceRoots();
           client
             ?.request("getSettings")
             .then((settings) => this.webview?.postMessage({ type: "settings", settings }))
@@ -1216,6 +1221,17 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     // The backend log has it too; this is for whoever opens the dev tools.
     if (this.profile.problem) console.warn(`[code-ai] no GitHub picture: ${this.profile.problem}`);
     this.postProfile();
+  }
+
+  /** Where each workspace folder's files are served, for the pictures in answers and documents. */
+  private postResourceRoots(): void {
+    const webview = this.webview;
+    if (!webview) return;
+    const roots = (vscode.workspace.workspaceFolders ?? []).map((folder) => ({
+      path: folder.uri.fsPath,
+      base: webview.asWebviewUri(folder.uri).toString().replace(/\/+$/, ""),
+    }));
+    void webview.postMessage({ type: "resourceRoots", roots });
   }
 
   private postProfile(): void {

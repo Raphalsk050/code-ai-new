@@ -2,6 +2,17 @@ import DOMPurify from "dompurify";
 import * as React from "react";
 
 import { renderBlocks } from "./markdown-render";
+import { resolveImage } from "./workspace-images";
+
+// A picture named by its path in the workspace is loaded from where the host
+// serves the workspace; one anywhere else keeps a path that loads nothing.
+if (DOMPurify.isSupported) {
+  DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+    if (node.tagName !== "IMG") return;
+    const src = node.getAttribute("src");
+    if (src) node.setAttribute("src", resolveImage(src));
+  });
+}
 
 const sanitize = (html: string): string => DOMPurify.sanitize(html);
 

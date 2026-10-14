@@ -19,7 +19,10 @@ import com.intellij.ui.jcef.JBCefBrowserBase
 import com.intellij.ui.jcef.JBCefBrowserBuilder
 import com.intellij.ui.jcef.JBCefJSQuery
 import com.intellij.util.concurrency.AppExecutorUtil
+import java.io.IOException
 import java.net.URI
+import java.nio.file.Files
+import java.nio.file.Path
 import java.security.SecureRandom
 import java.util.concurrent.TimeUnit
 import javax.swing.JComponent
@@ -54,6 +57,8 @@ internal class WebviewPanel(
     /** The bundle to run: `webview.js` or `flow.js`. */
     private val script: String,
     private val client: Client,
+    /** The project's folder: pictures in answers and documents are served from it, and nothing else of it. */
+    private val workspace: Path? = null,
 ) : Disposable {
     interface Client {
         /** The state a previous page of this panel saved, as JSON, or null. */
@@ -264,7 +269,26 @@ internal class WebviewPanel(
         "/$script" -> bundled(path, "text/javascript")
         "/codicons/codicon.css" -> bundled(path, "text/css")
         "/codicons/codicon.ttf" -> bundled(path, "font/ttf")
-        else -> null
+        else -> if (path.startsWith(WORKSPACE_PATH)) workspaceImage(path.removePrefix(WORKSPACE_PATH)) else null
+    }
+
+    /** An image under the project, and only an image, and only under it: links out of it are followed first. */
+    private fun workspaceImage(relative: String): Resource? {
+        val root = workspace ?: return null
+        val mime = IMAGE_TYPES[relative.substringAfterLast('.', "").lowercase()] ?: return null
+        return try {
+            val top = root.toRealPath()
+            val file = top.resolve(relative).normalize().toRealPath()
+            if (!file.startsWith(top) || !Files.isRegularFile(file) || Files.size(file) > MAX_IMAGE_BYTES) {
+                null
+            } else {
+                Resource(Files.readAllBytes(file), mime)
+            }
+        } catch (_: IOException) {
+            null
+        } catch (_: RuntimeException) {
+            null
+        }
     }
 
     private fun bundled(path: String, mime: String): Resource? =
@@ -329,5 +353,20 @@ internal class WebviewPanel(
         private val SCHEDULER = AppExecutorUtil.getAppScheduledExecutorService()
         private const val FLUSH_DELAY_MS = 8L
         private val EXTERNAL = Regex("^(https?|mailto):.*", RegexOption.IGNORE_CASE)
+
+        /** Where the project's own files are served, under the page's origin. */
+        const val WORKSPACE_PATH = "/workspace/"
+        private const val MAX_IMAGE_BYTES = 25L * 1024 * 1024
+        private val IMAGE_TYPES = mapOf(
+            "png" to "image/png",
+            "jpg" to "image/jpeg",
+            "jpeg" to "image/jpeg",
+            "gif" to "image/gif",
+            "webp" to "image/webp",
+            "bmp" to "image/bmp",
+            "svg" to "image/svg+xml",
+            "avif" to "image/avif",
+            "ico" to "image/x-icon",
+        )
     }
 }

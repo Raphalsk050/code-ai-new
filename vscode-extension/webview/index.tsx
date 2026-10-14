@@ -71,6 +71,7 @@ import { applyEvent, initialAppState, isBusy, Item, messagesToItems } from "./st
 import { STYLE } from "./styles";
 import { RailActions, TaskRail } from "./task-rail";
 import { useContainerWidth } from "./use-container-width";
+import { setResourceRoots } from "./workspace-images";
 
 declare function acquireVsCodeApi(): {
   postMessage: (message: WebviewToHost) => void;
@@ -320,6 +321,8 @@ function App(): JSX.Element {
           }
           if (opening.kept === "loaded" || opening.rebuilt) openingRef.current = null;
         }
+      } else if (data?.type === "resourceRoots") {
+        setResourceRoots(data.roots);
       } else if (data?.type === "transcriptResend") {
         if (savedRef.current?.id === data.id) {
           savedRef.current = null;
