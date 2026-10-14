@@ -1054,7 +1054,11 @@ class AgentOrchestrator:
 
         if not result.images or result.is_error:
             return
-        caption = f"Output of {tool_name} (see the attached image):"
+        count = len(result.images)
+        # Counted when there are several, so the model looks for every one: a
+        # Markdown read can bring all of a document's figures at once.
+        attached = "the attached image" if count == 1 else f"the {count} attached images"
+        caption = f"Output of {tool_name} (see {attached}):"
         prepared = await self._prepare_images(caption, list(result.images))
         if prepared is None:
             # Transcribed into the conversation already, or impossible to send.

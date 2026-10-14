@@ -90,11 +90,29 @@ def quote_web(text: str) -> str:
     return fence_untrusted(defuse_untrusted(text), tag=WEB_FENCE) if text else ""
 
 
-def bound_text(text: str, max_chars: int) -> str:
-    if len(text) <= max_chars:
-        return text
+_TRUNCATION_MARK = "\n...[truncated]...\n"
+
+
+def bound_text_kept(length: int, max_chars: int) -> list[tuple[int, int]]:
+    """The ``[start, end)`` character ranges of a text that :func:`bound_text` keeps.
+
+    For a caller that has to know which part of its text actually reached the
+    model, not just that some of it did: read_file attaches the images a
+    Markdown file references only where the reference itself was returned.
+    """
+
+    if length <= max_chars:
+        return [(0, length)]
     if max_chars < 64:
-        return text[:max_chars]
+        return [(0, max_chars)]
     head_len = max_chars // 2
-    tail_len = max_chars - head_len - 40
-    return text[:head_len] + "\n...[truncated]...\n" + text[-tail_len:]
+    # Never negative: a budget with no room left for a tail keeps the head
+    # alone, where a negative slice used to bring back most of the text.
+    tail_len = max(0, max_chars - head_len - 40)
+    return [(0, head_len), (length - tail_len, length)]
+
+
+def bound_text(text: str, max_chars: int) -> str:
+    return _TRUNCATION_MARK.join(
+        text[start:end] for start, end in bound_text_kept(len(text), max_chars)
+    )
