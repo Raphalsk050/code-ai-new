@@ -191,7 +191,7 @@ def test_requests_phrased_as_questions_stay_mutations() -> None:
         assert profile.requires_workspace_mutation is True, text
 
 
-def test_mutation_requests_keep_their_evidence_gate() -> None:
+def test_mutation_requests_keep_their_mutation_label() -> None:
     # The explanation veto must not weaken real mutations, including inflected
     # forms the old substring markers missed ("adicione", "remova").
     mutations = [
@@ -294,7 +294,7 @@ async def test_local_edit_settles_misclassified_research_plan() -> None:
     # a real local file mutation must settle the plan toward completion instead of
     # trapping the agent in a web_search loop demanding evidence it will never get.
     service = PlannerService(
-        config=PlannerConfig(double_check_completion=False),
+        config=PlannerConfig(),
         event_bus=AsyncEventBus(session_id="session"),
         session_id="session",
     )
@@ -326,7 +326,7 @@ async def test_genuine_research_is_not_skipped_when_web_evidence_exists() -> Non
     # recorded, a later local note-taking edit keeps the research step satisfied
     # rather than skipping it.
     service = PlannerService(
-        config=PlannerConfig(double_check_completion=False),
+        config=PlannerConfig(),
         event_bus=AsyncEventBus(session_id="session"),
         session_id="session",
     )
@@ -567,275 +567,40 @@ async def test_concrete_external_gap_unlocks_web_after_local_evidence() -> None:
     assert decision.allowed is True
 
 
-async def test_completion_requires_file_change_and_verification_evidence() -> None:
-    service = PlannerService(
-        config=PlannerConfig(double_check_completion=False),
-        event_bus=AsyncEventBus(session_id="session"),
-        session_id="session",
-    )
-    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
-    await service.submit_agent_plan(["Write the module"], changes_workspace=True)
-
-    rejected = await service.evaluate_completion(
-        {
-            "summary": "done",
-        }
-    )
-
-    assert rejected.accepted is False
-    assert any("file-change" in item for item in rejected.missing_requirements)
-
-
-async def test_undeclared_task_completes_without_file_change_demands() -> None:
-    # The keyword guess alone never demands file-change evidence: until the
-    # model declares the task a workspace change (or actually changes one),
-    # the request text is only a hint.
-    service = PlannerService(
-        config=PlannerConfig(double_check_completion=False),
-        event_bus=AsyncEventBus(session_id="session"),
-        session_id="session",
-    )
-    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
-    assert service.profile.requires_workspace_mutation is True
-
-    accepted = await service.evaluate_completion({"summary": "done"})
-
-    assert accepted.accepted is True
-
-
-async def test_completion_requires_verification_once_files_change_even_if_unclassified(
-    tmp_path,
-) -> None:
-    # "faça um jogo de pong" sits outside the mutation-marker set, so the surface
-    # classifier reads it as CONVERSATION (requires_workspace_mutation is False).
-    # But once the model actually writes a file, completion must still be backed by
-    # verification: the gate keys off real evidence, not the brittle label. The
-    # project exposes a test runner, so verification genuinely applies.
+async def test_success_claim_without_verification_evidence_is_accepted(tmp_path) -> None:
+    # complete_task accepts a well-formed claim. A code change in a project that
+    # exposes a test runner, claimed done with no verification run, completes on
+    # the first call; the final message says plainly that it was not verified.
     (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
-    service = PlannerService(
-        config=PlannerConfig(double_check_completion=False),
-        event_bus=AsyncEventBus(session_id="session"),
-        session_id="session",
-        workspace=tmp_path,
-    )
-    await service.begin_turn("faça um jogo de pong em python", provider_supports_tools=True)
-    assert service.profile.requires_workspace_mutation is False
-
-    await service.record_tool_result(
-        tool_call_id="w1",
-        tool_name="write_file",
-        payload={"path": "pong.py", "old_sha256": None, "new_sha256": "abc"},
-        success=True,
-    )
-    rejected = await service.evaluate_completion({"summary": "created pong"})
-
-    assert rejected.accepted is False
-    assert any("verification" in item for item in rejected.missing_requirements)
-
-
-async def test_double_check_is_folded_into_the_evidence_rejection(tmp_path) -> None:
-    # A high-risk change (three files touched) selects the strict policy, and the
-    # double-check must ride along with the evidence rejection instead of queuing
-    # a second rejection behind it: one rejection lists everything, the model
-    # fixes the evidence, and the next complete_task is accepted.
-    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
-    service = PlannerService(
-        config=PlannerConfig(),  # double_check_completion defaults to True
-        event_bus=AsyncEventBus(session_id="session"),
-        session_id="session",
-        workspace=tmp_path,
-    )
-    await service.begin_turn(
-        "Create src/a.py, src/b.py and src/c.py", provider_supports_tools=True
-    )
-    for index, path in enumerate(("src/a.py", "src/b.py", "src/c.py")):
-        await service.record_tool_result(
-            tool_call_id=f"w{index}",
-            tool_name="write_file",
-            payload={"path": path, "old_sha256": None, "new_sha256": f"h{index}"},
-            success=True,
-        )
-
-    first = await service.evaluate_completion({"summary": "created the modules"})
-
-    assert first.accepted is False
-    assert any("verification" in item for item in first.missing_requirements)
-    assert any("Double-check" in item for item in first.missing_requirements)
-
-    await service.record_tool_result(
-        tool_call_id="v1",
-        tool_name="execute_command",
-        payload={"argv": ["pytest"], "exit_code": 0, "stdout": "", "stderr": ""},
-        success=True,
-    )
-    second = await service.evaluate_completion({"summary": "created and verified"})
-
-    assert second.accepted is True
-
-
-async def test_low_risk_mutation_completes_without_double_check() -> None:
-    # A routine single-file change with settled evidence pays no double-check
-    # tax: the first well-evidenced complete_task is accepted, even with
-    # double_check_completion enabled.
     service = PlannerService(
         config=PlannerConfig(),
         event_bus=AsyncEventBus(session_id="session"),
         session_id="session",
+        workspace=tmp_path,
     )
     await service.begin_turn("Create src/example.py", provider_supports_tools=True)
+    await service.submit_agent_plan(["Write the module"], changes_workspace=True)
     await service.record_tool_result(
         tool_call_id="w1",
         tool_name="write_file",
-        payload={"path": "src/example.py", "old_sha256": None, "new_sha256": "h1"},
+        payload={"path": "src/example.py", "old_sha256": None, "new_sha256": "abc"},
         success=True,
     )
 
     decision = await service.evaluate_completion({"summary": "created the module"})
 
     assert decision.accepted is True
+    assert decision.outcome == "success"
+    assert service.ledger.latest_verification_passed is False
+    assert "Changed paths: src/example.py" in decision.final_text
+    assert "Not verified" in decision.final_text
 
 
-async def test_keyword_mutation_guess_never_costs_an_analysis_a_round_trip() -> None:
-    # "atualize ..." trips the mutation regex, but the model treats the task as
-    # analysis: it reads files and never attempts a write. Nothing was declared,
-    # so nothing is demanded: the first complete_task is accepted as is.
-    service = PlannerService(
-        config=PlannerConfig(),
-        event_bus=AsyncEventBus(session_id="session"),
-        session_id="session",
-    )
-    await service.begin_turn(
-        "atualize sua visao do fluxo de login e me explique os riscos",
-        provider_supports_tools=True,
-    )
-    assert service.profile.requires_workspace_mutation is True
-    await service.record_tool_result(
-        tool_call_id="r1",
-        tool_name="read_file",
-        payload={"path": "src/login.py", "sha256": "abc"},
-        success=True,
-    )
-
-    first = await service.evaluate_completion({"summary": "análise entregue"})
-
-    assert first.accepted is True
-    assert "no change was attempted" not in (first.final_text or "")
-
-
-async def test_declared_change_that_never_happened_is_released_after_one_nudge() -> None:
-    # The model itself said the task changes the workspace, then only read
-    # files. Holding it to its own word costs one nudge; insisting without new
-    # evidence releases the turn as a prose answer instead of looping.
-    service = PlannerService(
-        config=PlannerConfig(),
-        event_bus=AsyncEventBus(session_id="session"),
-        session_id="session",
-    )
-    await service.begin_turn(
-        "atualize sua visao do fluxo de login e me explique os riscos",
-        provider_supports_tools=True,
-    )
-    await service.submit_agent_plan(["Read login.py", "Fix it"], changes_workspace=True)
-    await service.record_tool_result(
-        tool_call_id="r1",
-        tool_name="read_file",
-        payload={"path": "src/login.py", "sha256": "abc"},
-        success=True,
-    )
-
-    first = await service.evaluate_completion({"summary": "análise entregue"})
-    assert first.accepted is False
-    assert any("file-change" in item for item in first.missing_requirements)
-
-    second = await service.evaluate_completion({"summary": "análise entregue"})
-
-    assert second.accepted is True
-    assert "no change was attempted" in second.final_text
-
-
-async def test_acknowledged_double_check_completes_in_one_call() -> None:
-    # Even a high-risk change (three files touched selects the strict policy)
-    # completes in one call when the claim arrives with
-    # double_check_acknowledged: the reconciliation already happened, so the
-    # runtime must not spend a round-trip re-asking for it.
-    service = PlannerService(
-        config=PlannerConfig(),
-        event_bus=AsyncEventBus(session_id="session"),
-        session_id="session",
-    )
-    await service.begin_turn(
-        "Create src/a.py, src/b.py and src/c.py", provider_supports_tools=True
-    )
-    for index, path in enumerate(("src/a.py", "src/b.py", "src/c.py")):
-        await service.record_tool_result(
-            tool_call_id=f"w{index}",
-            tool_name="write_file",
-            payload={"path": path, "old_sha256": None, "new_sha256": f"h{index}"},
-            success=True,
-        )
-
-    decision = await service.evaluate_completion(
-        {"summary": "created the modules", "double_check_acknowledged": True}
-    )
-
-    assert decision.accepted is True
-
-
-async def test_claiming_a_subset_of_changed_paths_is_not_rejected() -> None:
-    # Forgetting to list one of the real changes is harmless (the accepted
-    # summary reports the full recorded set anyway); only claiming a path with
-    # no change evidence is the dangerous, fabrication-shaped direction.
-    service = PlannerService(
-        config=PlannerConfig(double_check_completion=False),
-        event_bus=AsyncEventBus(session_id="session"),
-        session_id="session",
-    )
-    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
-    for index, path in enumerate(("src/example.py", "src/helper.py")):
-        await service.record_tool_result(
-            tool_call_id=f"w{index}",
-            tool_name="write_file",
-            payload={"path": path, "old_sha256": None, "new_sha256": f"h{index}"},
-            success=True,
-        )
-
-    decision = await service.evaluate_completion(
-        {"summary": "created the modules", "changed_paths": ["src/example.py"]}
-    )
-
-    assert decision.accepted is True
-
-
-async def test_claiming_an_unchanged_path_is_rejected() -> None:
-    service = PlannerService(
-        config=PlannerConfig(double_check_completion=False),
-        event_bus=AsyncEventBus(session_id="session"),
-        session_id="session",
-    )
-    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
-    await service.record_tool_result(
-        tool_call_id="w1",
-        tool_name="write_file",
-        payload={"path": "src/example.py", "old_sha256": None, "new_sha256": "h1"},
-        success=True,
-    )
-
-    decision = await service.evaluate_completion(
-        {
-            "summary": "created the modules",
-            "changed_paths": ["src/example.py", "src/ghost.py"],
-        }
-    )
-
-    assert decision.accepted is False
-    assert any("src/ghost.py" in item for item in decision.missing_requirements)
-
-
-async def test_documentation_only_change_completes_without_verification() -> None:
+async def test_documentation_only_change_is_reported_as_needing_no_verification() -> None:
     # A pure documentation change (a Markdown tracker) has nothing executable to
-    # verify, so completion must not be blocked on verification evidence.
+    # verify, so the final message must not call it unverified.
     service = PlannerService(
-        config=PlannerConfig(double_check_completion=False),
+        config=PlannerConfig(),
         event_bus=AsyncEventBus(session_id="session"),
         session_id="session",
     )
@@ -850,36 +615,7 @@ async def test_documentation_only_change_completes_without_verification() -> Non
     decision = await service.evaluate_completion({"summary": "created tracker"})
 
     assert decision.accepted is True
-
-
-async def test_mixed_change_with_code_still_requires_verification(tmp_path) -> None:
-    # If any non-documentation file changes, the verification gate stays strict
-    # even when a doc file changed alongside it (project exposes a test runner).
-    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
-    service = PlannerService(
-        config=PlannerConfig(double_check_completion=False),
-        event_bus=AsyncEventBus(session_id="session"),
-        session_id="session",
-        workspace=tmp_path,
-    )
-    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
-
-    await service.record_tool_result(
-        tool_call_id="w1",
-        tool_name="write_file",
-        payload={"path": "README.md", "old_sha256": None, "new_sha256": "abc"},
-        success=True,
-    )
-    await service.record_tool_result(
-        tool_call_id="w2",
-        tool_name="write_file",
-        payload={"path": "src/example.py", "old_sha256": None, "new_sha256": "def"},
-        success=True,
-    )
-    rejected = await service.evaluate_completion({"summary": "done"})
-
-    assert rejected.accepted is False
-    assert any("verification" in item for item in rejected.missing_requirements)
+    assert "No verification evidence was required." in decision.final_text
 
 
 async def test_task_context_shows_model_plan_step_as_current() -> None:
@@ -935,103 +671,11 @@ async def test_task_context_lists_recent_evidence_one_short_line_each() -> None:
     assert "Approved external gaps" not in block
 
 
-async def test_completion_reconciles_against_model_plan_not_skeleton() -> None:
-    # When the model submitted a plan, completion lists *its* untouched steps so it
-    # is guided back to its own checklist, instead of the generic skeleton wording.
+async def test_accepted_completion_settles_a_lagging_checklist() -> None:
+    # The model-authored checklist cursor often lags behind the work; an
+    # accepted completion settles every step instead of leaving the tail pending.
     service = PlannerService(
-        config=PlannerConfig(double_check_completion=False),
-        event_bus=AsyncEventBus(session_id="session"),
-        session_id="session",
-    )
-    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
-    await service.submit_agent_plan(
-        ["Read example", "Write module", "Run tests"], changes_workspace=True
-    )
-
-    rejected = await service.evaluate_completion({"summary": "done"})
-
-    assert rejected.accepted is False
-    assert any("declared plan steps" in item for item in rejected.missing_requirements)
-    assert not any(
-        "required plan steps are incomplete" in item
-        for item in rejected.missing_requirements
-    )
-
-
-async def test_model_plan_does_not_block_completion_once_change_is_verified() -> None:
-    # The model's checklist cursor advances coarsely, so a longer plan can lag
-    # behind reality. Once the change is actually verified, completion must trust
-    # the evidence (fail-soft) rather than block on untouched checklist tail items.
-    service = PlannerService(
-        config=PlannerConfig(double_check_completion=False),
-        event_bus=AsyncEventBus(session_id="session"),
-        session_id="session",
-    )
-    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
-    await service.submit_agent_plan(["a", "b", "c", "d", "e"])
-
-    await service.record_tool_result(
-        tool_call_id="w1",
-        tool_name="write_file",
-        payload={"path": "src/example.py", "old_sha256": None, "new_sha256": "h1"},
-        success=True,
-    )
-    await service.record_tool_result(
-        tool_call_id="v1",
-        tool_name="execute_command",
-        payload={"argv": ["true"], "exit_code": 0, "stdout": "", "stderr": ""},
-        success=True,
-    )
-
-    # The cursor lags (5 declared steps, far fewer evidence signals), but the
-    # change is verified, so completion is accepted instead of blocked.
-    assert any(
-        step.status.value == "PENDING" for step in service.agent_plan.steps
-    )
-    decision = await service.evaluate_completion({"summary": "created and verified"})
-
-    assert decision.accepted is True
-
-
-async def test_completion_fails_open_after_repeated_stalled_rejections() -> None:
-    # A claim the gate keeps rejecting while the progress fingerprint stays
-    # frozen must eventually be accepted with the unresolved requirements
-    # surfaced as limitations, instead of spinning until the stall guard kills
-    # the turn and discards the model's summary.
-    service = PlannerService(
-        config=PlannerConfig(
-            double_check_completion=False, max_completion_rejections=2
-        ),
-        event_bus=AsyncEventBus(session_id="session"),
-        session_id="session",
-    )
-    await service.begin_turn("Create src/example.py", provider_supports_tools=True)
-    await service.record_tool_result(
-        tool_call_id="w1",
-        tool_name="write_file",
-        payload={"path": "src/example.py", "old_sha256": None, "new_sha256": "h1"},
-        success=True,
-    )
-
-    # The model insists on a phantom path three times without new evidence.
-    claim = {"summary": "done", "changed_paths": ["src/example.py", "src/ghost.py"]}
-    first = await service.evaluate_completion(claim)
-    second = await service.evaluate_completion(claim)
-    third = await service.evaluate_completion(claim)
-
-    assert first.accepted is False
-    assert second.accepted is False
-    assert third.accepted is True
-    assert "Unresolved completion requirements" in third.final_text
-    assert "src/ghost.py" in third.final_text
-
-
-async def test_pending_checklist_alone_does_not_block_completion() -> None:
-    # A doc-only change satisfies every evidence requirement (verification does
-    # not apply), so a lagging model-authored checklist cursor must not be the
-    # only reason a completion is rejected - acceptance settles the checklist.
-    service = PlannerService(
-        config=PlannerConfig(double_check_completion=False),
+        config=PlannerConfig(),
         event_bus=AsyncEventBus(session_id="session"),
         session_id="session",
     )
@@ -1059,7 +703,7 @@ async def test_blocked_completion_is_accepted_without_structured_issues() -> Non
     # accepted and the summary surfaces, instead of the turn spinning to a
     # budget/stall wind-down that discards the model's real explanation.
     service = PlannerService(
-        config=PlannerConfig(double_check_completion=False),
+        config=PlannerConfig(),
         event_bus=AsyncEventBus(session_id="session"),
         session_id="session",
     )
@@ -1090,7 +734,7 @@ async def test_accepted_completion_emits_settled_plan_snapshot() -> None:
     bus = AsyncEventBus(session_id="session")
     events = _capture(bus)
     service = PlannerService(
-        config=PlannerConfig(double_check_completion=False),
+        config=PlannerConfig(),
         event_bus=bus,
         session_id="session",
     )
@@ -1125,7 +769,7 @@ async def test_blocked_completion_emits_settled_plan_snapshot() -> None:
     bus = AsyncEventBus(session_id="session")
     events = _capture(bus)
     service = PlannerService(
-        config=PlannerConfig(double_check_completion=False),
+        config=PlannerConfig(),
         event_bus=bus,
         session_id="session",
     )
@@ -1512,12 +1156,10 @@ async def test_final_answer_settles_a_declared_mutation_plan_too() -> None:
     assert snapshot["progress"] == "2/2"
 
 
-async def test_outside_workspace_mutation_completes_on_command_evidence(tmp_path) -> None:
-    # Regression: a mutation whose target lives outside the workspace (~/.zshrc)
-    # can never produce workspace file-change evidence - file tools are
-    # workspace-bound - so the completion gate trapped the model until it
-    # fabricated pointless workspace files just to satisfy the evidence demand.
-    # Command evidence must settle such a task.
+async def test_outside_workspace_mutation_completes_naming_the_target(tmp_path) -> None:
+    # A mutation whose target lives outside the workspace (~/.zshrc) never
+    # enters the ledger's hash map - file tools are workspace-bound - so the
+    # completion summary names the external target instead of "none".
     bus = AsyncEventBus(session_id="session")
     service = PlannerService(
         config=PlannerConfig(), event_bus=bus, session_id="session", workspace=tmp_path
@@ -1541,65 +1183,14 @@ async def test_outside_workspace_mutation_completes_on_command_evidence(tmp_path
     decision = await service.evaluate_completion(
         {"summary": "Alias adicionado ao ~/.zshrc.", "changed_paths": ["~/.zshrc"]}
     )
-    # First acceptance round trips on the double-check; the reconfirmation passes.
-    if not decision.accepted:
-        assert all("file-change" not in item for item in decision.missing_requirements)
-        decision = await service.evaluate_completion(
-            {"summary": "Alias adicionado ao ~/.zshrc.", "changed_paths": ["~/.zshrc"]}
-        )
     assert decision.accepted
     assert "~/.zshrc" in decision.final_text
-
-
-async def test_outside_workspace_mutation_without_action_evidence_guides_model(
-    tmp_path,
-) -> None:
-    # With an external target but no command run yet, the gate must not ask for
-    # workspace file evidence (which invites fabrication); it points at
-    # execute_command instead.
-    bus = AsyncEventBus(session_id="session")
-    service = PlannerService(
-        config=PlannerConfig(), event_bus=bus, session_id="session", workspace=tmp_path
-    )
-    await service.begin_turn(
-        "edite /etc/hosts e adicione uma entrada", provider_supports_tools=True
-    )
-    assert service.external_targets == ("/etc/hosts",)
-    await service.submit_agent_plan(["Edit /etc/hosts"], changes_workspace=True)
-
-    decision = await service.evaluate_completion({"summary": "Feito."})
-
-    assert decision.accepted is False
-    assert any("execute_command" in item for item in decision.missing_requirements)
-    assert all(
-        "file-change evidence" not in item for item in decision.missing_requirements
-    )
-
-
-async def test_workspace_mutation_gate_stays_strict_without_external_targets() -> None:
-    # No external targets: the strict file-change requirement is untouched.
-    bus = AsyncEventBus(session_id="session")
-    service = PlannerService(config=PlannerConfig(), event_bus=bus, session_id="session")
-    await service.begin_turn("crie src/example.py", provider_supports_tools=True)
-    await service.submit_agent_plan(["Create example.py"], changes_workspace=True)
-    assert service.external_targets == ()
-
-    await service.record_tool_result(
-        tool_call_id="cmd_1",
-        tool_name="execute_command",
-        payload={"argv": ["echo", "hi"], "exit_code": 0, "stdout": "hi"},
-        success=True,
-    )
-    decision = await service.evaluate_completion({"summary": "Feito."})
-
-    assert decision.accepted is False
-    assert any("file-change" in item for item in decision.missing_requirements)
 
 
 async def test_boundary_rejection_teaches_planner_the_external_target(tmp_path) -> None:
     # The objective may not name the path ("configure meu shell"); the model then
     # tries write_file on ~/.zshrc and gets a boundary error. That rejection is
-    # direct evidence of an external target and must widen the completion gate.
+    # direct evidence of an external target and must reach the task context.
     bus = AsyncEventBus(session_id="session")
     events = _capture(bus)
     service = PlannerService(
@@ -1626,31 +1217,6 @@ async def test_boundary_rejection_teaches_planner_the_external_target(tmp_path) 
         "write_file", {"path": str(tmp_path / "inside.txt")}
     )
     assert service.external_targets == ("~/.zshrc",)
-
-
-async def test_external_claimed_paths_do_not_trip_the_mismatch_check(tmp_path) -> None:
-    # Honestly claiming the external target as a changed path must not be read
-    # as a mismatch against the (empty) workspace hash ledger.
-    bus = AsyncEventBus(session_id="session")
-    service = PlannerService(
-        config=PlannerConfig(double_check_completion=False),
-        event_bus=bus,
-        session_id="session",
-        workspace=tmp_path,
-    )
-    await service.begin_turn("edite ~/.zshrc e adicione um alias", provider_supports_tools=True)
-    await service.record_tool_result(
-        tool_call_id="cmd_1",
-        tool_name="execute_command",
-        payload={"argv": ["zsh", "-c", "echo x >> ~/.zshrc"], "exit_code": 0},
-        success=True,
-    )
-
-    decision = await service.evaluate_completion(
-        {"summary": "Feito.", "changed_paths": ["~/.zshrc"]}
-    )
-
-    assert decision.accepted is True
 
 
 def test_external_path_targets_extraction(tmp_path) -> None:

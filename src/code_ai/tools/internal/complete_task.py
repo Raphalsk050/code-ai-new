@@ -10,9 +10,7 @@ from code_ai.tools.schema import tool_schema
 
 class CompleteTaskTool:
     name = "complete_task"
-    description = (
-        "Request task completion after the runtime has recorded the required evidence."
-    )
+    description = "Finish the task with a summary of what was done."
     capabilities = frozenset({ToolCapability.INTERNAL_COMPLETION})
     input_schema = tool_schema(
         {
@@ -41,13 +39,6 @@ class CompleteTaskTool:
                     "task left undone that the user should know about."
                 ),
             },
-            "double_check_acknowledged": {
-                "type": "boolean",
-                "description": (
-                    "Set to true after reconciling every acceptance criterion with "
-                    "actual evidence; skips the runtime's double-check round-trip."
-                ),
-            },
         },
         required=("summary",),
     )
@@ -66,9 +57,8 @@ class CompleteTaskTool:
             except WorkspaceBoundaryError:
                 # A task may legitimately change files *outside* the workspace
                 # (applied via commands, since file tools are workspace-bound).
-                # Claiming such a path must not blow up the completion claim -
-                # the planner's evidence gate arbitrates it - but the file must
-                # really exist so the claim stays honest.
+                # Claiming such a path must not blow up the completion claim,
+                # but the file must really exist so the claim stays honest.
                 candidate = Path(path).expanduser()
                 if not (candidate.is_absolute() and candidate.exists()):
                     raise
@@ -80,9 +70,6 @@ class CompleteTaskTool:
             "changed_paths": changed_paths,
             "remaining_issues": _string_list(arguments.get("remaining_issues")),
             "limitations": _string_list(arguments.get("limitations")),
-            "double_check_acknowledged": bool(
-                arguments.get("double_check_acknowledged", False)
-            ),
         }
 
 

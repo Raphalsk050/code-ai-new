@@ -1,11 +1,9 @@
 """The mutation discipline keys off observed evidence, not the surface label.
 
-Three independent holes let the deterministic layer go dark on real sessions:
+Two independent holes let the deterministic layer go dark on real sessions:
 the keyword classifier dropping continuation and low-level turns to
-``CONVERSATION``, ``execute_command`` mutating the workspace invisibly, and the
-only hard gate hanging off a ``complete_task`` call weak models never make.
-These tests pin the fix: what the agent *did* drives the discipline, and the
-checkpoint sits at the loop's natural stop.
+``CONVERSATION``, and ``execute_command`` mutating the workspace invisibly.
+These tests pin the fix: what the agent *did* drives the discipline.
 """
 
 from __future__ import annotations
@@ -35,15 +33,13 @@ def _project_with_tests() -> ProjectVerification:
     )
 
 
-def _planner(tmp_path, *, verifiable: bool = True) -> PlannerService:
+def _planner(tmp_path) -> PlannerService:
     return PlannerService(
-        config=PlannerConfig(double_check_completion=False),
+        config=PlannerConfig(),
         event_bus=AsyncEventBus(session_id="session"),
         session_id="session",
         workspace=tmp_path,
-        verification_detector=lambda _ws: (
-            _project_with_tests() if verifiable else ProjectVerification()
-        ),
+        verification_detector=lambda _ws: _project_with_tests(),
     )
 
 
@@ -114,34 +110,22 @@ def test_mutation_detection_accepts_a_plain_string_command() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# A shell mutation is a real change: the gate must demand verification for it
+# A shell mutation is a real change
 # --------------------------------------------------------------------------- #
 
 
-async def test_shell_mutation_requires_verification_before_completion(tmp_path) -> None:
+async def test_shell_mutation_counts_as_a_workspace_change(tmp_path) -> None:
     service = _planner(tmp_path)
     await service.begin_turn("rode o gerador de stubs", provider_supports_tools=True)
 
     await _run_command(service, ["bash", "-lc", "echo 'x = 1' > src/app.py"])
 
     assert service.ledger.command_mutated_workspace is True
-    decision = await service.evaluate_completion({"summary": "stub gerado"})
-    assert decision.accepted is False
-    assert any("verification" in item for item in decision.missing_requirements)
+    assert service._has_workspace_change_evidence() is True
+    assert service._effective_profile().requires_workspace_mutation is True
 
 
-async def test_shell_mutation_completes_once_verified(tmp_path) -> None:
-    service = _planner(tmp_path)
-    await service.begin_turn("rode o gerador de stubs", provider_supports_tools=True)
-
-    await _run_command(service, ["bash", "-lc", "echo 'x = 1' > src/app.py"])
-    await _run_command(service, ["pytest", "-q"])
-
-    decision = await service.evaluate_completion({"summary": "stub gerado e testado"})
-    assert decision.accepted is True
-
-
-async def test_read_only_commands_never_demand_verification(tmp_path) -> None:
+async def test_read_only_commands_are_not_workspace_changes(tmp_path) -> None:
     service = _planner(tmp_path)
     await service.begin_turn("liste os arquivos do projeto", provider_supports_tools=True)
 
@@ -149,9 +133,7 @@ async def test_read_only_commands_never_demand_verification(tmp_path) -> None:
     await _run_command(service, ["cat", "README.md"])
 
     assert service.ledger.command_mutated_workspace is False
-    has_change, verified, _ = service._change_verification_state()
-    assert has_change is False
-    assert verified is True
+    assert service._has_workspace_change_evidence() is False
 
 
 async def test_a_shell_mutation_after_a_passing_check_invalidates_it(tmp_path) -> None:
@@ -179,37 +161,6 @@ async def test_verification_runs_do_not_count_as_mutations(tmp_path) -> None:
     assert service.ledger.latest_verification_passed is True
 
 
-async def test_claimed_paths_are_not_called_phantom_after_a_shell_mutation(
-    tmp_path,
-) -> None:
-    # A command-driven change is real but path-less; nothing in the ledger can
-    # confirm or refute the claim, so it must not read as fabrication.
-    service = _planner(tmp_path)
-    await service.begin_turn("rode o gerador de stubs", provider_supports_tools=True)
-
-    await _run_command(service, ["bash", "-lc", "echo 'x = 1' > src/app.py"])
-    await _run_command(service, ["pytest", "-q"])
-
-    decision = await service.evaluate_completion(
-        {"summary": "stub gerado", "changed_paths": ["src/app.py"]}
-    )
-    assert decision.accepted is True
-
-
-async def test_unverifiable_project_still_completes_after_a_shell_mutation(
-    tmp_path,
-) -> None:
-    # No detectable test/build system: degrade gracefully rather than demanding
-    # evidence the agent cannot produce.
-    service = _planner(tmp_path, verifiable=False)
-    await service.begin_turn("rode o gerador de stubs", provider_supports_tools=True)
-
-    await _run_command(service, ["bash", "-lc", "echo 'x = 1' > src/app.py"])
-
-    decision = await service.evaluate_completion({"summary": "stub gerado"})
-    assert decision.accepted is True
-
-
 # --------------------------------------------------------------------------- #
 # A mislabelled task that mutates gets the mutation discipline anyway
 # --------------------------------------------------------------------------- #
@@ -230,7 +181,7 @@ async def test_conversation_task_that_writes_gains_the_task_context_block(
     assert "READ-ONLY TASK" not in block
 
 
-async def test_conversation_task_that_writes_must_verify_before_completing(
+async def test_conversation_task_that_writes_is_treated_as_a_change(
     tmp_path,
 ) -> None:
     service = _planner(tmp_path)
@@ -239,9 +190,6 @@ async def test_conversation_task_that_writes_must_verify_before_completing(
     await _write_file(service, "pong.py")
 
     assert service._effective_profile().requires_workspace_mutation is True
-    decision = await service.evaluate_completion({"summary": "pong pronto"})
-    assert decision.accepted is False
-    assert any("verification" in item for item in decision.missing_requirements)
 
 
 async def test_a_conversation_that_stays_a_conversation_is_left_alone(
@@ -254,8 +202,7 @@ async def test_a_conversation_that_stays_a_conversation_is_left_alone(
 
     assert service.task_context_block(recommended_tool_names=set()) == ""
     assert service._effective_profile().requires_workspace_mutation is False
-    has_change, verified, _ = service._change_verification_state()
-    assert (has_change, verified) == (False, True)
+    assert service._has_workspace_change_evidence() is False
 
 
 async def test_read_only_task_keeps_its_read_only_rules(tmp_path) -> None:
@@ -273,68 +220,3 @@ async def test_read_only_task_keeps_its_read_only_rules(tmp_path) -> None:
     block = service.task_context_block(recommended_tool_names={"read_file"})
     assert "READ-ONLY TASK" in block
     assert service._effective_profile().requires_workspace_mutation is False
-
-
-# --------------------------------------------------------------------------- #
-# The checkpoint at the loop's natural stop
-# --------------------------------------------------------------------------- #
-
-
-async def test_prose_ending_after_an_unverified_change_is_nudged_once(
-    tmp_path,
-) -> None:
-    service = _planner(tmp_path)
-    await service.begin_turn("implemente o parser", provider_supports_tools=True)
-    await _write_file(service, "src/parser.py")
-
-    first = await service.note_final_answer_verification_debt()
-    second = await service.note_final_answer_verification_debt()
-
-    assert first is not None
-    assert "verification" in first
-    assert second is None  # bounded to one nudge, then fail open
-
-
-async def test_prose_ending_after_a_verified_change_is_not_nudged(tmp_path) -> None:
-    service = _planner(tmp_path)
-    await service.begin_turn("implemente o parser", provider_supports_tools=True)
-    await _write_file(service, "src/parser.py")
-    await _run_command(service, ["pytest", "-q"])
-
-    assert await service.note_final_answer_verification_debt() is None
-
-
-async def test_prose_ending_on_a_read_only_task_is_never_nudged(tmp_path) -> None:
-    service = _planner(tmp_path)
-    await service.begin_turn("o que faz o modulo de parsing?", provider_supports_tools=True)
-    await service.record_tool_result(
-        tool_call_id="r1",
-        tool_name="read_file",
-        payload={"path": "src/parser.py", "sha256": "abc"},
-        success=True,
-    )
-
-    assert await service.note_final_answer_verification_debt() is None
-
-
-async def test_prose_ending_after_an_unverified_shell_mutation_is_nudged(
-    tmp_path,
-) -> None:
-    service = _planner(tmp_path)
-    await service.begin_turn("rode o gerador de stubs", provider_supports_tools=True)
-    await _run_command(service, ["bash", "-lc", "echo 'x = 1' > src/app.py"])
-
-    nudge = await service.note_final_answer_verification_debt()
-
-    assert nudge is not None
-    assert "pytest" in nudge
-
-
-async def test_a_denied_mutation_is_never_nudged_for_verification(tmp_path) -> None:
-    # The user's refusal is a decision, not a misreading: do not push back.
-    service = _planner(tmp_path)
-    await service.begin_turn("implemente o parser", provider_supports_tools=True)
-    await _write_file(service, "src/parser.py")
-    await service.note_user_denial("write_file", "user declined")
-
-    assert await service.note_final_answer_verification_debt() is None

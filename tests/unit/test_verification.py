@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from code_ai.config.models import PlannerConfig
 from code_ai.core.planning import PlannerService
+from code_ai.core.planning.models import EvidenceType
 from code_ai.core.verification import (
     CommandKind,
     detect_project_verification,
@@ -124,12 +125,12 @@ def test_verification_kind_prefers_detected_project_commands(tmp_path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Gate integration
+# Planner integration
 # --------------------------------------------------------------------------- #
 async def _service_with_python_project(tmp_path) -> PlannerService:
     (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
     service = PlannerService(
-        config=PlannerConfig(double_check_completion=False),
+        config=PlannerConfig(),
         event_bus=AsyncEventBus(session_id="session"),
         session_id="session",
         workspace=tmp_path,
@@ -144,22 +145,20 @@ async def _service_with_python_project(tmp_path) -> PlannerService:
     return service
 
 
-async def test_trivial_command_does_not_satisfy_gate(tmp_path) -> None:
+async def test_trivial_command_is_not_verification_evidence(tmp_path) -> None:
     service = await _service_with_python_project(tmp_path)
-    await service.record_tool_result(
+    records = await service.record_tool_result(
         tool_call_id="c1",
         tool_name="execute_command",
         payload={"argv": ["echo", "ok"], "exit_code": 0, "stdout": "ok", "stderr": ""},
         success=True,
     )
 
-    decision = await service.evaluate_completion({"summary": "done"})
-
-    assert decision.accepted is False
-    assert any("verification" in item for item in decision.missing_requirements)
+    assert [record.evidence_type for record in records] == [EvidenceType.COMMAND_SUCCEEDED]
+    assert service.ledger.latest_verification_passed is False
 
 
-async def test_real_test_run_satisfies_gate(tmp_path) -> None:
+async def test_real_test_run_is_verification_evidence(tmp_path) -> None:
     service = await _service_with_python_project(tmp_path)
     await service.record_tool_result(
         tool_call_id="c1",
@@ -168,45 +167,13 @@ async def test_real_test_run_satisfies_gate(tmp_path) -> None:
         success=True,
     )
 
-    decision = await service.evaluate_completion({"summary": "done and tested"})
-
-    assert decision.accepted is True
-
-
-async def test_weaker_check_does_not_satisfy_gate_when_tests_exist(tmp_path) -> None:
-    # The project exposes pytest (test) and ruff (lint). A lint-only pass is
-    # genuine verification but must not complete a behavior change: that is the
-    # cheapest way to game the gate with an exit-0 command.
-    service = await _service_with_python_project(tmp_path)
-    (tmp_path / "pyproject.toml").write_text(
-        "[project]\nname = 'demo'\n[tool.ruff]\nline-length = 100\n",
-        encoding="utf-8",
-    )
-    service._project_verification = None  # re-detect with ruff present
-    await service.record_tool_result(
-        tool_call_id="c1",
-        tool_name="execute_command",
-        payload={"argv": ["ruff", "check", "."], "exit_code": 0, "stdout": "", "stderr": ""},
-        success=True,
-    )
-
-    decision = await service.evaluate_completion({"summary": "done"})
-
-    assert decision.accepted is False
-    assert any("lint" in item and "test" in item for item in decision.missing_requirements)
-
-    # Running the real test suite afterwards satisfies the gate.
-    await service.record_tool_result(
-        tool_call_id="c2",
-        tool_name="execute_command",
-        payload={"argv": ["pytest", "-q"], "exit_code": 0, "stdout": "ok", "stderr": ""},
-        success=True,
-    )
+    assert service.ledger.latest_verification_passed is True
     decision = await service.evaluate_completion({"summary": "done and tested"})
     assert decision.accepted is True
+    assert "Verified by evidence" in decision.final_text
 
 
-async def test_verification_kinds_reset_when_files_change_again(tmp_path) -> None:
+async def test_verification_resets_when_files_change_again(tmp_path) -> None:
     service = await _service_with_python_project(tmp_path)
     await service.record_tool_result(
         tool_call_id="c1",
@@ -214,7 +181,7 @@ async def test_verification_kinds_reset_when_files_change_again(tmp_path) -> Non
         payload={"argv": ["pytest", "-q"], "exit_code": 0, "stdout": "ok", "stderr": ""},
         success=True,
     )
-    assert service.ledger.strongest_verification_kind_passed() is CommandKind.TEST
+    assert service.ledger.latest_verification_passed is True
 
     await service.record_tool_result(
         tool_call_id="w2",
@@ -224,16 +191,14 @@ async def test_verification_kinds_reset_when_files_change_again(tmp_path) -> Non
     )
 
     # The earlier test run no longer covers the new change.
-    assert service.ledger.strongest_verification_kind_passed() is None
-    decision = await service.evaluate_completion({"summary": "done"})
-    assert decision.accepted is False
+    assert service.ledger.latest_verification_passed is False
 
 
 async def test_greenfield_completes_with_warning(tmp_path) -> None:
-    # No manifest: no detectable verification. A code change still completes, but
-    # the runtime surfaces a clear warning rather than trapping the agent.
+    # No manifest: no detectable verification. A code change completes with a
+    # clear warning that nothing could verify it.
     service = PlannerService(
-        config=PlannerConfig(double_check_completion=False),
+        config=PlannerConfig(),
         event_bus=AsyncEventBus(session_id="session"),
         session_id="session",
         workspace=tmp_path,

@@ -58,11 +58,11 @@ class ProjectVerification:
 
     @property
     def required_kind(self) -> CommandKind | None:
-        """The strongest kind this project exposes; what completion demands.
+        """The strongest kind this project exposes.
 
         ``commands`` is already ordered by trust, so the first command's kind is
         the strongest check available. A weaker check (e.g. a lint pass when a
-        test command exists) is genuine verification but not enough to complete.
+        test command exists) is genuine verification but proves less.
         """
         first = self.primary()
         return first.kind if first else None
@@ -92,8 +92,7 @@ class ProjectVerification:
             return (
                 "No test/build system was detected in this project, so there is no "
                 "automated check to run. Confirm the change is correct by reading it "
-                "back, then complete with a clear summary noting verification was not "
-                "available."
+                "back, and note in your summary that verification was not available."
             )
         listed = "; ".join(
             f"`{cmd.display}` ({cmd.kind.value}, from {cmd.source})"
@@ -103,6 +102,6 @@ class ProjectVerification:
         return (
             "Verification commands detected for this project: "
             f"{listed}. Run the one that exercises your change before completing. "
-            f"Completion requires a passing {required.value} run: weaker checks "
-            "(lint or typecheck alone) and trivial commands do not count."
+            f"The {required.value} command is the strongest check here: lint or "
+            "typecheck alone prove less, and trivial commands prove nothing."
         )

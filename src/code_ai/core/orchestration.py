@@ -434,7 +434,6 @@ class _TurnState:
     attempt_emitted: bool = False
     # The model loop picks up here when an unexpected error sends it round again.
     next_step: int = 0
-    no_tool_nudged: bool = False
     seen_call_fingerprints: set[str] = field(default_factory=set)
     # Whether the current model step streamed any visible text on the "answer"
     # channel. Reset per step. When a turn ends in prose that only ever streamed
@@ -772,8 +771,8 @@ class AgentOrchestrator:
                 on_demand.render_catalog(self.tool_registry) if self._on_demand() else ""
             ),
             # With every tool switched off, the whole prompt - "call
-            # write_file", "complete_task only after evidence" - describes a
-            # session that does not exist. Ask for the one that does.
+            # write_file", "call complete_task" - describes a session that
+            # does not exist. Ask for the one that does.
             tools_available=bool(self.tool_registry.names()),
         )
 
@@ -1363,10 +1362,7 @@ class AgentOrchestrator:
                     continue
                 if await self._retry_interrupted_tool_call(response, state):
                     continue
-                outcome = await self._handle_no_tool_response(response, state)
-                if outcome is not None:
-                    return outcome
-                continue
+                return await self._handle_no_tool_response(response, state)
 
             # The response landed: the next one starts with a full retry budget.
             # Not reset on the prose path above, which also receives responses
@@ -1401,55 +1397,13 @@ class AgentOrchestrator:
 
     async def _handle_no_tool_response(
         self, response: ModelResponse, state: _TurnState
-    ) -> TurnResult | None:
+    ) -> TurnResult:
         # With the tools off the model often answers in tool-call markup anyway,
         # and recovery leaves it alone because there is no tool to route it to.
         # It must not be what the user is handed: strip it, and when nothing but
         # markup was said, explain the empty turn rather than ending on silence.
         if not state.step_offered_tools and looks_like_attempted_tool_call(response.text):
             response.text = strip_tool_call_markup(response.text) or _NO_TOOLS_ANSWER
-
-        # Fail-open. The surface classifier may still mislabel a request as a
-        # mutation (keyword heuristics are inherently imperfect), so we nudge
-        # the model toward tools at most once. If it still answers in
-        # prose, we surface *its* answer rather than spiralling into repeated
-        # corrections and ultimately handing the user a system message instead of
-        # a reply. The only hard completion gate is the evidence-based
-        # complete_task check, not this path.
-        #
-        # The verification checkpoint goes first and consumes the same budget:
-        # when the model has actually changed the workspace, "you left this
-        # unverified" is strictly better guidance than the generic "use the
-        # tools", and the two must never cost two round-trips.
-        if self.planner and self.planner.enabled:
-            debt = await self.planner.note_final_answer_verification_debt()
-            if debt:
-                state.no_tool_nudged = True
-                state.think_hard = True
-                if response.text:
-                    self.conversation.add_assistant(
-                        bound_text(response.text, self.config.budgets.max_tool_output_chars),
-                        [],
-                    )
-                self.conversation.add_user(build_runtime_note(debt))
-                await self.set_state(
-                    AgentState.CALLING_MODEL, phase="correcting_unverified_change"
-                )
-                return None
-
-        if self._requires_tool_for_progress() and not state.no_tool_nudged:
-            state.no_tool_nudged = True
-            state.think_hard = True
-            if response.text:
-                self.conversation.add_assistant(
-                    bound_text(response.text, self.config.budgets.max_tool_output_chars), []
-                )
-            correction = await self.planner.note_no_tool_response(
-                recommended_tool_names=self._recommended_tool_names()
-            )
-            self.conversation.add_user(build_runtime_note(correction))
-            await self.set_state(AgentState.CALLING_MODEL, phase="correcting_no_tool_response")
-            return None
 
         if response.text:
             self.conversation.add_assistant(response.text, response.tool_calls)
@@ -2925,10 +2879,9 @@ class AgentOrchestrator:
             content = str(exc)
             if isinstance(exc, WorkspaceBoundaryError):
                 # The model tried to touch a file outside the workspace. Teach the
-                # planner the task's real target is external (so completion stops
-                # demanding workspace file evidence) and point the model at the
-                # one channel that can do it, instead of leaving it to invent
-                # workspace files that satisfy the evidence gate.
+                # planner the task's real target is external and point the model
+                # at the one channel that can do it, instead of leaving it to
+                # invent workspace files in its place.
                 if self.planner and self.planner.enabled:
                     await self.planner.note_workspace_boundary_rejection(
                         call.name, call.arguments
@@ -2938,7 +2891,7 @@ class AgentOrchestrator:
                     "change a file outside the workspace, use execute_command "
                     "(subject to user approval) and confirm the result with a "
                     "read-back command. Do not create or edit workspace files "
-                    "just to satisfy completion evidence."
+                    "in its place."
                 )
             if isinstance(exc, EnvironmentUnavailableError):
                 # Not the model's mistake and not worth a lesson: the host is
@@ -3010,26 +2963,6 @@ class AgentOrchestrator:
             },
             source="core.orchestrator",
         )
-        # A rejection for real evidence gaps is a recurring failure class worth
-        # a lesson: the model claimed done without proof. The double-check
-        # round-trip is pacing, not failure, so it never records one.
-        if not self.planner.double_check_pending:
-            await self._record_failure(
-                trigger="completion_rejected",
-                context=(
-                    "The model called complete_task but the evidence gate "
-                    "rejected the claim. Missing requirements: "
-                    + bound_text(
-                        "; ".join(decision.missing_requirements) or "(unspecified)",
-                        600,
-                    )
-                ),
-                fallback_lesson=(
-                    "Do not claim completion before the evidence exists: run the "
-                    "project's verification command and read back the changed "
-                    "files, then call complete_task."
-                ),
-            )
         return _ToolOutcome(
             result=ToolResult(
                 tool_call_id=call.id, name=call.name, content=content, is_error=True
@@ -3794,10 +3727,10 @@ class AgentOrchestrator:
         if not (self.planner and self.planner.enabled):
             return ""
         if not self.tool_registry.names():
-            # The block is entirely about which tool to call next and what
-            # evidence completion needs. With every tool off it only tells the
-            # model to call write_file and complete_task, neither of which it
-            # has - the same lie the system prompt already stopped telling.
+            # The block is entirely about which tool to call next and how the
+            # task stands. With every tool off it only tells the model to call
+            # write_file and complete_task, neither of which it has - the same
+            # lie the system prompt already stopped telling.
             return ""
         return self.planner.task_context_block(
             recommended_tool_names=self._recommended_tool_names()

@@ -4,6 +4,7 @@ import asyncio
 
 from code_ai.config.models import AppConfig
 from code_ai.core.errors import ToolArgumentError
+from code_ai.core.planning.models import CompletionClaim
 from code_ai.events.bus import AsyncEventBus
 from code_ai.tools.base import ToolContext
 from code_ai.tools.internal import (
@@ -99,24 +100,30 @@ async def test_complete_task_defaults_to_success_with_summary_only(tmp_path) -> 
         "outcome",
         "remaining_issues",
         "limitations",
-        "double_check_acknowledged",
     }
     assert set(tool.input_schema["properties"]) == {
         "summary",
         "outcome",
         "remaining_issues",
         "limitations",
-        "double_check_acknowledged",
     }
     assert tool.input_schema["properties"]["outcome"]["type"] == ["string", "null"]
     assert tool.input_schema["properties"]["remaining_issues"]["type"] == ["array", "null"]
     assert tool.input_schema["properties"]["limitations"]["type"] == ["array", "null"]
-    assert tool.input_schema["properties"]["double_check_acknowledged"]["type"] == [
-        "boolean",
-        "null",
-    ]
 
     result = await tool.execute({"summary": "Done."}, context)
 
     assert result["outcome"] == "success"
     assert result["summary"] == "Done."
+
+
+async def test_complete_task_ignores_a_retired_double_check_flag(tmp_path) -> None:
+    # Models trained on the old schema may still send double_check_acknowledged;
+    # the claim must go through, and the flag must not reach the planner's
+    # claim model, which rejects unknown fields.
+    result = await CompleteTaskTool().execute(
+        {"summary": "Done.", "double_check_acknowledged": True}, make_context(tmp_path)
+    )
+
+    assert "double_check_acknowledged" not in result
+    assert CompletionClaim.model_validate(result).summary == "Done."

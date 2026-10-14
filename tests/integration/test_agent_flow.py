@@ -230,7 +230,7 @@ async def test_web_search_tool_call_passes_model_query_unchanged(tmp_path) -> No
     assert web_search.calls[0]["query"] == "copa do mundo"
 
 
-class FakeCodeBlockThenToolsProvider:
+class FakeDeclaredChangeProvider:
     def __init__(self, workspace: Any) -> None:
         self.calls = 0
         self.workspace = workspace
@@ -244,7 +244,7 @@ class FakeCodeBlockThenToolsProvider:
     async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
         self.calls += 1
         if self.calls == 1:
-            # The model declares the task a workspace change...
+            # The model declares the task a workspace change, then makes it.
             yield ProviderEvent(
                 kind="completed",
                 response=ModelResponse(
@@ -263,15 +263,6 @@ class FakeCodeBlockThenToolsProvider:
             )
             return
         if self.calls == 2:
-            # ...then slips into answering with the code as text.
-            text = "```python\ndef answer():\n    return 42\n```"
-            yield ProviderEvent(kind="text_delta", text_delta=text)
-            yield ProviderEvent(
-                kind="completed",
-                response=ModelResponse(text=text, finish_reason=FinishReason.STOP),
-            )
-            return
-        if self.calls == 3:
             yield ProviderEvent(
                 kind="completed",
                 response=ModelResponse(
@@ -289,7 +280,7 @@ class FakeCodeBlockThenToolsProvider:
                 ),
             )
             return
-        if self.calls == 4:
+        if self.calls == 3:
             yield ProviderEvent(
                 kind="completed",
                 response=ModelResponse(
@@ -337,7 +328,7 @@ class FakeCodeBlockThenToolsProvider:
         return None
 
 
-async def test_mutation_task_rejects_code_block_until_tools_verify_and_complete(tmp_path) -> None:
+async def test_mutation_task_writes_verifies_and_completes(tmp_path) -> None:
     config = AppConfig.from_mapping(
         {
             "api_mode": "ollama",
@@ -346,7 +337,7 @@ async def test_mutation_task_rejects_code_block_until_tools_verify_and_complete(
             "permission_mode": "bypass",
         }
     )
-    provider = FakeCodeBlockThenToolsProvider(tmp_path)
+    provider = FakeDeclaredChangeProvider(tmp_path)
     app = build_application(config=config, provider=provider)
     events = []
     app.subscribe(lambda event: events.append(event.event_type))
@@ -361,9 +352,7 @@ async def test_mutation_task_rejects_code_block_until_tools_verify_and_complete(
         "def answer():\n    return 42\n"
     )
     assert "Created src/example.py" in result.text
-    assert "agent.corrective_prompt.injected" in events
-    # A low-risk, verified single-file change completes on the first
-    # complete_task: the double-check tax only applies to high-risk changes.
+    # The claim is accepted on the first complete_task.
     assert "planning.completion.rejected" not in events
     assert "planning.completion.accepted" in events
     assert "assistant.final" in events
@@ -774,11 +763,6 @@ class FakeOutsideWorkspaceEditProvider:
                 arguments={"command": f"touch {self.outside_path}"},
             ),
             3: ToolCall(id="done_1", name="complete_task", arguments=completion_args),
-            4: ToolCall(
-                id="done_2",
-                name="complete_task",
-                arguments={**completion_args, "double_check_acknowledged": True},
-            ),
         }
         call = script.get(self.agent_steps)
         if call is not None:
@@ -805,12 +789,10 @@ class FakeOutsideWorkspaceEditProvider:
 
 
 async def test_outside_workspace_edit_completes_without_workspace_evidence(tmp_path) -> None:
-    # Regression: a mutation targeting a file outside the workspace could never
-    # satisfy the completion gate (file tools are workspace-bound and the ledger
-    # only hashes workspace files), so the model was pushed to fabricate
-    # workspace files as evidence. The boundary rejection must teach the planner
-    # the target is external, guide the model to execute_command, and command
-    # evidence must then settle the completion.
+    # Regression: a mutation targeting a file outside the workspace (file tools
+    # are workspace-bound) pushed the model to fabricate workspace files. The
+    # boundary rejection must teach the planner the target is external and
+    # guide the model to execute_command; the completion then names the target.
     workspace = tmp_path / "ws"
     workspace.mkdir()
     outside = tmp_path / "outside" / "config.txt"
@@ -840,7 +822,7 @@ async def test_outside_workspace_edit_completes_without_workspace_evidence(tmp_p
     # ...the planner learned the external target...
     planner = app.orchestrator.planner
     assert str(outside) in planner.external_targets
-    # ...the command really ran and completion settled on its evidence.
+    # ...the command really ran and the completion named the target.
     assert outside.exists()
     assert "planning.completion.accepted" in {e.event_type for e in events}
     assert str(outside) in result.text
@@ -885,10 +867,7 @@ class FakeBlindWriteThenReadProvider:
             ToolCall(
                 id=f"complete_{self.calls}",
                 name="complete_task",
-                arguments={
-                    "summary": "Updated config.py timeout.",
-                    "double_check_acknowledged": True,
-                },
+                arguments={"summary": "Updated config.py timeout."},
             ),
         )
         yield ProviderEvent(

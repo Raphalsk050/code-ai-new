@@ -445,7 +445,6 @@ class CompletionClaim(BaseModel):
     changed_paths: list[str] = Field(default_factory=list)
     remaining_issues: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
-    double_check_acknowledged: bool = False
 
     @field_validator("outcome")
     @classmethod
@@ -585,12 +584,10 @@ _MUTATION_RE = re.compile(
 # understand something, not to change it - even when a mutation verb appears as
 # the subject ("explique a função update_user", "como adicionar um endpoint?",
 # "pelo que voce comecaria a implementar hoje?"). Misreading these as mutations
-# traps the turn behind a file-change evidence gate no explanation can ever
-# satisfy - and actively steers the model into changes nobody asked for. The
-# veto is deliberately biased: a real mutation phrased as a question degrades
-# gracefully (tools stay available and any actual file change still demands
-# verification through the evidence-keyed gate), while a trapped explanation
-# has no way out.
+# actively steers the model into changes nobody asked for. The veto is
+# deliberately biased: a real mutation phrased as a question degrades gracefully
+# (tools stay available and any actual file change is still picked up from the
+# evidence), while a misread explanation gets pushed toward edits.
 _EXPLANATION_START_RE = re.compile(
     r"^(?:"
     r"explique|explica|me explique|me explica|explain|"

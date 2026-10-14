@@ -15,7 +15,7 @@ from code_ai.events.bus import AsyncEventBus
 
 def _service() -> PlannerService:
     return PlannerService(
-        config=PlannerConfig(double_check_completion=False),
+        config=PlannerConfig(),
         event_bus=AsyncEventBus(session_id="session"),
         session_id="session",
     )
@@ -195,9 +195,7 @@ def test_ledger_replays_subagent_review_findings() -> None:
     )
 
     assert records[-1].evidence_type == EvidenceType.REVIEW_COMPLETED
-    # The reviewer's serious finding gates the parent completion too.
-    assert ledger.review_ran_after_last_change is True
-    assert ledger.open_severe_review_findings == 1
+    assert records[-1].review_severity_summary == {"critical": 1, "low": 2}
 
 
 def test_ledger_records_failed_subagent_command_as_failure() -> None:
@@ -225,15 +223,15 @@ def test_ledger_records_failed_subagent_command_as_failure() -> None:
     )
 
     # The change is real even though the sub-agent failed, and the failed
-    # verification keeps the completion gate closed.
+    # verification is not mistaken for a pass.
     assert ledger.current_changed_paths() == ["a.py"]
     assert ledger.latest_verification_passed is False
 
 
 # ------------------------------------------------------------------ #
-# End to end through the planner: delegated work satisfies completion
+# End to end through the planner: delegated work lands in its ledger
 # ------------------------------------------------------------------ #
-async def test_delegated_implementation_satisfies_completion_gate() -> None:
+async def test_delegated_implementation_is_planner_evidence() -> None:
     service = _service()
     await service.begin_turn(
         "adicione um endpoint de health check", provider_supports_tools=True
@@ -248,10 +246,7 @@ async def test_delegated_implementation_satisfies_completion_gate() -> None:
     )
 
     assert service.ledger.has_success(EvidenceType.FILE_CREATED)
-    decision = await service.evaluate_completion(
-        {"summary": "health endpoint added via coder sub-agent"}
-    )
-    assert decision.accepted is True
+    assert service.ledger.current_changed_paths() == ["src/health.py"]
 
 
 async def test_delegation_moves_the_progress_fingerprint() -> None:

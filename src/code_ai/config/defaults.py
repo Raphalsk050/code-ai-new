@@ -302,21 +302,10 @@ DEFAULT_PLANNER: dict[str, object] = {
     "tool_policy": "advisory",
     "local_first": True,
     "require_plan_for_mutations": True,
-    "require_verification_for_changes": True,
-    "double_check_completion": True,
-    # High-risk changes (many files, a failed verification this turn, complex
-    # tasks) must be backed by an independent review (code_review or a reviewer
-    # sub-agent) run after the last change, when review tools are available.
-    "require_review_for_risky_changes": True,
     "max_plan_steps": 20,
     "max_discovery_rounds": 8,
     "max_replans": 3,
     "max_step_attempts": 3,
-    "max_no_progress_rounds": 3,
-    # Consecutive complete_task rejections tolerated while the progress
-    # fingerprint stays frozen before the gate fails open and accepts with the
-    # unresolved requirements surfaced as limitations.
-    "max_completion_rejections": 2,
     "persist_plan": True,
 }
 

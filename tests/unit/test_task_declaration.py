@@ -1,11 +1,10 @@
 """The model decides whether a task changes the workspace, not the classifier.
 
 The keyword classifier still guesses from the first message, but the guess is
-only a hint: every demand the runtime makes - the prose nudge, the file-change
-completion evidence, the mutation rules in the task context - keys off the
-model's own ``changes_workspace`` declaration in ``submit_plan``, or off what
-the model actually did. These tests pin that the two never argue over a label
-the model did not choose.
+only a hint: the mutation rules in the task context, and the channel prose
+streams on, key off the model's own ``changes_workspace`` declaration in
+``submit_plan``, or off what the model actually did. These tests pin that the
+two never argue over a label the model did not choose.
 """
 
 from __future__ import annotations
@@ -54,7 +53,7 @@ def _project_with_tests() -> ProjectVerification:
 
 def _planner(tmp_path, bus: AsyncEventBus | None = None) -> PlannerService:
     return PlannerService(
-        config=PlannerConfig(double_check_completion=False),
+        config=PlannerConfig(),
         event_bus=bus or AsyncEventBus(session_id="session"),
         session_id="session",
         workspace=tmp_path,
@@ -127,9 +126,6 @@ async def test_a_declared_change_is_held_to_its_word(tmp_path) -> None:
     block = service.task_context_block(recommended_tool_names={"write_file"})
     assert "changes the workspace (your declaration)" in block
     assert "changes_workspace=false" in block  # the way out is named, not hidden
-    decision = await service.evaluate_completion({"summary": "done"})
-    assert decision.accepted is False
-    assert any("file-change" in item for item in decision.missing_requirements)
 
 
 async def test_declaring_after_a_write_lands_on_verification(tmp_path) -> None:
@@ -173,7 +169,7 @@ async def test_declaring_an_answer_drops_every_mutation_demand(tmp_path) -> None
 
 async def test_a_write_on_a_declared_answer_is_followed_not_fought(tmp_path) -> None:
     # The model said "answer", then changed a file anyway. No rejection: the
-    # evidence upgrades the task and the only new expectation is verification.
+    # evidence upgrades the task.
     service = _planner(tmp_path)
     await service.begin_turn("o que faz o parser?", provider_supports_tools=True)
     await service.submit_agent_plan(["Read", "Answer"], changes_workspace=False)
@@ -186,9 +182,8 @@ async def test_a_write_on_a_declared_answer_is_followed_not_fought(tmp_path) -> 
     assert "observed: the workspace already changed" in block
     assert "READ-ONLY TASK" not in block
     # Still the model's decision on prose: no tool demand from a declaration it
-    # never made, only the verification debt for the change it did make.
+    # never made.
     assert service.requires_tool_for_progress() is False
-    assert await service.note_final_answer_verification_debt() is not None
 
 
 # --------------------------------------------------------------------------- #
@@ -206,7 +201,7 @@ async def test_an_undeclared_mutation_guess_demands_nothing(tmp_path) -> None:
     block = service.task_context_block(recommended_tool_names={"read_file"})
     assert "not declared yet - you decide" in block
     assert "looks like a workspace change" in block
-    assert "do not claim completion from prose" not in block
+    assert "call complete_task with a summary" not in block
 
 
 async def test_a_plan_without_a_declaration_keeps_the_task_undeclared(tmp_path) -> None:

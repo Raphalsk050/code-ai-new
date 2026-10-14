@@ -29,7 +29,7 @@ Layers (top to bottom): `ui/` → `app/` → `core/` → `providers/`. A turn's 
 | **`PlannerToolPolicy`** | `src/code_ai/core/planning/policy.py` | Derives allowed/recommended tools from the phase. In `advisory` mode (the default) it **exposes everything**. |
 | **Classifier** | `src/code_ai/core/planning/models.py` — `TaskProfile.from_user_text` (:132) | A keyword regex decides `intent` / `requires_workspace_mutation`. **Single point of failure.** |
 | **Evidence** | `src/code_ai/core/planning/evidence.py` — `_records_from_payload` (:308) | Turns a tool payload into an `EvidenceRecord`. `execute_command` at :415. |
-| **Completion gate** | `src/code_ai/core/planning/completion.py` | Minimal/Standard/Strict policies over an immutable `CompletionContext`. |
+| **Completion gate** *(removed)* | `src/code_ai/core/planning/completion.py` | Minimal/Standard/Strict policies over an immutable `CompletionContext`. |
 | **Preconditions** | `src/code_ai/core/planning/preconditions.py` | Advisory nudges (once, fail-open) before action tools. |
 
 **Flow of a turn** (`orchestration.py`):
@@ -140,6 +140,8 @@ Anti-over-engineering corollary: do **not** harden batches (the data: batches ar
 
 ### F3 — Completion driven by the runtime  *(unblocks the dead latch #2)*
 
+> **Removed (2026-10):** the end-of-turn verification checkpoint, the prose correction and the `complete_task` evidence gate were all dropped: built for weak models, they got in the way of capable ones. A prose answer now simply ends the turn and `complete_task` accepts any well-formed claim.
+
 **Motivation.** `complete_task`=0 in 241 steps. The evidence-based completion gate — the one hard latch — is dead code in real use, because it depends on the weak model calling a meta-tool. Turns end in prose (`_handle_no_tool_response`) or in a stall/wind-down, with no verification checkpoint at all.
 
 **Change.** Move the checkpoint to the loop's **natural stop** (when the model answers with no tool call), keyed on **observed evidence**:
@@ -199,7 +201,7 @@ Anti-over-engineering corollary: do **not** harden batches (the data: batches ar
 ```
 F1  (F1a + F1b)   -- root cause; correctly defines "this is a mutation task"
   |- F2           -- makes the shell count as a mutation (feeds has_file_change)
-      |- F3       -- consumes has_file_change at the loop's natural stop
+      |- F3       -- consumes has_file_change at the loop's natural stop (removed)
 F4                -- independent; do it after investigating, or defer it
 F5                -- only after F1 proves the classification robust
 ```
@@ -244,10 +246,10 @@ F1→F2→F3 are a **coherent package** (the "definition of observed mutation" f
 | Turn start / resume | `service.py:226` (`begin_turn`), `:273` (`_resume_turn`) |
 | Context block | `service.py:625` (`task_context_block`) |
 | "Does the task affect the workspace?" | `service.py:755` (`_task_produces_workspace_effects`) |
-| Completion snapshot | `service.py:923` (`_completion_context`) |
+| Completion snapshot *(removed)* | `service.py:923` (`_completion_context`) |
 | Settling on prose | `service.py:1246` (`settle_agent_plan_on_final_answer`) |
 | `execute_command` evidence | `evidence.py:415` |
-| Completion policies | `completion.py` (`select_policy:330`, `changes_require_verification:53`) |
+| Completion policies *(removed)* | `completion.py` (`select_policy:330`); `changes_require_verification` now lives in `service.py` |
 | Per-phase tool policy | `policy.py:131` (`_strict_allowed_tool_names`, dead today) |
 | Advisory nudges | `preconditions.py` (`oversized_write_gap:121`) |
 | Planner defaults | `defaults.py:186` (`tool_policy="advisory"`) |

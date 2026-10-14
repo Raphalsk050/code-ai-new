@@ -1019,7 +1019,7 @@ class TwoFileMutationProvider(_BaseProvider):
 
 
 async def test_multi_file_change_not_blocked_by_phase(tmp_path) -> None:
-    config = _config(tmp_path, planner={"double_check_completion": False})
+    config = _config(tmp_path)
     provider = TwoFileMutationProvider()
     app = build_application(config=config, provider=provider)
     events: list[str] = []
@@ -1090,11 +1090,7 @@ async def test_misclassified_mutation_is_answered_not_forced_into_tools(tmp_path
 
 
 class WritesThenAnswersProvider(_BaseProvider):
-    """Changes a file, then ends the turn in prose without ever verifying.
-
-    The dominant real shape: weak models never call ``complete_task``, so the
-    evidence gate behind it never runs and the turn simply stops.
-    """
+    """Declares a change and makes it, then ends the turn in prose, unverified."""
 
     def __init__(self) -> None:
         self.calls = 0
@@ -1107,28 +1103,85 @@ class WritesThenAnswersProvider(_BaseProvider):
                 response=ModelResponse(
                     tool_calls=[
                         ToolCall(
+                            id="p1",
+                            name="submit_plan",
+                            arguments={
+                                "steps": ["Write mod.py"],
+                                "changes_workspace": True,
+                            },
+                        ),
+                        ToolCall(
                             id="w1",
                             name="write_file",
                             arguments={"path": "mod.py", "content": "VALUE = 1\n"},
-                        )
+                        ),
                     ],
                     finish_reason=FinishReason.TOOL_CALLS,
                 ),
             )
             return
+        text = "Done, mod.py now has VALUE." if self.calls == 2 else "Answering again."
         yield ProviderEvent(
             kind="completed",
-            response=ModelResponse(
-                text="Done, mod.py now has VALUE.", finish_reason=FinishReason.STOP
-            ),
+            response=ModelResponse(text=text, finish_reason=FinishReason.STOP),
         )
 
 
-async def test_unverified_change_ending_in_prose_is_nudged_once(tmp_path) -> None:
+async def test_unverified_change_ending_in_prose_ends_the_turn(tmp_path) -> None:
     # A pyproject makes pytest detectable, so verification is something the
-    # agent could actually run here.
+    # agent could have run. Ending in prose without it still ends the turn on
+    # that answer: no extra model call is spent asking for verification.
     (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
     provider = WritesThenAnswersProvider()
+    app = build_application(config=_config(tmp_path), provider=provider)
+
+    await app.start()
+    result = await app.submit_user_message("crie mod.py com a constante VALUE")
+    await app.close()
+
+    assert (tmp_path / "mod.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert provider.calls == 2
+    assert result.error is None
+    assert result.text == "Done, mod.py now has VALUE."
+
+
+class WritesThenCompletesProvider(_BaseProvider):
+    """Changes a file, then claims success with complete_task, unverified."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        if self.calls == 1:
+            call = ToolCall(
+                id="w1",
+                name="write_file",
+                arguments={"path": "mod.py", "content": "VALUE = 1\n"},
+            )
+        elif self.calls == 2:
+            call = ToolCall(
+                id="c1",
+                name="complete_task",
+                arguments={"summary": "Created mod.py with VALUE."},
+            )
+        else:
+            yield ProviderEvent(
+                kind="completed",
+                response=ModelResponse(
+                    text="Completing again.", finish_reason=FinishReason.STOP
+                ),
+            )
+            return
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(tool_calls=[call], finish_reason=FinishReason.TOOL_CALLS),
+        )
+
+
+async def test_success_claim_without_verification_is_accepted(tmp_path) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
+    provider = WritesThenCompletesProvider()
     app = build_application(config=_config(tmp_path), provider=provider)
     events: list[str] = []
     app.subscribe(lambda event: events.append(event.event_type))
@@ -1137,31 +1190,10 @@ async def test_unverified_change_ending_in_prose_is_nudged_once(tmp_path) -> Non
     result = await app.submit_user_message("crie mod.py com a constante VALUE")
     await app.close()
 
-    assert (tmp_path / "mod.py").read_text(encoding="utf-8") == "VALUE = 1\n"
-    assert "planning.verification_debt.nudged" in events
-    # One nudge, then the model's own answer stands: the checkpoint never traps
-    # the turn, exactly like the completion gate's fail-open release.
-    assert provider.calls == 3
-    assert result.text == "Done, mod.py now has VALUE."
-    assert events.count("planning.verification_debt.nudged") == 1
-
-
-async def test_read_only_prose_answer_is_not_nudged_for_verification(tmp_path) -> None:
-    # The regression half of the checkpoint: it keys off observed change, so a
-    # question that changed nothing must cost no extra round-trip.
-    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
-    provider = AnswersInProseProvider()
-    app = build_application(config=_config(tmp_path), provider=provider)
-    events: list[str] = []
-    app.subscribe(lambda event: events.append(event.event_type))
-
-    await app.start()
-    result = await app.submit_user_message("explain what the adder function does")
-    await app.close()
-
-    assert "planning.verification_debt.nudged" not in events
-    assert provider.calls == 1
-    assert result.text == "The adder function returns the sum of its two arguments."
+    assert provider.calls == 2
+    assert "planning.completion.accepted" in events
+    assert "planning.completion.rejected" not in events
+    assert "Created mod.py with VALUE." in result.text
 
 
 class ParallelReadsProvider(_BaseProvider):

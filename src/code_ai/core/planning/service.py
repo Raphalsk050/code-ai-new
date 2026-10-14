@@ -8,11 +8,6 @@ from typing import Any
 
 from code_ai.config.models import PlannerConfig
 from code_ai.core.errors import ToolExecutionError
-from code_ai.core.planning.completion import (
-    CompletionContext,
-    CompletionGate,
-    changes_require_verification,
-)
 from code_ai.core.planning.evidence import EvidenceLedger, EvidenceRecord
 from code_ai.core.planning.models import (
     CRITERION_APPLY_VIA_TOOLS,
@@ -34,7 +29,6 @@ from code_ai.core.planning.models import (
 from code_ai.core.planning.policy import PlannerToolPolicy, PolicyDecision
 from code_ai.core.planning.preconditions import PreconditionGate
 from code_ai.core.verification import (
-    KIND_PRIORITY,
     CommandKind,
     ProjectVerification,
     detect_project_verification,
@@ -69,7 +63,7 @@ class ApprovedExternalGap:
 
 
 class PlannerService:
-    """Owns semantic task progress and evidence-based completion decisions."""
+    """Owns semantic task progress and completion decisions."""
 
     def __init__(
         self,
@@ -81,7 +75,6 @@ class PlannerService:
         verification_detector: Callable[[Path], ProjectVerification] = detect_project_verification,
         verification_memo: Callable[[ProjectVerification], None] | None = None,
         write_agent_types: frozenset[str] = frozenset(),
-        review_tools_available: Callable[[], bool] | None = None,
     ) -> None:
         self.config = config
         self.event_bus = event_bus
@@ -107,12 +100,9 @@ class PlannerService:
         self.approved_external_gap = False
         # Paths the task targets that live *outside* the workspace (e.g. ~/.zshrc).
         # File tools are workspace-bound, so these can only be changed through
-        # commands; the completion gate must accept command evidence for them
-        # instead of demanding workspace file-change evidence the task cannot
-        # honestly produce. Seeded from the objective, grown by boundary errors.
+        # commands; the task context points the model there instead of at
+        # workspace files. Seeded from the objective, grown by boundary errors.
         self.external_targets: tuple[str, ...] = ()
-        self.no_progress_rounds = 0
-        self.double_check_pending = False
         self.accepted_final_text: str | None = None
         # The blocking ask_user question the previous turn ended on, if any.
         # The user's next message answers it: the app layer resumes the paused
@@ -123,42 +113,28 @@ class PlannerService:
         # strongest available signal that the task is not the change it was
         # declared or guessed to be (e.g. a question that mentions "implement").
         # While set, every consumer sees the task as a prose deliverable: no
-        # corrective nudges toward write tools, no file-change completion
-        # demands, prose streams as the answer. See note_user_denial.
+        # mutation rules in the task context, prose streams as the answer. See
+        # note_user_denial.
         self.user_declined_mutation = False
         # The model's own decision on whether this task changes the workspace,
         # declared through submit_plan's changes_workspace. ``None`` until the
         # model says. The surface classifier only guesses from keywords in the
-        # first message; this is the authority. Every demand the runtime makes
-        # (prose nudges, file-change completion evidence, the mutation rules in
-        # the task context) keys off this declaration or off observed evidence,
-        # never off the keyword guess - a guess the model disagreed with used
-        # to turn into a round of corrections in both directions.
+        # first message; this is the authority. The mutation rules in the task
+        # context key off this declaration or off observed evidence, never off
+        # the keyword guess - a guess the model disagreed with used to turn
+        # into a round of corrections in both directions.
         self.declared_mutation: bool | None = None
-        # Risk-proportional evidence gate for success completion claims.
-        self.completion_gate = CompletionGate(
-            max_rejections_without_progress=config.max_completion_rejections
-        )
         # Evidence-based preconditions checked before action-taking tools run.
         self._precondition_gate = PreconditionGate(workspace=workspace)
         # Sub-agent profile names that can mutate the workspace; delegating to
         # one of these before any reconnaissance is gated. Empty (the default
         # for directly-constructed services) disables the delegation gate.
         self._write_agent_types = write_agent_types
-        # Whether a review channel (review tools or a reviewer sub-agent)
-        # actually exists in this session. ``None`` (the default for
-        # directly-constructed services) means no review can be demanded, so
-        # the high-risk review requirement never fires without a way to comply.
-        self._review_tools_available = review_tools_available
         # Workspace-relative paths whose current content the agent has observed
         # (read, written, or reported by a sub-agent). Deliberately survives
         # begin_turn's per-turn ledger reset: a file read two turns ago is still
         # known content, so the read-before-write gate must not demand a re-read.
         self._known_content_paths: set[str] = set()
-        # Whether the turn already spent its one nudge about ending in prose
-        # with the workspace changed but unverified. See
-        # note_final_answer_verification_debt.
-        self._verification_debt_nudged = False
 
     @property
     def enabled(self) -> bool:
@@ -168,8 +144,8 @@ class PlannerService:
         """The detected verification capabilities of the workspace, cached.
 
         Detection is lazy and best-effort: with no workspace, or none detected,
-        this returns an empty ``ProjectVerification`` and the completion gate
-        degrades gracefully instead of trapping the agent.
+        this returns an empty ``ProjectVerification`` and the verification hint
+        says there is nothing to run.
         """
         if self._project_verification is None:
             if self._workspace is None:
@@ -258,14 +234,10 @@ class PlannerService:
         self.approved_external_gaps = ()
         self.approved_external_gap = self.profile.allows_web_first
         self.external_targets = _external_path_targets(text, self._workspace)
-        self.no_progress_rounds = 0
-        self.double_check_pending = False
         self.accepted_final_text = None
         self.pending_question = None
         self.user_declined_mutation = False
         self.declared_mutation = None
-        self.completion_gate.reset()
-        self._verification_debt_nudged = False
         self._require_tool_calling(provider_supports_tools)
 
         await self._emit_phase(
@@ -278,8 +250,8 @@ class PlannerService:
             self.profile.model_dump(mode="json"),
             source="core.planner",
         )
-        # The deterministic skeleton drives policy and completion gating, but it is
-        # never surfaced as a plan: the sidebar is reserved for the model-authored
+        # The deterministic skeleton drives the phases and the tool policy, but it
+        # is never surfaced as a plan: the sidebar is reserved for the model-authored
         # steps submitted via submit_plan. Advance the internal cursor silently.
         await self._mark_current_step_started()
 
@@ -314,16 +286,12 @@ class PlannerService:
                     record.compact(),
                     source="core.planner",
                 )
-        self.no_progress_rounds = 0
-        self.double_check_pending = False
         self.accepted_final_text = None
         # Per-turn like everything above it, and missing here was a trap: a
         # refusal in the previous turn kept governing this one, so a user who
         # said "no" once and then "continue" got an agent that still believed
         # it must not touch files - and said so instead of working.
         self.user_declined_mutation = False
-        self.completion_gate.reset()
-        self._verification_debt_nudged = False
         await self._emit_phase(PlanningPhase.EXECUTE)
         # A plan paused at the previous turn's end (see suspend_agent_plan) comes
         # back to life: the current step starts running again in the sidebar.
@@ -440,7 +408,6 @@ class PlannerService:
             if question:
                 self.pending_question = question
             return []
-        before = self.progress_signature()
         step_id = self.current_step.step_id if self.current_step else None
         records = self.ledger.record_tool_result(
             plan=self.plan,
@@ -463,15 +430,11 @@ class PlannerService:
                 record.compact(),
                 source="core.planner",
             )
+        # The model-authored checklist is *not* advanced here: that cursor is
+        # driven solely by the model via complete_plan_step, so the sidebar
+        # reflects real progress instead of racing one step ahead per piece of
+        # evidence.
         await self._advance_after_evidence(records, tool_name=tool_name, payload=payload)
-        # Only genuine forward motion clears the no-progress counter. Recording yet
-        # another identical observation must not look like progress, or a tool-call
-        # loop would reset the guard forever. The model-authored checklist is *not*
-        # advanced here: that cursor is driven solely by the model via
-        # complete_plan_step, so the sidebar reflects real progress instead of
-        # racing one step ahead per piece of evidence.
-        if self.progress_signature() != before:
-            self.no_progress_rounds = 0
         return records
 
     def precondition_gap(self, tool_name: str, arguments: dict[str, Any]) -> str | None:
@@ -529,9 +492,8 @@ class PlannerService:
 
         A file tool rejecting a path with a boundary error is direct evidence the
         model is trying to change an external file. Remembering the target lets
-        the completion gate accept command evidence for it instead of demanding
-        workspace file-change evidence - which is what pushes models to fabricate
-        pointless workspace files just to satisfy the gate.
+        the task context point the model at commands for it instead of at
+        pointless workspace files, and lets the completion summary name it.
         """
         path = str(arguments.get("path") or "").strip()
         if not path or not self._path_is_outside_workspace(path):
@@ -560,10 +522,9 @@ class PlannerService:
         after it had correctly fallen back to prose.
 
         Downgrade the demand, not the tools: the task is treated as a prose
-        deliverable from here on (read-only context rules, no corrective nudge,
-        no file-change completion requirement, prose streams as the answer),
-        but the model may still mutate later in the turn if the user asks -
-        the advisory gates keep working.
+        deliverable from here on (read-only context rules, prose streams as the
+        answer), but the model may still mutate later in the turn if the user
+        asks - the advisory gates keep working.
         """
         if not self.enabled or self.user_declined_mutation:
             return
@@ -584,7 +545,7 @@ class PlannerService:
         """Best-effort: does this path resolve outside the workspace root?
 
         With no configured workspace nothing is "outside", and unresolvable
-        paths are treated as internal so the strict evidence gate stays intact.
+        paths are treated as internal.
         """
         if self._workspace is None:
             return False
@@ -597,19 +558,6 @@ class PlannerService:
         except (OSError, ValueError):
             return False
         return resolved != root and not resolved.is_relative_to(root)
-
-    def _has_external_action_evidence(self) -> bool:
-        """Whether any successful system action could have applied the external change.
-
-        Commands and terminal interactions are the only channels that can touch
-        files outside the workspace, so their success is the honest stand-in for
-        the file-change evidence the ledger cannot hash there.
-        """
-        return self.ledger.has_success(
-            EvidenceType.COMMAND_SUCCEEDED,
-            EvidenceType.VERIFICATION_PASSED,
-            EvidenceType.TERMINAL_OBSERVED,
-        )
 
     async def record_policy_denial(
         self,
@@ -644,12 +592,12 @@ class PlannerService:
         )
 
     def requires_tool_for_progress(self) -> bool:
-        """Whether a prose-only response is a wrong turn right now.
+        """Whether the task's deliverable right now is tool work, not prose.
 
-        Only the model's own declaration creates this demand: it said the task
-        changes the workspace, so answering with the diff as text is a slip
-        worth one correction. A keyword guess never does - a question that
-        happens to mention "implement" must be free to end in prose.
+        Only the model's own declaration makes it so: it said the task changes
+        the workspace, so its prose is working commentary rather than the
+        answer. A keyword guess never does - a question that happens to
+        mention "implement" streams its prose as the answer.
         """
         if not (self.enabled and self.profile and self.declared_mutation is True):
             return False
@@ -749,8 +697,7 @@ class PlannerService:
                 f"Outside-workspace target(s): {sorted(self.external_targets)}. "
                 "File tools only work inside the workspace: change these targets "
                 "with execute_command and confirm with a read-back command. Never "
-                "create or edit workspace files just to satisfy completion "
-                "evidence.\n"
+                "create or edit workspace files in their place.\n"
                 if self.external_targets
                 else ""
             )
@@ -796,11 +743,11 @@ class PlannerService:
             )
             return header + (
                 f"Task kind: changes the workspace ({origin}).\n"
-                "Rules: prefer the recommended tools, work on the current step, and do not "
-                "claim completion from prose. For workspace changes, call write_file or "
-                "edit_code; for completion, call complete_task after verification evidence "
-                "exists. If you conclude the task needs no workspace change after all, "
-                "call submit_plan again with changes_workspace=false and answer in the chat."
+                "Rules: prefer the recommended tools and work on the current step. Make "
+                "workspace changes with write_file or edit_code, not as code in the chat; "
+                "when the work is done, call complete_task with a summary. If you conclude "
+                "the task needs no workspace change after all, call submit_plan again "
+                "with changes_workspace=false and answer in the chat."
             )
         if self.declared_mutation is False or self.user_declined_mutation:
             # The model said so (or the user refused the change): the prose
@@ -823,8 +770,7 @@ class PlannerService:
                 "required.\n"
                 "- Nobody asked for a document: put notes, summaries or analysis in "
                 "your answer, not in a file. If the task genuinely turns out to need "
-                "a file change, make it - the runtime follows what you do and will "
-                "then expect the change to be verified."
+                "a file change, make it and verify it - the runtime follows what you do."
             )
         # Undeclared: the keyword guess is shown as a hint, never as a demand.
         # The model decides; until it does, nothing is required of it beyond
@@ -887,7 +833,7 @@ class PlannerService:
           verification discipline it deserves.
 
         Every consumer that steers or gates on the label - the task context
-        block, the tool policy, the completion gate - sees this corrected view.
+        block, the tool policy - sees this corrected view.
         A declaration also rewrites :attr:`profile` itself (see
         :meth:`_declare_workspace_mutation`), so the skeleton follows.
         """
@@ -976,50 +922,6 @@ class PlannerService:
         shown = paths[:limit]
         return f"{shown} (+{len(paths) - limit} more)"
 
-    def corrective_message(self, *, recommended_tool_names: set[str]) -> str:
-        current = self.current_step
-        required_evidence = [
-            item.value for item in current.required_evidence
-        ] if current else []
-        return (
-            "Runtime correction: you declared this task changes the workspace, so its "
-            "deliverable is a change made through tools, not chat text. Do not provide "
-            "the implementation, diff, or command as prose: use the recommended tools "
-            "to satisfy the current step, then verify the result. If you have "
-            "reconsidered and no workspace change is needed, call submit_plan again "
-            "with changes_workspace=false and then answer. "
-            f"Phase: {self.phase.value}. "
-            f"Current step: {current.title if current else 'none'}. "
-            f"Recommended tools: {sorted(recommended_tool_names)}. "
-            f"Required evidence: {required_evidence}."
-        )
-
-    async def note_no_tool_response(self, *, recommended_tool_names: set[str]) -> str:
-        self.no_progress_rounds += 1
-        await self.event_bus.emit(
-            "agent.corrective_prompt.injected",
-            {
-                "phase": self.phase.value,
-                "current_step": self.current_step.title if self.current_step else None,
-                "recommended_tools": sorted(recommended_tool_names),
-                "no_progress_rounds": self.no_progress_rounds,
-            },
-            source="core.planner",
-        )
-        if self.no_progress_rounds >= self.config.max_no_progress_rounds:
-            await self.event_bus.emit(
-                "planning.no_progress.detected",
-                {
-                    "rounds": self.no_progress_rounds,
-                    "phase": self.phase.value,
-                    "current_step": self.current_step.title if self.current_step else None,
-                },
-                source="core.planner",
-            )
-        if self.no_progress_rounds > self.config.max_no_progress_rounds:
-            await self._emit_phase(PlanningPhase.BLOCKED)
-        return self.corrective_message(recommended_tool_names=recommended_tool_names)
-
     async def evaluate_completion(self, arguments: dict[str, Any]) -> CompletionDecision:
         try:
             claim = CompletionClaim.model_validate(arguments)
@@ -1051,32 +953,7 @@ class PlannerService:
                 missing_requirements=tuple(invalid),
             )
 
-        verdict = self.completion_gate.evaluate(
-            self._completion_context(claim),
-            progress_fingerprint=self.progress_signature(),
-        )
-        if verdict.double_check_requested:
-            self.double_check_pending = True
-        if not verdict.accepted:
-            await self.event_bus.emit(
-                "planning.completion.rejected",
-                {
-                    "missing_requirements": list(verdict.missing_requirements),
-                    "policy": verdict.policy_name,
-                },
-                source="core.planner",
-            )
-            return CompletionDecision(
-                accepted=False,
-                outcome="success",
-                missing_requirements=verdict.missing_requirements,
-            )
-
-        await self._accept_success_completion(
-            claim,
-            acceptance_note=verdict.acceptance_note,
-            unresolved=verdict.missing_requirements if verdict.fail_open else (),
-        )
+        await self._accept_success_completion(claim)
         return CompletionDecision(
             accepted=True,
             outcome="success",
@@ -1084,11 +961,10 @@ class PlannerService:
         )
 
     def _claim_validity_gaps(self, claim: CompletionClaim) -> list[str]:
-        """Structural problems with the claim itself, before any evidence policy.
+        """Structural problems with the claim itself.
 
         These are practically unreachable through the normal tool flow (the tool
-        already rejects an empty summary; objectives are set once per turn), so
-        they are judged outside the gate's pacing counter.
+        already rejects an empty summary; objectives are set once per turn).
         """
         if not (self.profile and self.plan):
             return ["No active plan exists."]
@@ -1111,148 +987,6 @@ class PlannerService:
         return (
             self.ledger.has_success(EvidenceType.FILE_CREATED, EvidenceType.FILE_CHANGED)
             or self.ledger.command_mutated_workspace
-        )
-
-    def _change_verification_state(self) -> tuple[bool, bool, str]:
-        """``(workspace changed, verification settled, what is still owed)``.
-
-        Verification only applies when (a) something actually changed, (b) the
-        change is not documentation-only and (c) the project exposes a way to
-        verify it. With no detectable test/build system we degrade gracefully
-        and complete with a warning rather than trapping the agent demanding
-        evidence it cannot get. A command-driven change has no paths to judge
-        doc-only-ness by, so it always counts as verifiable work.
-        """
-        has_file_change = self._has_workspace_change_evidence()
-        verification_applies = (
-            has_file_change
-            and (
-                self.ledger.command_mutated_workspace
-                or changes_require_verification(self.ledger.current_changed_paths())
-            )
-            and self.project_verification().has_any
-        )
-        verified, gap = self._verification_status(verification_applies)
-        return has_file_change, verified, gap
-
-    def _completion_context(self, claim: CompletionClaim) -> CompletionContext:
-        """Snapshot the evidence the completion policies are allowed to judge."""
-        profile = self._effective_profile()
-        assert profile is not None  # guarded by _claim_validity_gaps
-        has_file_change, verified, verification_gap = self._change_verification_state()
-        changed_paths = tuple(self.ledger.current_changed_paths())
-        phantom: tuple[str, ...] = ()
-        # A command-driven change is real but path-less, so no claimed path can
-        # be checked against it. Calling those paths fabricated would accuse the
-        # model of inventing exactly the work it just did through the shell.
-        if (
-            has_file_change or profile.requires_workspace_mutation
-        ) and not self.ledger.command_mutated_workspace:
-            # Paths outside the workspace never enter the ledger's hash map, so
-            # honestly claiming an external target must not read as fabrication.
-            claimed = {
-                path
-                for path in claim.changed_paths
-                if not self._path_is_outside_workspace(path)
-            }
-            phantom = tuple(sorted(claimed - set(changed_paths)))
-        pending_declared: tuple[str, ...] = ()
-        incomplete_skeleton: tuple[str, ...] = ()
-        if self.agent_plan is not None:
-            # The model's own checklist is the source of truth once submitted;
-            # the skeleton is only the fallback narrative.
-            pending_declared = tuple(
-                step.title
-                for step in self.agent_plan.steps
-                if step.status == PlanStepStatus.PENDING
-            )
-        elif self.plan is not None:
-            incomplete_skeleton = tuple(
-                step.title
-                for step in self.plan.steps
-                if step.kind != PlanStepKind.COMPLETE
-                and step.status
-                not in {PlanStepStatus.COMPLETED, PlanStepStatus.SKIPPED}
-            )
-        return CompletionContext(
-            claim=claim,
-            profile=profile,
-            changed_paths=changed_paths,
-            has_file_change=has_file_change,
-            write_attempted=self.ledger.mutation_was_attempted(),
-            has_analysis_evidence=self.ledger.has_success(
-                EvidenceType.FILE_READ,
-                EvidenceType.WORKSPACE_LISTED,
-                EvidenceType.LOCAL_SEARCH_MATCH,
-                EvidenceType.LOCAL_SEARCH_COMPLETED,
-                EvidenceType.DISCOVERY_COMPLETED,
-                EvidenceType.WEB_RESULT,
-            ),
-            verified=verified,
-            verification_gap=verification_gap,
-            verification_failed_this_turn=self.ledger.has_record(
-                EvidenceType.VERIFICATION_FAILED
-            ),
-            external_targets=self.external_targets,
-            has_external_action_evidence=self._has_external_action_evidence(),
-            phantom_claimed_paths=phantom,
-            pending_declared_steps=pending_declared,
-            incomplete_skeleton_steps=incomplete_skeleton,
-            double_check_enabled=self.config.double_check_completion,
-            double_check_pending=self.double_check_pending,
-            severe_review_findings=self.ledger.open_severe_review_findings,
-            has_current_review=self.ledger.review_ran_after_last_change,
-            review_required_for_risk=self._review_required_for_risk(),
-        )
-
-    def _review_required_for_risk(self) -> bool:
-        """Whether a high-risk claim may be asked to carry review evidence.
-
-        Requires both the config switch and an actual review channel; demanding
-        a review the session cannot run would only trap the turn until the
-        gate's fail-open released it.
-        """
-        if not self.config.require_review_for_risky_changes:
-            return False
-        if self._review_tools_available is None:
-            return False
-        try:
-            return bool(self._review_tools_available())
-        except Exception:
-            return False
-
-    def _verification_status(self, verification_applies: bool) -> tuple[bool, str]:
-        """Whether the current change set counts as verified, and why not.
-
-        Verified means a verification passed against the current changes *and*
-        it was at least as strong as the strongest check the project exposes
-        (test > build > typecheck > lint). A lint-only pass on a project with a
-        test suite is the classic way to game the gate with a cheap exit-0 run,
-        so it does not count; the returned gap message tells the model exactly
-        which command it still owes. Projects that only expose weaker checks
-        degrade gracefully - their strongest available check is enough.
-        """
-        if not self.config.require_verification_for_changes or not verification_applies:
-            return True, ""
-        project = self.project_verification()
-        if not self.ledger.latest_verification_passed:
-            return False, (
-                "no current successful verification evidence exists. "
-                + project.prompt_hint()
-            )
-        required = project.required_kind
-        passed = self.ledger.strongest_verification_kind_passed()
-        if required is None or (
-            passed is not None and KIND_PRIORITY[passed] <= KIND_PRIORITY[required]
-        ):
-            return True, ""
-        primary = project.primary()
-        ran = passed.value if passed else "an unclassified check"
-        return False, (
-            f"verification for the current changes only ran at the '{ran}' level, "
-            f"but this project exposes a {required.value} command "
-            f"(`{primary.display if primary else required.value}`). Run it against "
-            "the current changes; a weaker check cannot prove the change works."
         )
 
     def progress_signature(self) -> tuple[object, ...]:
@@ -1461,46 +1195,6 @@ class PlannerService:
             source="core.planner",
         )
 
-    async def note_final_answer_verification_debt(self) -> str | None:
-        """One nudge when a turn ends in prose having changed but not verified.
-
-        The evidence gate is the runtime's only hard quality trap, and it hangs
-        off ``complete_task`` - a meta-tool weak models simply never call (zero
-        calls across 241 observed model steps). Every one of those turns ended
-        the other way: the model stopped calling tools and answered. So the
-        checkpoint belongs at *that* stop, keyed on what the ledger recorded
-        rather than on the model volunteering a claim.
-
-        Returns the correction to inject, or ``None`` to let the answer stand.
-        Bounded to once per turn and fail-open by construction: a second prose
-        answer is accepted with the debt unpaid, exactly like ``CompletionGate``
-        releases a turn it cannot satisfy. Keyed on observed change, never on the
-        task label, so a read-only task never sees it.
-        """
-        if not (self.enabled and self.profile):
-            return None
-        if self.user_declined_mutation or self._verification_debt_nudged:
-            return None
-        has_change, verified, gap = self._change_verification_state()
-        if not has_change or verified:
-            return None
-        self._verification_debt_nudged = True
-        await self.event_bus.emit(
-            "planning.verification_debt.nudged",
-            {
-                "changed_paths": self.ledger.current_changed_paths(),
-                "command_mutated_workspace": self.ledger.command_mutated_workspace,
-            },
-            source="core.planner",
-        )
-        return (
-            "Runtime check: this turn changed the workspace, but "
-            + (gap or "no current successful verification evidence exists.")
-            + " Run that check now against the current state. If it genuinely "
-            "cannot run here, answer again and state the unverified change as an "
-            "explicit limitation instead of leaving it unsaid."
-        )
-
     async def settle_agent_plan_on_final_answer(self) -> None:
         """Complete the checklist when a turn ends cleanly in a final answer.
 
@@ -1512,8 +1206,7 @@ class PlannerService:
         model remembered to report. Leaving the plan ACTIVE here put the sidebar
         at "paused, waiting for you" after a delivered answer, with nothing
         actually pending; models routinely finish without declaring the closing
-        step, and the verification checkpoint has already had its say before the
-        answer stands (see :meth:`note_final_answer_verification_debt`).
+        step.
 
         Only the clean no-tool final-answer path calls this. A blocking
         question raised via ``ask_user``, a cancellation or a wind-down suspend
@@ -1710,21 +1403,19 @@ class PlannerService:
     def _completion_verification_note(self, changed_paths: list[str]) -> str:
         if self.ledger.latest_verification_evidence_id:
             return f"Verified by evidence {self.ledger.latest_verification_evidence_id}."
-        code_changed = changes_require_verification(changed_paths)
-        if code_changed and not self.project_verification().has_any:
+        code_changed = self.ledger.command_mutated_workspace or changes_require_verification(
+            changed_paths
+        )
+        if not code_changed:
+            return "No verification evidence was required."
+        if not self.project_verification().has_any:
             return (
                 "Warning: no automated test/build system was detected in this "
                 "project, so the change was not automatically verified."
             )
-        return "No verification evidence was required."
+        return "Not verified: no passing check covers the current changes."
 
-    async def _accept_success_completion(
-        self,
-        claim: CompletionClaim,
-        *,
-        acceptance_note: str = "",
-        unresolved: tuple[str, ...] = (),
-    ) -> None:
+    async def _accept_success_completion(self, claim: CompletionClaim) -> None:
         if self.plan and self.current_step and self.current_step.kind == PlanStepKind.COMPLETE:
             self.current_step.status = PlanStepStatus.COMPLETED
             self.plan.status = PlanStatus.COMPLETED
@@ -1746,17 +1437,8 @@ class PlannerService:
             verification = ""
         else:
             changed_line = "Changed paths: none"
-        # A fail-open acceptance stays honest: what the gate could not confirm is
-        # reported to the user instead of silently dropped.
-        unresolved_line = (
-            "Unresolved completion requirements: " + "; ".join(unresolved)
-            if unresolved
-            else ""
-        )
-        # The claim's own disclosures reach the user too. They are the honest
-        # currency the completion gate accepts in place of a fix (e.g. an open
-        # review finding), so hiding them from the final message would turn the
-        # disclosure escape hatch into a silent bypass.
+        # The claim's own disclosures reach the user too: what the model reports
+        # as still open must not vanish from the final message.
         remaining_line = (
             "Remaining issues: " + "; ".join(claim.remaining_issues)
             if claim.remaining_issues
@@ -1772,10 +1454,8 @@ class PlannerService:
                     claim.summary,
                     changed_line,
                     verification,
-                    acceptance_note,
                     remaining_line,
                     limitations_line,
-                    unresolved_line,
                 )
                 if item
             ),
@@ -1850,6 +1530,42 @@ class PlannerService:
         return bool(self.plan and self.plan.current_step_index >= len(self.plan.steps) - 1)
 
 
+# File suffixes whose changes carry no executable behaviour, so there is nothing
+# meaningful to verify (no test/command applies).
+_DOC_ONLY_SUFFIXES = frozenset(
+    {
+        ".md",
+        ".markdown",
+        ".mdx",
+        ".rst",
+        ".adoc",
+        ".txt",
+        ".text",
+    }
+)
+
+
+def changes_require_verification(paths: list[str]) -> bool:
+    """Whether a set of changed paths warrants verification evidence.
+
+    Pure documentation/prose edits (e.g. a ``.md`` progress tracker) have nothing
+    to run or assert against, so they do not require verification. Any path that
+    is not clearly documentation counts - a mixed change still needs
+    verification.
+    """
+    if not paths:
+        return False
+    return any(not _is_doc_only_path(path) for path in paths)
+
+
+def _is_doc_only_path(path: str) -> bool:
+    dot = path.rfind(".")
+    slash = max(path.rfind("/"), path.rfind("\\"))
+    if dot <= slash:  # no suffix (or a dotfile with no extension)
+        return False
+    return path[dot:].lower() in _DOC_ONLY_SUFFIXES
+
+
 _GENERIC_EXTERNAL_GAP_PHRASES = {
     "external evidence",
     "external information",
@@ -1894,11 +1610,10 @@ _PATH_TOKEN_RE = re.compile(r"(?<![:\w/])(~(?:/[\w.+-][\w./+-]*)?|/[\w.+-][\w./+
 def _external_path_targets(text: str, workspace: Path | None) -> tuple[str, ...]:
     """Path-like tokens in the objective that resolve outside the workspace root.
 
-    Purely a *signal*, never a hard classification: it widens what the
-    completion gate accepts as evidence (commands instead of workspace file
-    hashes) but removes no requirement for ordinary workspace tasks. With no
-    workspace configured nothing is "outside", and unresolvable tokens are
-    ignored, so a false positive costs nothing and a miss degrades to the
+    Purely a *signal*, never a hard classification: it steers the task context
+    toward commands for these targets and names them in the completion summary.
+    With no workspace configured nothing is "outside", and unresolvable tokens
+    are ignored, so a false positive costs nothing and a miss degrades to the
     boundary-error fallback (see note_workspace_boundary_rejection).
     """
     if workspace is None:

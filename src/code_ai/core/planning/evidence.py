@@ -10,7 +10,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from code_ai.core.planning.models import EvidenceType, ExecutionPlan
-from code_ai.core.verification import CommandKind, strongest_kind
+from code_ai.core.verification import CommandKind
 from code_ai.events.models import utc_now_iso
 from code_ai.tools.groups import group_of
 from code_ai.tools.output import bound_text
@@ -24,12 +24,6 @@ VerificationClassifier = Callable[[list[str] | str | None], CommandKind | None]
 # The review tools whose results become REVIEW_COMPLETED evidence.
 _REVIEW_TOOLS = frozenset(
     {"architecture_review", "code_review", "build_review", "test_review"}
-)
-
-# Finding severities serious enough that completing without addressing (or at
-# least honestly disclosing) them would hand the user known-broken work.
-_SEVERE_FINDING_SEVERITIES = frozenset(
-    {"critical", "high", "blocker", "severe", "major", "error"}
 )
 
 # Sinks a redirection can target without changing anything on disk.
@@ -79,12 +73,12 @@ def command_mutates_workspace(argv: list[str] | str | None) -> bool:
     ``execute_command`` is the agent's universal bypass: on shell-driven
     workloads most real changes arrive as ``python -c``, a redirection or a
     ``cp``, none of which the ledger can hash into ``FILE_CHANGED`` evidence.
-    Without this signal ``has_file_change`` stays false for the dominant channel
-    and the completion gate has nothing to demand verification for.
+    Without this signal the planner never sees the dominant channel change
+    anything.
 
     Coarse by design: it answers whether the workspace moved, never which paths.
-    A false positive costs one verification nudge (the gate fails open), which
-    is the cheap side of the trade.
+    A false positive only makes the task read as a change, which is the cheap
+    side of the trade.
     """
     text = " ".join(argv) if isinstance(argv, list) else (argv or "")
     if not text.strip():
@@ -95,15 +89,6 @@ def command_mutates_workspace(argv: list[str] | str | None) -> bool:
         if target.strip("'\"").casefold() not in _NULL_SINKS:
             return True
     return bool(_MUTATING_COMMAND_RE.search(text))
-
-
-def count_severe_findings(severity_summary: dict[str, int]) -> int:
-    """How many findings in a review's severity summary are serious."""
-    return sum(
-        count
-        for severity, count in severity_summary.items()
-        if severity.lower() in _SEVERE_FINDING_SEVERITIES and count > 0
-    )
 
 
 class EvidenceRecord(BaseModel):
@@ -161,22 +146,11 @@ class EvidenceLedger:
         # A successful shell command whose shape says it wrote to the filesystem.
         # Path-less on purpose (see ``command_mutates_workspace``): it is the
         # coarse "the workspace moved" signal for the one channel the hash map
-        # cannot follow, so the completion gate still knows a change happened.
+        # cannot follow, so the planner still knows a change happened.
         self.command_mutated_workspace = False
         self.latest_verification_passed = False
         self.latest_verification_evidence_id: str | None = None
         self.verification_hashes: dict[str, str] = {}
-        # Kinds of verification (test/build/typecheck/lint) that passed against
-        # the *current* change set. Reset whenever a file changes, so the
-        # completion gate can demand the project's strongest check and a stale
-        # or weaker pass (e.g. lint-only) cannot stand in for it.
-        self._verification_kinds_passed: set[CommandKind] = set()
-        # Review state for the *current* change set, reset whenever a file
-        # changes (a fix may have addressed the findings, and a review of the
-        # old state says nothing about the new one). Severe findings that are
-        # still open must be fixed or honestly disclosed before completion.
-        self.review_ran_after_last_change = False
-        self.open_severe_review_findings = 0
         # Distinct knowledge accumulated this session. Each set grows only when the
         # agent observes something genuinely new, so repeating an identical
         # observation does not register as progress. See ``progress_fingerprint``.
@@ -274,22 +248,6 @@ class EvidenceLedger:
         wanted = set(types)
         return any(record.evidence_type in wanted for record in self.records)
 
-    def mutation_was_attempted(self) -> bool:
-        """Whether any write-shaped action was tried this turn, even a failed one.
-
-        Its absence, on a mutation-labelled task, is the reclassification signal
-        the completion gate uses: the model never treated the task as a
-        mutation, whatever the surface classifier said.
-        """
-        if self.command_mutated_workspace:
-            return True
-        return any(
-            record.tool_name in {"write_file", "edit_code"}
-            or record.evidence_type
-            in {EvidenceType.FILE_CREATED, EvidenceType.FILE_CHANGED}
-            for record in self.records
-        )
-
     def success_records(self, *types: EvidenceType) -> list[EvidenceRecord]:
         wanted = set(types)
         return [
@@ -300,10 +258,6 @@ class EvidenceLedger:
 
     def current_changed_paths(self) -> list[str]:
         return sorted(self.changed_hashes)
-
-    def strongest_verification_kind_passed(self) -> CommandKind | None:
-        """The most trusted kind of check that passed for the current change set."""
-        return strongest_kind(self._verification_kinds_passed)
 
     def compact_recent(self, *, limit: int = 12) -> list[dict[str, Any]]:
         return [record.compact() for record in self.records[-limit:]]
@@ -342,23 +296,15 @@ class EvidenceLedger:
             self._invalidate_change_dependent_state()
         elif record.success and record.metadata.get("mutates_workspace"):
             # A shell write is as real a change as a file-tool write, so it
-            # invalidates verification and review the same way - what passed
-            # before it describes the workspace as it no longer is. Only the
-            # hashes are missing, which is why the flag is path-less.
+            # invalidates verification the same way - what passed before it
+            # describes the workspace as it no longer is. Only the hashes are
+            # missing, which is why the flag is path-less.
             self.command_mutated_workspace = True
             self._invalidate_change_dependent_state()
-        elif record.evidence_type == EvidenceType.REVIEW_COMPLETED and record.success:
-            self.review_ran_after_last_change = True
-            self.open_severe_review_findings += count_severe_findings(
-                record.review_severity_summary
-            )
         elif record.evidence_type == EvidenceType.VERIFICATION_PASSED and record.success:
             self.latest_verification_passed = True
             self.latest_verification_evidence_id = record.evidence_id
             self.verification_hashes = dict(self.changed_hashes)
-            kind = record.metadata.get("verification_kind")
-            if kind is not None:
-                self._verification_kinds_passed.add(CommandKind(kind))
         elif record.evidence_type == EvidenceType.VERIFICATION_FAILED:
             self.latest_verification_passed = False
             self.latest_verification_evidence_id = None
@@ -370,9 +316,6 @@ class EvidenceLedger:
         self.latest_verification_passed = False
         self.latest_verification_evidence_id = None
         self.verification_hashes = {}
-        self._verification_kinds_passed = set()
-        self.review_ran_after_last_change = False
-        self.open_severe_review_findings = 0
 
     def _record_knowledge(self, record: EvidenceRecord) -> None:
         if record.evidence_type == EvidenceType.FILE_READ:
@@ -395,10 +338,9 @@ class EvidenceLedger:
             # identical command does not.
             self._command_keys.add(record.summary)
         elif record.evidence_type == EvidenceType.REVIEW_COMPLETED:
-            # A fresh review is genuine progress: without this, a completion
-            # rejection that asked for a review would keep counting toward the
-            # gate's fail-open pacing even after the model complied. Keyed by
-            # summary so repeating an identical review is not progress.
+            # A fresh review is genuine progress, so a turn spent reviewing is
+            # not mistaken for a stall. Keyed by summary so repeating an
+            # identical review is not progress.
             self._review_keys.add(record.summary)
         elif record.evidence_type == EvidenceType.SURFACE_OBSERVED:
             # Browser and desktop work left the stall detector blind: nothing
@@ -545,10 +487,9 @@ def _records_from_payload(
         command_success = success and exit_code == 0
         # A command only counts as verification when it actually exercises the
         # code (a test/build/typecheck/lint runner). A trivial exit-0 command
-        # (echo, ls, cat ...) is recorded as a neutral command run, so it can
-        # never satisfy the completion gate's verification requirement. The
-        # classified kind travels in the record's metadata so the ledger can
-        # judge whether the *strongest* applicable check has passed.
+        # (echo, ls, cat ...) is recorded as a neutral command run, so it never
+        # counts as verification. The classified kind travels in the record's
+        # metadata.
         argv = payload.get("argv") or []
         kind = classify_verification(argv) if classify_verification else CommandKind.TEST
         if kind is not None:
@@ -669,10 +610,10 @@ def _records_from_subagent_reports(
 
     Sub-agents act directly on the shared workspace, so their file changes and
     verification runs are as real as the parent's own - without this conversion
-    the completion gate would reject a delegated implementation for "missing"
-    evidence and push the model to redo (or fabricate) the work. Items are
-    replayed in the order the sub-agent performed them, so a verification that
-    ran after the last change still counts as current.
+    the parent's ledger would show none of the delegated work and the model
+    would be pushed to redo it. Items are replayed in the order the sub-agent
+    performed them, so a verification that ran after the last change still
+    counts as current.
     """
     reports = payload.get("reports")
     if not isinstance(reports, list):

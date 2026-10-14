@@ -22,9 +22,8 @@ _TRIVIAL = frozenset(
 )
 
 # Single-token runners that are genuine verification by themselves, mapped to
-# what they actually exercise. The kind feeds the completion gate's strength
-# check: a lint pass is real verification, but it must not masquerade as a test
-# run when the project exposes a test command.
+# what they actually exercise: a lint pass is real verification, but it must not
+# masquerade as a test run.
 _RUNNER_KINDS: dict[str, CommandKind] = {
     # tests
     "pytest": CommandKind.TEST,
@@ -193,10 +192,8 @@ def verification_kind(
     A command classifies when it matches one of the project's detected
     verification commands (whose kind wins), or a known test/build/typecheck/
     lint runner. Inspection and file-shuffling commands (``echo``, ``ls``,
-    ``cat`` ...) never classify, so the completion gate cannot be satisfied
-    with a trivial exit-0 command — and the returned kind lets the gate demand
-    the project's *strongest* check rather than accepting a lint pass as proof
-    that a behavior change works.
+    ``cat`` ...) never classify, so a trivial exit-0 command is never recorded
+    as verification.
     """
     argv = _normalize_argv(argv)
     if not argv:

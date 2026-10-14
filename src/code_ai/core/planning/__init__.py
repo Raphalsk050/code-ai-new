@@ -1,13 +1,3 @@
-from code_ai.core.planning.completion import (
-    CompletionContext,
-    CompletionEvidencePolicy,
-    CompletionGate,
-    GateVerdict,
-    MinimalCompletionPolicy,
-    StandardCompletionPolicy,
-    StrictCompletionPolicy,
-    select_policy,
-)
 from code_ai.core.planning.evidence import EvidenceLedger, EvidenceRecord
 from code_ai.core.planning.models import (
     AgentPlan,
@@ -32,14 +22,6 @@ __all__ = [
     "AgentPlan",
     "AgentPlanStep",
     "CompletionClaim",
-    "CompletionContext",
-    "CompletionEvidencePolicy",
-    "CompletionGate",
-    "GateVerdict",
-    "MinimalCompletionPolicy",
-    "StandardCompletionPolicy",
-    "StrictCompletionPolicy",
-    "select_policy",
     "EvidenceLedger",
     "EvidenceRecord",
     "EvidenceType",

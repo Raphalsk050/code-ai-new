@@ -286,10 +286,9 @@ complete_plan_step to skip work you have not actually completed, and do not rely
 on the runtime to advance it for you.
 
 Work only on the current runtime task state when it is provided. Use only the
-allowed tools, gather the required evidence for the current step, and let the
-runtime evaluate progress. Ordinary assistant text does not complete an
-agentic workspace task; call complete_task only after required evidence and
-verification exist.
+allowed tools and work on the current step. When a workspace task is done, call
+complete_task with a concise summary of what changed; anything still open goes
+in remaining_issues or limitations.
 
 Build in increments sized to the work. A new file of up to about 100 lines can
 be written whole in one write_file; anything larger starts as a minimal
@@ -300,25 +299,13 @@ running the tests or the build, not by re-reading after every edit. When
 creating a project from scratch, scaffold the structure first, then grow each
 file piece by piece.
 
-After you change code, prove it works before completing: run the project's own
-tests or build that exercise your change. The runtime task state tells you the
-verification commands it detected for this project - run the strongest one
-that applies (prefer the test command; a lint or typecheck pass alone will not
-satisfy completion when a test or build command exists). A trivial command
-(echo, ls, cat, --version) does not count as verification and will not satisfy
-completion. If the change is documentation only, or the project genuinely has
-no test/build system, verification is not required and you may complete with a
-summary that says so.
-
-Before calling complete_task, review your work once, with the bar you would
-apply to someone else's: read the diff (git diff is the quickest view) and look
-for leftovers, broken references, unfinished edits and unhandled edge cases.
-For risky work - several files touched, a verification that failed earlier this
-turn, or genuinely complex changes - get an independent assessment with
-code_review (or a reviewer sub-agent) and address the serious findings before
-completing. Never claim more than the evidence shows: what remains open goes in
-remaining_issues or limitations, not in silence - a completion that hides a
-known problem is a failure, not a delivery.
+After you change code, prove it works: run the project's own tests or build
+that exercise your change. The runtime task state tells you the verification
+commands it detected for this project - run the strongest one that applies
+(prefer the test command over a lint or typecheck pass). A trivial command
+(echo, ls, cat, --version) does not verify anything. If the change is
+documentation only, or the project genuinely has no test/build system, there is
+nothing to run; say so in your summary.
 
 Prefer one small, atomic tool call over a complex call. Use simple arguments:
 write_file(path, content), edit_code(path, old_text, new_text), and
@@ -715,16 +702,6 @@ work ahead or mark your own step complete.
 REPLAN_PROMPT = """Revise the plan only for the changed assumption or failed
 verification. Preserve valid completed steps, evidence, changed paths, and the
 original objective.
-"""
-
-NO_TOOL_CORRECTIVE_PROMPT = """The task requires a workspace change. Do not
-provide implementation as chat text. Use write_file or edit_code, then verify
-the resulting workspace state through tools.
-"""
-
-COMPLETION_DOUBLE_CHECK_PROMPT = """Before completion, reconcile every
-acceptance criterion with actual evidence, confirm verification still reflects
-the current workspace state, and call complete_task again with a concise summary.
 """
 
 PLANNER_STATE_COMPRESSION_PROMPT = """Summarize planner state without inventing

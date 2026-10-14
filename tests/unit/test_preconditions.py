@@ -10,7 +10,7 @@ from code_ai.events.bus import AsyncEventBus
 
 def _service(workspace: Path) -> PlannerService:
     return PlannerService(
-        config=PlannerConfig(double_check_completion=False),
+        config=PlannerConfig(),
         event_bus=AsyncEventBus(session_id="session"),
         session_id="session",
         workspace=workspace,
@@ -230,7 +230,7 @@ def test_grounded_coder_delegation_proceeds(tmp_path) -> None:
 
 async def test_planner_gates_dispatch_until_local_evidence_exists(tmp_path) -> None:
     service = PlannerService(
-        config=PlannerConfig(double_check_completion=False),
+        config=PlannerConfig(),
         event_bus=AsyncEventBus(session_id="session"),
         session_id="session",
         workspace=tmp_path,
@@ -252,7 +252,7 @@ async def test_planner_gates_dispatch_until_local_evidence_exists(tmp_path) -> N
 
 async def test_workspace_listing_alone_does_not_ground_delegation(tmp_path) -> None:
     service = PlannerService(
-        config=PlannerConfig(double_check_completion=False),
+        config=PlannerConfig(),
         event_bus=AsyncEventBus(session_id="session"),
         session_id="session",
         workspace=tmp_path,
@@ -299,7 +299,7 @@ async def test_undeclared_question_context_leaves_the_decision_to_the_model(
     assert "not declared yet - you decide" in block
     assert "looks like a question" in block
     assert "READ-ONLY TASK" not in block
-    assert "call complete_task after verification evidence exists" not in block
+    assert "call complete_task with a summary" not in block
 
 
 async def test_declared_read_only_context_block_says_answer_in_prose(tmp_path) -> None:
@@ -315,7 +315,7 @@ async def test_declared_read_only_context_block_says_answer_in_prose(tmp_path) -
     assert "answer the user directly" in block
     # The mutation-oriented completion rules must not leak into questions:
     # they are what pushed models to fabricate a document as "evidence".
-    assert "call complete_task after verification evidence exists" not in block
+    assert "call complete_task with a summary" not in block
 
 
 async def test_declared_mutation_context_block_keeps_completion_rules(tmp_path) -> None:
@@ -324,7 +324,7 @@ async def test_declared_mutation_context_block_keeps_completion_rules(tmp_path) 
     await service.submit_agent_plan(["Add the endpoint"], changes_workspace=True)
     block = service.task_context_block(recommended_tool_names={"write_file"})
     assert "changes the workspace (your declaration)" in block
-    assert "call complete_task after verification evidence exists" in block
+    assert "call complete_task with a summary" in block
 
 
 def test_an_edit_anchored_in_old_text_needs_no_prior_read(tmp_path) -> None:

@@ -130,19 +130,10 @@ class PlannerConfig:
     tool_policy: str = str(DEFAULT_PLANNER["tool_policy"])
     local_first: bool = bool(DEFAULT_PLANNER["local_first"])
     require_plan_for_mutations: bool = bool(DEFAULT_PLANNER["require_plan_for_mutations"])
-    require_verification_for_changes: bool = bool(
-        DEFAULT_PLANNER["require_verification_for_changes"]
-    )
-    double_check_completion: bool = bool(DEFAULT_PLANNER["double_check_completion"])
-    require_review_for_risky_changes: bool = bool(
-        DEFAULT_PLANNER["require_review_for_risky_changes"]
-    )
     max_plan_steps: int = int(DEFAULT_PLANNER["max_plan_steps"])
     max_discovery_rounds: int = int(DEFAULT_PLANNER["max_discovery_rounds"])
     max_replans: int = int(DEFAULT_PLANNER["max_replans"])
     max_step_attempts: int = int(DEFAULT_PLANNER["max_step_attempts"])
-    max_no_progress_rounds: int = int(DEFAULT_PLANNER["max_no_progress_rounds"])
-    max_completion_rejections: int = int(DEFAULT_PLANNER["max_completion_rejections"])
     persist_plan: bool = bool(DEFAULT_PLANNER["persist_plan"])
 
     @classmethod
@@ -156,15 +147,10 @@ class PlannerConfig:
             tool_policy=_resolve_tool_policy(data),
             local_first=bool(values["local_first"]),
             require_plan_for_mutations=bool(values["require_plan_for_mutations"]),
-            require_verification_for_changes=bool(values["require_verification_for_changes"]),
-            double_check_completion=bool(values["double_check_completion"]),
-            require_review_for_risky_changes=bool(values["require_review_for_risky_changes"]),
             max_plan_steps=int(values["max_plan_steps"]),
             max_discovery_rounds=int(values["max_discovery_rounds"]),
             max_replans=int(values["max_replans"]),
             max_step_attempts=int(values["max_step_attempts"]),
-            max_no_progress_rounds=int(values["max_no_progress_rounds"]),
-            max_completion_rejections=int(values["max_completion_rejections"]),
             persist_plan=bool(values["persist_plan"]),
         )
 
@@ -186,15 +172,12 @@ class PlannerConfig:
             "max_discovery_rounds": self.max_discovery_rounds,
             "max_replans": self.max_replans,
             "max_step_attempts": self.max_step_attempts,
-            "max_no_progress_rounds": self.max_no_progress_rounds,
         }
         for key, value in limits.items():
             if value <= 0:
                 raise ConfigurationError(f"Planner value {key} must be positive.")
         if self.max_plan_steps > 100:
             raise ConfigurationError("max_plan_steps must be 100 or lower.")
-        if self.max_no_progress_rounds > 20:
-            raise ConfigurationError("max_no_progress_rounds must be 20 or lower.")
 
 
 @dataclass(slots=True)

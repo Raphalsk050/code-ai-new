@@ -116,10 +116,10 @@ async def test_working_channel_prose_is_announced_as_final_answer(tmp_path) -> N
     result = await app.submit_user_message("crie um arquivo config.json no projeto")
     await app.close()
 
-    # The model declared a change, so its prose gets one corrective nudge; the
-    # second prose ends the turn.
-    assert provider.calls == 3
-    assert result.text == FINAL_PROSE
+    # The model declared a change, so its prose streams as working trace; that
+    # prose still ends the turn.
+    assert provider.calls == 2
+    assert result.text == FIRST_PROSE
 
     # The prose only ever streamed as dim "working" trace...
     channels = {
@@ -131,7 +131,7 @@ async def test_working_channel_prose_is_announced_as_final_answer(tmp_path) -> N
 
     # ...so the finish path must announce it as the turn's actual answer.
     finals = [e for e in events if e.event_type == "assistant.final"]
-    assert [str(e.payload.get("text")) for e in finals] == [FINAL_PROSE]
+    assert [str(e.payload.get("text")) for e in finals] == [FIRST_PROSE]
 
 
 class InspectsThenAnswersProvider(_BaseProvider):

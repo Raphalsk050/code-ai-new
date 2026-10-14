@@ -14,9 +14,9 @@ from code_ai.events.models import utc_now_iso
 from code_ai.tools.output import bound_text
 
 # Continuation prompts must read as an imperative mutation request so the
-# per-turn TaskProfile classifier keeps the file/verification evidence gates
-# active (see TaskProfile.from_user_text) instead of misreading the follow-up
-# as conversation.
+# per-turn TaskProfile classifier keeps the mutation scaffolding active (see
+# TaskProfile.from_user_text) instead of misreading the follow-up as
+# conversation.
 _MAX_PROMPT_GAP_LINES = 8
 
 
@@ -224,7 +224,7 @@ class GoalService:
         The first iteration carries the objective itself. Later iterations
         carry the unmet criteria with the evaluator's feedback, phrased as an
         imperative follow-up so the turn classifier keeps the mutation
-        evidence gates active.
+        scaffolding active.
         """
         goal = self._require_active_goal()
         latest = goal.latest_report()

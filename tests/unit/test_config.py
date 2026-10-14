@@ -156,6 +156,32 @@ def test_invalid_memory_config_is_rejected(tmp_path) -> None:
         load_config(explicit_path=config_path)
 
 
+def test_a_config_with_retired_planner_keys_still_loads(tmp_path) -> None:
+    # Settings of the removed completion gate may linger in a user's config;
+    # they are ignored, never an error.
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "api_mode": "ollama",
+                "workspace": str(tmp_path),
+                "planner": {
+                    "mode": "act",
+                    "require_verification_for_changes": True,
+                    "double_check_completion": False,
+                    "require_review_for_risky_changes": True,
+                    "max_no_progress_rounds": 50,
+                    "max_completion_rejections": 2,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(explicit_path=config_path)
+    assert config.planner.mode == "act"
+    assert not hasattr(config.planner, "double_check_completion")
+
+
 def test_invalid_budget_is_rejected(tmp_path) -> None:
     config_path = tmp_path / "config.json"
     config_path.write_text(
