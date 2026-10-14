@@ -146,6 +146,78 @@ async function askApproval(ui) {
   await ui.page.waitForSelector(".approval-card");
 }
 
+/**
+ * Put the idle where its head leans furthest, so that a part snapping back has
+ * far to go, then watch every frame. What is noted is how far each looped part
+ * moved on the frames where it changed hands (a pose, an act, the caret or the
+ * pointer taking over) and the one after: a loop moves on every frame, but a
+ * handover only shows there. Read with `steps`.
+ */
+async function watchSteps(ui) {
+  return ui.page.evaluate((float) => {
+    const box = document.querySelector(float);
+    const svg = box.querySelector(".agent-av");
+    const part = (name) => svg.querySelector(name);
+    const matrix = (el) => new DOMMatrix(getComputedStyle(el).transform);
+    const turn = (el) => {
+      const m = matrix(el);
+      return (Math.atan2(m.b, m.a) * 180) / Math.PI;
+    };
+    let lean = 0;
+    let at = 0;
+    for (let t = 0; t < 14; t += 0.1) {
+      svg.style.setProperty("--av-phase", `-${t.toFixed(1)}s`);
+      const now = Math.abs(turn(part(".agent-av-rig")));
+      if (now > lean) [lean, at] = [now, t];
+    }
+    svg.style.setProperty("--av-phase", `-${at.toFixed(1)}s`);
+    const read = () => {
+      const eyes = matrix(part(".agent-av-eyes"));
+      return { rig: turn(part(".agent-av-rig")), leaf: turn(part(".agent-av-leaf")), x: eyes.e, y: eyes.f };
+    };
+    const owner = () =>
+      [svg.getAttribute("data-pose"), box.getAttribute("data-act"), ...["data-rapt", "data-watching", "data-asleep"].map((a) => box.hasAttribute(a))].join();
+    const seen = { lean, rig: 0, leaf: 0, eyes: 0, handovers: 0, stop: false };
+    window.__steps = seen;
+    let last = read();
+    let was = owner();
+    let watching = 0;
+    const frame = () => {
+      const now = read();
+      const who = owner();
+      if (who !== was) {
+        seen.handovers += 1;
+        watching = 2;
+        was = who;
+      }
+      if (watching > 0) {
+        watching -= 1;
+        seen.rig = Math.max(seen.rig, Math.abs(now.rig - last.rig));
+        seen.leaf = Math.max(seen.leaf, Math.abs(now.leaf - last.leaf));
+        seen.eyes = Math.max(seen.eyes, Math.hypot(now.x - last.x, now.y - last.y));
+      }
+      last = now;
+      if (!seen.stop) requestAnimationFrame(frame);
+    };
+    requestAnimationFrame(frame);
+  }, FLOAT);
+}
+async function steps(ui) {
+  return ui.page.evaluate(() => {
+    window.__steps.stop = true;
+    return window.__steps;
+  });
+}
+/** The most a looped part may move across a handover: about what the loop moves in a frame, and well short of a snap. */
+const SMOOTH = { rig: 2.5, leaf: 6, eyes: 0.6 };
+function assertSmooth(assert, seen, what, handovers) {
+  assert(seen.lean > 3, `the idle never leans far enough to tell: ${seen.lean.toFixed(1)} deg`);
+  assert(seen.handovers >= handovers, `${seen.handovers} handovers seen, ${handovers} expected`);
+  for (const key of Object.keys(SMOOTH)) {
+    assert(seen[key] < SMOOTH[key], `${what}, its ${key} jumped ${seen[key].toFixed(2)} as it changed hands`);
+  }
+}
+
 /** The middle of its face, and of the seat the home screen keeps for it. */
 const faceOf = (box) => ({ x: box.x + box.width * 0.464, y: box.y + box.height * 0.571 });
 async function seatOf(ui) {
@@ -564,6 +636,36 @@ export const tests = {
     await ui.page.waitForSelector(acting("petted"));
     assert((await mostWhile(ui, "petted", "--av-glad")) > 0.9, "it does not like it");
     assert(!(await ui.page.evaluate(() => window.__state?.prefs?.avatarAt)), "being touched was remembered as being put somewhere");
+  },
+
+  async "into an act and out of it, nothing on it jumps"(ui, assert) {
+    await openChat(ui);
+    await ui.page.waitForSelector(AT_EASE);
+    const grip = await ui.page.locator(GRIP).boundingBox();
+    // Pointed at from the side, not watched: the eyes stay the loop's until the act.
+    await ui.page.mouse.move(5, 5);
+    await ui.page.evaluate(() => document.documentElement.dispatchEvent(new MouseEvent("mouseleave")));
+    await ui.page.waitForSelector(`${FLOAT}:not([data-watching])`);
+    await watchSteps(ui);
+    await ui.page.mouse.click(grip.x + grip.width / 2, grip.y + grip.height / 2);
+    await ui.page.waitForSelector(acting("poked"));
+    await ui.page.waitForSelector(AT_EASE, { timeout: 3000 });
+    await ui.page.waitForTimeout(600);
+    assertSmooth(assert, await steps(ui), "poked", 2);
+  },
+
+  async "anxious and calm again, nothing on it jumps"(ui, assert) {
+    await openChat(ui);
+    await ui.page.waitForSelector(AT_EASE);
+    await watchSteps(ui);
+    await type(ui, "abc");
+    await ui.page.waitForSelector(ANXIOUS);
+    await ui.page.waitForTimeout(600);
+    for (let i = 0; i < 3; i++) await ui.page.keyboard.press("Backspace");
+    await ui.page.waitForSelector(IDLE, { timeout: 1500 });
+    await ui.page.waitForSelector(`${FLOAT}:not([data-rapt])`);
+    await ui.page.waitForTimeout(600);
+    assertSmooth(assert, await steps(ui), "anxious", 4);
   },
 
   async "thrown hard at a wall, it sees stars where it lands"(ui, assert) {

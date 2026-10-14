@@ -2,6 +2,7 @@ import * as React from "react";
 
 import { type Acted, type ActName, Actor, type Effects, LAIR, type Manners, onCue, RESTING } from "./avatar-acts";
 import { AgentAvatar } from "./agent-avatar";
+import { across, LOOPED } from "./avatar-blend";
 import {
   type Body, type Bounds, clampTo, glide, leanFor, type Place, placeOf, pointOf, settled, type Spring, stepSpring,
 } from "./avatar-motion";
@@ -49,6 +50,10 @@ const SLEEP_RETRY_MS = 10_000;
 const POKE = { ms: 300, px: 5 };
 /** Stroked: the pointer turns back over its face this often, each time after this far, within this long. */
 const PET = { turns: 3, px: 6, ms: 1500 };
+/** How quickly the typing's hold on it gives way to an act, and comes back after: about a quarter second, no overshoot. */
+const HEED = { stiffness: 140, damping: 2 * Math.sqrt(140) };
+/** How long a part an act is done with takes to fade, in s. */
+const FADE_S = 0.2;
 /** Typing takes it from these; the rest it finishes first. */
 const DROPPED_FOR_KEYS: ReadonlySet<ActName | null> = new Set<ActName>(["greets", "waits", "nods-off", "wakes"]);
 const EVERYTHING: Manners = { greets: true, waits: true, cheers: true, sleeps: true, touch: true, hides: true };
@@ -70,8 +75,14 @@ const eased = (u: number) => {
 function show(group: Element, time: number | undefined, place: (part: SVGElement, index: number, time: number) => string): void {
   Array.from(group.children).forEach((child, index) => {
     const part = child as SVGElement;
-    if (time !== undefined) part.setAttribute("transform", place(part, index, time));
-    else if (part.style.opacity) part.style.opacity = "";
+    if (time !== undefined) {
+      if (part.style.transition) part.style.transition = "";
+      part.setAttribute("transform", place(part, index, time));
+    } else if (part.style.opacity) {
+      // Cut short by the next act: it goes out where it stood instead of vanishing.
+      part.style.transition = `opacity ${FADE_S}s ease-out`;
+      part.style.opacity = "";
+    }
   });
 }
 
@@ -133,6 +144,8 @@ interface Sim extends Body {
   /** What typing does to it, and what that came to on the last frame. */
   nerves: Nerves;
   felt: Felt;
+  /** How much the typing has a say, 0 to 1: none while it acts, and eased between. */
+  heed: Spring;
   /** Where the typing is: the field, and its caret in the room's pixels, read again when `stale`. */
   field: HTMLTextAreaElement | null;
   caret: { x: number; y: number } | null;
@@ -162,6 +175,8 @@ interface Sim extends Body {
 }
 
 const still = (): Spring => ({ x: 0, v: 0 });
+/** Falling asleep and waking change the breathing and the zs as well as the loops. */
+const ASLEEP = `${LOOPED}, .av-float-zs path`;
 const within = (value: number, most: number) => Math.max(-most, Math.min(most, value));
 const same = (a: Place, b: Place) => a.right === b.right && a.bottom === b.bottom && a.x === b.x && a.y === b.y;
 
@@ -214,7 +229,7 @@ export function FloatingAvatar({
     x: 0, y: 0, vx: 0, vy: 0, held: false, grabX: 0, grabY: 0, wantX: 0, wantY: 0, home: null, dock: null, gaze: null, watching: false, moved: false,
     place: start ?? HOME,
     tilt: still(), leaf: still(), lookX: still(), lookY: still(), sx: { x: 1, v: 0 }, sy: { x: 1, v: 0 },
-    nerves: new Nerves(), felt: UNFELT, field: null, caret: null, stale: false,
+    nerves: new Nerves(), felt: UNFELT, heed: { x: 1, v: 0 }, field: null, caret: null, stale: false,
     actor: new Actor(), acted: RESTING, shown: null, asleep: false, lurking: false, rescued: false, lairX: null, flinch: 0, card: null,
     greeting: true, pressed: null, petting: { x: 0, way: 0, turns: 0, since: 0 },
     last: 0, frame: 0,
@@ -264,16 +279,18 @@ export function FloatingAvatar({
     if (!el) return;
     const s = sim.current;
     // Its weight, its nerves and its acting move the same parts: each is added
-    // to the others. An act is the whole of what it does, so the keys wait.
-    const felt = s.actor.playing ? UNFELT : s.felt;
+    // to the others. An act is the whole of what it does, so the keys wait,
+    // let go of and taken back over a moment rather than in a frame.
+    const felt = s.felt;
+    const w = Math.min(1, Math.max(0, s.heed.x));
     const acted = s.acted;
-    el.style.transform = `translate3d(${(s.x + acted.dx).toFixed(2)}px, ${(s.y + felt.hop + acted.dy).toFixed(2)}px, 0)`;
-    el.style.setProperty("--av-tilt", `${(s.tilt.x + felt.tilt + acted.tilt).toFixed(2)}deg`);
-    el.style.setProperty("--av-leaf-lag", `${(s.leaf.x + felt.leaf + acted.leaf).toFixed(2)}deg`);
-    el.style.setProperty("--av-look-x", `${within(s.lookX.x + felt.lookX + acted.lookX, EYE_MOST.x).toFixed(3)}px`);
-    el.style.setProperty("--av-look-y", `${within(s.lookY.x + felt.lookY + acted.lookY, EYE_MOST.y).toFixed(3)}px`);
-    el.style.setProperty("--av-sx", (s.sx.x * felt.sx * acted.sx).toFixed(4));
-    el.style.setProperty("--av-sy", (s.sy.x * felt.sy * acted.sy).toFixed(4));
+    el.style.transform = `translate3d(${(s.x + acted.dx).toFixed(2)}px, ${(s.y + felt.hop * w + acted.dy).toFixed(2)}px, 0)`;
+    el.style.setProperty("--av-tilt", `${(s.tilt.x + felt.tilt * w + acted.tilt).toFixed(2)}deg`);
+    el.style.setProperty("--av-leaf-lag", `${(s.leaf.x + felt.leaf * w + acted.leaf).toFixed(2)}deg`);
+    el.style.setProperty("--av-look-x", `${within(s.lookX.x + felt.lookX * w + acted.lookX, EYE_MOST.x).toFixed(3)}px`);
+    el.style.setProperty("--av-look-y", `${within(s.lookY.x + felt.lookY * w + acted.lookY, EYE_MOST.y).toFixed(3)}px`);
+    el.style.setProperty("--av-sx", (s.sx.x * (1 + (felt.sx - 1) * w) * acted.sx).toFixed(4));
+    el.style.setProperty("--av-sy", (s.sy.x * (1 + (felt.sy - 1) * w) * acted.sy).toFixed(4));
     el.style.setProperty("--av-nerves", s.felt.nerves.toFixed(3));
     el.style.setProperty("--av-lid", acted.lid.toFixed(3));
     el.style.setProperty("--av-glad", acted.glad.toFixed(3));
@@ -378,7 +395,7 @@ export function FloatingAvatar({
       }
       if (watching !== s.watching) {
         s.watching = watching;
-        ref.current?.toggleAttribute("data-watching", watching);
+        across(ref.current, () => ref.current?.toggleAttribute("data-watching", watching));
       }
       const eyes = watching ? GLANCE : { stiffness: 130, damping: 17 };
       s.tilt = stepSpring(s.tilt, to.tilt, dt, 150, 11);
@@ -402,8 +419,10 @@ export function FloatingAvatar({
         s.stale = false;
       }
       const felt = s.nerves.step(now, dt, { x: s.x + size * FACE_AT.x, y: s.y + size * FACE_AT.y, size }, s.caret);
-      if (felt.rapt !== s.felt.rapt) ref.current?.toggleAttribute("data-rapt", felt.rapt);
+      if (felt.rapt !== s.felt.rapt) across(ref.current, () => ref.current?.toggleAttribute("data-rapt", felt.rapt));
       s.felt = felt;
+      const heeding = s.actor.playing ? 0 : 1;
+      s.heed = stepSpring(s.heed, heeding, dt, HEED.stiffness, HEED.damping);
       // Too much typing, and it runs for the composer; no more keys, and it comes out.
       if (!felt.rapt) s.rescued = false;
       const scared = may.hides && felt.rapt && felt.nerves >= BOLTS_AT && !s.rescued;
@@ -419,7 +438,7 @@ export function FloatingAvatar({
       }
       if (acted.asleep !== s.asleep) {
         s.asleep = acted.asleep;
-        ref.current?.toggleAttribute("data-asleep", acted.asleep);
+        across(ref.current, () => ref.current?.toggleAttribute("data-asleep", acted.asleep), ASLEEP);
       }
 
       const moving = !!(s.held || s.home || s.vx || s.vy || lair);
@@ -441,7 +460,8 @@ export function FloatingAvatar({
       const calm =
         settled(s.tilt, to.tilt, 0.05) && settled(s.leaf, 0, 0.05) &&
         settled(s.lookX, to.lookX) && settled(s.lookY, to.lookY) &&
-        settled(s.sx, to.sx, 0.002) && settled(s.sy, to.sy, 0.002);
+        settled(s.sx, to.sx, 0.002) && settled(s.sy, to.sy, 0.002) &&
+        settled(s.heed, s.actor.playing ? 0 : 1, 0.002);
       if (moving || !calm || s.nerves.stirred(now) || !acted.still || s.actor.playing !== s.shown) {
         s.frame = requestAnimationFrame(tick);
         return;

@@ -1,5 +1,6 @@
 import * as React from "react";
 
+import { blend, type Held, hold } from "./avatar-blend";
 import type { AvatarPose } from "./avatar-pose";
 import { IDLE_LOOP_S } from "./avatar-rig";
 import { type AvatarSkin, useAvatarColor, useAvatarSkin } from "./avatar-skin";
@@ -77,8 +78,11 @@ export function AgentAvatar({
   const carved = dress === "halloween";
   // Where in the idle's loop this one starts; see --av-phase in the stylesheet.
   const phase = React.useRef(`${(-Math.random() * IDLE_LOOP_S).toFixed(2)}s`).current;
+  const svg = React.useRef<SVGSVGElement>(null);
+  useHandover(svg, pose);
   return (
     <svg
+      ref={svg}
       className={`agent-av${className ? " " + className : ""}`}
       style={{ "--av-phase": phase } as React.CSSProperties}
       data-pose={pose ?? undefined}
@@ -211,6 +215,24 @@ export function AgentAvatar({
       )}
     </svg>
   );
+}
+
+/**
+ * Each pose is its own loop, and so is an act's stillness: swapped in one
+ * frame, every part jumps from where the old loop had it. The old look is read
+ * while rendering, the last moment it is still on screen, and blended out once
+ * the new pose is in.
+ */
+function useHandover(svg: React.RefObject<SVGSVGElement>, pose: AvatarPose | null): void {
+  const committed = React.useRef(pose);
+  const held = React.useRef<Held | null>(null);
+  held.current = pose !== committed.current && svg.current ? hold(svg.current) : null;
+  React.useLayoutEffect(() => {
+    if (pose === committed.current) return;
+    committed.current = pose;
+    if (held.current) blend(held.current);
+    held.current = null;
+  }, [pose]);
 }
 
 export function useSteadyPose(pose: AvatarPose | null, dwell = 400): AvatarPose | null {
