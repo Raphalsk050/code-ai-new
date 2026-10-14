@@ -3,7 +3,7 @@
 // nothing else - the panels keep their own slices.
 
 import type { EventEnvelope, StoredMessage } from "../../src/protocol";
-import { tf } from "../i18n";
+import { t, tf } from "../i18n";
 import { callTarget } from "../tool-target";
 import { formatTokens } from "./usage";
 
@@ -396,6 +396,21 @@ function applyResend(state: TranscriptState, event: EventEnvelope): TranscriptSt
   return { ...state, items: [...items.slice(0, cut), notice], requestStart: -1, turn: null };
 }
 
+/** Why the runtime stopped a turn the model had not finished, and the setting that decides when. */
+const WOUND_DOWN: Record<string, string> = {
+  model_stalled: "Stopped: {0} rounds in a row made no progress. {1} in config.json sets how many.",
+  model_step_budget_exhausted: "Stopped at the limit of {0} model steps. {1} in config.json sets it.",
+  tool_call_budget_exhausted: "Stopped at the limit of {0} tool calls. {1} in config.json sets it.",
+  turn_time_budget_exhausted: "Stopped: {0} s went by without progress. {1} in config.json sets how long.",
+};
+
+function windDownNote(p: Record<string, any>): string {
+  const note = WOUND_DOWN[String(p.reason ?? "")];
+  return note
+    ? tf(note, Number(p.limit ?? 0), String(p.setting ?? ""))
+    : tf("Stopped by a runtime limit: {0}", String(p.reason ?? ""));
+}
+
 function applyItems(state: TranscriptState, event: EventEnvelope): Pick<TranscriptState, "items"> {
   const p = event.payload ?? {};
   const id = event.event_id;
@@ -660,6 +675,12 @@ function applyItems(state: TranscriptState, event: EventEnvelope): Pick<Transcri
           level: "warning",
           text: `completion rejected: ${(p.missing_requirements ?? []).toString()}`,
         }),
+      };
+    case "turn.budget_exhausted":
+      return { items: push(items, { kind: "notice", id, level: "warning", text: windDownNote(p) }) };
+    case "turn.no_answer":
+      return {
+        items: push(items, { kind: "notice", id, level: "warning", text: t("The model ended the turn without an answer.") }),
       };
     case "model.request.failed":
       return {

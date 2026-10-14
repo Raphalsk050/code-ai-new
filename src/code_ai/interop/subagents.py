@@ -189,7 +189,8 @@ def _profile(
     try:
         max_steps = min(max(int(str(steps).strip()), _MIN_STEPS), _MAX_STEPS)
     except ValueError:
-        max_steps = 60 if acts else 30
+        # Not said: no cap, like the built-in agents.
+        max_steps = 0
     return SubagentProfile(
         name=slug,
         description=" ".join(description.split()),

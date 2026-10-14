@@ -237,16 +237,18 @@ class SubagentRuntime:
         The sub-agent runs in ``bypass`` internally: approval already happened
         once, at the parent, when the model called the dispatch tool. Re-prompting
         per action would deadlock parallel sub-agents. Workspace boundaries still
-        apply - those live in the tools, not the permission mode. The turn budget
-        is set to the profile timeout so the inner loop winds down gracefully
-        before the coordinator's hard wall-clock cutoff trips.
+        apply - those live in the tools, not the permission mode.
+
+        A caller that gives a time (a graph node) has the inner loop wind down
+        gracefully within it, before its own hard cutoff trips. A sub-agent is
+        given none: it runs until it is done or stalls, and the coordinator
+        stops it only if it falls silent.
         """
-        timeout = timeout_seconds or profile.timeout_seconds(self._config.budgets)
         budgets = dataclasses.replace(
             self._config.budgets,
             max_model_steps=max_model_steps or profile.max_model_steps,
-            max_turn_seconds=timeout,
-            max_turn_wall_time_s=timeout,
+            max_turn_seconds=timeout_seconds,
+            max_turn_wall_time_s=timeout_seconds,
         )
         return dataclasses.replace(
             self._config,

@@ -2320,7 +2320,7 @@
       "writes": true,
       "runs_processes": true,
       "read_only": false,
-      "max_model_steps": 60,
+      "max_model_steps": 0,
       "capabilities": [
         "local_read",
         "local_write",
@@ -2336,7 +2336,7 @@
       "writes": false,
       "runs_processes": false,
       "read_only": true,
-      "max_model_steps": 30,
+      "max_model_steps": 0,
       "capabilities": [
         "local_read",
         "web"
@@ -2350,7 +2350,7 @@
       "writes": false,
       "runs_processes": true,
       "read_only": false,
-      "max_model_steps": 30,
+      "max_model_steps": 0,
       "capabilities": [
         "local_read",
         "process",

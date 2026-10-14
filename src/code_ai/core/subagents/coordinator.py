@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
@@ -285,6 +286,8 @@ class SubagentCoordinator:
         # must learn about real file changes even when the child times out.
         evidence = SubagentEvidenceCollector()
         built.event_bus.subscribe(evidence)
+        pulse = _Pulse()
+        beat = built.event_bus.subscribe(pulse.beat)
 
         await self._bus.emit(
             "subagent.started",
@@ -299,24 +302,25 @@ class SubagentCoordinator:
 
         child_cancel = asyncio.Event()
         mirror = asyncio.ensure_future(self._mirror_cancel(parent_cancel, child_cancel))
-        hard_timeout = built.timeout_seconds + self._hard_grace_seconds
+        turn = asyncio.ensure_future(
+            built.orchestrator.run_turn(request.prompt, cancel_event=child_cancel)
+        )
         try:
-            result = await asyncio.wait_for(
-                built.orchestrator.run_turn(request.prompt, cancel_event=child_cancel),
-                timeout=hard_timeout,
-            )
+            quiet_for = built.timeout_seconds + self._hard_grace_seconds
+            result = await pulse.watch(turn, quiet_for=quiet_for)
         except TimeoutError:
             # Cooperative first: let the loop observe the cancel and unwind.
             child_cancel.set()
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(mirror, timeout=0)
+            turn.cancel()
+            # A turn stuck where cancelling cannot reach is left behind, not waited on.
+            await asyncio.wait({turn}, timeout=self._hard_grace_seconds)
             return SubagentReport(
                 agent_id=agent_id,
                 agent_type=profile.name,
                 name=name,
                 task=request.prompt,
                 status=SubagentStatus.TIMEOUT,
-                error=f"Sub-agent exceeded its {built.timeout_seconds}s time budget.",
+                error=f"Sub-agent went {built.timeout_seconds}s without a sign of life.",
                 usage=built.usage.to_dict(),
                 evidence=evidence.items(),
             )
@@ -331,11 +335,14 @@ class SubagentCoordinator:
                 evidence=evidence.items(),
             )
         finally:
+            if not turn.done():
+                turn.cancel()
             mirror.cancel()
             with contextlib.suppress(BaseException):
                 await mirror
             built.event_bus.unsubscribe(forwarder)
             built.event_bus.unsubscribe(evidence)
+            built.event_bus.unsubscribe(beat)
 
         return self._report_from_turn(
             result, profile, request, agent_id, name, built, evidence.items()
@@ -495,3 +502,28 @@ class SubagentCoordinator:
             status=SubagentStatus.REJECTED,
             error=reason,
         )
+
+
+class _Pulse:
+    """When a sub-agent last showed it was alive: any event it emitted.
+
+    A wall clock stopped sub-agents that were working, and the slower the
+    model the sooner: what is stopped instead is one that has gone silent,
+    which is what a hung one does.
+    """
+
+    def __init__(self) -> None:
+        self.last = time.monotonic()
+
+    async def beat(self, envelope: EventEnvelope) -> None:
+        self.last = time.monotonic()
+
+    async def watch(self, turn: asyncio.Future[TurnResult], *, quiet_for: float) -> TurnResult:
+        """The turn's result, or ``TimeoutError`` once it has been silent for ``quiet_for`` s."""
+        while True:
+            left = self.last + quiet_for - time.monotonic()
+            if left <= 0:
+                raise TimeoutError
+            done, _ = await asyncio.wait({turn}, timeout=left)
+            if done:
+                return turn.result()

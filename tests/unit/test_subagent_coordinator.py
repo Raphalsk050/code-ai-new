@@ -281,7 +281,35 @@ async def test_timeout_yields_timeout_report_without_crashing(tmp_path) -> None:
     )
 
     assert reports[0].status is SubagentStatus.TIMEOUT
-    assert "time budget" in reports[0].error
+    assert "without a sign of life" in reports[0].error
+
+
+async def test_a_sub_agent_that_keeps_working_outlives_the_quiet_window(tmp_path) -> None:
+    class _Talkative(_FakeRuntime):
+        def build(self, profile, *, model: str = "") -> BuiltSubagent:
+            bus = AsyncEventBus()
+
+            async def behaviour(prompt, cancel_event):
+                # Three times the quiet window in all, never silent for long.
+                for _ in range(12):
+                    await asyncio.sleep(0.05)
+                    await bus.emit("tool.call.progress", {"name": "execute_command"})
+                return TurnResult(text="done after a while", response=None)
+
+            return BuiltSubagent(
+                orchestrator=_FakeOrchestrator(behaviour),
+                event_bus=bus,
+                usage=_FakeUsage(),
+                timeout_seconds=0,
+            )
+
+    coord = _coordinator(tmp_path, _Talkative(None), hard_grace_seconds=0.2)
+    reports = await asyncio.wait_for(
+        coord.dispatch([SubagentRequest("coder", "long task")]), timeout=5
+    )
+
+    assert reports[0].status is SubagentStatus.COMPLETED
+    assert reports[0].summary == "done after a while"
 
 
 async def test_wound_down_time_budget_maps_to_timeout(tmp_path) -> None:

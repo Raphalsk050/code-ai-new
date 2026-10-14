@@ -38,9 +38,10 @@ class SubagentProfile:
     name: str
     description: str
     allowed_capabilities: frozenset[ToolCapability]
+    # 0 is no cap: the stall detector ends a run that goes nowhere.
     max_model_steps: int
     role_prompt: str
-    # Which budget field bounds this profile's wall-clock time.
+    # Which budget field says how long it may go without a sign of life.
     timeout_field: str
     # Exactly these tools, when set; the capabilities still have to allow them.
     allowed_tools: frozenset[str] | None = None
@@ -83,7 +84,7 @@ _EXPLORER = SubagentProfile(
         "parallel before you plan or change anything."
     ),
     allowed_capabilities=frozenset({ToolCapability.LOCAL_READ, ToolCapability.WEB}),
-    max_model_steps=30,
+    max_model_steps=0,
     timeout_field="subagent_explorer_timeout_s",
     role_prompt=(
         "You are an exploration sub-agent. Your job is to investigate and report, "
@@ -111,7 +112,7 @@ _CODER = SubagentProfile(
             ToolCapability.WEB,
         }
     ),
-    max_model_steps=60,
+    max_model_steps=0,
     timeout_field="subagent_worker_timeout_s",
     role_prompt=(
         "You are an implementation sub-agent focused on a single, well-scoped task. "
@@ -142,7 +143,7 @@ _REVIEWER = SubagentProfile(
             ToolCapability.WEB,
         }
     ),
-    max_model_steps=30,
+    max_model_steps=0,
     timeout_field="subagent_worker_timeout_s",
     role_prompt=(
         "You are a code-review sub-agent. Read the relevant code and run the review, "

@@ -401,3 +401,19 @@ test("a message whose own turn has come is in no line any more", () => {
     ["queued: answered once the running turn ends", "b"],
   ]);
 });
+
+test("a turn the runtime stopped says why, and which setting decides it", () => {
+  const state = feed([
+    ["user.message", { text: "fix it" }],
+    ["turn.budget_exhausted", { reason: "model_stalled", limit: 12, setting: "budgets.max_stall_rounds" }],
+  ]);
+  const last = state.transcript.items[state.transcript.items.length - 1];
+  assert.equal(last.kind, "notice");
+  assert.match(last.kind === "notice" ? last.text : "", /12 rounds.*budgets\.max_stall_rounds/);
+});
+
+test("a turn that ended with nothing said does not end in silence", () => {
+  const state = feed([["user.message", { text: "fix it" }], ["turn.no_answer", {}]]);
+  const last = state.transcript.items[state.transcript.items.length - 1];
+  assert.equal(last.kind, "notice");
+});

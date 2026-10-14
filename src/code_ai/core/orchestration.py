@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import itertools
 import json
 import logging
 import random
@@ -418,7 +419,8 @@ WIND_DOWN_STALLED = "model_stalled"
 @dataclass(slots=True)
 class _TurnState:
     cancel_event: asyncio.Event | None
-    deadline: float
+    # When the turn has gone too long without progress; None when nothing caps it.
+    deadline: float | None
     tool_calls_executed: int = 0
     last_response: ModelResponse | None = None
     progress_signature: tuple[object, ...] = ()
@@ -970,7 +972,7 @@ class AgentOrchestrator:
 
         state = _TurnState(
             cancel_event=cancel_event,
-            deadline=time.monotonic() + self.config.budgets.turn_timeout(),
+            deadline=self._turn_deadline(),
             user_text=text,
         )
         # Snapshot the tree before the model touches it, so "what changed this
@@ -1292,11 +1294,17 @@ class AgentOrchestrator:
             await asyncio.wait_for(cancel_event.wait(), timeout=delay)
         self._raise_if_cancelled(cancel_event)
 
+    def _turn_deadline(self) -> float | None:
+        timeout = self.config.budgets.turn_timeout()
+        return None if timeout is None else time.monotonic() + timeout
+
     async def _run_model_loop(self, state: _TurnState) -> TurnResult:
-        for step in range(state.next_step, self.config.budgets.max_model_steps):
+        limit = self.config.budgets.max_model_steps
+        steps = range(state.next_step, limit) if limit > 0 else itertools.count(state.next_step)
+        for step in steps:
             state.next_step = step + 1
             self._raise_if_cancelled(state.cancel_event)
-            if time.monotonic() > state.deadline:
+            if state.deadline is not None and time.monotonic() > state.deadline:
                 return await self._wind_down(state, reason=WIND_DOWN_TIME_BUDGET)
             # Steering: anything the user typed while the previous step ran joins
             # the conversation here, so it reaches the model on the very next
@@ -1368,7 +1376,7 @@ class AgentOrchestrator:
             # Not reset on the prose path above, which also receives responses
             # that ran out of retries - resetting there would re-arm them.
             state.failures = 0
-            if state.tool_calls_executed >= self.config.budgets.max_tool_calls:
+            if 0 < self.config.budgets.max_tool_calls <= state.tool_calls_executed:
                 # Checked here rather than inside the batch so the calls the
                 # ceiling refuses are never written to the transcript: an
                 # assistant message holding tool calls with no results is a
@@ -2014,9 +2022,9 @@ class AgentOrchestrator:
             # costs minutes, so a turn doing everything right was cut off after
             # a handful of them with "I reached a runtime safety budget". The
             # guard against an agent that spins is stall detection right here,
-            # which is semantic; max_model_steps and max_tool_calls remain the
-            # absolute ceilings.
-            state.deadline = time.monotonic() + self.config.budgets.turn_timeout()
+            # which is semantic; max_model_steps and max_tool_calls are the
+            # absolute ceilings, when they are set.
+            state.deadline = self._turn_deadline()
             return None
 
         state.stall_rounds += 1
@@ -3031,10 +3039,29 @@ class AgentOrchestrator:
     # ------------------------------------------------------------------ #
     # Turn termination
     # ------------------------------------------------------------------ #
+    def _wind_down_limit(self, reason: str) -> tuple[str, float]:
+        """The setting that ended the turn for ``reason``, and its value."""
+        budgets = self.config.budgets
+        if reason == WIND_DOWN_STALLED:
+            return "max_stall_rounds", max(2, budgets.max_stall_rounds)
+        if reason == WIND_DOWN_STEP_BUDGET:
+            return "max_model_steps", budgets.max_model_steps
+        if reason == WIND_DOWN_TOOL_BUDGET:
+            return "max_tool_calls", budgets.max_tool_calls
+        return budgets.turn_timeout_setting(), budgets.turn_timeout() or 0
+
     async def _wind_down(self, state: _TurnState, *, reason: str) -> TurnResult:
+        # The model is asked not to talk about limits (see _LANDING_NOTE), so
+        # this is what tells the user why the turn stopped, and what decides it.
+        setting, limit = self._wind_down_limit(reason)
         await self.event_bus.emit(
             "turn.budget_exhausted",
-            {"reason": reason, "tool_calls_executed": state.tool_calls_executed},
+            {
+                "reason": reason,
+                "tool_calls_executed": state.tool_calls_executed,
+                "setting": f"budgets.{setting}",
+                "limit": limit,
+            },
             source="core.orchestrator",
         )
         text = await self._land_turn(state) or self._best_effort_text(state)
@@ -3121,6 +3148,10 @@ class AgentOrchestrator:
             await self.event_bus.emit(
                 "assistant.final", {"text": text}, source="core.orchestrator"
             )
+        if not text.strip() and error is None:
+            # The model stopped with nothing to say: told so, the user is not
+            # left looking at the last tool call wondering whether it is done.
+            await self.event_bus.emit("turn.no_answer", {}, source="core.orchestrator")
         await self._suspend_plan_sidebar()
         await self.set_state(AgentState.READY, phase="waiting_user")
         await self.event_bus.emit(

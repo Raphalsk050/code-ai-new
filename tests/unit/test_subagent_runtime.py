@@ -104,8 +104,10 @@ def test_built_subagent_is_isolated_from_parent(tmp_path) -> None:
     # the parent config is untouched.
     assert orch.config.permission_mode == "bypass"
     assert config.permission_mode == "ask"
-    # Budgets scoped to the profile.
-    assert orch.config.budgets.max_model_steps == 60
+    # No cap on steps or time: it runs until done or stalled, and the
+    # coordinator stops it only once it falls silent for this long.
+    assert orch.config.budgets.max_model_steps == 0
+    assert orch.config.budgets.turn_timeout() is None
     assert built.timeout_seconds == config.budgets.subagent_worker_timeout_s
 
 

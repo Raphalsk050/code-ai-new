@@ -1331,6 +1331,13 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         this.inFlight.push(params);
         client.send("submitUserMessage", params);
       }
+    } else if (interrupted.length) {
+      void this.webview?.postMessage({
+        type: "event",
+        event: syntheticError(
+          `the backend restarted mid-answer ${MAX_TURN_RESENDS} times in a row; the message was not sent again`
+        ),
+      });
     }
     const pending = this.pendingSubmits.splice(0);
     for (const params of pending) {

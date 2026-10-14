@@ -227,25 +227,27 @@ def default_sandbox_base_dir() -> Path:
 
 DEFAULT_BUDGETS: dict[str, int] = {
     "build_tool_timeout_s": 300,
-    "default_tool_timeout_s": 60,
+    "default_tool_timeout_s": 600,
     "max_context_tokens": 256000,
     "max_model_call_s": 180,
     "max_model_step_seconds": 180,
     # Seconds a model request can go without a first token before the user is
     # told it is waiting in the server's queue; the notice repeats at this pace.
     "model_queue_notice_s": 15,
-    "max_model_steps": 80,
-    "max_orchestration_rounds": 60,
-    "max_stall_rounds": 4,
-    "max_orchestration_seconds": 60,
-    "max_tool_call_seconds": 900,
-    "max_tool_calls": 250,
+    # 0 is no cap (see UNCAPPED_BUDGETS). A turn ends when the model is done,
+    # when the user stops it, or when the stall detector sees it going nowhere.
+    "max_model_steps": 0,
+    "max_stall_rounds": 12,
+    "max_tool_call_seconds": 3600,
+    "max_tool_calls": 0,
     "max_tool_output_chars": 12000,
-    "max_tool_wall_time_s": 900,
-    "max_turn_seconds": 900,
-    "max_turn_wall_time_s": 900,
-    "subagent_explorer_timeout_s": 120,
-    "subagent_worker_timeout_s": 300,
+    "max_tool_wall_time_s": 3600,
+    "max_turn_seconds": 0,
+    "max_turn_wall_time_s": 0,
+    # How long a sub-agent may go without a sign of life before it is taken for
+    # hung and stopped. Silence, not age: one that keeps working keeps going.
+    "subagent_explorer_timeout_s": 600,
+    "subagent_worker_timeout_s": 1800,
     # Sub-agent orchestration limits. Depth 1 means the main agent may delegate
     # but a sub-agent may not delegate further (no unbounded recursion).
     "max_subagent_depth": 1,
@@ -257,6 +259,12 @@ DEFAULT_BUDGETS: dict[str, int] = {
     "subagent_circuit_failure_threshold": 3,
     "subagent_circuit_reset_s": 30,
 }
+
+
+# Budgets where 0 means no cap rather than a misconfiguration.
+UNCAPPED_BUDGETS = frozenset(
+    {"max_model_steps", "max_tool_calls", "max_turn_seconds", "max_turn_wall_time_s"}
+)
 
 
 DEFAULT_SAMPLING: dict[str, object] = {

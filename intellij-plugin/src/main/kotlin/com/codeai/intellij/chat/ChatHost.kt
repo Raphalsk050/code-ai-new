@@ -486,6 +486,12 @@ internal class ChatHost(private val project: Project) : Disposable {
                     inFlight += params
                     client.send("submitUserMessage", params)
                 }
+            } else if (interrupted.isNotEmpty()) {
+                postEvent(
+                    syntheticError(
+                        "the backend restarted mid-answer $MAX_TURN_RESENDS times in a row; the message was not sent again"
+                    )
+                )
             }
             val pending = ArrayList(pendingSubmits)
             pendingSubmits.clear()

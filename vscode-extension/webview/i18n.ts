@@ -537,6 +537,16 @@ const PT: Record<string, string> = {
   "Code-AI updates come from {0}. Sign in once, in the same window git uses.":
     "As atualizações do Code-AI vêm de {0}. Entre uma vez, na mesma janela que o git usa.",
   "The change is open in the editor, as a diff.": "A mudança está aberta no editor, como diff.",
+  "Stopped: {0} rounds in a row made no progress. {1} in config.json sets how many.":
+    "Parado: {0} rodadas seguidas sem progresso. {1} no config.json define quantas.",
+  "Stopped at the limit of {0} model steps. {1} in config.json sets it.":
+    "Parado no limite de {0} passos do modelo. {1} no config.json define esse limite.",
+  "Stopped at the limit of {0} tool calls. {1} in config.json sets it.":
+    "Parado no limite de {0} chamadas de ferramenta. {1} no config.json define esse limite.",
+  "Stopped: {0} s went by without progress. {1} in config.json sets how long.":
+    "Parado: {0} s sem progresso. {1} no config.json define quanto tempo.",
+  "Stopped by a runtime limit: {0}": "Parado por um limite de execução: {0}",
+  "The model ended the turn without an answer.": "O modelo encerrou o turno sem resposta.",
   "The backend restarted mid-answer; sending your message again ({0}/{1})":
     "O backend reiniciou no meio da resposta; enviando sua mensagem de novo ({0}/{1})",
   "{0} nodes": "{0} nós",

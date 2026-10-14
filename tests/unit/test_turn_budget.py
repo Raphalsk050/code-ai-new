@@ -271,3 +271,97 @@ async def test_a_silent_landing_still_says_something_without_jargon(tmp_path) ->
     assert result.text.strip()
     assert "budget" not in result.text.lower()
     assert "runtime" not in result.text.lower()
+
+
+def _default_config(tmp_path) -> AppConfig:
+    return AppConfig.from_mapping(
+        {
+            "api_mode": "ollama",
+            "workspace": str(tmp_path),
+            "model": "fake",
+            "permission_mode": "bypass",
+            "memories_dir": str(tmp_path / "memories"),
+            "planner": {"enabled": False},
+            "memory": {"reflection_enabled": False},
+        }
+    )
+
+
+async def test_by_default_nothing_caps_a_turn_that_keeps_working(tmp_path) -> None:
+    # Well past the 80 steps that used to end a turn on their own: a turn that
+    # keeps making progress runs until the model is done.
+    provider = _SlowProvider(120, pause=0, distinct=True)
+    app = build_application(config=_default_config(tmp_path), provider=provider)
+
+    await app.start()
+    result = await app.submit_user_message("keep going")
+    await app.close()
+
+    assert result.wind_down_reason is None
+    assert result.text == "done"
+    assert provider.calls == 121
+
+
+async def test_a_stopped_turn_names_the_setting_that_stopped_it(tmp_path) -> None:
+    # The answer stays free of limits; the event is what tells the user why.
+    provider = _NeverStopsProvider()
+    app = build_application(config=_step_capped_config(tmp_path, steps=3), provider=provider)
+    stopped: list[dict] = []
+    app.subscribe(
+        lambda event: stopped.append(event.payload)
+        if event.event_type == "turn.budget_exhausted"
+        else None
+    )
+
+    await app.start()
+    await app.submit_user_message("tell me the project's default port")
+    await app.close()
+
+    assert stopped == [
+        {
+            "reason": WIND_DOWN_STEP_BUDGET,
+            "tool_calls_executed": 3,
+            "setting": "budgets.max_model_steps",
+            "limit": 3,
+        }
+    ]
+
+
+class _SaysNothingProvider(_SlowProvider):
+    """Ends the turn with neither text nor a tool call."""
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ProviderEvent]:
+        self.calls += 1
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(text="", finish_reason=FinishReason.STOP),
+        )
+
+
+async def test_a_turn_that_ends_with_nothing_said_is_announced(tmp_path) -> None:
+    provider = _SaysNothingProvider(0, pause=0, distinct=True)
+    app = build_application(config=_default_config(tmp_path), provider=provider)
+    events: list[str] = []
+    app.subscribe(lambda event: events.append(event.event_type))
+
+    await app.start()
+    await app.submit_user_message("hello")
+    await app.close()
+
+    assert "turn.no_answer" in events
+    assert events.index("turn.no_answer") < events.index("turn.completed")
+
+
+def test_the_terminal_says_why_a_turn_stopped() -> None:
+    from code_ai.events.models import EventEnvelope
+    from code_ai.ui.terminal.view_models import TerminalViewModel
+
+    stalled = {"reason": "model_stalled", "setting": "budgets.max_stall_rounds", "limit": 12}
+    vm = TerminalViewModel()
+    for event_type, payload in (("turn.budget_exhausted", stalled), ("turn.no_answer", {})):
+        vm.apply(
+            EventEnvelope.create(event_type=event_type, session_id="s", sequence=0, payload=payload)
+        )
+
+    assert any("budgets.max_stall_rounds = 12" in line for line in vm.conversation)
+    assert any("without an answer" in line for line in vm.conversation)

@@ -198,6 +198,32 @@ def test_invalid_budget_is_rejected(tmp_path) -> None:
         load_config(explicit_path=config_path)
 
 
+def test_zero_lifts_a_cap_only_where_a_cap_can_be_lifted() -> None:
+    from code_ai.config.models import BudgetConfig
+
+    uncapped = BudgetConfig.from_mapping({"max_model_steps": 0, "max_tool_calls": 0})
+    uncapped.validate()
+    assert uncapped.turn_timeout() is None
+    assert BudgetConfig.from_mapping({"max_turn_seconds": 600}).turn_timeout() == 600
+    with pytest.raises(ConfigurationError):
+        BudgetConfig.from_mapping({"default_tool_timeout_s": 0}).validate()
+
+
+def test_a_config_naming_retired_budgets_still_loads(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "api_mode": "ollama",
+                "workspace": str(tmp_path),
+                "budgets": {"max_orchestration_rounds": 60, "max_orchestration_seconds": 60},
+            }
+        ),
+        encoding="utf-8",
+    )
+    load_config(explicit_path=config_path)
+
+
 def test_redacted_config_output_hides_api_key(tmp_path) -> None:
     config_path = tmp_path / "config.json"
     config_path.write_text(

@@ -17,6 +17,7 @@ from code_ai.config.defaults import (
     DEFAULT_SAMPLING,
     DEFAULT_SANDBOX,
     PLACEHOLDER_API_KEY,
+    UNCAPPED_BUDGETS,
     default_sandbox_base_dir,
     project_browser_dir,
     project_index_dir,
@@ -82,8 +83,6 @@ class BudgetConfig:
     max_model_step_seconds: int = DEFAULT_BUDGETS["max_model_step_seconds"]
     model_queue_notice_s: int = DEFAULT_BUDGETS["model_queue_notice_s"]
     max_model_steps: int = DEFAULT_BUDGETS["max_model_steps"]
-    max_orchestration_rounds: int = DEFAULT_BUDGETS["max_orchestration_rounds"]
-    max_orchestration_seconds: int = DEFAULT_BUDGETS["max_orchestration_seconds"]
     max_stall_rounds: int = DEFAULT_BUDGETS["max_stall_rounds"]
     max_tool_call_seconds: int = DEFAULT_BUDGETS["max_tool_call_seconds"]
     max_tool_calls: int = DEFAULT_BUDGETS["max_tool_calls"]
@@ -111,7 +110,7 @@ class BudgetConfig:
 
     def validate(self) -> None:
         for key, value in asdict(self).items():
-            if value <= 0:
+            if value < 0 or (value == 0 and key not in UNCAPPED_BUDGETS):
                 raise ConfigurationError(f"Budget value {key} must be positive.")
         if self.max_context_tokens < 4096:
             raise ConfigurationError("max_context_tokens must be at least 4096.")
@@ -119,8 +118,18 @@ class BudgetConfig:
     def model_timeout(self) -> float:
         return float(min(self.max_model_call_s, self.max_model_step_seconds))
 
-    def turn_timeout(self) -> float:
-        return float(min(self.max_turn_seconds, self.max_turn_wall_time_s))
+    def turn_timeout(self) -> float | None:
+        """Seconds a turn may go without progress, or ``None`` for no cap."""
+        caps = [cap for cap in (self.max_turn_seconds, self.max_turn_wall_time_s) if cap > 0]
+        return float(min(caps)) if caps else None
+
+    def turn_timeout_setting(self) -> str:
+        """The key that decides :meth:`turn_timeout`, to name it to the user."""
+        if self.max_turn_wall_time_s > 0 and (
+            self.max_turn_seconds <= 0 or self.max_turn_wall_time_s < self.max_turn_seconds
+        ):
+            return "max_turn_wall_time_s"
+        return "max_turn_seconds"
 
 
 @dataclass(slots=True)

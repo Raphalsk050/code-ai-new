@@ -285,6 +285,17 @@ class TerminalViewModel:
             verb = "approved" if event.payload.get("approved") else "denied"
             scope = event.payload.get("scope")
             self.conversation.append(f"approval> {name} {verb} ({scope})")
+        elif event.event_type == "turn.budget_exhausted":
+            # The model's answer leaves limits out; this line is what says why
+            # the turn stopped, and which setting decides it.
+            setting = event.payload.get("setting") or "a runtime limit"
+            limit = event.payload.get("limit")
+            reason = str(event.payload.get("reason") or "").replace("_", " ")
+            self.conversation.append(
+                f"stopped> {reason} ({setting} = {limit}; raise it in config.json)"
+            )
+        elif event.event_type == "turn.no_answer":
+            self.conversation.append("stopped> the model ended the turn without an answer")
         elif event.event_type == "planning.policy.denied":
             self.conversation.append(
                 f"policy> denied {event.payload.get('tool_name')}: {event.payload.get('reason')}"
