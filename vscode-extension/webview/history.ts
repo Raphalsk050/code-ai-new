@@ -1,7 +1,9 @@
-// Local conversation history, persisted in the webview's VSCode state so it
-// survives reloads (like the task list in Cline/Codex/Claude). The live agent
-// runs in a single bridge process, so this is a client-side transcript archive:
-// it lets the user browse and reopen past conversations, and start fresh ones.
+// Local conversation history. What each conversation holds is kept by the host
+// (src/transcript-store.ts), one file each; the webview's own state keeps only
+// the list - title, date, size - and the preferences, so saving it stays cheap
+// however long the conversations grow. The live agent runs in a single bridge
+// process, so this is a client-side transcript archive: it lets the user browse
+// and reopen past conversations, and start fresh ones.
 
 import type { AppMode, ServerConversation } from "../src/protocol";
 import type { Place } from "./avatar-motion";
@@ -12,7 +14,14 @@ export interface Conversation {
   id: string;
   title: string;
   updatedAt: number;
-  items: Item[];
+  /** How many items it holds; the items themselves are the host's. */
+  count: number;
+}
+
+/** What an older panel kept: the items too, in its own state. */
+interface LegacyConversation extends Partial<Conversation> {
+  id: string;
+  items?: Item[];
 }
 
 /** A conversation shown on the home screen, merged from the bridge (source of
@@ -50,13 +59,13 @@ export function mergeHistory(
     });
   }
   for (const c of client) {
-    if (c.items.length === 0) continue;
+    if (c.count === 0) continue;
     const prev = byId.get(c.id);
     byId.set(c.id, {
       id: c.id,
       title: c.title,
       updatedAt: Math.max(c.updatedAt, prev?.updatedAt ?? 0),
-      count: c.items.length,
+      count: c.count,
       summary: prev?.summary,
       tokens: prev?.tokens,
     });
@@ -127,12 +136,12 @@ export function deriveTitle(items: Item[]): string {
 /** Conversations newest-first, dropping any that never accrued a message. */
 export function sorted(conversations: Conversation[]): Conversation[] {
   return conversations
-    .filter((c) => c.items.length > 0)
+    .filter((c) => c.count > 0)
     .slice()
     .sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
-/** Upsert the active conversation's transcript, returning a new state. */
+/** Upsert the active conversation's entry in the list, returning a new state. */
 export function upsertActive(
   state: PersistedState,
   activeId: string,
@@ -144,12 +153,45 @@ export function upsertActive(
     id: activeId,
     title: deriveTitle(items),
     updatedAt: Date.now(),
-    items,
+    count: items.length,
   };
   // Keep an empty active conversation out of the persisted list until it has
   // content, so the history doesn't fill up with blank threads.
   const conversations = items.length > 0 ? [record, ...rest] : existing ? rest : state.conversations;
   return { ...state, conversations, activeId };
+}
+
+/**
+ * Where `next` stops being `prev`: the first item that is not the same object.
+ * The store replaces only what changed, so everything before it is unchanged.
+ */
+export function firstChange(prev: readonly Item[], next: readonly Item[]): number {
+  const shared = Math.min(prev.length, next.length);
+  let i = 0;
+  while (i < shared && prev[i] === next[i]) i += 1;
+  return i;
+}
+
+/**
+ * State saved by a panel that kept the items itself: the list as it is kept
+ * now, and the items to hand over to the host. Nothing to hand over is `[]`.
+ */
+export function takeLegacy(state: PersistedState): {
+  state: PersistedState;
+  handOver: { id: string; items: Item[] }[];
+} {
+  const old = state.conversations as LegacyConversation[];
+  if (!old.some((c) => Array.isArray(c.items))) return { state, handOver: [] };
+  const handOver = old
+    .filter((c) => Array.isArray(c.items) && c.items.length > 0)
+    .map((c) => ({ id: c.id, items: c.items as Item[] }));
+  const conversations: Conversation[] = old.map((c) => ({
+    id: c.id,
+    title: c.title ?? deriveTitle(c.items ?? []),
+    updatedAt: c.updatedAt ?? 0,
+    count: c.count ?? c.items?.length ?? 0,
+  }));
+  return { state: { ...state, conversations }, handOver };
 }
 
 export function removeConversation(state: PersistedState, id: string): PersistedState {

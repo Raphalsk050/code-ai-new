@@ -31,6 +31,7 @@ import com.codeai.intellij.util.strings
 import com.codeai.intellij.util.text
 import com.codeai.intellij.util.toJson
 import com.codeai.intellij.util.truthy
+import com.codeai.intellij.web.TranscriptStore
 import com.codeai.intellij.web.WebviewPanel
 import com.codeai.intellij.web.WebviewStateStore
 import com.google.gson.JsonArray
@@ -74,6 +75,7 @@ internal class ChatHost(private val project: Project) : Disposable {
     private val status = project.service<AgentStatusService>()
     private val inline = project.service<InlineHints>()
     private val saved = WebviewStateStore(project, "chat")
+    private val transcripts = TranscriptStore(project, host::later)
 
     @Volatile
     private var panel: WebviewPanel? = null
@@ -175,6 +177,7 @@ internal class ChatHost(private val project: Project) : Disposable {
     }
 
     override fun dispose() {
+        transcripts.flush()
         contextPush?.cancel(false)
         explainTimer?.cancel(false)
         refactorTimer?.cancel(false)
@@ -259,7 +262,20 @@ internal class ChatHost(private val project: Project) : Disposable {
             "deleteConversation" -> {
                 if (message.text("id") == activeConversation) activeConversation = null
                 client?.send("deleteConversation", json("conversation_id" to message.text("id")))
+                transcripts.remove(message.text("id"))
             }
+            "saveTranscript" -> {
+                val id = message.text("id")
+                val from = message.number("from")?.toInt() ?: 0
+                if (!transcripts.save(id, from, message.array("items") ?: JsonArray())) {
+                    post(json("type" to "transcriptResend", "id" to id))
+                }
+            }
+            "loadTranscript" -> {
+                val id = message.text("id")
+                post(json("type" to "transcript", "id" to id, "items" to transcripts.load(id)))
+            }
+            "adoptTranscripts" -> transcripts.adopt(message.array("conversations") ?: JsonArray())
             "answerNow" ->
                 client?.request("answerNow", json("text" to message.text("text")))?.then(
                     { },
@@ -771,6 +787,7 @@ internal class ChatHost(private val project: Project) : Disposable {
 
     /** Where edits are reviewed: the IDE's diff, or the panel's own view. */
     private fun postEditorDiff() = post(json("type" to "editorDiff", "enabled" to diffs.enabled))
+
 
     /** The plugin's own settings, as the panel's settings screen edits them. */
     private fun postEditorSettings() {

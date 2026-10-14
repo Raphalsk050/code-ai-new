@@ -7,6 +7,7 @@ import type { BridgeClient } from "./bridge-client";
 import { EditDiffs } from "./edit-diff";
 import { formatEditorContext, otherOpenFiles } from "./editor-context";
 import { SessionChanges } from "./session-changes";
+import { TranscriptStore } from "./transcript-store";
 import { FIRST_CHECK_MS, nextCheckDelay } from "./update-schedule";
 import { initialAgentStatus, reduceAgentStatus, statusView } from "./agent-status";
 import {
@@ -79,7 +80,12 @@ export function activate(context: vscode.ExtensionContext): void {
   const diffs = new EditDiffs();
   // Everything the agent changed in the conversation, for the rail's Changes.
   const changes = new SessionChanges();
-  const provider = new ChatViewProvider(context.extensionUri, bridge, diffs, changes);
+  // Per workspace, as the backend keeps its own record of the conversations.
+  const transcripts = new TranscriptStore(
+    path.join((context.storageUri ?? context.globalStorageUri).fsPath, "transcripts")
+  );
+  context.subscriptions.push({ dispose: () => void transcripts.flush() });
+  const provider = new ChatViewProvider(context.extensionUri, bridge, diffs, changes, transcripts);
   const flowEditor = new FlowEditorProvider(context.extensionUri, bridge, context.secrets);
   provider.onSettingsSaved = () => flowEditor.refreshCatalog();
   context.subscriptions.push(
@@ -160,7 +166,8 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     private readonly extensionUri: vscode.Uri,
     private readonly bridge: BridgeSession,
     private readonly diffs: EditDiffs,
-    private readonly changes: SessionChanges
+    private readonly changes: SessionChanges,
+    private readonly transcripts: TranscriptStore
   ) {}
 
   /** The extension's own settings, as the panel's settings screen edits them. */
@@ -770,6 +777,22 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         case "deleteConversation":
           if (message.id === this.activeConversation) this.activeConversation = undefined;
           client?.send("deleteConversation", { conversation_id: message.id });
+          void this.transcripts.remove(message.id);
+          break;
+        case "saveTranscript": {
+          const id = message.id;
+          void this.transcripts.save(id, message.from, message.items).then((kept) => {
+            if (!kept) void this.webview?.postMessage({ type: "transcriptResend", id });
+          });
+          break;
+        }
+        case "loadTranscript": {
+          const id = message.id;
+          void this.transcripts.load(id).then((items) => this.webview?.postMessage({ type: "transcript", id, items }));
+          break;
+        }
+        case "adoptTranscripts":
+          void this.transcripts.adopt(message.conversations);
           break;
         case "answerNow":
           client?.request("answerNow", { text: message.text }).catch((err) =>

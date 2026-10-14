@@ -54,7 +54,9 @@ button:focus-visible, .pressable:focus-visible, [tabindex]:focus-visible {
 }
 
 /* ---- entrances ---- */
-.block, .notice, .tool, .thinking { animation: rise-in var(--dur-base) var(--ease-out) both; }
+/* Backwards, not both: a fill that outlives the entrance keeps every message
+   on a compositing layer of its own, and a long transcript paints thousands. */
+.block, .notice, .tool, .thinking { animation: rise-in var(--dur-base) var(--ease-out) backwards; }
 /* A new block rises with its first item already in it; that item rising again
    inside would double the motion. */
 .block-body > :first-child { animation: none; }

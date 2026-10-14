@@ -48,9 +48,30 @@ const PAGE = `<!DOCTYPE html>
     <div id="root"></div>
     <script>
       window.__toHost = [];
-      window.__state = undefined;
+      // What a spec seeds before the page loads (page.addInitScript), or nothing.
+      window.__state = window.__seedState;
+      // The host's conversation store (src/transcript-store.ts), in memory.
+      window.__transcripts = window.__seedTranscripts ?? {};
+      const keepTranscript = (message) => {
+        const kept = window.__transcripts;
+        if (message.type === "saveTranscript") {
+          const items = message.from === 0 ? [] : kept[message.id];
+          if (!items || items.length < message.from) {
+            setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: { type: "transcriptResend", id: message.id } })));
+            return;
+          }
+          items.length = message.from;
+          items.push(...JSON.parse(JSON.stringify(message.items)));
+          kept[message.id] = items;
+        } else if (message.type === "loadTranscript") {
+          const items = kept[message.id] ? JSON.parse(JSON.stringify(kept[message.id])) : null;
+          setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: { type: "transcript", id: message.id, items } })));
+        } else if (message.type === "adoptTranscripts") {
+          for (const { id, items } of message.conversations) if (!kept[id] && items.length) kept[id] = items;
+        }
+      };
       window.acquireVsCodeApi = () => ({
-        postMessage: (message) => { window.__toHost.push(message); },
+        postMessage: (message) => { window.__toHost.push(message); keepTranscript(message); },
         getState: () => window.__state,
         setState: (state) => { window.__state = state; },
       });

@@ -34,10 +34,12 @@ import {
   DEFAULT_PREFS,
   EMPTY_PERSISTED,
   ExtPrefs,
+  firstChange,
   mergeHistory,
   newId,
   PersistedState,
   removeConversation,
+  takeLegacy,
   upsertActive,
 } from "./history";
 import { ChatHeader } from "./chat-header";
@@ -95,6 +97,9 @@ function clientEvent(event_type: string, payload: Record<string, any> = {}): Eve
 type Screen = "home" | "chat" | "settings";
 /** How long after the last streamed piece the transcript is saved. */
 const PERSIST_AFTER_MS = 400;
+/** Blocks drawn at once when a conversation opens, and how many join after each frame. */
+const FIRST_BLOCKS = 24;
+const MORE_BLOCKS = 12;
 
 // Backend states a turn ends well in; ERROR, FAILED and CANCELLED end it too,
 // but not with an answer worth marking done.
@@ -109,9 +114,13 @@ const OFFLINE = new Set(["STARTING", "RECONNECTING", "DISCONNECTED"]);
 
 function App(): JSX.Element {
   const [state, dispatch] = React.useReducer(applyEvent, initialAppState);
-  const [persisted, setPersisted] = React.useState<PersistedState>(
-    () => vscode.getState() ?? EMPTY_PERSISTED
-  );
+  // An older panel kept every conversation's items in this state: they go to
+  // the host once, and only the list stays here.
+  const legacy = React.useRef<ReturnType<typeof takeLegacy> | null>(null);
+  const [persisted, setPersisted] = React.useState<PersistedState>(() => {
+    legacy.current = takeLegacy(vscode.getState() ?? EMPTY_PERSISTED);
+    return legacy.current.state;
+  });
   const [screen, setScreen] = React.useState<Screen>("home");
   const [returnScreen, setReturnScreen] = React.useState<Screen>("home");
   const [activeId, setActiveId] = React.useState<string | null>(null);
@@ -154,6 +163,13 @@ function App(): JSX.Element {
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
   const pendingReconstructRef = React.useRef<string | null>(null);
+  // The conversation being opened: whether the host has said what it kept,
+  // and whether the backend has rebuilt it. Saved before both are settled, it
+  // would be recorded as empty, or as the rebuild over the fuller copy.
+  const openingRef = React.useRef<{ id: string; kept: "waiting" | "none" | "loaded"; rebuilt: boolean } | null>(null);
+  // What the host was last given for the active conversation: a save sends
+  // only what changed since. Null makes the next one send it all.
+  const savedRef = React.useRef<{ id: string; items: Item[] } | null>(null);
 
   // State saved by an older build has no word on what came after it.
   const prefs: ExtPrefs = { ...DEFAULT_PREFS, ...persisted.prefs };
@@ -279,9 +295,35 @@ function App(): JSX.Element {
       } else if (data?.type === "conversationsList") {
         setServerConvos(data.conversations);
       } else if (data?.type === "conversationLoaded") {
-        if (pendingReconstructRef.current === data.id) {
+        const opening = openingRef.current?.id === data.id ? openingRef.current : null;
+        if (opening) opening.rebuilt = true;
+        if (pendingReconstructRef.current === data.id && opening?.kept !== "loaded") {
           pendingReconstructRef.current = null;
+          setDrawn(FIRST_BLOCKS);
           dispatch(clientEvent("client.load", { items: messagesToItems(data.messages) }));
+        }
+        if (opening?.kept === "none") openingRef.current = null;
+      } else if (data?.type === "transcript") {
+        // What the host kept wins over what the backend can rebuild: it has
+        // every tool call and notice the backend never saw.
+        const opening = openingRef.current?.id === data.id ? openingRef.current : null;
+        if (opening) {
+          const items = (data.items ?? []) as Item[];
+          if (items.length > 0) {
+            opening.kept = "loaded";
+            pendingReconstructRef.current = null;
+            savedRef.current = { id: data.id, items };
+            setDrawn(FIRST_BLOCKS);
+            dispatch(clientEvent("client.load", { items }));
+          } else {
+            opening.kept = "none";
+          }
+          if (opening.kept === "loaded" || opening.rebuilt) openingRef.current = null;
+        }
+      } else if (data?.type === "transcriptResend") {
+        if (savedRef.current?.id === data.id) {
+          savedRef.current = null;
+          setResend((n) => n + 1);
         }
       } else if (data?.type === "refactorStatus") {
         if (data.status === "analyzing")
@@ -346,16 +388,30 @@ function App(): JSX.Element {
 
   // -- persist the active transcript to local history ----------------------
   // A new message is saved at once. Text streaming into the last one is saved a
-  // moment after it stops: each save serialises the whole history, and an
-  // answer arrives in hundreds of pieces.
+  // moment after it stops: an answer arrives in hundreds of pieces. The host
+  // is sent only what changed since its last copy, and the webview's own state
+  // only the entry in the list.
   const pendingSave = React.useRef<(() => void) | null>(null);
   const savedCount = React.useRef(-1);
+  const [resend, setResend] = React.useState(0);
+
+  // A conversation opened with hundreds of messages is drawn from the newest:
+  // what is on screen first, then the older ones a slice at a time, each after
+  // a frame, so typing and scrolling are never held up behind all of it.
+  const [drawn, setDrawn] = React.useState(Infinity);
   React.useEffect(() => {
     if (screen !== "chat" || mode !== "agent" || !activeId) return;
+    if (openingRef.current?.id === activeId) return;
     const items = state.transcript.items;
     const save = () => {
       pendingSave.current = null;
       savedCount.current = items.length;
+      const saved = savedRef.current?.id === activeId ? savedRef.current.items : null;
+      const from = saved ? firstChange(saved, items) : 0;
+      if (saved ? from < items.length || from < saved.length : items.length > 0) {
+        send({ type: "saveTranscript", id: activeId, from, items: items.slice(from) });
+        savedRef.current = { id: activeId, items };
+      }
       setPersisted((prev) => {
         const next = upsertActive(prev, activeId, items);
         vscode.setState(next);
@@ -369,7 +425,17 @@ function App(): JSX.Element {
     pendingSave.current = save;
     const timer = window.setTimeout(save, PERSIST_AFTER_MS);
     return () => window.clearTimeout(timer);
-  }, [state.transcript.items, screen, activeId, mode]);
+  }, [state.transcript.items, screen, activeId, mode, resend]);
+
+  // Once: what an older panel kept goes to the host, and the list alone stays.
+  React.useEffect(() => {
+    const handOver = legacy.current?.handOver ?? [];
+    legacy.current = null;
+    if (handOver.length === 0) return;
+    send({ type: "adoptTranscripts", conversations: handOver });
+    vscode.setState(persisted);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // Leaving the conversation, or the panel going away: what was waiting is saved now.
   React.useEffect(() => {
     const flush = () => pendingSave.current?.();
@@ -441,7 +507,18 @@ function App(): JSX.Element {
     syncGlass();
     pin.onScroll();
   };
-  React.useLayoutEffect(syncGlass);
+  // The end of the transcript moves away without a scroll when content grows
+  // under a reader who scrolled up. Watched rather than read after every
+  // render: reading it then lays the whole transcript out again.
+  React.useLayoutEffect(() => {
+    const inner = scrollRef.current?.querySelector(".transcript-inner");
+    if (!inner || typeof ResizeObserver === "undefined") return;
+    syncGlass();
+    const observer = new ResizeObserver(syncGlass);
+    observer.observe(inner);
+    return () => observer.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen, mode]);
   React.useEffect(() => {
     const ta = textareaRef.current;
     if (!ta) return;
@@ -451,6 +528,26 @@ function App(): JSX.Element {
 
   const busy = isBusy(state.session.status);
   const connected = !OFFLINE.has(state.session.status);
+
+  // The avatars' loops ask for a frame sixty times a second. Nobody sees them
+  // while the panel is hidden, and while the user works elsewhere with nothing
+  // running they are only a cost: they hold where they are until either ends.
+  const [seen, setSeen] = React.useState(() => ({ shown: !document.hidden, focused: document.hasFocus() }));
+  React.useEffect(() => {
+    const update = () => setSeen({ shown: !document.hidden, focused: document.hasFocus() });
+    window.addEventListener("focus", update);
+    window.addEventListener("blur", update);
+    document.addEventListener("visibilitychange", update);
+    return () => {
+      window.removeEventListener("focus", update);
+      window.removeEventListener("blur", update);
+      document.removeEventListener("visibilitychange", update);
+    };
+  }, []);
+  const still = !seen.shown || (!seen.focused && !busy);
+  React.useEffect(() => {
+    document.documentElement.toggleAttribute("data-still", still);
+  }, [still]);
   const items = state.transcript.items;
   const lastItem = items[items.length - 1];
   const showTyping = busy && lastItem?.kind !== "assistant";
@@ -472,6 +569,22 @@ function App(): JSX.Element {
     if (mood) cue(mood);
   }, [busy, state.session.status, items]);
   const blocks = React.useMemo(() => groupBlocks(items), [items]);
+
+  React.useEffect(() => {
+    if (drawn === Infinity) return;
+    if (drawn >= blocks.length + 1) {
+      setDrawn(Infinity);
+      return;
+    }
+    let timer = 0;
+    const frame = requestAnimationFrame(() => {
+      timer = window.setTimeout(() => setDrawn((n) => n + MORE_BLOCKS), 0);
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+    };
+  }, [drawn, blocks.length]);
   const pinText = React.useMemo(() => {
     const found = pin.target && items.find((item) => item.id === pin.target?.message);
     return found && found.kind === "user" ? found.text : "";
@@ -585,11 +698,13 @@ function App(): JSX.Element {
 
   const openConversation = (id: string) => {
     if (id !== activeId) summarizeOutgoing();
-    const convo = persisted.conversations.find((c) => c.id === id);
-    const cached = (convo?.items ?? []) as Item[];
     setActiveId(id);
-    dispatch(clientEvent("client.load", { items: cached }));
-    pendingReconstructRef.current = cached.length === 0 ? id : null;
+    // Asked of the host and of the backend at once; see the two answers above.
+    savedRef.current = null;
+    openingRef.current = { id, kept: "waiting", rebuilt: false };
+    pendingReconstructRef.current = id;
+    dispatch(clientEvent("client.load", { items: [] }));
+    send({ type: "loadTranscript", id });
     send({ type: "loadConversation", id });
     updatePrefs({ mode: "agent" });
     setScreen("chat");
@@ -1027,6 +1142,7 @@ function App(): JSX.Element {
     live && lastBlock?.speaker !== "agent"
       ? [...blocks, { speaker: "agent", key: agentKey(lastBlock?.key ?? ""), items: [] }]
       : blocks;
+  const drawnBlocks = shownBlocks.length > drawn ? shownBlocks.slice(shownBlocks.length - drawn) : shownBlocks;
 
   const composerBar = (action?: React.ReactNode) => (
     <ComposerBar
@@ -1133,7 +1249,7 @@ function App(): JSX.Element {
                       onOpen={openConversation}
                     />
                   ) : (
-                    shownBlocks.map((block, i) => (
+                    drawnBlocks.map((block, i) => (
                       <BlockView
                         key={block.key}
                         block={block}
@@ -1142,13 +1258,13 @@ function App(): JSX.Element {
                         avatarPending={avatar.pending}
                         onAvatarSignIn={avatar.signIn && !avatar.src ? signInForPicture : undefined}
                         done={done && block === lastBlock}
-                        pose={i === shownBlocks.length - 1 && block.speaker === "agent" ? pose : null}
+                        pose={i === drawnBlocks.length - 1 && block.speaker === "agent" ? pose : null}
                         onOpenDiff={editorDiff ? openDiff : undefined}
                         onTerminal={showTerminal}
                         onAnswerNow={answerNow}
                         onDelete={block.speaker === "user" && !busy ? deleteBlock : undefined}
                       >
-                        {i === shownBlocks.length - 1 && block.speaker === "agent" ? live : null}
+                        {i === drawnBlocks.length - 1 && block.speaker === "agent" ? live : null}
                       </BlockView>
                     ))
                   )}

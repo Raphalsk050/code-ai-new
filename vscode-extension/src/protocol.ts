@@ -343,6 +343,10 @@ export type HostToWebview =
   | { type: "mcpError"; message: string }
   | { type: "mcpElicitationResult"; id: string; ok: boolean; message: string }
   | { type: "conversationsList"; conversations: ServerConversation[] }
+  /** A conversation's items as the host keeps them; null when it keeps none. */
+  | { type: "transcript"; id: string; items: unknown[] | null }
+  /** The host lost what came before the last save: the next one has to carry it all. */
+  | { type: "transcriptResend"; id: string }
   | { type: "conversationLoaded"; id: string; messages: StoredMessage[] }
   | { type: "refactorStatus"; status: "analyzing" | "idle" }
   | { type: "refactorResult"; improvements: RefactorImprovement[]; path: string; language: string }
@@ -418,6 +422,11 @@ export type WebviewToHost =
   | { type: "listConversations" }
   | { type: "loadConversation"; id: string }
   | { type: "deleteConversation"; id: string }
+  /** What changed in a conversation: its items from `from` on, replacing what the host has there. */
+  | { type: "saveTranscript"; id: string; from: number; items: unknown[] }
+  | { type: "loadTranscript"; id: string }
+  /** Conversations an older panel kept in its own state, handed over once. */
+  | { type: "adoptTranscripts"; conversations: { id: string; items: unknown[] }[] }
   /** One of the user's messages, counted from the newest, with the answer(s) it got. */
   | { type: "deleteMessage"; text: string; fromEnd: number; count: number }
   /** A message waiting for a turn of its own is handed to the turn that is running. */

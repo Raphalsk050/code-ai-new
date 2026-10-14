@@ -61,6 +61,9 @@ body {
 .block {
   margin: 0 0 12px; padding: 9px 12px 11px; min-width: 0;
   border: 1px solid var(--border); border-radius: var(--radius-lg);
+  /* Off screen, a box is neither laid out nor painted: a frame costs what is
+     in view, not the whole conversation. "auto" keeps the size it last had. */
+  content-visibility: auto; contain-intrinsic-size: auto 160px;
   transition: border-color var(--dur-slow) var(--ease-out), background-color var(--dur-slow) var(--ease-out);
 }
 /* The turn is over and ended on an answer: its box turns green, so "it is all

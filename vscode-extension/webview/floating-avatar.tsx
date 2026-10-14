@@ -244,12 +244,18 @@ export function FloatingAvatar({
     () => (roomRef.current ??= (ref.current?.offsetParent as HTMLElement | null) ?? null),
     []
   );
-  // How far down it may go, measured when the layout changes and not every frame.
+  // How far down it may go, and how big the room is, measured when the layout
+  // changes and not every frame: read in the frame loop, they lay the page out
+  // again whenever anything else on it has just changed.
   const floor = React.useRef<number | null>(null);
+  const roomSize = React.useRef<{ width: number; height: number } | null>(null);
   const bounds = React.useCallback((): Bounds => {
-    const box = room();
-    const width = box?.clientWidth ?? window.innerWidth;
-    const height = Math.min(box?.clientHeight ?? window.innerHeight, floor.current ?? Infinity);
+    const box = roomSize.current ? null : room();
+    const width = roomSize.current?.width ?? box?.clientWidth ?? window.innerWidth;
+    const height = Math.min(
+      roomSize.current?.height ?? box?.clientHeight ?? window.innerHeight,
+      floor.current ?? Infinity
+    );
     return { left: MARGIN, top: MARGIN, right: width - size - MARGIN, bottom: height - size - MARGIN };
   }, [room, size]);
   /** Where the screen's seat puts it: its face on the middle of the seat. */
@@ -501,12 +507,14 @@ export function FloatingAvatar({
   // caught in flight it is only kept inside.
   React.useLayoutEffect(() => {
     roomRef.current = null;
+    roomSize.current = null;
     const box = room();
     if (!box) return;
     const wall = box.querySelector<HTMLElement>(FLOOR);
     const field = wall?.querySelector<HTMLElement>(LAIR_OF);
     const fit = () => {
       const s = sim.current;
+      roomSize.current = { width: box.clientWidth, height: box.clientHeight };
       const outer = box.getBoundingClientRect();
       floor.current = wall ? wall.getBoundingClientRect().top - outer.top : null;
       const lair = field?.getBoundingClientRect();

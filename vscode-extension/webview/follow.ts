@@ -175,12 +175,12 @@ export function useFollow(
     return () => document.removeEventListener("keydown", onKey);
   }, [ref, page, letGo]);
 
-  // After every render: this is where new text makes the content taller.
-  React.useLayoutEffect(pin);
-
-  // And when it grows without one - an image loading, a card opening, the
-  // panel resized. The scroller comes and goes with the screen it is on, so
-  // the observer follows whichever element the ref holds.
+  // Whenever the content grows: new text, an image loading, a card opening,
+  // the panel resized. Told after layout and before paint, so pinning reads
+  // sizes that are already worked out; done after every render instead, it
+  // made the browser lay the whole transcript out again for each token. The
+  // scroller comes and goes with the screen it is on, so the observer follows
+  // whichever element the ref holds.
   const observed = React.useRef<{ el: HTMLElement; ro: ResizeObserver } | null>(null);
   React.useLayoutEffect(() => {
     const el = ref.current;

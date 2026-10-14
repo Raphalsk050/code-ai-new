@@ -239,6 +239,12 @@ ${COLOR_STYLE}
 /* Its seat on the home screen, where the mark stands when it does not float. */
 .spark-dock { height: 62px; }
 
+/* Hidden, or left alone with nothing running (index.tsx sets it): every loop
+   holds where it is, and picks up from there. */
+:root[data-still] .agent-av *, :root[data-still] .av-float-fx *, :root[data-still] .av-float-zs path {
+  animation-play-state: paused !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .agent-av *, .av-float-fx * { animation: none !important; }
   .agent-av[data-pose=search] .agent-av-eyes { transform: translate(-1.6px,.2px); }

@@ -64,7 +64,7 @@ export const tests = {
 
     // And the saved transcript no longer has it.
     await ui.page.waitForFunction(() => {
-      const saved = window.__state?.conversations?.[0]?.items ?? [];
+      const saved = Object.values(window.__transcripts)[0] ?? [];
       return saved.length === 6 && !saved.some((item) => item.id === "u2" || item.id === "a2");
     });
   },

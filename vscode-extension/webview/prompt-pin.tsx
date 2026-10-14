@@ -43,7 +43,12 @@ export function usePromptPin(
     frame.current = 0;
     const el = scrollRef.current;
     if (!el || landing.current) return;
-    const nodes = Array.from(el.querySelectorAll<HTMLElement>("[data-user-block]"));
+    // The requests are the transcript's own children: no walk through every
+    // message's markup to find them.
+    const inner = el.querySelector(".transcript-inner");
+    const nodes = Array.from(inner?.children ?? []).filter(
+      (node): node is HTMLElement => node instanceof HTMLElement && node.dataset.userBlock !== undefined
+    );
     const index = blockToPin(
       nodes.map((node) => node.getBoundingClientRect()),
       el.getBoundingClientRect().top,
@@ -54,8 +59,10 @@ export function usePromptPin(
     setTarget((prev) => (prev?.block === next?.block && prev?.message === next?.message ? prev : next));
   }, [scrollRef]);
 
+  // Measured once the frame is painted, when the layout is already worked out:
+  // read before it, every position asked for lays the transcript out again.
   const schedule = React.useCallback(() => {
-    if (!frame.current) frame.current = requestAnimationFrame(measure);
+    if (!frame.current) frame.current = requestAnimationFrame(() => setTimeout(measure, 0));
   }, [measure]);
 
   // Positions also move without a scroll: reasoning folding away, a tool card
