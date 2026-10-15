@@ -7,7 +7,7 @@ import logging
 import os
 import re
 import uuid
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -1249,17 +1249,27 @@ class CodeAIApplication:
         planner = self.orchestrator.planner
         return bool(planner and planner.enabled and planner.agent_plan)
 
-    async def start_plan_execution(self) -> bool:
+    async def start_plan_execution(
+        self, *, launch: Callable[[Coroutine[Any, Any, Any]], None] | None = None
+    ) -> bool:
         """Switch to act mode and immediately execute the approved plan.
 
         Returns True when an execution turn was started. When no plan has been
         authored yet there is nothing to run, so it only arms act mode and
         returns False, letting the caller fall back to plain mode switching.
+
+        ``launch`` runs the turn elsewhere and returns at once, the way the
+        bridge runs every turn: awaited inside a request, it held the bridge's
+        read loop, and with it every approval and stop, for as long as it ran.
         """
         await self.set_planner_mode(PlannerMode.ACT)
         if not self.has_active_plan():
             return False
-        await self.submit_user_message(_EXECUTE_PLAN_INSTRUCTION, resume_plan=True)
+        turn = self.submit_user_message(_EXECUTE_PLAN_INSTRUCTION, resume_plan=True)
+        if launch is None:
+            await turn
+        else:
+            launch(turn)
         return True
 
     async def request_replan(self, reason: str | None = None) -> str:

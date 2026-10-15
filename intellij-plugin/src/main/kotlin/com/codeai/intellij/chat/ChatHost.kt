@@ -324,7 +324,7 @@ internal class ChatHost(private val project: Project) : Disposable {
                     },
                     { error -> Notify.error(project, "Failed to save settings: ${asError(error)}") },
                 )
-            "listModels" -> client?.request("listModels", timeoutMs = AI_REQUEST_TIMEOUT_MS)?.then(
+            "listModels" -> client?.request("listModels", timeoutMs = LIST_MODELS_TIMEOUT_MS)?.then(
                 { result ->
                     post(json("type" to "modelsListed", "models" to (result.asObject().array("models") ?: JsonArray())))
                 },
@@ -967,10 +967,13 @@ internal class ChatHost(private val project: Project) : Disposable {
         // Stopping a stdio server waits on its process; approving one starts it.
         private const val MCP_REQUEST_TIMEOUT_MS = 60_000L
 
-        // AI calls (explain, refactor) go through the model, which the bridge
-        // bounds at `budgets.model_timeout()` (180s by default). The client must
-        // wait at least that long plus network and startup slack.
-        private const val AI_REQUEST_TIMEOUT_MS = 300_000L
+        // AI calls (explain, refactor, a plan, a summary) wait on the model, which
+        // may think for as long as it needs: no clock here. The bridge dying still
+        // fails them.
+        private const val AI_REQUEST_TIMEOUT_MS = BridgeClient.NO_TIMEOUT
+
+        // The bridge gives a model catalog a minute (providers/model_listing.py).
+        private const val LIST_MODELS_TIMEOUT_MS = 90_000L
         private const val PROFILE_TIMEOUT_MS = 60_000L
         private const val PICTURE_SIGN_IN_TIMEOUT_MS = 6 * 60_000L
         private const val PROFILE_DELAY_MS = 5_000L

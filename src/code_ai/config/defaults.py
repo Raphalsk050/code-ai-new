@@ -229,8 +229,16 @@ DEFAULT_BUDGETS: dict[str, int] = {
     "build_tool_timeout_s": 300,
     "default_tool_timeout_s": 600,
     "max_context_tokens": 256000,
-    "max_model_call_s": 180,
-    "max_model_step_seconds": 180,
+    # Seconds a model request may go without sending a byte. 0 is no cap: a
+    # model that thinks for minutes before it says anything is working, and a
+    # retry would only start the thinking over. A dead connection is caught by
+    # TCP keepalive instead (see providers.base.http_timeout).
+    "max_model_call_s": 0,
+    "max_model_step_seconds": 0,
+    # Seconds the model may stay unreachable (connection refused, 5xx, 429,
+    # a broken stream) before the turn gives up. 0 waits as long as it takes,
+    # retrying with a capped backoff, for as long as the user does not stop it.
+    "max_model_outage_s": 0,
     # Seconds a model request can go without a first token before the user is
     # told it is waiting in the server's queue; the notice repeats at this pace.
     "model_queue_notice_s": 15,
@@ -263,7 +271,15 @@ DEFAULT_BUDGETS: dict[str, int] = {
 
 # Budgets where 0 means no cap rather than a misconfiguration.
 UNCAPPED_BUDGETS = frozenset(
-    {"max_model_steps", "max_tool_calls", "max_turn_seconds", "max_turn_wall_time_s"}
+    {
+        "max_model_call_s",
+        "max_model_outage_s",
+        "max_model_step_seconds",
+        "max_model_steps",
+        "max_tool_calls",
+        "max_turn_seconds",
+        "max_turn_wall_time_s",
+    }
 )
 
 

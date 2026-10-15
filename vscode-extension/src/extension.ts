@@ -3,7 +3,7 @@ import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
 
-import type { BridgeClient } from "./bridge-client";
+import { NO_TIMEOUT, type BridgeClient } from "./bridge-client";
 import { EditDiffs } from "./edit-diff";
 import { formatEditorContext, otherOpenFiles } from "./editor-context";
 import { SessionChanges } from "./session-changes";
@@ -35,10 +35,13 @@ import type {
 // Stopping a stdio server waits on its process; approving one starts it.
 const MCP_REQUEST_TIMEOUT_MS = 60_000;
 
-// AI calls (explain/refactor) go through the model, which the bridge bounds at
-// `budgets.model_timeout()` (180s by default). The client must wait at least
-// that long plus network/startup slack, so give these calls a generous ceiling.
-const AI_REQUEST_TIMEOUT_MS = 300_000;
+// AI calls (explain, refactor, a plan, a summary) wait on the model, which may
+// think for as long as it needs: no clock here. The bridge dying still fails them.
+const AI_REQUEST_TIMEOUT_MS = NO_TIMEOUT;
+// A suggestion that arrives this late is about code the user has moved past.
+const INLINE_REQUEST_TIMEOUT_MS = 300_000;
+// The bridge gives a model catalog a minute (providers/model_listing.py).
+const LIST_MODELS_TIMEOUT_MS = 90_000;
 
 // A turn cut short by a dying backend is sent again, like any failed step: up
 // to 20 times, counted afresh whenever a model response lands.
@@ -421,7 +424,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           path: vscode.workspace.asRelativePath(document.uri, false),
           language: document.languageId,
         },
-        AI_REQUEST_TIMEOUT_MS
+        INLINE_REQUEST_TIMEOUT_MS
       );
       const ms = Date.now() - started;
       if (token.isCancellationRequested) {
@@ -912,7 +915,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       case "listModels":
         client
-          ?.request<{ models: string[] }>("listModels", {}, AI_REQUEST_TIMEOUT_MS)
+          ?.request<{ models: string[] }>("listModels", {}, LIST_MODELS_TIMEOUT_MS)
           .then((r) => this.webview?.postMessage({ type: "modelsListed", models: r.models ?? [] }))
           .catch((err) => this.webview?.postMessage({ type: "modelsError", message: String(err) }));
         break;

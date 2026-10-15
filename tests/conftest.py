@@ -81,7 +81,7 @@ def _no_release_lookups(monkeypatch, tmp_path):
 def _retry_without_waiting(monkeypatch):
     """Failed model steps retry at once: the real backoff runs to minutes."""
 
-    monkeypatch.setattr(orchestration, "_retry_delay", lambda attempt: 0.0)
+    monkeypatch.setattr(orchestration, "_retry_delay", lambda attempt, exc=None: 0.0)
     yield
 
 

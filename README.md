@@ -78,6 +78,8 @@ Safe example:
 
 `OPENAI_API_KEY` and `BASE_URL` override file values. API keys are redacted in config output, logs, events, tests, and UI-facing payloads.
 
+Nothing on a working turn runs on a clock by default: a model request may stay silent for as long as the model thinks (`budgets.max_model_call_s`, 0), and a model that cannot be reached (connection refused, 5xx, 429, a dropped stream) is retried with a capped backoff until it answers or the user stops the turn (`budgets.max_model_outage_s`, 0). Set either to a number of seconds to bound it. A request the server refuses is retried 20 times at most.
+
 ## API Modes
 
 - `responses`: OpenAI Responses or compatible `/v1/responses`.
@@ -123,7 +125,7 @@ Three profiles ship by default:
 - `reviewer`: independent code review (reads and runs the review/build/test tools, never edits source).
 
 A single `dispatch_agent` call may carry several tasks; they run concurrently up to `max_concurrent_subagents`.
-Delegation is resilient by construction: each sub-agent has a wall-clock timeout scoped to its profile, transient failures retry with backoff, and a per-profile circuit breaker stops dispatching to a role that keeps failing.
+Delegation is resilient by construction: a sub-agent is stopped only once it has gone silent for its profile's `subagent_*_timeout_s` (any event counts as alive, including the notices sent while its model has not started), transient failures retry with backoff, and a per-profile circuit breaker stops dispatching to a role that keeps failing. `dispatch_agent` is exempt from the tool wall clock (`max_tool_wall_time_s`).
 Every delegation resolves to a structured report - unknown types, limits, timeouts, and crashes degrade into feedback the model reacts to rather than crashing the turn.
 
 Because `dispatch_agent` carries the `delegate` capability, `ask` mode prompts once at the delegation boundary; the sub-agents then run without further prompts (so a parallel fan-out never blocks on approval).

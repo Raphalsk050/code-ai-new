@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { BridgeClient } from "../bridge-client";
+import { BridgeClient, NO_TIMEOUT } from "../bridge-client";
 
 // A stand-in bridge: silent for `delay` ms, then one event, then (if asked)
 // an answer to every request it reads.
@@ -45,6 +45,23 @@ test("a bridge that never speaks is given up on after the allowance", async () =
     const started = Date.now();
     await assert.rejects(client.request("getSettings", {}, 100), /timed out/);
     assert.ok(Date.now() - started >= 300);
+  } finally {
+    client.dispose();
+  }
+});
+
+test("a request that waits on the model has no clock, and a bridge that dies still ends it", async () => {
+  const client = bridge(0, "mute", 5_000);
+  try {
+    await new Promise<void>((resolve) => client.once("event", () => resolve()));
+    let settled = false;
+    const asked = client.request("getSettings", {}, NO_TIMEOUT).finally(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.equal(settled, false);
+    client.dispose();
+    await assert.rejects(asked, /exited/);
   } finally {
     client.dispose();
   }

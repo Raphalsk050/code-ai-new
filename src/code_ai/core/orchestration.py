@@ -61,7 +61,7 @@ from code_ai.prompts import (
     build_system_prompt,
     build_text_tool_protocol,
 )
-from code_ai.providers.base import ModelProvider
+from code_ai.providers.base import ModelProvider, is_unreachable, retry_after
 from code_ai.providers.models import (
     FinishReason,
     ImageContent,
@@ -107,13 +107,34 @@ _VISIBLE_OUTPUT_KINDS = frozenset({"text_delta", "reasoning_delta", "tool_call_d
 _METER_INTERVAL_S = 0.25
 
 
-def _retry_delay(attempt: int) -> float:
+# The longest a server's Retry-After is honoured for.
+_MAX_RETRY_AFTER_S = 600.0
+
+
+def _retry_delay(attempt: int, exc: BaseException | None = None) -> float:
     """Seconds before retry ``attempt``: half a second, doubling up to 20.
 
-    Twenty retries span about five minutes, long enough to ride out a model
-    server restarting.
+    Longer when the server said how long to stay away (Retry-After).
     """
-    return min(20.0, 0.5 * 2 ** (attempt - 1)) + random.random() * 0.25
+    delay = min(20.0, 0.5 * 2 ** (attempt - 1)) + random.random() * 0.25
+    asked = retry_after(exc) if exc is not None else None
+    return max(delay, min(asked, _MAX_RETRY_AFTER_S)) if asked is not None else delay
+
+
+def _is_outage(exc: BaseException) -> bool:
+    """Whether the model could not be reached, rather than refused the request.
+
+    An outage is waited out for as long as it lasts (max_model_outage_s, no
+    cap by default): a server restarting, a VPN reconnecting or an overloaded
+    endpoint all come back, and a long task should still be there when they
+    do. A refusal keeps the _MAX_FAILED_ATTEMPTS bound: sent again unchanged,
+    the same request fails the same way.
+    """
+    if isinstance(exc, TransientProviderError):
+        return True
+    if isinstance(exc, ProviderError):
+        return False
+    return is_unreachable(exc)
 
 
 def _failure_reason(exc: BaseException, *, idle_timeout: float | None = None) -> str:
@@ -1268,15 +1289,25 @@ class AgentOrchestrator:
         *,
         discarded: bool,
         idle_timeout: float | None = None,
+        outage: int = 0,
     ) -> None:
-        """Count a failure, say so, and wait before the next attempt."""
-        state.failures += 1
-        delay = _retry_delay(state.failures)
+        """Count a failure, say so, and wait before the next attempt.
+
+        ``outage`` is how many attempts in a row could not reach the model:
+        those are waited out without a count (max_attempts 0) and leave the
+        bound on every other failure alone.
+        """
+        if outage:
+            attempt, max_attempts = outage, 0
+        else:
+            state.failures += 1
+            attempt, max_attempts = state.failures, _MAX_FAILED_ATTEMPTS
+        delay = _retry_delay(attempt, exc)
         await self.event_bus.emit(
             "model.request.retrying",
             {
-                "attempt": state.failures,
-                "max_attempts": _MAX_FAILED_ATTEMPTS,
+                "attempt": attempt,
+                "max_attempts": max_attempts,
                 "reason": _failure_reason(exc, idle_timeout=idle_timeout),
                 "type": type(exc).__name__,
                 "delay_s": round(delay, 1),
@@ -2197,10 +2228,13 @@ class AgentOrchestrator:
         retries have been spent on this response. Output a broken attempt
         already streamed is taken back rather than kept as the answer.
         """
-        model_timeout = float(self.config.budgets.model_timeout())
+        model_timeout = self.config.budgets.model_timeout()
         # From the first attempt: a retry sends the request again, it does not
         # give the user back the time already spent waiting for it.
         waiting_since = time.monotonic()
+        # Failed attempts in a row that could not reach the model, and since when.
+        outages = 0
+        unreachable_since: float | None = None
         while True:
             streamed: list[str] = []
             state.attempt_emitted = False
@@ -2237,20 +2271,36 @@ class AgentOrchestrator:
                     and await self._drop_unreadable_images()
                 ):
                     continue
-            if state.failures >= _MAX_FAILED_ATTEMPTS:
-                await self._emit_request_failed(failure)
-                if streamed:
-                    # Out of retries: what reached the user is the best there is.
-                    return ModelResponse(
-                        text="".join(streamed), finish_reason=FinishReason.UNKNOWN
-                    )
-                reason = _failure_reason(failure, idle_timeout=model_timeout)
+            outage_cap = self.config.budgets.max_model_outage_s
+            if _is_outage(failure):
+                outages += 1
+                if unreachable_since is None:
+                    unreachable_since = time.monotonic()
+                gave_up = 0 < outage_cap <= time.monotonic() - unreachable_since
+            else:
+                gave_up = state.failures >= _MAX_FAILED_ATTEMPTS
+            if not gave_up:
+                await self._retry_after_failure(
+                    failure,
+                    state,
+                    discarded=state.attempt_emitted,
+                    idle_timeout=model_timeout,
+                    outage=outages if _is_outage(failure) else 0,
+                )
+                continue
+            await self._emit_request_failed(failure)
+            if streamed:
+                # Out of retries: what reached the user is the best there is.
+                return ModelResponse(text="".join(streamed), finish_reason=FinishReason.UNKNOWN)
+            reason = _failure_reason(failure, idle_timeout=model_timeout)
+            if _is_outage(failure):
                 raise ProviderError(
-                    f"Model step failed after {_MAX_FAILED_ATTEMPTS} retries: {reason}"
+                    f"The model could not be reached for {outage_cap}s "
+                    f"(max_model_outage_s): {reason}"
                 ) from failure
-            await self._retry_after_failure(
-                failure, state, discarded=state.attempt_emitted, idle_timeout=model_timeout
-            )
+            raise ProviderError(
+                f"Model step failed after {_MAX_FAILED_ATTEMPTS} retries: {reason}"
+            ) from failure
 
     async def _enforce_image_limit(self, limit: int | None = None) -> bool:
         """Keep the conversation within the endpoint's images-per-request cap.
@@ -2999,7 +3049,12 @@ class AgentOrchestrator:
             # The loader of the other mode does not exist for the model.
             raise ToolArgumentError(f"Unknown tool: {name}")
         parent = state.cancel_event
-        timeout = float(self.config.budgets.max_tool_wall_time_s)
+        # Sub-agents answer to their coordinator, which stops one only once it
+        # has gone silent: a wall clock here would cut off a fan-out still at work.
+        if ToolCapability.DELEGATE in self.tool_registry.capabilities(name):
+            timeout = float("inf")
+        else:
+            timeout = float(self.config.budgets.max_tool_wall_time_s)
         tool_cancel = asyncio.Event()
         exec_task = asyncio.ensure_future(
             self.tool_registry.execute(name, arguments, self.tool_context_factory(tool_cancel))

@@ -1378,7 +1378,7 @@ class DoctorModal(ModalScreen[None]):
                 )
                 response = await asyncio.wait_for(
                     provider.complete(request),
-                    timeout=min(30.0, candidate.budgets.model_timeout()),
+                    timeout=min(30.0, candidate.budgets.model_timeout() or 30.0),
                 )
             finally:
                 await provider.close()
@@ -1430,7 +1430,7 @@ class DoctorModal(ModalScreen[None]):
             try:
                 vectors = await asyncio.wait_for(
                     client.embed(["def parse_tool_call(payload): return payload"]),
-                    timeout=min(30.0, candidate.budgets.model_timeout()),
+                    timeout=min(30.0, candidate.budgets.model_timeout() or 30.0),
                 )
             finally:
                 await client.close()

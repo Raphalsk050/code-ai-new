@@ -13,7 +13,13 @@ from code_ai.core.errors import (
     ToolCallingUnsupportedError,
     TransientProviderError,
 )
-from code_ai.providers.base import build_openai_http_client, closing_stream
+from code_ai.providers.base import (
+    build_openai_http_client,
+    closing_stream,
+    failure_status,
+    http_timeout,
+    is_unreachable,
+)
 from code_ai.providers.debug import ModelDebugLogger
 from code_ai.providers.images import parse_image_limit
 from code_ai.providers.models import (
@@ -62,6 +68,14 @@ def _is_transient_exception(exc: Exception) -> bool:
 
 def _carries_images(request: ModelRequest) -> bool:
     return any(getattr(message, "images", None) for message in request.messages)
+
+
+def _unreachable(exc: Exception, request: ModelRequest) -> bool:
+    """Whether to report ``exc`` as a failure to wait out (see _worth_retrying)."""
+
+    if failure_status(exc) == 500 and _carries_images(request):
+        return False
+    return isinstance(exc, TransientProviderError) or is_unreachable(exc)
 
 
 def _worth_retrying(exc: Exception, request: ModelRequest) -> bool:
@@ -234,7 +248,7 @@ class OpenAIChatCompletionsProvider:
         self._client = AsyncOpenAI(
             api_key=config.provider_api_key(),
             base_url=config.base_url,
-            timeout=config.budgets.model_timeout(),
+            timeout=http_timeout(config),
             max_retries=0,
             http_client=build_openai_http_client(config),
         )
@@ -320,7 +334,8 @@ class OpenAIChatCompletionsProvider:
                 ) from exc
             except Exception as exc:
                 if not _worth_retrying(exc, request) or attempts >= 2:
-                    raise ProviderError(f"Chat Completions request failed: {exc}") from exc
+                    error = TransientProviderError if _unreachable(exc, request) else ProviderError
+                    raise error(f"Chat Completions request failed: {exc}") from exc
                 attempts += 1
                 await asyncio.sleep(min(2.0, 0.25 * (2**attempts)) + random.random() * 0.1)
 

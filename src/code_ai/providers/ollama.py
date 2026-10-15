@@ -6,7 +6,12 @@ from typing import Any
 from urllib.parse import urljoin
 
 from code_ai.config.models import AppConfig
-from code_ai.core.errors import ProviderError, ToolCallingUnsupportedError
+from code_ai.core.errors import (
+    ProviderError,
+    ToolCallingUnsupportedError,
+    TransientProviderError,
+)
+from code_ai.providers.base import build_http_client, is_unreachable
 from code_ai.providers.debug import ModelDebugLogger
 from code_ai.providers.models import (
     FinishReason,
@@ -118,10 +123,7 @@ class NativeOllamaProvider:
         self._httpx = httpx
         self._config = config
         self._base_url = normalize_native_ollama_base_url(config.base_url)
-        self._client = httpx.AsyncClient(
-            timeout=config.budgets.model_timeout(),
-            verify=config.ssl_verification,
-        )
+        self._client = build_http_client(config)
         self._capabilities = ProviderCapabilities(
             streaming=True,
             tool_calling=True,
@@ -218,7 +220,8 @@ class NativeOllamaProvider:
         except ToolCallingUnsupportedError:
             raise
         except Exception as exc:
-            raise ProviderError(f"Ollama request failed: {exc}") from exc
+            error = TransientProviderError if is_unreachable(exc) else ProviderError
+            raise error(f"Ollama request failed: {exc}") from exc
 
         response = ModelResponse(
             text="".join(text_parts),

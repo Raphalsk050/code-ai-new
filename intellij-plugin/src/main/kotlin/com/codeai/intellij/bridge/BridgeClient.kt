@@ -123,9 +123,11 @@ internal class BridgeClient private constructor(
         }
     }
 
-    /** Give a request so long to be answered, counted from now. */
+    /** Give a request so long to be answered, counted from now: no limit at all for [NO_TIMEOUT]. */
     private fun arm(id: Int, waiting: Pending, delayMs: Long) {
         waiting.timeout?.cancel(false)
+        waiting.timeout = null
+        if (delayMs <= 0) return
         waiting.timeout = scheduler.schedule({
             if (pending.remove(id) != null) {
                 val seconds = (delayMs / 1000.0).roundToLong()
@@ -217,6 +219,13 @@ internal class BridgeClient private constructor(
 
     companion object {
         const val DEFAULT_TIMEOUT_MS = 20_000L
+
+        /**
+         * For a request that waits on the model: answered whenever the model is
+         * done, however long it thinks. A bridge that dies still fails it, and
+         * one that never starts still has the start allowance.
+         */
+        const val NO_TIMEOUT = 0L
 
         /** How long a bridge may take to say its first word before what waits on it gives up. */
         const val START_ALLOWANCE_MS = 5 * 60_000L

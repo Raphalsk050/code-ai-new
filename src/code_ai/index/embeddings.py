@@ -110,6 +110,10 @@ class HttpEmbeddingClient:
 
 
 # Statuses that blame the payload rather than the server.
+# An embedding call is a quick, bounded request: unlike a model reply, nothing
+# about it can legitimately take minutes, so it keeps a cap of its own when
+# max_model_call_s sets none.
+_EMBED_TIMEOUT_S = 180.0
 _INPUT_REJECTED = frozenset({400, 413, 422})
 # How servers word "your input is longer than the model's context": OpenAI,
 # vLLM, llama.cpp, LM Studio and Ollama (with truncate off) each say it
@@ -170,5 +174,5 @@ def build_embedding_client(config: AppConfig) -> EmbeddingClient | None:
         model=index.embedding_model,
         api_key=config.provider_api_key() if not index.embedding_base_url else config.api_key,
         ssl_verification=config.ssl_verification,
-        timeout_s=float(config.budgets.max_model_call_s),
+        timeout_s=config.budgets.model_timeout() or _EMBED_TIMEOUT_S,
     )

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 from dataclasses import dataclass
 
@@ -89,13 +88,7 @@ class ReviewService:
         await self._event_bus.emit(
             "model.request.started", {"review": source}, source=f"tool.{source}"
         )
-        response = await asyncio.wait_for(
-            self._provider.complete(request),
-            timeout=min(
-                self._config.budgets.subagent_worker_timeout_s,
-                self._config.budgets.max_model_call_s,
-            ),
-        )
+        response = await self._provider.complete(request)
         await self._event_bus.emit(
             "usage.updated",
             {"usage": response.usage.to_dict() if response.usage else None, "review": source},
@@ -144,13 +137,7 @@ class ReviewService:
             "model.request.started", {"review": f"{source}.refute"}, source=f"tool.{source}"
         )
         try:
-            response = await asyncio.wait_for(
-                self._provider.complete(request),
-                timeout=min(
-                    self._config.budgets.subagent_worker_timeout_s,
-                    self._config.budgets.max_model_call_s,
-                ),
-            )
+            response = await self._provider.complete(request)
         except Exception:
             return result
         await self._event_bus.emit(
@@ -218,13 +205,7 @@ class ReviewService:
         await self._event_bus.emit(
             "model.request.started", {"review": source}, source=f"tool.{source}"
         )
-        response = await asyncio.wait_for(
-            self._provider.complete(request),
-            timeout=min(
-                self._config.budgets.subagent_worker_timeout_s,
-                self._config.budgets.max_model_call_s,
-            ),
-        )
+        response = await self._provider.complete(request)
         await self._event_bus.emit(
             "usage.updated",
             {"usage": response.usage.to_dict() if response.usage else None, "review": source},

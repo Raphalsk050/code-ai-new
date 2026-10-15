@@ -7,6 +7,10 @@ from code_ai.config.models import AppConfig
 from code_ai.core.errors import ProviderError
 from code_ai.providers.ollama import normalize_native_ollama_base_url
 
+# A catalog is one quick GET: a server that cannot answer it in this long is
+# not going to, and the settings screen is waiting on it.
+_LIST_TIMEOUT_S = 60.0
+
 
 def models_endpoint(config: AppConfig) -> str:
     """Resolve the URL that lists the models the configured provider serves.
@@ -64,7 +68,7 @@ async def list_available_models(config: AppConfig) -> list[str]:
 
     try:
         async with httpx.AsyncClient(
-            timeout=config.budgets.model_timeout(),
+            timeout=_LIST_TIMEOUT_S,
             verify=config.ssl_verification,
         ) as client:
             response = await client.get(url, headers=headers)

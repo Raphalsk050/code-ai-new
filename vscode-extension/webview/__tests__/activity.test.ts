@@ -108,6 +108,13 @@ test("a retry takes back the broken attempt and leaves the transcript alone", ()
   assert.equal(again.session.retry, "2/20");
   assert.equal(again.session.retryNote, "timeout · 4s");
 
+  // An unreachable model is waited out with no total to count down.
+  const unreachable = feed(
+    [["model.request.retrying", { attempt: 31, max_attempts: 0, reason: "Connection refused", delay_s: 20 }]],
+    again
+  );
+  assert.equal(activityLabel(unreachable.session), "retrying #31");
+
   const answered = feed([["model.stream.delta", { text: "Whole answer" }]], again);
   assert.equal(answered.session.retry, "");
   assert.equal(answered.session.retryNote, "");

@@ -136,7 +136,7 @@ class _App:
         self.replan_reason = reason
         return "replan queued"
 
-    async def start_plan_execution(self) -> bool:
+    async def start_plan_execution(self, *, launch=None) -> bool:
         return self.plan_started
 
     # goal

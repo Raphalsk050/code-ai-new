@@ -344,7 +344,7 @@ class BridgeServer:
         return result.to_payload()
 
     async def _h_start_plan(self, params: dict[str, Any]) -> dict[str, Any]:
-        return (await self._commands.start_plan()).to_payload()
+        return (await self._commands.start_plan(self._start_background_turn)).to_payload()
 
     async def _h_goal_define(self, params: dict[str, Any]) -> dict[str, Any]:
         result = await self._commands.goal_define(str(params.get("objective") or ""))

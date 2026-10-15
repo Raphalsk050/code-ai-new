@@ -16,6 +16,12 @@ import type { BridgeMethod, EventEnvelope } from "./protocol";
 export const DEFAULT_TIMEOUT_MS = 20_000;
 /** How long a bridge may take to say its first word before what waits on it gives up. */
 export const START_ALLOWANCE_MS = 5 * 60_000;
+/**
+ * For a request that waits on the model: answered whenever the model is done,
+ * however long it thinks. A bridge that dies still fails it, and one that never
+ * starts still has the start allowance.
+ */
+export const NO_TIMEOUT = 0;
 
 interface Pending {
   settle: (err: Error | null, msg?: any) => void;
@@ -73,6 +79,8 @@ export class BridgeClient extends EventEmitter {
   /** Give a request so long to be answered, counted from now. */
   private arm(id: number, waiting: Pending, delayMs: number): void {
     clearTimeout(waiting.timer);
+    waiting.timer = undefined;
+    if (delayMs <= 0) return;
     waiting.timer = setTimeout(() => {
       if (!this.pending.delete(id)) return;
       waiting.settle(

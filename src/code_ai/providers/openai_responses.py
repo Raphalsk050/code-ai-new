@@ -9,7 +9,12 @@ from typing import Any
 
 from code_ai.config.models import AppConfig
 from code_ai.core.errors import ImageLimitError, ProviderError, TransientProviderError
-from code_ai.providers.base import build_openai_http_client, closing_stream
+from code_ai.providers.base import (
+    build_openai_http_client,
+    closing_stream,
+    http_timeout,
+    is_unreachable,
+)
 from code_ai.providers.debug import ModelDebugLogger
 from code_ai.providers.images import parse_image_limit
 from code_ai.providers.models import (
@@ -137,7 +142,7 @@ class OpenAIResponsesProvider:
         self._client = AsyncOpenAI(
             api_key=config.provider_api_key(),
             base_url=config.base_url,
-            timeout=config.budgets.model_timeout(),
+            timeout=http_timeout(config),
             max_retries=0,
             http_client=build_openai_http_client(config),
         )
@@ -220,7 +225,9 @@ class OpenAIResponsesProvider:
                     request.use_remote_conversation_state = False
                     continue
                 if not _is_transient_exception(exc) or attempts >= 2:
-                    raise ProviderError(f"Responses request failed: {exc}") from exc
+                    unreachable = isinstance(exc, TransientProviderError) or is_unreachable(exc)
+                    error = TransientProviderError if unreachable else ProviderError
+                    raise error(f"Responses request failed: {exc}") from exc
                 attempts += 1
                 await asyncio.sleep(min(2.0, 0.25 * (2**attempts)) + random.random() * 0.1)
 

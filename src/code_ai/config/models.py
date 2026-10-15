@@ -81,6 +81,7 @@ class BudgetConfig:
     max_context_tokens: int = DEFAULT_BUDGETS["max_context_tokens"]
     max_model_call_s: int = DEFAULT_BUDGETS["max_model_call_s"]
     max_model_step_seconds: int = DEFAULT_BUDGETS["max_model_step_seconds"]
+    max_model_outage_s: int = DEFAULT_BUDGETS["max_model_outage_s"]
     model_queue_notice_s: int = DEFAULT_BUDGETS["model_queue_notice_s"]
     max_model_steps: int = DEFAULT_BUDGETS["max_model_steps"]
     max_stall_rounds: int = DEFAULT_BUDGETS["max_stall_rounds"]
@@ -115,8 +116,10 @@ class BudgetConfig:
         if self.max_context_tokens < 4096:
             raise ConfigurationError("max_context_tokens must be at least 4096.")
 
-    def model_timeout(self) -> float:
-        return float(min(self.max_model_call_s, self.max_model_step_seconds))
+    def model_timeout(self) -> float | None:
+        """Seconds a model request may stay silent, or ``None`` for no cap."""
+        caps = [cap for cap in (self.max_model_call_s, self.max_model_step_seconds) if cap > 0]
+        return float(min(caps)) if caps else None
 
     def turn_timeout(self) -> float | None:
         """Seconds a turn may go without progress, or ``None`` for no cap."""

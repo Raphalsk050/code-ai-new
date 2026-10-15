@@ -621,7 +621,7 @@ async def test_a_bug_mid_turn_is_retried_not_fatal(tmp_path, monkeypatch) -> Non
 async def test_cancelling_during_a_retry_wait_ends_the_turn_at_once(
     tmp_path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(orchestration, "_retry_delay", lambda attempt: 30.0)
+    monkeypatch.setattr(orchestration, "_retry_delay", lambda attempt, exc=None: 30.0)
     provider = FailsThenAnswersProvider(failures=3)
     app = build_application(config=_config(tmp_path), provider=provider)
     waiting = asyncio.Event()

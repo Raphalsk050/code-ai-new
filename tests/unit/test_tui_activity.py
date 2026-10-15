@@ -154,6 +154,17 @@ def test_a_retry_takes_back_what_the_broken_attempt_streamed() -> None:
     assert vm.conversation[-1] == "model> retrying 2/20 in 4s: timeout"
     assert len(vm.conversation) == 3
 
+    # An unreachable model is waited out with no total to count down.
+    vm.apply(
+        _event(
+            "model.request.retrying",
+            {"attempt": 31, "max_attempts": 0, "reason": "refused", "delay_s": 20},
+            7,
+        )
+    )
+    assert vm.conversation[-1] == "model> retrying #31 in 20s: refused"
+    assert vm.working_activity() == "retrying #31"
+
     # The model answering again ends the retry.
     vm.apply(_event("model.stream.delta", {"text": "Whole answer"}, 8))
     assert vm.retry_note == ""

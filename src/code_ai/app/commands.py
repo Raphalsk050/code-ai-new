@@ -13,6 +13,7 @@ the same result in a panel.
 from __future__ import annotations
 
 import shlex
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -109,8 +110,10 @@ class SessionCommands:
         message = await self._app.request_replan(reason=reason or None)
         return CommandResult(ok=True, message=message, data={"plan": self._app.get_plan_snapshot()})
 
-    async def start_plan(self) -> CommandResult:
-        started = await self._app.start_plan_execution()
+    async def start_plan(
+        self, launch: Callable[[Coroutine[Any, Any, Any]], None] | None = None
+    ) -> CommandResult:
+        started = await self._app.start_plan_execution(launch=launch)
         if not started:
             return _failed("No plan is waiting to be started.")
         return CommandResult(ok=True, message="Plan execution started.")

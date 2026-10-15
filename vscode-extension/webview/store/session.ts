@@ -96,7 +96,8 @@ export function applySession(state: SessionState, event: EventEnvelope): Session
       const note = [String(p.reason ?? "").trim(), delay >= 1 ? `${Math.round(delay)}s` : ""];
       return {
         ...state,
-        retry: `${p.attempt ?? "?"}/${p.max_attempts ?? "?"}`,
+        // No total: the model is unreachable and waited out for as long as that lasts.
+        retry: Number(p.max_attempts) === 0 ? `#${p.attempt ?? "?"}` : `${p.attempt ?? "?"}/${p.max_attempts ?? "?"}`,
         retryNote: note.filter(Boolean).join(" · "),
       };
     }

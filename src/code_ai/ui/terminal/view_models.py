@@ -729,11 +729,13 @@ class TerminalViewModel:
             self.clear_code_stream()
         attempt = payload.get("attempt")
         total = payload.get("max_attempts")
-        self.retry_note = f"retrying {attempt}/{total}"
+        # No total: the model is unreachable and waited out for as long as that lasts.
+        count = f"#{attempt}" if total == 0 else f"{attempt}/{total}"
+        self.retry_note = f"retrying {count}"
         delay = payload.get("delay_s")
         wait = f" in {delay:g}s" if isinstance(delay, int | float) and delay >= 1 else ""
         reason = str(payload.get("reason") or "").strip()
-        line = f"{_RETRY_PREFIX}{attempt}/{total}{wait}" + (f": {reason}" if reason else "")
+        line = f"{_RETRY_PREFIX}{count}{wait}" + (f": {reason}" if reason else "")
         # One line for the whole run of retries, rewritten in place: it is the
         # last line while the retries go on, so it is still in the live tail.
         if self.conversation and self.conversation[-1].startswith(_RETRY_PREFIX):
