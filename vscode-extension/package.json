@@ -13,6 +13,7 @@
   ],
   "activationEvents": [
     "onView:code-ai.chat",
+    "onWebviewPanel:code-ai.window",
     "onCustomEditor:code-ai.flow"
   ],
   "main": "./dist/extension.js",
@@ -53,6 +54,11 @@
         "title": "Code-AI: Focus Chat"
       },
       {
+        "command": "code-ai.popOut",
+        "title": "Code-AI: Open Chat in a New Window",
+        "icon": "$(link-external)"
+      },
+      {
         "command": "code-ai.restart",
         "title": "Code-AI: Restart (reload settings)",
         "icon": "$(refresh)"
@@ -86,6 +92,11 @@
     ],
     "menus": {
       "view/title": [
+        {
+          "command": "code-ai.popOut",
+          "when": "view == code-ai.chat",
+          "group": "navigation"
+        },
         {
           "command": "code-ai.restart",
           "when": "view == code-ai.chat",

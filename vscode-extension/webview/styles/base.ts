@@ -160,6 +160,11 @@ body {
 .markdown > .md-block:last-child > :last-child { margin-bottom: 0; }
 .markdown p { margin: 0 0 10px; }
 .markdown img { max-width: 100%; height: auto; border-radius: var(--radius-md); }
+/* The sidebar while the chat is in its own window. */
+.app.elsewhere {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; padding: 24px; text-align: center; color: var(--fg-muted);
+}
 .markdown ul, .markdown ol { margin: 0 0 10px; padding-left: 22px; }
 .markdown li { margin: 2px 0; }
 .markdown h1, .markdown h2, .markdown h3 { margin: 16px 0 8px; line-height: 1.3; }

@@ -29,6 +29,7 @@ export function ChatHeader({
   onHistory,
   onToggleRail,
   onSettings,
+  onPopIn,
   onCompact,
 }: {
   title: string;
@@ -48,6 +49,8 @@ export function ChatHeader({
   onHistory: () => void;
   onToggleRail: () => void;
   onSettings: () => void;
+  /** In the chat's own window: back to the sidebar. */
+  onPopIn?: () => void;
   onCompact: () => void;
 }): JSX.Element {
   return (
@@ -101,6 +104,11 @@ export function ChatHeader({
         <button className="icon-btn" title={t("Settings")} onPointerDown={ripple} onClick={onSettings}>
           <Codicon name="gear" />
         </button>
+        {onPopIn && (
+          <button className="icon-btn" title={t("Back to the sidebar")} onPointerDown={ripple} onClick={onPopIn}>
+            <Codicon name="layout-sidebar-left" />
+          </button>
+        )}
       </div>
     </div>
   );

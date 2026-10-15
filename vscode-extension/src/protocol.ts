@@ -355,6 +355,14 @@ export type HostToWebview =
   | { type: "transcriptResend"; id: string }
   /** Where the workspace's own files are served, for the pictures in an answer. */
   | { type: "resourceRoots"; roots: ResourceRoot[] }
+  /**
+   * Whether this surface holds the chat. The sidebar does not while the chat
+   * is in its own window; the one taking it over gets the other's list,
+   * preferences and open conversation.
+   */
+  | { type: "surface"; active: boolean; state?: unknown; conversation?: string }
+  /** Pop-out asked for from outside the page: hand the state over with popOut. */
+  | { type: "popOutRequested" }
   | { type: "conversationLoaded"; id: string; messages: StoredMessage[] }
   | { type: "refactorStatus"; status: "analyzing" | "idle" }
   | { type: "refactorResult"; improvements: RefactorImprovement[]; path: string; language: string }
@@ -435,6 +443,12 @@ export type WebviewToHost =
   | { type: "loadTranscript"; id: string }
   /** Conversations an older panel kept in its own state, handed over once. */
   | { type: "adoptTranscripts"; conversations: { id: string; items: unknown[] }[] }
+  /** Take the chat into a window of its own, with this surface's state and open conversation. */
+  | { type: "popOut"; state?: unknown; conversation?: string }
+  /** Take the chat back to the sidebar. */
+  | { type: "popIn" }
+  /** The window's state as it saves it, for the sidebar to take back. */
+  | { type: "surfaceState"; state: unknown }
   /** One of the user's messages, counted from the newest, with the answer(s) it got. */
   | { type: "deleteMessage"; text: string; fromEnd: number; count: number }
   /** A message waiting for a turn of its own is handed to the turn that is running. */

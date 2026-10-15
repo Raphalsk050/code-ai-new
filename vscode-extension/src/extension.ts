@@ -103,6 +103,10 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerWebviewViewProvider("code-ai.chat", provider, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
+    // A chat left in its own window comes back in it after a reload.
+    vscode.window.registerWebviewPanelSerializer("code-ai.window", {
+      deserializeWebviewPanel: async (panel, state) => provider.adoptWindow(panel, state),
+    }),
     vscode.window.registerCustomEditorProvider(FlowEditorProvider.viewType, flowEditor, {
       webviewOptions: { retainContextWhenHidden: true },
       supportsMultipleEditorsPerDocument: false,
@@ -110,6 +114,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("code-ai.open", () =>
       vscode.commands.executeCommand("code-ai.chat.focus")
     ),
+    vscode.commands.registerCommand("code-ai.popOut", () => provider.requestPopOut()),
     // Respawn the bridge so edited settings/config take effect without having to
     // reload the whole extension host.
     vscode.commands.registerCommand("code-ai.restart", () => bridge.restart()),
@@ -202,7 +207,18 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Called after a settings save lands, so other views can refresh. */
   onSettingsSaved?: () => void;
   private view?: vscode.WebviewView;
+  /** The chat in a window of its own, while it is popped out of the sidebar. */
+  private window?: vscode.WebviewPanel;
+  /** The surface holding the chat: the window while there is one, else the sidebar. */
   private webview?: vscode.Webview;
+  /** What the surfaces share while any is open (see attach). */
+  private attached?: vscode.Disposable[];
+  /** The backend's last word on its state, for a surface that opens later. */
+  private lastStatus?: EventEnvelope;
+  /** The window's latest saved state, handed back to the sidebar when it closes. */
+  private windowState?: unknown;
+  /** What the next surface to load takes over: the list, preferences and open conversation. */
+  private handOver?: { state?: unknown; conversation?: string };
   /** The thread on screen, so a backend that restarts can pick it up again. */
   private activeConversation?: string;
   /** Messages sent while the backend was down, delivered once it is back. */
@@ -705,7 +721,28 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   resolveWebviewView(view: vscode.WebviewView): void {
-    view.webview.options = {
+    view.webview.options = this.webviewOptions();
+    // Render the UI first and unconditionally: the webview must never be blank,
+    // even if the bridge fails to spawn. Bridge errors are surfaced as events
+    // inside the already-rendered UI instead of leaving an empty panel.
+    this.view = view;
+    view.webview.html = renderHtml(view.webview, this.extensionUri);
+    view.webview.onDidReceiveMessage((message: WebviewToHost) => this.onMessage(message, view.webview));
+    view.onDidChangeVisibility(() => {
+      if (view.visible) this.pushContext();
+    });
+    view.onDidDispose(() => {
+      this.view = undefined;
+      if (this.webview === view.webview) this.webview = undefined;
+      this.detachIfAlone();
+    });
+    // While the chat is in its own window, the sidebar only says where it went.
+    if (!this.window) this.webview = view.webview;
+    this.attach();
+  }
+
+  private webviewOptions(): vscode.WebviewOptions {
+    return {
       enableScripts: true,
       // The workspace too: pictures in answers and documents are its files.
       localResourceRoots: [
@@ -713,410 +750,400 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         ...(vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri),
       ],
     };
-    // Render the UI first and unconditionally: the webview must never be blank,
-    // even if the bridge fails to spawn. Bridge errors are surfaced as events
-    // inside the already-rendered UI instead of leaving an empty panel.
-    this.view = view;
-    this.webview = view.webview;
-    view.webview.html = renderHtml(view.webview, this.extensionUri);
+  }
 
-    view.webview.onDidReceiveMessage((message: WebviewToHost) => {
-      const client = this.client;
-      switch (message.type) {
-        case "submit": {
-          const context =
-            message.includeContext === false ? "" : formatEditorContext(currentEditorContext());
-          const params = {
-            text: message.text,
-            context,
-            images: message.images ?? [],
-            // Default false: a second message is usually a second question, and
-            // steering silently folds it into the answer to the first.
-            steer: message.steer === true,
-          };
-          if (client) {
-            this.inFlight.push(params);
-            client.send("submitUserMessage", params);
-            break;
-          }
-          // Dropping it here is what made one crash look like a dead panel.
-          this.pendingSubmits.push(params);
-          void this.webview?.postMessage({
+  /**
+   * A message from a surface. Only the one holding the chat is answered: the
+   * other is the sidebar while the chat is in its own window, and all it can
+   * do is say so and call the chat back.
+   */
+  private onMessage(message: WebviewToHost, from: vscode.Webview): void {
+    if (from !== this.webview) {
+      if (message.type === "popIn") this.popIn();
+      else if (message.type === "getSettings") void from.postMessage({ type: "surface", active: false });
+      return;
+    }
+    const client = this.client;
+    switch (message.type) {
+      case "submit": {
+        const context =
+          message.includeContext === false ? "" : formatEditorContext(currentEditorContext());
+        const params = {
+          text: message.text,
+          context,
+          images: message.images ?? [],
+          // Default false: a second message is usually a second question, and
+          // steering silently folds it into the answer to the first.
+          steer: message.steer === true,
+        };
+        if (client) {
+          this.inFlight.push(params);
+          client.send("submitUserMessage", params);
+          break;
+        }
+        // Dropping it here is what made one crash look like a dead panel.
+        this.pendingSubmits.push(params);
+        void this.webview?.postMessage({
+          type: "event",
+          event: syntheticNotice(
+            "The Code-AI backend is not running; starting it, and your message goes " +
+              "out as soon as it is up."
+          ),
+        });
+        this.bridge.ensureStarted();
+        break;
+      }
+      case "newConversation":
+        this.activeConversation = message.id;
+        this.changes.reset();
+        client?.send("newConversation", { conversation_id: message.id });
+        break;
+      case "listConversations":
+        client
+          ?.request<{ conversations: any[] }>("listConversations")
+          .then((r) =>
+            this.webview?.postMessage({ type: "conversationsList", conversations: r.conversations ?? [] })
+          )
+          .catch((err) => console.error("[code-ai] listConversations failed", err));
+        break;
+      case "loadConversation":
+        this.activeConversation = message.id;
+        this.changes.reset();
+        client
+          ?.request<{ id: string; messages: any[] }>("loadConversation", { conversation_id: message.id })
+          .then((r) =>
+            this.webview?.postMessage({
+              type: "conversationLoaded",
+              id: r.id ?? message.id,
+              messages: r.messages ?? [],
+            })
+          )
+          .catch((err) => this.recoverFromMissingConversation(client, message.id, err));
+        break;
+      case "deleteConversation":
+        if (message.id === this.activeConversation) this.activeConversation = undefined;
+        client?.send("deleteConversation", { conversation_id: message.id });
+        void this.transcripts.remove(message.id);
+        break;
+      case "saveTranscript": {
+        const id = message.id;
+        void this.transcripts.save(id, message.from, message.items).then((kept) => {
+          if (!kept) void this.webview?.postMessage({ type: "transcriptResend", id });
+        });
+        break;
+      }
+      case "loadTranscript": {
+        const id = message.id;
+        void this.transcripts.load(id).then((items) => this.webview?.postMessage({ type: "transcript", id, items }));
+        break;
+      }
+      case "adoptTranscripts":
+        void this.transcripts.adopt(message.conversations);
+        break;
+      case "answerNow":
+        client?.request("answerNow", { text: message.text }).catch((err) =>
+          this.webview?.postMessage({
             type: "event",
-            event: syntheticNotice(
-              "The Code-AI backend is not running; starting it, and your message goes " +
-                "out as soon as it is up."
-            ),
-          });
-          this.bridge.ensureStarted();
-          break;
-        }
-        case "newConversation":
-          this.activeConversation = message.id;
-          this.changes.reset();
-          client?.send("newConversation", { conversation_id: message.id });
-          break;
-        case "listConversations":
-          client
-            ?.request<{ conversations: any[] }>("listConversations")
-            .then((r) =>
-              this.webview?.postMessage({ type: "conversationsList", conversations: r.conversations ?? [] })
-            )
-            .catch((err) => console.error("[code-ai] listConversations failed", err));
-          break;
-        case "loadConversation":
-          this.activeConversation = message.id;
-          this.changes.reset();
-          client
-            ?.request<{ id: string; messages: any[] }>("loadConversation", { conversation_id: message.id })
-            .then((r) =>
-              this.webview?.postMessage({
-                type: "conversationLoaded",
-                id: r.id ?? message.id,
-                messages: r.messages ?? [],
-              })
-            )
-            .catch((err) => this.recoverFromMissingConversation(client, message.id, err));
-          break;
-        case "deleteConversation":
-          if (message.id === this.activeConversation) this.activeConversation = undefined;
-          client?.send("deleteConversation", { conversation_id: message.id });
-          void this.transcripts.remove(message.id);
-          break;
-        case "saveTranscript": {
-          const id = message.id;
-          void this.transcripts.save(id, message.from, message.items).then((kept) => {
-            if (!kept) void this.webview?.postMessage({ type: "transcriptResend", id });
-          });
-          break;
-        }
-        case "loadTranscript": {
-          const id = message.id;
-          void this.transcripts.load(id).then((items) => this.webview?.postMessage({ type: "transcript", id, items }));
-          break;
-        }
-        case "adoptTranscripts":
-          void this.transcripts.adopt(message.conversations);
-          break;
-        case "answerNow":
-          client?.request("answerNow", { text: message.text }).catch((err) =>
+            event: syntheticError(`could not hand the message over: ${String(err)}`),
+          })
+        );
+        break;
+      case "deleteMessage":
+        client
+          ?.request<{ deleted?: boolean }>("deleteMessage", {
+            text: message.text,
+            from_end: message.fromEnd,
+            count: message.count,
+          })
+          .then((answer) => {
+            if (answer?.deleted) return;
+            // Off the screen either way; the agent's memory of it is another matter.
+            void this.webview?.postMessage({
+              type: "event",
+              event: syntheticNotice(
+                "That message had already been folded into the conversation's summary: " +
+                  "it is off the list, but the summary still holds what it said."
+              ),
+            });
+          })
+          .catch((err) =>
             this.webview?.postMessage({
               type: "event",
-              event: syntheticError(`could not hand the message over: ${String(err)}`),
+              event: syntheticError(`could not delete the message: ${String(err)}`),
             })
           );
-          break;
-        case "deleteMessage":
-          client
-            ?.request<{ deleted?: boolean }>("deleteMessage", {
-              text: message.text,
-              from_end: message.fromEnd,
-              count: message.count,
-            })
-            .then((answer) => {
-              if (answer?.deleted) return;
-              // Off the screen either way; the agent's memory of it is another matter.
-              void this.webview?.postMessage({
-                type: "event",
-                event: syntheticNotice(
-                  "That message had already been folded into the conversation's summary: " +
-                    "it is off the list, but the summary still holds what it said."
-                ),
-              });
-            })
-            .catch((err) =>
-              this.webview?.postMessage({
-                type: "event",
-                event: syntheticError(`could not delete the message: ${String(err)}`),
-              })
-            );
-          break;
-        case "getSettings":
-          // The panel asks this as it mounts, so it is listening by now: what
-          // was posted while it was still loading may never have reached it.
-          this.postUpdate();
-          this.postProfile();
-          this.postResourceRoots();
-          client
-            ?.request("getSettings")
-            .then((settings) => this.webview?.postMessage({ type: "settings", settings }))
-            .catch((err) => {
-              console.error("[code-ai] getSettings failed", err);
-              // The settings screen renders nothing until this answer lands, so
-              // a rejection swallowed here is a screen that loads for ever.
-              void this.webview?.postMessage({
-                type: "event",
-                event: syntheticError(`could not read the settings: ${String(err)}`),
-              });
+        break;
+      case "getSettings":
+        // The panel asks this as it mounts, so it is listening by now: what
+        // was posted while it was still loading may never have reached it.
+        this.greet(true);
+        client
+          ?.request("getSettings")
+          .then((settings) => this.webview?.postMessage({ type: "settings", settings }))
+          .catch((err) => {
+            console.error("[code-ai] getSettings failed", err);
+            // The settings screen renders nothing until this answer lands, so
+            // a rejection swallowed here is a screen that loads for ever.
+            void this.webview?.postMessage({
+              type: "event",
+              event: syntheticError(`could not read the settings: ${String(err)}`),
             });
-          break;
-        case "updateSettings":
-          client
-            ?.request<{ settings?: { inline_hints_enabled?: boolean; inline_model?: string; model?: string } }>(
-              "updateSettings",
-              { updates: message.updates }
-            )
-            .then((result) => {
-              // Keep the inline-hints toggle/status bar in sync with edits made
-              // from the settings panel.
-              this.applyInlineSettings(result.settings);
-              this.webview?.postMessage({ type: "settingsUpdated", result });
-              // The graph editor caches the catalog, and the catalog carries the
-              // language: without this, changing it there leaves that tab in the
-              // old one until the window reloads.
-              this.onSettingsSaved?.();
-            })
-            .catch((err) =>
-              vscode.window.showErrorMessage(`Code-AI: failed to save settings: ${String(err)}`)
-            );
-          break;
-        case "listModels":
-          client
-            ?.request<{ models: string[] }>("listModels", {}, AI_REQUEST_TIMEOUT_MS)
-            .then((r) => this.webview?.postMessage({ type: "modelsListed", models: r.models ?? [] }))
-            .catch((err) => this.webview?.postMessage({ type: "modelsError", message: String(err) }));
-          break;
-        case "mcp":
-          void this.runMcp(message, client);
-          break;
-        case "mcpElicitation":
-          client
-            ?.request<{ ok: boolean; message: string }>("mcpElicitationAnswer", {
-              id: message.id,
-              action: message.action,
-              content: message.content ?? {},
-            })
-            .then((r) =>
-              this.webview?.postMessage({
-                type: "mcpElicitationResult",
-                id: message.id,
-                ok: r.ok,
-                message: r.message ?? "",
-              })
-            )
-            .catch((err) =>
-              this.webview?.postMessage({
-                type: "mcpElicitationResult",
-                id: message.id,
-                ok: false,
-                message: String(err).replace(/^Error: /, ""),
-              })
-            );
-          break;
-        case "cancel":
-          client?.send("cancel");
-          break;
-        case "compact":
-          client?.send("compact");
-          break;
-        case "resolveApproval":
-          client?.send("resolveApproval", {
-            call_id: message.call_id,
-            scope: message.scope,
-            reason: message.reason ?? "",
           });
-          break;
-        case "setPermissionMode":
-          client?.send("setPermissionMode", { mode: message.mode });
-          break;
-        case "setMode":
-          this.mode = message.mode;
-          this.autoRunRefactor = message.autoRunRefactor;
-          if (this.mode !== "explain") this.explainJob = null;
-          break;
-        case "analyzeRefactor":
-          void this.runAnalyzeRefactor();
-          break;
-        case "planRefactor":
-          void this.runPlanRefactor(message.id, message.improvements);
-          break;
-        case "answerQuestions":
-          client?.send("answerQuestion", { answer: message.text });
-          break;
-        case "setPlannerMode":
-          client?.send("setPlannerMode", { mode: message.mode });
-          break;
-        case "replan":
-          this.runCommand("replan", {}, client);
-          break;
-        case "startPlan":
-          this.runCommand("startPlan", {}, client);
-          break;
-        case "goal": {
-          const method =
-            message.action === "define"
-              ? "goalDefine"
-              : message.action === "start"
-                ? "goalStart"
-                : message.action === "stop"
-                  ? "goalStop"
-                  : "goalStatus";
-          this.runCommand(method, { objective: message.objective ?? "" }, client);
-          break;
-        }
-        case "terminal": {
-          const request = message.request;
-          const method =
-            request.action === "start"
-              ? "terminalStart"
-              : request.action === "write"
-                ? "terminalWrite"
-                : request.action === "ctrl"
-                  ? "terminalControl"
-                  : request.action === "kill"
-                    ? "terminalKill"
-                    : "terminalStatus";
-          const params: Record<string, unknown> =
-            request.action === "start"
-              ? { command: request.command ?? "" }
-              : request.action === "write"
-                ? { text: request.text }
-                : request.action === "ctrl"
-                  ? { key: request.key }
-                  : {};
-          this.runCommand(method, params, client);
-          break;
-        }
-        case "indexRefresh":
-          this.runCommand("indexRefresh", { full: message.full, subtree: message.subtree ?? "" }, client);
-          break;
-        case "summarizeConversation":
-          // Fire and forget: the card updates on the next list, and a summary
-          // that fails is not worth interrupting the user for.
-          client
-            ?.request("summarizeConversation", { conversation_id: message.id }, AI_REQUEST_TIMEOUT_MS)
-            .then(() =>
-              client
-                ?.request<{ conversations: any[] }>("listConversations")
-                .then((r) =>
-                  this.webview?.postMessage({
-                    type: "conversationsList",
-                    conversations: r.conversations ?? [],
-                  })
-                )
-            )
-            .catch((err) => console.error("[code-ai] summarizeConversation failed", err));
-          break;
-        case "runAsset":
-          this.runCommand("runAsset", { token: message.token, argument: message.argument }, client);
-          break;
-        case "report":
-          this.runCommand(message.method, {}, client, "report");
-          break;
-        case "searchFiles":
-          void this.searchWorkspaceFiles(message.query);
-          break;
-        case "listSlashCommands":
-          client
-            ?.request<{ commands: SlashCommandSpec[] }>("listSlashCommands")
-            .then((r) =>
-              this.webview?.postMessage({ type: "slashCommands", commands: r.commands ?? [] })
-            )
-            .catch((err) => console.error("[code-ai] listSlashCommands failed", err));
-          break;
-        case "restartBridge":
-          this.bridge.restart();
-          break;
-        case "openDiff":
-          void this.diffs.open(message.path);
-          break;
-        case "openChange":
-          void this.changes.open(message.path);
-          break;
-        case "revertChange":
-          void this.changes.revert(message.path);
-          break;
-        case "reviewChanges":
-          void this.changes.reviewAll();
-          break;
-        case "updateEditorSettings":
-          void this.updateEditorSettings(message.updates);
-          break;
-        case "installUpdate":
-          void this.installUpdate();
-          break;
-        case "signInForUpdates":
-          void this.signInForUpdates();
-          break;
-        case "avatarSignIn":
-          void this.signInForPicture();
-          break;
-        case "reloadWindow":
-          void vscode.commands.executeCommand("workbench.action.reloadWindow");
-          break;
+        break;
+      case "updateSettings":
+        client
+          ?.request<{ settings?: { inline_hints_enabled?: boolean; inline_model?: string; model?: string } }>(
+            "updateSettings",
+            { updates: message.updates }
+          )
+          .then((result) => {
+            // Keep the inline-hints toggle/status bar in sync with edits made
+            // from the settings panel.
+            this.applyInlineSettings(result.settings);
+            this.webview?.postMessage({ type: "settingsUpdated", result });
+            // The graph editor caches the catalog, and the catalog carries the
+            // language: without this, changing it there leaves that tab in the
+            // old one until the window reloads.
+            this.onSettingsSaved?.();
+          })
+          .catch((err) =>
+            vscode.window.showErrorMessage(`Code-AI: failed to save settings: ${String(err)}`)
+          );
+        break;
+      case "listModels":
+        client
+          ?.request<{ models: string[] }>("listModels", {}, AI_REQUEST_TIMEOUT_MS)
+          .then((r) => this.webview?.postMessage({ type: "modelsListed", models: r.models ?? [] }))
+          .catch((err) => this.webview?.postMessage({ type: "modelsError", message: String(err) }));
+        break;
+      case "mcp":
+        void this.runMcp(message, client);
+        break;
+      case "mcpElicitation":
+        client
+          ?.request<{ ok: boolean; message: string }>("mcpElicitationAnswer", {
+            id: message.id,
+            action: message.action,
+            content: message.content ?? {},
+          })
+          .then((r) =>
+            this.webview?.postMessage({
+              type: "mcpElicitationResult",
+              id: message.id,
+              ok: r.ok,
+              message: r.message ?? "",
+            })
+          )
+          .catch((err) =>
+            this.webview?.postMessage({
+              type: "mcpElicitationResult",
+              id: message.id,
+              ok: false,
+              message: String(err).replace(/^Error: /, ""),
+            })
+          );
+        break;
+      case "cancel":
+        client?.send("cancel");
+        break;
+      case "compact":
+        client?.send("compact");
+        break;
+      case "resolveApproval":
+        client?.send("resolveApproval", {
+          call_id: message.call_id,
+          scope: message.scope,
+          reason: message.reason ?? "",
+        });
+        break;
+      case "setPermissionMode":
+        client?.send("setPermissionMode", { mode: message.mode });
+        break;
+      case "setMode":
+        this.mode = message.mode;
+        this.autoRunRefactor = message.autoRunRefactor;
+        if (this.mode !== "explain") this.explainJob = null;
+        break;
+      case "analyzeRefactor":
+        void this.runAnalyzeRefactor();
+        break;
+      case "planRefactor":
+        void this.runPlanRefactor(message.id, message.improvements);
+        break;
+      case "answerQuestions":
+        client?.send("answerQuestion", { answer: message.text });
+        break;
+      case "setPlannerMode":
+        client?.send("setPlannerMode", { mode: message.mode });
+        break;
+      case "replan":
+        this.runCommand("replan", {}, client);
+        break;
+      case "startPlan":
+        this.runCommand("startPlan", {}, client);
+        break;
+      case "goal": {
+        const method =
+          message.action === "define"
+            ? "goalDefine"
+            : message.action === "start"
+              ? "goalStart"
+              : message.action === "stop"
+                ? "goalStop"
+                : "goalStatus";
+        this.runCommand(method, { objective: message.objective ?? "" }, client);
+        break;
       }
-    });
+      case "terminal": {
+        const request = message.request;
+        const method =
+          request.action === "start"
+            ? "terminalStart"
+            : request.action === "write"
+              ? "terminalWrite"
+              : request.action === "ctrl"
+                ? "terminalControl"
+                : request.action === "kill"
+                  ? "terminalKill"
+                  : "terminalStatus";
+        const params: Record<string, unknown> =
+          request.action === "start"
+            ? { command: request.command ?? "" }
+            : request.action === "write"
+              ? { text: request.text }
+              : request.action === "ctrl"
+                ? { key: request.key }
+                : {};
+        this.runCommand(method, params, client);
+        break;
+      }
+      case "indexRefresh":
+        this.runCommand("indexRefresh", { full: message.full, subtree: message.subtree ?? "" }, client);
+        break;
+      case "summarizeConversation":
+        // Fire and forget: the card updates on the next list, and a summary
+        // that fails is not worth interrupting the user for.
+        client
+          ?.request("summarizeConversation", { conversation_id: message.id }, AI_REQUEST_TIMEOUT_MS)
+          .then(() =>
+            client
+              ?.request<{ conversations: any[] }>("listConversations")
+              .then((r) =>
+                this.webview?.postMessage({
+                  type: "conversationsList",
+                  conversations: r.conversations ?? [],
+                })
+              )
+          )
+          .catch((err) => console.error("[code-ai] summarizeConversation failed", err));
+        break;
+      case "runAsset":
+        this.runCommand("runAsset", { token: message.token, argument: message.argument }, client);
+        break;
+      case "report":
+        this.runCommand(message.method, {}, client, "report");
+        break;
+      case "searchFiles":
+        void this.searchWorkspaceFiles(message.query);
+        break;
+      case "listSlashCommands":
+        client
+          ?.request<{ commands: SlashCommandSpec[] }>("listSlashCommands")
+          .then((r) =>
+            this.webview?.postMessage({ type: "slashCommands", commands: r.commands ?? [] })
+          )
+          .catch((err) => console.error("[code-ai] listSlashCommands failed", err));
+        break;
+      case "restartBridge":
+        this.bridge.restart();
+        break;
+      case "openDiff":
+        void this.diffs.open(message.path);
+        break;
+      case "openChange":
+        void this.changes.open(message.path);
+        break;
+      case "revertChange":
+        void this.changes.revert(message.path);
+        break;
+      case "reviewChanges":
+        void this.changes.reviewAll();
+        break;
+      case "updateEditorSettings":
+        void this.updateEditorSettings(message.updates);
+        break;
+      case "installUpdate":
+        void this.installUpdate();
+        break;
+      case "signInForUpdates":
+        void this.signInForUpdates();
+        break;
+      case "avatarSignIn":
+        void this.signInForPicture();
+        break;
+      case "reloadWindow":
+        void vscode.commands.executeCommand("workbench.action.reloadWindow");
+        break;
+      case "popOut":
+        void this.popOut(message.state, message.conversation);
+        break;
+      case "popIn":
+        this.popIn();
+        break;
+      case "surfaceState":
+        if (this.window) this.windowState = message.state;
+        break;
+    }
+  }
 
-    // Keep the webview in sync with what the user is looking at, so it can show
-    // a context chip and let the user opt out before sending.
-    const pushContext = () =>
-      void this.webview?.postMessage({ type: "editorContext", context: currentEditorContext() });
-    const editorSubs = [
-      vscode.window.onDidChangeActiveTextEditor(pushContext),
+  /**
+   * What every surface shares, set up when the first one appears and kept
+   * until the last one goes: the backend's events and the editor's context
+   * reach whichever surface holds the chat.
+   */
+  private attach(): void {
+    if (this.attached) return;
+    this.attached = [
+      // Keep the webview in sync with what the user is looking at, so it can
+      // show a context chip and let the user opt out before sending.
+      vscode.window.onDidChangeActiveTextEditor(() => this.pushContext()),
       // A tab opened, closed or moved: the list of open files changed.
-      vscode.window.tabGroups.onDidChangeTabs(pushContext),
+      vscode.window.tabGroups.onDidChangeTabs(() => this.pushContext()),
       vscode.window.onDidChangeTextEditorSelection((e) => {
         if (e.textEditor !== vscode.window.activeTextEditor) return;
-        pushContext();
+        this.pushContext();
         if (this.mode === "explain") this.scheduleExplain(e.textEditor);
         else if (this.mode === "refactor" && this.autoRunRefactor) this.scheduleRefactor();
       }),
-      view.onDidChangeVisibility(() => {
-        if (view.visible) pushContext();
+      // Events reach the panel through the session, so the backend keeps
+      // running when the panel is closed and re-attaches when it is reopened.
+      this.bridge.subscribe({
+        onEvent: (event) => {
+          this.trackTurn(event);
+          if (event.event_type === "status.changed") this.lastStatus = event;
+          // An MCP sign-in: the page opens in the user's browser, the VS Code way,
+          // so a remote window still reaches the machine the user sits at.
+          // Web pages only: a command: or file: link here would run in the editor.
+          const url = event.event_type === "mcp.auth.url" ? String(event.payload?.url ?? "") : "";
+          if (/^https?:\/\//i.test(url)) void vscode.env.openExternal(vscode.Uri.parse(url));
+          void this.webview?.postMessage({ type: "event", event });
+        },
+        onRestart: () => {
+          this.explainJob = null;
+          // The restart re-read the config, so the hint state may have changed.
+          this.refreshInlineSettings();
+        },
+        onStarted: (client, reason) => void this.resume(client, reason),
       }),
-    ];
-    pushContext();
-
-    // Events reach the panel through the session, so the backend keeps running
-    // when the panel is closed and re-attaches when it is reopened.
-    const bridgeSub = this.bridge.subscribe({
-      onEvent: (event) => {
-        this.trackTurn(event);
-        // An MCP sign-in: the page opens in the user's browser, the VS Code way,
-        // so a remote window still reaches the machine the user sits at.
-        // Web pages only: a command: or file: link here would run in the editor.
-        const url = event.event_type === "mcp.auth.url" ? String(event.payload?.url ?? "") : "";
-        if (/^https?:\/\//i.test(url)) void vscode.env.openExternal(vscode.Uri.parse(url));
-        void this.webview?.postMessage({ type: "event", event });
-      },
-      onRestart: () => {
-        this.explainJob = null;
-        // The restart re-read the config, so the hint state may have changed.
-        this.refreshInlineSettings();
-      },
-      onStarted: (client, reason) => void this.resume(client, reason),
-    });
-
-    // Where edits are reviewed: the editor's diff, or the panel's own view.
-    const postEditorDiff = () =>
-      void this.webview?.postMessage({ type: "editorDiff", enabled: this.diffs.enabled });
-    editorSubs.push(
       vscode.workspace.onDidChangeConfiguration((e) => {
-        if (e.affectsConfiguration("code-ai.diff.openInEditor")) postEditorDiff();
+        if (e.affectsConfiguration("code-ai.diff.openInEditor")) this.postEditorDiff();
         if (["code-ai.diff.openInEditor", "code-ai.command", "code-ai.args"].some((key) => e.affectsConfiguration(key))) {
           this.postEditorSettings();
         }
-      })
-    );
-    postEditorDiff();
-    this.postEditorSettings();
-    editorSubs.push(
-      this.changes.onDidChangeList((files) => void this.webview?.postMessage({ type: "sessionChanges", files }))
-    );
-    void this.changes.summaries().then((files) => this.webview?.postMessage({ type: "sessionChanges", files }));
-    this.postUpdate();
-    this.postProfile();
-
-    view.onDidDispose(() => {
-      editorSubs.forEach((d) => d.dispose());
-      bridgeSub.dispose();
-      if (this.explainTimer) clearTimeout(this.explainTimer);
-      if (this.refactorTimer) clearTimeout(this.refactorTimer);
-      this.explainJob = null;
-      this.refactorTarget = null;
-      this.view = undefined;
-      this.webview = undefined;
-    });
+      }),
+      this.changes.onDidChangeList((files) => void this.webview?.postMessage({ type: "sessionChanges", files })),
+    ];
+    this.greet(false);
 
     this.bridge.ensureStarted();
     // A backend the graph editor started before this view existed never told
@@ -1125,6 +1152,118 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     // Learn whether inline hints are on so the provider and status bar are
     // correct straight away (and after a restart re-reads edited config).
     this.refreshInlineSettings();
+  }
+
+  private detachIfAlone(): void {
+    if (this.view || this.window || !this.attached) return;
+    this.attached.forEach((d) => d.dispose());
+    this.attached = undefined;
+    if (this.explainTimer) clearTimeout(this.explainTimer);
+    if (this.refactorTimer) clearTimeout(this.refactorTimer);
+    this.explainJob = null;
+    this.refactorTarget = null;
+  }
+
+  /**
+   * Everything a surface draws from the host, for one that has just loaded.
+   * The hand-over waits for a surface that is `listening`: posted to one still
+   * loading, it would be lost.
+   */
+  private greet(listening: boolean): void {
+    this.pushContext();
+    this.postEditorDiff();
+    this.postEditorSettings();
+    void this.changes.summaries().then((files) => this.webview?.postMessage({ type: "sessionChanges", files }));
+    this.postUpdate();
+    this.postProfile();
+    this.postResourceRoots();
+    // Where the backend is, for a surface that missed it saying so.
+    if (this.lastStatus) void this.webview?.postMessage({ type: "event", event: this.lastStatus });
+    // A surface taking the chat over: the list, the preferences and the open
+    // conversation the other one had.
+    if (listening && this.handOver) {
+      void this.webview?.postMessage({ type: "surface", active: true, ...this.handOver });
+      this.handOver = undefined;
+    }
+  }
+
+  private pushContext(): void {
+    void this.webview?.postMessage({ type: "editorContext", context: currentEditorContext() });
+  }
+
+  /** Where edits are reviewed: the editor's diff, or the panel's own view. */
+  private postEditorDiff(): void {
+    void this.webview?.postMessage({ type: "editorDiff", enabled: this.diffs.enabled });
+  }
+
+  /**
+   * The chat in an editor tab of its own, moved into a window of its own: one
+   * that can go to another monitor. The conversation goes with it, a turn in
+   * progress included, and the sidebar says where it went.
+   */
+  async popOut(state?: unknown, conversation?: string): Promise<void> {
+    if (this.window) {
+      this.window.reveal();
+      return;
+    }
+    const panel = vscode.window.createWebviewPanel(
+      "code-ai.window",
+      "Code-AI",
+      { viewColumn: vscode.ViewColumn.Active, preserveFocus: false },
+      { ...this.webviewOptions(), retainContextWhenHidden: true }
+    );
+    this.handOver = { state, conversation: conversation ?? this.activeConversation };
+    this.adoptWindow(panel, state);
+    // VS Code 1.85 and later move an editor into a window of its own; before,
+    // the chat stays a tab the user can place where they like.
+    await vscode.commands.executeCommand("workbench.action.moveEditorToNewWindow").then(undefined, () => undefined);
+  }
+
+  /** The chat moves into `panel`: one just made, or one VS Code restored after a reload with its saved state. */
+  adoptWindow(panel: vscode.WebviewPanel, state?: unknown): void {
+    if (this.window && this.window !== panel) this.window.dispose();
+    panel.webview.options = this.webviewOptions();
+    panel.iconPath = vscode.Uri.joinPath(this.extensionUri, "media", "icon.svg");
+    this.window = panel;
+    this.windowState = state;
+    this.webview = panel.webview;
+    panel.webview.html = renderHtml(panel.webview, this.extensionUri, { window: true });
+    panel.webview.onDidReceiveMessage((message: WebviewToHost) => this.onMessage(message, panel.webview));
+    panel.onDidDispose(() => this.popIn(panel));
+    void this.view?.webview.postMessage({ type: "surface", active: false });
+    this.attach();
+  }
+
+  /** Back to the sidebar, with whatever the window had: the window closes. */
+  popIn(closed?: vscode.WebviewPanel): void {
+    const panel = this.window;
+    if (!panel || (closed && closed !== panel)) return;
+    this.window = undefined;
+    this.handOver = { state: this.windowState, conversation: this.activeConversation };
+    this.windowState = undefined;
+    if (this.view) {
+      // Still loaded, showing where the chat went: it is listening.
+      this.webview = this.view.webview;
+      this.greet(true);
+      this.view.show?.(true);
+    } else {
+      this.webview = undefined;
+      // The sidebar was never opened, or was closed: opening it takes the chat back.
+      void vscode.commands.executeCommand("code-ai.chat.focus");
+    }
+    if (!closed) panel.dispose();
+    this.detachIfAlone();
+  }
+
+  /** Asked from the command palette or the sidebar's title bar: the sidebar hands its state over. */
+  requestPopOut(): void {
+    if (this.window) {
+      this.window.reveal();
+    } else if (this.view && this.webview === this.view.webview) {
+      void this.view.webview.postMessage({ type: "popOutRequested" });
+    } else {
+      void this.popOut();
+    }
   }
 
   /**
@@ -1482,7 +1621,7 @@ async function openMarkdownPreview(sourcePath: string, markdown: string): Promis
   await vscode.commands.executeCommand("markdown.showPreview", uri);
 }
 
-function renderHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
+function renderHtml(webview: vscode.Webview, extensionUri: vscode.Uri, options: { window?: boolean } = {}): string {
   const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "dist", "webview.js"));
   const codiconsUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "dist", "codicons", "codicon.css"));
   const nonce = makeNonce();
@@ -1502,7 +1641,7 @@ function renderHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
     <link rel="stylesheet" href="${codiconsUri}" />
     <title>Code-AI</title>
   </head>
-  <body>
+  <body${options.window ? ' data-surface="window"' : ""}>
     <div id="root"></div>
     <script nonce="${nonce}" src="${scriptUri}"></script>
   </body>

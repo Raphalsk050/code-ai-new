@@ -547,6 +547,9 @@ const PT: Record<string, string> = {
     "Parado: {0} s sem progresso. {1} no config.json define quanto tempo.",
   "Stopped by a runtime limit: {0}": "Parado por um limite de execução: {0}",
   "The model ended the turn without an answer.": "O modelo encerrou o turno sem resposta.",
+  "Code-AI is open in its own window.": "O Code-AI está aberto em uma janela própria.",
+  "Bring it back here": "Trazer de volta para cá",
+  "Back to the sidebar": "Voltar para a barra lateral",
   "The backend restarted mid-answer; sending your message again ({0}/{1})":
     "O backend reiniciou no meio da resposta; enviando sua mensagem de novo ({0}/{1})",
   "{0} nodes": "{0} nós",

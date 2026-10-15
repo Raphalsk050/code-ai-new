@@ -25,6 +25,7 @@ import { tests as avatar } from "./avatar.e2e.mjs";
 import { tests as remove } from "./delete.e2e.mjs";
 import { tests as history } from "./history.e2e.mjs";
 import { tests as perf } from "./perf.e2e.mjs";
+import { tests as surface } from "./surface.e2e.mjs";
 import { tests as queue } from "./queue.e2e.mjs";
 import { tests as dropdown } from "./dropdown.e2e.mjs";
 import { tests as flow } from "./flow.e2e.mjs";
@@ -36,7 +37,7 @@ const GROUPS = [
     ready: "#root .app",
     // The chat panel is a sidebar: its specs assume the width one has.
     viewport: { width: 900, height: 900 },
-    specs: { settings, mcp, update, branch, transcript, stream, chrome, turns, rail, settingsLayout, terminal, avatar, remove, history, perf, queue, dropdown },
+    specs: { settings, mcp, update, branch, transcript, stream, chrome, turns, rail, settingsLayout, terminal, avatar, remove, history, perf, surface, queue, dropdown },
   },
   {
     name: "flow",

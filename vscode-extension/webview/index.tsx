@@ -80,6 +80,13 @@ declare function acquireVsCodeApi(): {
 };
 const vscode = acquireVsCodeApi();
 const send = (message: WebviewToHost) => vscode.postMessage(message);
+/** This page is the chat's own window (see popOut in src/extension.ts), not the sidebar. */
+const IS_WINDOW = document.body?.dataset.surface === "window";
+/** Saved where it survives a reload; the window also tells the host, which hands it back to the sidebar. */
+const saveState = (next: PersistedState) => {
+  vscode.setState(next);
+  if (IS_WINDOW) send({ type: "surfaceState", state: next });
+};
 
 /** Build a synthetic envelope so the webview can drive the store locally. */
 function clientEvent(event_type: string, payload: Record<string, any> = {}): EventEnvelope {
@@ -164,6 +171,12 @@ function App(): JSX.Element {
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
   const pendingReconstructRef = React.useRef<string | null>(null);
+  // The chat is in its own window: this sidebar only says so.
+  const [elsewhere, setElsewhere] = React.useState(false);
+  // A conversation to open once this surface takes the chat over.
+  const [takeOver, setTakeOver] = React.useState<string | null>(null);
+  // Asked to pop out from outside the page: what it hands over, as of now.
+  const popOutRef = React.useRef<() => void>(() => undefined);
   // The conversation being opened: whether the host has said what it kept,
   // and whether the backend has rebuilt it. Saved before both are settled, it
   // would be recorded as empty, or as the rebuild over the fuller copy.
@@ -321,6 +334,16 @@ function App(): JSX.Element {
           }
           if (opening.kept === "loaded" || opening.rebuilt) openingRef.current = null;
         }
+      } else if (data?.type === "surface") {
+        setElsewhere(!data.active);
+        if (data.active && data.state) {
+          const next = takeLegacy(data.state as PersistedState).state;
+          vscode.setState(next);
+          setPersisted(next);
+        }
+        if (data.active && data.conversation) setTakeOver(data.conversation);
+      } else if (data?.type === "popOutRequested") {
+        popOutRef.current();
       } else if (data?.type === "resourceRoots") {
         setResourceRoots(data.roots);
       } else if (data?.type === "transcriptResend") {
@@ -417,7 +440,7 @@ function App(): JSX.Element {
       }
       setPersisted((prev) => {
         const next = upsertActive(prev, activeId, items);
-        vscode.setState(next);
+        saveState(next);
         return next;
       });
     };
@@ -436,7 +459,7 @@ function App(): JSX.Element {
     legacy.current = null;
     if (handOver.length === 0) return;
     send({ type: "adoptTranscripts", conversations: handOver });
-    vscode.setState(persisted);
+    saveState(persisted);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   // Leaving the conversation, or the panel going away: what was waiting is saved now.
@@ -666,7 +689,7 @@ function App(): JSX.Element {
 
   // -- persisted state helpers --------------------------------------------
   const persistState = (next: PersistedState) => {
-    vscode.setState(next);
+    saveState(next);
     setPersisted(next);
   };
 
@@ -699,18 +722,37 @@ function App(): JSX.Element {
     cue("greet");
   };
 
-  const openConversation = (id: string) => {
-    if (id !== activeId) summarizeOutgoing();
+  /**
+   * `here` opens it in this page only: the backend already has it, as when a
+   * surface takes over the chat the other one was showing, turn and all.
+   */
+  const openConversation = (id: string, here = false) => {
+    if (id !== activeId && !here) summarizeOutgoing();
     setActiveId(id);
     // Asked of the host and of the backend at once; see the two answers above.
     savedRef.current = null;
-    openingRef.current = { id, kept: "waiting", rebuilt: false };
-    pendingReconstructRef.current = id;
+    openingRef.current = { id, kept: "waiting", rebuilt: here };
+    pendingReconstructRef.current = here ? null : id;
     dispatch(clientEvent("client.load", { items: [] }));
     send({ type: "loadTranscript", id });
-    send({ type: "loadConversation", id });
+    if (!here) send({ type: "loadConversation", id });
     updatePrefs({ mode: "agent" });
     setScreen("chat");
+  };
+
+  React.useEffect(() => {
+    if (!takeOver) return;
+    setTakeOver(null);
+    openConversation(takeOver, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [takeOver]);
+
+  // What this surface hands over when the chat leaves it: what is waiting to
+  // be saved first, so the host's copy is the one on screen.
+  popOutRef.current = () => {
+    pendingSave.current?.();
+    const handed = activeId && screen === "chat" ? upsertActive(persisted, activeId, state.transcript.items) : persisted;
+    send({ type: "popOut", state: handed, conversation: activeId ?? undefined });
   };
 
   const deleteConversation = (id: string) => {
@@ -1046,6 +1088,18 @@ function App(): JSX.Element {
   );
 
   // -- screens -------------------------------------------------------------
+  if (elsewhere) {
+    return (
+      <div className="app elsewhere" ref={rootRef} data-w={width}>
+        <Codicon name="link-external" size={28} />
+        <p>{t("Code-AI is open in its own window.")}</p>
+        <button className="btn-primary" onClick={() => send({ type: "popIn" })}>
+          {t("Bring it back here")}
+        </button>
+      </div>
+    );
+  }
+
   if (screen === "settings") {
     return (
       <div className="app" ref={rootRef} data-w={width}>
@@ -1236,6 +1290,7 @@ function App(): JSX.Element {
         onToggleRail={() => setRailDocked((d) => !d)}
         onSettings={openSettings}
         onCompact={() => send({ type: "compact" })}
+        onPopIn={IS_WINDOW ? () => send({ type: "popIn" }) : undefined}
       />
 
       <div className="workbench">
