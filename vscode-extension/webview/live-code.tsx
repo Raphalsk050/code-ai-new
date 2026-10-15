@@ -32,7 +32,8 @@ export function LiveCodePanel({ code }: { code: CodeStreamState }): JSX.Element 
       </div>
       {code.reason && <div className="livecode-reason">{code.reason}</div>}
       <div className="livecode-body" ref={bodyRef} {...follow.handlers}>
-        {code.code || "…"}
+        {/* What grows under the capped box, for the follower to watch. */}
+        <div>{code.code || "…"}</div>
       </div>
     </div>
   );

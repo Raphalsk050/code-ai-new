@@ -181,19 +181,39 @@ export function useFollow(
   // made the browser lay the whole transcript out again for each token. The
   // scroller comes and goes with the screen it is on, so the observer follows
   // whichever element the ref holds.
-  const observed = React.useRef<{ el: HTMLElement; ro: ResizeObserver } | null>(null);
+  // A box capped in height stops resizing once full, so what is watched is
+  // what grows inside it: each child the box has, and any it gets later.
+  const observed = React.useRef<{ el: HTMLElement; ro: ResizeObserver; mo: MutationObserver | null } | null>(null);
   React.useLayoutEffect(() => {
     const el = ref.current;
     if (observed.current?.el === el) return;
     observed.current?.ro.disconnect();
+    observed.current?.mo?.disconnect();
     observed.current = null;
     if (!el || typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(pin);
     ro.observe(el);
     for (const child of Array.from(el.children)) ro.observe(child);
-    observed.current = { el, ro };
+    const mo =
+      typeof MutationObserver === "undefined"
+        ? null
+        : new MutationObserver((records) => {
+            for (const record of records) {
+              record.addedNodes.forEach((node) => {
+                if (node instanceof Element) ro.observe(node);
+              });
+            }
+          });
+    mo?.observe(el, { childList: true });
+    observed.current = { el, ro, mo };
   });
-  React.useEffect(() => () => observed.current?.ro.disconnect(), []);
+  React.useEffect(
+    () => () => {
+      observed.current?.ro.disconnect();
+      observed.current?.mo?.disconnect();
+    },
+    []
+  );
 
   const rejoin = React.useCallback(
     (smooth = false) => {

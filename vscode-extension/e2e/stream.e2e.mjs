@@ -53,6 +53,23 @@ async function wheel(ui, dy) {
 const jumpShown = (ui) => ui.page.$(".jump-btn").then((el) => el !== null);
 
 export const tests = {
+  async "the reasoning box keeps up with the reasoning once it is full"(ui, assert) {
+    await openChat(ui);
+    await ui.fromHost(envelope("user.message", { text: "Explain the parser" }));
+    await ui.fromHost(envelope("status.changed", { state: "CALLING_MODEL" }));
+    // Well past its cap: the box itself stops growing long before the text does.
+    for (let i = 1; i <= 60; i++) {
+      await ui.fromHost(envelope("model.thinking.delta", { text: `Step ${i}: the config is read twice, once per section.\n` }));
+    }
+    await settle(ui);
+    const box = await ui.page.$eval(".thinking-body", (el) => ({
+      overflow: el.scrollHeight > el.clientHeight + 50,
+      below: el.scrollHeight - el.scrollTop - el.clientHeight,
+    }));
+    assert(box.overflow, "the reasoning never filled its box");
+    assert(box.below < 2, `the reasoning box was left ${box.below}px above its end`);
+  },
+
   async "blocks already on screen are left alone while the answer streams"(ui, assert) {
     await openChat(ui);
     await ui.fromHost(envelope("user.message", { text: "Show me" }));

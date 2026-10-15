@@ -326,7 +326,9 @@ function ThinkingRow({ text, streaming }: { text: string; streaming?: boolean })
       </button>
       {open && (
         <div ref={body} className="thinking-body" {...follow.handlers}>
-          {text}
+          {/* An element, not bare text: the box stops growing at its cap, and
+              what keeps growing under it is what the follower watches. */}
+          <div>{text}</div>
         </div>
       )}
     </div>
