@@ -3,6 +3,36 @@
 Decisions, trade-offs and loose ends. One entry per block of work, newest at
 the top.
 
+## 2026-10-15 - 0.44.0: no clock on a long task, the chat in its own window
+
+### What was done
+
+- **Long tasks died at about five minutes.** Three clocks did it: a model request silent for 180 s was dropped and asked again from scratch; twenty failed attempts, which a backoff capped at 20 s spends in about five minutes, ended the turn; and `startPlan` ran the whole plan execution inside its request, holding the bridge's read loop (approvals and stop included) until the host gave up at 300 s. Now there is no silence cap by default, an unreachable model is retried until it answers or the user stops the turn, and `startPlan` starts a background turn. Host requests that wait on the model have no timeout; `dispatch_agent` is exempt from the tool wall clock; the review tool lost its 180 s.
+- **config.json froze the defaults of its day.** Every save wrote the whole configuration back, so a default changed in a release never reached anyone who had saved a setting, the old limits above among them. A save now writes only what differs from the defaults (plus `api_key`, `base_url`, `model`, `workspace`) and stamps `config_version: 2`; an older file is migrated once on load.
+- **Chat Completions is the default API mode**, and the migration switches `responses` to it.
+- **The chat pops out into a window of its own** (VS Code 1.85+; a tab before), for another monitor. It moves rather than being copied: the sidebar says where it went and calls it back, closing the window hands everything back, and a window left open comes back after a reload.
+- **The reasoning box keeps following** once it reaches its height; **stopping a turn withdraws the approval it was waiting on**, card and diff included; **sub-agent models get a List models button**.
+
+### Decisions
+
+- **Silence is not failure.** A thinking model may send nothing for minutes, and a retry starts the thinking over. A dead connection is found by TCP keepalive (idle 30 s, six probes 10 s apart) instead of a read cap. `max_model_call_s` still applies when set.
+- **An outage is waited out, a refusal is not.** The providers now raise `TransientProviderError` for connection failures, dropped streams, 5xx and 429; everything else keeps the bound of 20. A read that went silent past a cap the user set counts as a refusal, so a model that always thinks longer than the cap does not retry for ever. `max_model_outage_s` bounds the wait for headless runs.
+- **The migration drops a budget value only when it equals a past default** for that key. A user who chose exactly that value loses it once; the alternative was leaving every frozen 180 s in place.
+- **`responses` is switched once, not for ever.** After the migration the file says `config_version: 2`, and a Responses mode chosen then is kept.
+- **Provider fields stay in the file even at their defaults**: a changed default must not move `base_url` or `model` under a working setup.
+- **The popout moves the one surface rather than mirroring it**: two live surfaces would mean two transcripts racing over one backend.
+
+### Checked
+
+Backend suite: everything but the four environment failures known before this batch (the two terminal UI specs that read default values out of config.json were moved to reading them back through the loader), 354 webview and host unit tests, 199 end-to-end specs, the packaging tests. New: `tests/unit/test_long_tasks.py`, the migration tests in `test_config.py`, `e2e/surface.e2e.mjs`.
+
+### Loose ends
+
+- **The IntelliJ changes were not built here** (no JetBrains repository reachable). Its tool window already floats natively, so it needed no popout.
+- **Graph nodes keep their wall clocks**: a node's model call is bounded by its `timeout_s`, or `subagent_worker_timeout_s` (1800 s) when it sets none.
+- **A model that stops mid-stream and stays silent is not announced**: the waiting notice covers the time before its first token only.
+- `scripts/test-package.mjs` had a spec that failed on any Linux machine (it smoke-tested a fake binary); fixed on the way.
+
 ## 2026-10-14 - No caps on a working turn; a long conversation stays fast
 
 ### What was done
