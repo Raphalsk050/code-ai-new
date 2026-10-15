@@ -107,7 +107,7 @@ test("a binary already on disk is used as is, with nothing built", () => {
   const existing = fakeBinary("linux", "already-there");
   // No Python is invoked: a build would take minutes, and this is the path
   // every run after the first takes.
-  const found = withCandidates("linux", [existing], () => ensureBackend("linux"));
+  const found = withCandidates("linux", [existing], () => ensureBackend("linux", { smoke: false }));
   assert.equal(found, existing);
 });
 
