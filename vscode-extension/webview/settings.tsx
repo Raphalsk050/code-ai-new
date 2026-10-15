@@ -725,19 +725,13 @@ export function SettingsScreen({
         label: t("Sub-agent models"),
         hint: t("Comma-separated; a sub-agent takes the next one in turn."),
         keys: ["subagent_models"],
+        wide: true,
         control: (
-          <input
-            value={((draft.subagent_models as string[]) ?? []).join(", ")}
-            placeholder={t("empty = every sub-agent inherits the session model")}
-            onChange={(e) =>
-              set(
-                "subagent_models",
-                e.target.value
-                  .split(",")
-                  .map((name) => name.trim())
-                  .filter(Boolean)
-              )
-            }
+          <SubagentModels
+            chosen={(draft.subagent_models as string[]) ?? []}
+            models={models}
+            onListModels={onListModels}
+            onChange={(next) => set("subagent_models", next)}
           />
         ),
       },
@@ -1148,6 +1142,76 @@ function ToolSwitches({
           </label>
         ))}
       </div>
+    </div>
+  );
+}
+
+/**
+ * The models sub-agents take in turn. They run on the session's endpoint, so
+ * the list is the one the model picker fetches: a click adds a model to the
+ * rotation, or takes it out.
+ */
+function SubagentModels({
+  chosen,
+  models,
+  onListModels,
+  onChange,
+}: {
+  chosen: string[];
+  models: ModelsState;
+  onListModels: () => void;
+  onChange: (next: string[]) => void;
+}): JSX.Element {
+  const toggle = (name: string) =>
+    onChange(chosen.includes(name) ? chosen.filter((m) => m !== name) : [...chosen, name]);
+  return (
+    <div className="model-field">
+      <div className="model-row">
+        <input
+          className="model-input"
+          value={chosen.join(", ")}
+          spellCheck={false}
+          placeholder={t("empty = every sub-agent inherits the session model")}
+          onChange={(e) =>
+            onChange(
+              e.target.value
+                .split(",")
+                .map((name) => name.trim())
+                .filter(Boolean)
+            )
+          }
+        />
+        <button
+          type="button"
+          className="btn-ghost model-list-btn"
+          title={t("List the models the configured provider serves")}
+          onClick={onListModels}
+          disabled={models.status === "loading"}
+        >
+          {models.status === "loading" ? <span className="spinner" /> : <Codicon name="refresh" size={14} />}
+          <span>{models.status === "loading" ? t("Listing…") : t("List models")}</span>
+        </button>
+      </div>
+      {models.status === "ready" && models.list.length > 0 && (
+        <ul className="model-options" role="listbox" aria-multiselectable="true" aria-label={t("Sub-agent models")}>
+          {models.list.map((m) => (
+            <li
+              key={m}
+              role="option"
+              aria-selected={chosen.includes(m)}
+              className={`model-option ${chosen.includes(m) ? "current" : ""}`}
+              onClick={() => toggle(m)}
+            >
+              <span className="model-check">{chosen.includes(m) && <Codicon name="check" size={14} />}</span>
+              {m}
+            </li>
+          ))}
+        </ul>
+      )}
+      {models.status === "ready" && models.list.length === 0 && (
+        <div className="model-note">{t("The provider returned no models.")}</div>
+      )}
+      {models.status === "error" && <div className="model-error">{models.error}</div>}
     </div>
   );
 }

@@ -53,6 +53,26 @@ export const tests = {
     assert("workspace" in sent.updates, "the form posts untouched fields too");
   },
 
+  async "sub-agent models are picked from the provider's list"(ui, assert) {
+    await openPanel(ui);
+    await goTo(ui, "Sub-agents");
+    await ui.page.click('.settings-field:has(> .settings-field-label:text-is("Sub-agent models")) .model-list-btn');
+    assert((await ui.toHost("listModels")).length === 1, "the list was not asked for");
+    await ui.fromHost({ type: "modelsListed", models: ["qwen3-coder", "gpt-oss:20b", "llama3.1"] });
+    const option = (name) => `.model-options[aria-label="Sub-agent models"] .model-option:has-text("${name}")`;
+    await ui.page.click(option("gpt-oss:20b"));
+    await ui.page.click(option("qwen3-coder"));
+    await ui.page.click(option("llama3.1"));
+    await ui.page.click(option("gpt-oss:20b")); // and out again
+    assert(
+      (await value(ui, '.settings-field:has(> .settings-field-label:text-is("Sub-agent models")) input')) === "qwen3-coder, llama3.1",
+      "the field does not hold the picks in order"
+    );
+    await ui.page.click(SAVE);
+    const [sent] = await ui.toHost("updateSettings");
+    assert(JSON.stringify(sent.updates.subagent_models) === JSON.stringify(["qwen3-coder", "llama3.1"]), JSON.stringify(sent.updates.subagent_models));
+  },
+
   async "a saved field keeps the value the backend confirmed"(ui, assert) {
     const snapshot = await openPanel(ui);
 
