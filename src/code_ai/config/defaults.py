@@ -510,7 +510,7 @@ DEFAULT_INDEX: dict[str, object] = {
 
 DEFAULT_CONFIG: dict[str, object] = {
     "api_key": PLACEHOLDER_API_KEY,
-    "api_mode": "responses",
+    "api_mode": "completions",
     "base_url": "http://localhost:11434/v1",
     "permission_mode": "ask",
     "budgets": DEFAULT_BUDGETS,

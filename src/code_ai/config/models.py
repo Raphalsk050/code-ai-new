@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 from code_ai.config.defaults import (
     DEFAULT_BROWSER,
     DEFAULT_BUDGETS,
+    DEFAULT_CONFIG,
     DEFAULT_FILE_IO,
     DEFAULT_GOAL,
     DEFAULT_GRAPH,
@@ -799,7 +800,7 @@ class SamplingConfig:
 @dataclass(slots=True)
 class AppConfig:
     api_key: str = ""
-    api_mode: str = "responses"
+    api_mode: str = "completions"
     base_url: str = "http://localhost:11434/v1"
     permission_mode: str = "ask"
     budgets: BudgetConfig = field(default_factory=BudgetConfig)
@@ -924,7 +925,7 @@ class AppConfig:
         workspace = Path(str(data.get("workspace", Path.cwd()))).expanduser()
         config = cls(
             api_key=normalize_api_key(str(data.get("api_key", ""))),
-            api_mode=normalize_api_mode(str(data.get("api_mode", "responses"))),
+            api_mode=normalize_api_mode(str(data.get("api_mode", DEFAULT_CONFIG["api_mode"]))),
             base_url=str(data.get("base_url", "http://localhost:11434/v1")),
             permission_mode=str(data.get("permission_mode", "ask")).strip().lower(),
             budgets=budgets,

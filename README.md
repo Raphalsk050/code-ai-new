@@ -78,12 +78,14 @@ Safe example:
 
 `OPENAI_API_KEY` and `BASE_URL` override file values. API keys are redacted in config output, logs, events, tests, and UI-facing payloads.
 
+A save writes only what differs from the defaults, plus `api_key`, `base_url`, `model` and `workspace`, so a default changed in a later release still reaches the file. `config_version` records the format; a file from before version 2 is migrated once on load (`responses` becomes `completions`, and budget values that were only the old defaults are dropped).
+
 Nothing on a working turn runs on a clock by default: a model request may stay silent for as long as the model thinks (`budgets.max_model_call_s`, 0), and a model that cannot be reached (connection refused, 5xx, 429, a dropped stream) is retried with a capped backoff until it answers or the user stops the turn (`budgets.max_model_outage_s`, 0). Set either to a number of seconds to bound it. A request the server refuses is retried 20 times at most.
 
 ## API Modes
 
+- `completions` (default): modern message-oriented Chat Completions (`/v1/chat/completions`).
 - `responses`: OpenAI Responses or compatible `/v1/responses`.
-- `completions`: modern message-oriented Chat Completions (`/v1/chat/completions`).
 - `chat_completions`: alias for `completions`.
 - `ollama`: native Ollama `/api/chat`.
 

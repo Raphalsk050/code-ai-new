@@ -10,6 +10,7 @@ from textual.widgets import Static, TextArea
 from textual.widgets.text_area import Selection
 
 import code_ai.ui.terminal as terminal_package
+from code_ai.config.loader import load_config
 from code_ai.config.models import AppConfig
 from code_ai.context.compression import CompressionResult
 from code_ai.core.orchestration import TurnResult
@@ -1611,7 +1612,8 @@ def test_the_provider_settings_apply_without_a_restart(tmp_path) -> None:
         assert rebuilds_the_provider(command) is True
 
     saved = json.loads(config_path.read_text(encoding="utf-8"))
-    assert saved["api_mode"] == "completions"
+    # The default is left out of the file; what loads back is what was set.
+    assert load_config(explicit_path=config_path).api_mode == "completions"
     assert saved["base_url"] == "http://localhost:1234"
     # Written, but never echoed back into the conversation.
     assert "sk-secret" not in handle_config_command(fake_app, "/config show", config_path=None)
@@ -1825,8 +1827,8 @@ async def test_toggle_button_collapses_and_persists_session_panel(tmp_path) -> N
         await pilot.pause(0.1)
         assert not session.has_class("collapsed")
         assert str(button.label) == "‹"
-        saved = json.loads(config_path.read_text(encoding="utf-8"))
-        assert saved["terminal_session_collapsed"] is False
+        # Back to the default, which the file leaves out.
+        assert load_config(explicit_path=config_path).terminal_session_collapsed is False
 
 
 async def test_session_panel_starts_collapsed_when_configured(tmp_path) -> None:

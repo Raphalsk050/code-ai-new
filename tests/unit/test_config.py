@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import errno
 import json
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
 
 from code_ai.cli.main import build_parser
+from code_ai.config import loader
 from code_ai.config.defaults import PLACEHOLDER_API_KEY
 from code_ai.config.loader import (
     config_init,
@@ -560,3 +562,118 @@ def test_followup_reasoning_effort_is_validated(tmp_path) -> None:
 )
 def test_serves_model_locally_excludes_ollama_cloud_models(base_url, model, local) -> None:
     assert AppConfig(base_url=base_url, model=model).serves_model_locally() is local
+
+
+def test_completions_is_the_default_api_mode(tmp_path) -> None:
+    assert AppConfig.from_mapping({}).api_mode == "completions"
+    assert load_config(explicit_path=tmp_path / "missing.json").api_mode == "completions"
+
+
+def _version_1_file(path: Path) -> None:
+    # The shape every save wrote before version 2: the defaults of the day,
+    # frozen, around the few things the user actually set.
+    path.write_text(
+        json.dumps(
+            {
+                "api_key": PLACEHOLDER_API_KEY,
+                "api_mode": "responses",
+                "base_url": "http://gpu.local:8000/v1",
+                "model": "qwen3",
+                "permission_mode": "ask",
+                "workspace": str(path.parent),
+                "budgets": {
+                    "max_context_tokens": 128000,
+                    "max_model_call_s": 180,
+                    "max_model_steps": 80,
+                    "max_stall_rounds": 7,
+                    "max_turn_seconds": 900,
+                    "max_tool_wall_time_s": 900,
+                    "subagent_worker_timeout_s": 300,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_a_config_from_before_version_2_drops_what_it_froze(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    _version_1_file(config_path)
+
+    config = load_config(explicit_path=config_path)
+
+    assert config.api_mode == "completions"
+    assert config.budgets.model_timeout() is None
+    assert config.budgets.max_model_steps == 0
+    assert config.budgets.turn_timeout() is None
+    assert config.budgets.max_tool_wall_time_s == 3600
+    assert config.budgets.subagent_worker_timeout_s == 1800
+    # What the user chose stays.
+    assert config.budgets.max_context_tokens == 128000
+    assert config.budgets.max_stall_rounds == 7
+    assert config.base_url == "http://gpu.local:8000/v1"
+    assert config.model == "qwen3"
+
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved["config_version"] == 2
+    assert saved["budgets"] == {"max_context_tokens": 128000, "max_stall_rounds": 7}
+    assert "api_mode" not in saved
+    assert "permission_mode" not in saved
+    assert saved["model"] == "qwen3"
+    assert saved["api_key"] == PLACEHOLDER_API_KEY
+
+
+def test_responses_chosen_after_the_migration_is_kept(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    _version_1_file(config_path)
+    config = load_config(explicit_path=config_path)
+
+    persist_config_updates(config, {"api_mode": "responses"}, explicit_path=config_path)
+
+    assert load_config(explicit_path=config_path).api_mode == "responses"
+    assert load_config(explicit_path=config_path).api_mode == "responses"
+
+
+def test_a_file_that_cannot_be_rewritten_is_still_migrated(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "config.json"
+    _version_1_file(config_path)
+    before = config_path.read_text(encoding="utf-8")
+
+    def held(*args, **kwargs):
+        raise PermissionError(errno.EACCES, "held by another process")
+
+    monkeypatch.setattr(loader, "atomic_write_text", held)
+
+    assert load_config(explicit_path=config_path).api_mode == "completions"
+    assert config_path.read_text(encoding="utf-8") == before
+
+
+def test_a_save_writes_only_what_differs_from_the_defaults(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    config_init(config_path, workspace=tmp_path)
+    config = load_config(explicit_path=config_path)
+    budgets = asdict(config.budgets)
+    budgets["max_context_tokens"] = 64000
+
+    # The panel saves a section whole, changed or not.
+    persist_config_updates(
+        config, {"budgets": budgets, "permission_mode": "ask"}, explicit_path=config_path
+    )
+
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved["budgets"] == {"max_context_tokens": 64000}
+    assert "permission_mode" not in saved
+    assert saved["config_version"] == 2
+    assert {"api_key", "base_url", "model", "workspace"} <= set(saved)
+
+
+def test_a_first_save_does_not_write_a_key_from_the_environment(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-from-the-environment")
+    config_path = tmp_path / "config.json"
+    config = load_config(explicit_path=config_path)
+
+    persist_config_updates(config, {"model": "other-model"}, explicit_path=config_path)
+
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved["api_key"] == PLACEHOLDER_API_KEY
+    assert saved["model"] == "other-model"
