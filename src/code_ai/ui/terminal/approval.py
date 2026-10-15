@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import difflib
 import json
 import logging
@@ -301,6 +302,12 @@ class TerminalApprovalGateway:
         watchdog = asyncio.create_task(self._deny_if_dialog_vanishes(modal, _resolve))
         try:
             return await future
+        except asyncio.CancelledError:
+            # The turn was stopped while it asked: the dialog goes with it.
+            with contextlib.suppress(Exception):
+                if self._app.screen is modal:
+                    modal.dismiss(None)
+            raise
         finally:
             watchdog.cancel()
 

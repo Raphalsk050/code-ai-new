@@ -3592,7 +3592,9 @@ class AgentOrchestrator:
             "tool.approval.requested", request.to_dict(), source="core.orchestrator"
         )
         try:
-            user_decision = await self.approval_gateway.request_approval(request)
+            user_decision = await self._await_decision(
+                request, state.cancel_event if state is not None else None
+            )
         except Exception as exc:  # pragma: no cover - defensive: never crash a turn on UI errors
             user_decision = ApprovalDecision.unavailable(f"Approval prompt failed: {exc}")
         await self.event_bus.emit(
@@ -3614,6 +3616,33 @@ class AgentOrchestrator:
                 refused_by_user=user_decision.from_user,
             )
         return _Authorization(allowed=True, overrode_policy=not policy_allowed)
+
+    async def _await_decision(
+        self, request: ApprovalRequest, cancel_event: asyncio.Event | None
+    ) -> ApprovalDecision:
+        """The user's answer, or none the moment the turn is stopped.
+
+        A stop only raises the turn's flag, and the prompt never looked at it:
+        a turn stopped while it asked kept waiting for an answer, its card and
+        diff stayed on screen, and the next message queued behind it. Stopped,
+        the question is withdrawn (resolved, so every front end takes it down)
+        and the loop ends the turn at its next check.
+        """
+        asking = asyncio.ensure_future(self.approval_gateway.request_approval(request))
+        if cancel_event is None:
+            return await asking
+        stopped = asyncio.ensure_future(cancel_event.wait())
+        try:
+            await asyncio.wait({asking, stopped}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            stopped.cancel()
+            if not asking.done():
+                asking.cancel()
+        if asking.done() and not asking.cancelled():
+            return asking.result()
+        with contextlib.suppress(BaseException):
+            await asking
+        return ApprovalDecision.unavailable("The turn was stopped before this was answered.")
 
     def _is_read_only(self, name: str) -> bool:
         try:

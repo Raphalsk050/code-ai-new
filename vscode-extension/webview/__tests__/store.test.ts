@@ -417,3 +417,19 @@ test("a turn that ended with nothing said does not end in silence", () => {
   const last = state.transcript.items[state.transcript.items.length - 1];
   assert.equal(last.kind, "notice");
 });
+
+test("a turn that ends, however it ends, takes its approval card with it", () => {
+  for (const ended of ["CANCELLED", "READY", "ERROR", "DISCONNECTED"]) {
+    const state = feed([
+      ["user.message", { text: "edit it" }],
+      ["tool.approval.requested", { call_id: "c1", tool_name: "edit_code", arguments: { path: "a.py" } }],
+      ["status.changed", { state: ended }],
+    ]);
+    assert.equal(state.approvals.pending, null, ended);
+  }
+  const waiting = feed([
+    ["tool.approval.requested", { call_id: "c1", tool_name: "edit_code", arguments: {} }],
+    ["status.changed", { state: "WAITING_APPROVAL" }],
+  ]);
+  assert.equal(waiting.approvals.pending?.call_id, "c1");
+});
