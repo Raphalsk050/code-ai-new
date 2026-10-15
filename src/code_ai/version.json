@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 44,
-  "patch": 0,
-  "build": 116,
+  "patch": 1,
+  "build": 117,
   "updated": "2026-10-15",
-  "note": "Long tasks run without a clock, the chat pops out into its own window, and Chat Completions is the default"
+  "note": "Cache dependencies in the CI build"
 }

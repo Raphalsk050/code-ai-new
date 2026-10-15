@@ -25,7 +25,7 @@ name: Build standalone binaries
 #
 # PIP_TRUSTED_HOST: the proxy re-signs TLS with a certificate the containers
 # do not have. PIP_CACHE_DIR: mounted off the runner's disk, or every run
-# re-downloads Playwright twice.
+# re-downloads Playwright twice. npm_config_cache likewise, for the extension.
 
 env:
   PIP_TRUSTED_HOST: "pypi.org files.pythonhosted.org"
@@ -209,7 +209,8 @@ jobs:
   # ---- the same two binaries, on a GitHub-hosted runner --------------------
   # Only these mention v4, and they are skipped unless the dropdown asks for
   # them. No PIP_TRUSTED_HOST: that gets past a proxy which re-signs TLS, and
-  # there is none here. No pip cache either - the machine is thrown away.
+  # there is none here. The machine is thrown away, so the caches go through
+  # actions/cache and the setup actions instead of staying on its disk.
 
   linux-public:
     name: Linux x86_64 (GitHub-hosted)
@@ -223,11 +224,21 @@ jobs:
           v() { sed -n "s/.*\"$1\": *\([0-9]*\).*/\1/p" src/code_ai/version.json; }
           echo "CODE_AI_VERSION=$(v major).$(v minor).$(v patch)" >> "$GITHUB_ENV"
 
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/code-ai-ci/pip-linux
+          key: pip-linux-${{ hashFiles('pyproject.toml') }}
+          restore-keys: pip-linux-
+
       - name: Build Linux binary
         run: |
+          cache="$HOME/.cache/code-ai-ci/pip-linux"
+          mkdir -p "$cache"
           docker run --rm \
             --user "$(id -u):$(id -g)" \
             -e HOME=/tmp \
+            -e PIP_CACHE_DIR=/pip-cache \
+            -v "$cache":/pip-cache \
             -v "$PWD":/work -w /work \
             python:3.12-bullseye \
             bash -euxc '
@@ -265,9 +276,19 @@ jobs:
           v() { sed -n "s/.*\"$1\": *\([0-9]*\).*/\1/p" src/code_ai/version.json; }
           echo "CODE_AI_VERSION=$(v major).$(v minor).$(v patch)" >> "$GITHUB_ENV"
 
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/code-ai-ci/pip-wine
+          key: pip-wine-${{ hashFiles('pyproject.toml') }}
+          restore-keys: pip-wine-
+
       - name: Build Windows binary inside Wine
         run: |
+          cache="$HOME/.cache/code-ai-ci/pip-wine"
+          mkdir -p "$cache"
           docker run --rm \
+            -e 'PIP_CACHE_DIR=Z:\pip-cache' \
+            -v "$cache":/pip-cache \
             -v "$PWD":/work -w /work \
             tobix/pywine:3.12 \
             bash -euxc '
@@ -282,8 +303,11 @@ jobs:
       - name: Fix output ownership
         if: always()
         run: |
-          docker run --rm -v "$PWD":/work alpine \
-            sh -c 'chown -R '"$(id -u):$(id -g)"' /work/dist /work/build 2>/dev/null || true'
+          docker run --rm \
+            -v "$PWD":/work \
+            -v "$HOME/.cache/code-ai-ci/pip-wine":/pip-cache \
+            alpine \
+            sh -c 'chown -R '"$(id -u):$(id -g)"' /work/dist /work/build /pip-cache 2>/dev/null || true'
 
       - name: Stage artifact
         run: |
@@ -308,11 +332,22 @@ jobs:
           v() { sed -n "s/.*\"$1\": *\([0-9]*\).*/\1/p" src/code_ai/version.json; }
           echo "CODE_AI_VERSION=$(v major).$(v minor).$(v patch)" >> "$GITHUB_ENV"
 
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/code-ai-ci/mac
+          key: mac-${{ hashFiles('scripts/build_mac_bundle.py', 'pyproject.toml') }}
+          restore-keys: mac-
+
       - name: Assemble the macOS builds
         run: |
+          cache="$HOME/.cache/code-ai-ci/mac"
+          mkdir -p "$cache/pip"
           docker run --rm \
             --user "$(id -u):$(id -g)" \
             -e HOME=/tmp \
+            -e PIP_CACHE_DIR=/cache/pip \
+            -e CODE_AI_BUILD_CACHE=/cache \
+            -v "$cache":/cache \
             -v "$PWD":/work -w /work \
             python:3.12-bullseye \
             python scripts/build_mac_bundle.py --out out
@@ -385,10 +420,13 @@ jobs:
           done
           export CODE_AI_MAC_ARGS
           if [ -n "$CODE_AI_MAC_ARGS" ]; then echo "mac=true" >> "$GITHUB_OUTPUT"; fi
+          npm_cache="$HOME/.cache/code-ai-ci/npm"
+          mkdir -p "$npm_cache"
           docker run --rm \
             --user "$(id -u):$(id -g)" \
             -e HOME=/tmp \
-            -e npm_config_cache=/tmp/npm \
+            -e npm_config_cache=/npm-cache \
+            -v "$npm_cache":/npm-cache \
             -e CODE_AI_VERSION \
             -e CODE_AI_MAC_ARGS \
             -v "$PWD":/work -w /work/vscode-extension \
@@ -499,6 +537,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+          cache: npm
+          cache-dependency-path: vscode-extension/package-lock.json
 
       - name: Build the packages
         id: package
@@ -654,10 +694,13 @@ jobs:
           done
           export CODE_AI_PLUGIN_TARGETS
           case "$CODE_AI_PLUGIN_TARGETS" in *darwin*) echo "mac=true" >> "$GITHUB_OUTPUT" ;; esac
+          npm_cache="$HOME/.cache/code-ai-ci/npm"
+          mkdir -p "$npm_cache"
           docker run --rm \
             --user "$(id -u):$(id -g)" \
             -e HOME=/tmp \
-            -e npm_config_cache=/tmp/npm \
+            -e npm_config_cache=/npm-cache \
+            -v "$npm_cache":/npm-cache \
             -e PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
             -e CODE_AI_VERSION \
             -e CODE_AI_PLUGIN_TARGETS \
@@ -763,11 +806,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+          cache: npm
+          cache-dependency-path: vscode-extension/package-lock.json
 
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "21"
+          cache: gradle
+          cache-dependency-path: |
+            intellij-plugin/*.gradle*
+            intellij-plugin/gradle.properties
+            intellij-plugin/gradle/wrapper/gradle-wrapper.properties
 
       # Node and Java side by side here, so Gradle bundles the panel itself.
       - name: Build the packages
