@@ -3,6 +3,33 @@
 Decisions, trade-offs and loose ends. One entry per block of work, newest at
 the top.
 
+## 2026-10-16 - Comment boxes, note bubbles, and graphs the agent writes
+
+### What was done
+
+- **Comment boxes, as Unreal has them.** A `comment` node kind that never runs: the compiler accepts it, warns about a malformed one and leaves it out of the program. In the editor it is drawn behind everything, dragged by its title bar and resized from any edge or corner. Dragging it carries every node wholly inside it, unless it is set to move alone. C wraps the selection, double-click or F2 edits the title in place, and zoomed out the title grows to stay readable.
+- **Note bubbles on any node** (`note`, `note_shown`), from the node's menu, F2, the bubble itself or the inspector. A hidden note leaves a mark that brings it back.
+- **Graph tools for the agent**, a deferred `graphs` group: `graph_reference`, `write_graph`, `edit_graph`. The spec names nodes by ids the agent picks and wires them as text; edge kinds, dynamic pin counts, positions and comment sizes are derived (`core/graph/authoring.py`).
+
+### Decisions
+
+- **A comment is a node, not a new top-level list**, as in Unreal: selection, copy, paste, undo and deletion already work on nodes. The schema version stays 1, because the extension ships its own backend and the two cannot disagree.
+- **The comment body lets clicks through.** A marquee or a right-click inside a comment is about its nodes; only the title bar and the edges belong to the box. A marquee selects a comment only when it encloses all of it.
+- **What a comment carries is worked out when the drag starts**: the nodes wholly inside, nested comments included. Partly inside does not count, so a node can sit on the border without being dragged along.
+- **The compiler stays the only judge.** The tools refuse only what they cannot turn into a document (an unknown kind, a missing pin or node, a second wire on an exec output); everything else goes through `compile_graph`, with the professions and tools the editor validates against, and a graph with errors is not written.
+- **Specs and edits travel as JSON strings**, as the slides and PDF tools do: strict function calling would otherwise demand every nested field be declared.
+- **write_graph will not overwrite** without `replace`; edit_graph is what changes a graph, because it keeps the user's layout and moves only what it adds.
+- **The layout is Blueprint-like**: the exec flow left to right from Start, branches one row down, and what feeds a node data sits under it, chains growing leftwards. A comment around noted nodes leaves room for their bubbles.
+
+### Checked
+
+Backend suite (only the four known environment failures), 368 webview and host unit tests, 211 end-to-end specs; `e2e/notes.e2e.mjs` drives comments and bubbles with the mouse and keyboard, and opens a graph `write_graph` made (`e2e/fixtures/agent-written.flow.json`, kept current by `tests/unit/test_graph_authoring.py`) to check nothing is drawn over anything.
+
+### Loose ends
+
+- The comment box has no "show bubble when zoomed" or per-comment font picker beyond a number; the title already grows when zoomed out.
+- Graph agents can be handed the graph tools like any other; nothing yet runs a graph from the chat.
+
 ## 2026-10-15 - 0.44.0: no clock on a long task, the chat in its own window
 
 ### What was done

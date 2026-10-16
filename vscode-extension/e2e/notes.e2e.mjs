@@ -7,6 +7,10 @@ import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const CATALOG = JSON.parse(readFileSync(join(root, "e2e", "fixtures", "catalog.json"), "utf8"));
+// What the agent's write_graph makes of a review loop (tests/unit/test_graph_authoring.py).
+const AGENT_WRITTEN = JSON.parse(
+  readFileSync(join(root, "e2e", "fixtures", "agent-written.flow.json"), "utf8")
+);
 
 function node(id, kind, pos, data = {}) {
   return { id, kind, pos, data };
@@ -71,7 +75,37 @@ async function lastGraph(ui) {
 
 const at = (graph, id) => graph.nodes.find((item) => item.id === id);
 
+function overlap(a, b) {
+  return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+}
+
 export const tests = {
+  async "a graph the agent wrote opens with nothing drawn over anything"(ui, assert) {
+    await boot(ui, AGENT_WRITTEN);
+    await ui.page.click('[data-testid="frame"]');
+    const ids = AGENT_WRITTEN.nodes.filter((item) => item.kind !== "comment").map((item) => item.id);
+    const boxes = {};
+    for (const id of ids) boxes[id] = await box(ui, `[data-testid="node-${id}"] .flow-node-box`);
+    for (let i = 0; i < ids.length; i += 1) {
+      for (let j = i + 1; j < ids.length; j += 1) {
+        assert(!overlap(boxes[ids[i]], boxes[ids[j]]), `${ids[i]} and ${ids[j]} overlap`);
+      }
+    }
+    const comment = AGENT_WRITTEN.nodes.find((item) => item.kind === "comment");
+    const frame = await box(ui, `[data-testid="comment-${comment.id}"] .flow-comment-body`);
+    for (const id of ["plan", "llm"]) {
+      const inner = boxes[id];
+      assert(
+        inner.x > frame.x && inner.y > frame.y &&
+          inner.x + inner.width < frame.x + frame.width && inner.y + inner.height < frame.y + frame.height,
+        `${id} is not inside the comment drawn around it`
+      );
+    }
+    await ui.page.waitForSelector('[data-testid="note-plan"]');
+    await ui.shot("notes-04-agent-written");
+  },
+
+
   async "a comment is drawn behind the nodes it holds"(ui, assert) {
     await boot(ui);
     const order = await ui.page.evaluate(() =>

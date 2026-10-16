@@ -410,6 +410,8 @@ They take an optional `location` (`project` or `sandbox`) that says which of the
 Four groups of tools are not offered to the model until a task needs them, so the everyday tool list stays short and the cached prompt prefix stays small: `browser` (drive a web page), `desktop` (screen, mouse, keyboard, running applications), `terminal` (an interactive terminal session) and `android` (`analyze_apk`, `analyze_logcat`).
 The model calls `load_tools` with the group name, or simply calls one of the group's tools, and the group stays loaded for the rest of the session.
 A group the host cannot serve (no `pyautogui` for the desktop, a macOS-only feature elsewhere) is withdrawn for the session on the first such error, and the tool result says so instead of inviting a retry.
+
+The `graphs` group writes the orchestrator graphs the editor runs (`*.flow.json`). `graph_reference` gives the node catalog and the spec format, or reads an existing graph back as a spec; `write_graph` builds a graph from that spec (nodes by id, wires as `a.pin -> b.pin` or chains like `start -> agent -> end`, comment boxes around groups of nodes, notes on nodes), lays it out and checks it with the compiler the editor's Run uses, and writes nothing when there are errors; `edit_graph` applies a list of operations, all or nothing, placing only the nodes it adds.
 Sub-agents see their whole role registry directly.
 
 Screenshots and pasted images stay in the conversation, but only the newest `image_history_limit` image-bearing messages (default 2) still carry their pixels on the wire; older ones are replaced by a one-line note in the request.

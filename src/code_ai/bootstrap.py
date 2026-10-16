@@ -99,6 +99,7 @@ from code_ai.tools.documents import (
 )
 from code_ai.tools.filesystem import EditCodeTool, ListFilesTool, ReadFileTool, WriteFileTool
 from code_ai.tools.git import GitReviewTool
+from code_ai.tools.graphs import EditGraphTool, GraphReferenceTool, WriteGraphTool
 from code_ai.tools.interaction import AskUserTool
 from code_ai.tools.internal import (
     CompletePlanStepTool,
@@ -154,6 +155,8 @@ from code_ai.version import __version__
 
 
 def build_tool_registry() -> ToolRegistry:
+    from code_ai.core.graph.toolbox import grantable_names, tools_payload
+
     registry = ToolRegistry()
     for tool in (
         ListFilesTool(),
@@ -214,6 +217,11 @@ def build_tool_registry() -> ToolRegistry:
         LatexArticleTool(),
         LatexCompileTool(),
         LatexSetupTool(),
+        # The graph tools check a graph against the tools this build can hand an
+        # agent, read when they run: settings switch tools on and off.
+        GraphReferenceTool(lambda: tools_payload(registry)),
+        WriteGraphTool(lambda: grantable_names(registry)),
+        EditGraphTool(lambda: grantable_names(registry)),
         WebSearchTool(),
         UseSkillTool(),
         CreateSkillTool(),

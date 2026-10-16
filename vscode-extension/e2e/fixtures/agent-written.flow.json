@@ -1,0 +1,277 @@
+{
+  "version": 1,
+  "name": "review loop",
+  "variables": [
+    {
+      "id": "v1",
+      "name": "rounds",
+      "type": "int",
+      "default": 3
+    }
+  ],
+  "nodes": [
+    {
+      "id": "c1",
+      "kind": "comment",
+      "pos": [
+        280,
+        -120
+      ],
+      "data": {
+        "color": "#2563eb",
+        "font_size": 18,
+        "height": 530,
+        "move_mode": "group",
+        "title": "Design",
+        "width": 290
+      }
+    },
+    {
+      "id": "start",
+      "kind": "start",
+      "pos": [
+        0,
+        0
+      ],
+      "data": {}
+    },
+    {
+      "id": "llm",
+      "kind": "model",
+      "pos": [
+        320,
+        300
+      ],
+      "data": {
+        "api_key_ref": "session",
+        "api_mode": "",
+        "base_url": "http://localhost:11434/v1",
+        "model": "qwen3",
+        "reasoning_effort": ""
+      }
+    },
+    {
+      "id": "plan",
+      "kind": "profession",
+      "pos": [
+        320,
+        0
+      ],
+      "data": {
+        "max_steps": 0,
+        "name": "",
+        "note": "plans before code",
+        "note_shown": true,
+        "profession": "architect",
+        "role_override": "",
+        "task": "Plan the importer",
+        "timeout_s": 0
+      }
+    },
+    {
+      "id": "split",
+      "kind": "sequence",
+      "pos": [
+        640,
+        0
+      ],
+      "data": {
+        "outputs": 3
+      }
+    },
+    {
+      "id": "write",
+      "kind": "profession",
+      "pos": [
+        960,
+        0
+      ],
+      "data": {
+        "max_steps": 0,
+        "name": "",
+        "profession": "code_writer",
+        "role_override": "",
+        "task": "",
+        "timeout_s": 0
+      }
+    },
+    {
+      "id": "review",
+      "kind": "profession",
+      "pos": [
+        960,
+        300
+      ],
+      "data": {
+        "max_steps": 0,
+        "name": "",
+        "profession": "architect",
+        "role_override": "",
+        "task": "Review it",
+        "timeout_s": 0
+      }
+    },
+    {
+      "id": "log",
+      "kind": "print",
+      "pos": [
+        960,
+        600
+      ],
+      "data": {
+        "label": "report",
+        "value": ""
+      }
+    },
+    {
+      "id": "end",
+      "kind": "end",
+      "pos": [
+        1280,
+        600
+      ],
+      "data": {}
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "kind": "exec",
+      "from": [
+        "start",
+        "out"
+      ],
+      "to": [
+        "plan",
+        "in"
+      ]
+    },
+    {
+      "id": "e2",
+      "kind": "exec",
+      "from": [
+        "plan",
+        "out"
+      ],
+      "to": [
+        "split",
+        "in"
+      ]
+    },
+    {
+      "id": "e3",
+      "kind": "exec",
+      "from": [
+        "split",
+        "out_0"
+      ],
+      "to": [
+        "write",
+        "in"
+      ]
+    },
+    {
+      "id": "e4",
+      "kind": "exec",
+      "from": [
+        "split",
+        "out_1"
+      ],
+      "to": [
+        "review",
+        "in"
+      ]
+    },
+    {
+      "id": "e5",
+      "kind": "exec",
+      "from": [
+        "split",
+        "out_2"
+      ],
+      "to": [
+        "log",
+        "in"
+      ]
+    },
+    {
+      "id": "e6",
+      "kind": "exec",
+      "from": [
+        "log",
+        "out"
+      ],
+      "to": [
+        "end",
+        "in"
+      ]
+    },
+    {
+      "id": "e7",
+      "kind": "data",
+      "from": [
+        "llm",
+        "model"
+      ],
+      "to": [
+        "plan",
+        "model"
+      ]
+    },
+    {
+      "id": "e8",
+      "kind": "data",
+      "from": [
+        "llm",
+        "model"
+      ],
+      "to": [
+        "write",
+        "model"
+      ]
+    },
+    {
+      "id": "e9",
+      "kind": "data",
+      "from": [
+        "plan",
+        "report"
+      ],
+      "to": [
+        "write",
+        "task"
+      ]
+    },
+    {
+      "id": "e10",
+      "kind": "data",
+      "from": [
+        "write",
+        "report"
+      ],
+      "to": [
+        "log",
+        "value"
+      ]
+    },
+    {
+      "id": "e11",
+      "kind": "data",
+      "from": [
+        "write",
+        "report"
+      ],
+      "to": [
+        "end",
+        "result"
+      ]
+    }
+  ],
+  "view": {
+    "pan": [
+      60,
+      60
+    ],
+    "zoom": 0.8
+  }
+}

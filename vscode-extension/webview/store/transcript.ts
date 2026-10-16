@@ -264,7 +264,7 @@ function toolDetail(name: string, result: any): string {
   if (name === "web_search") return webSearchDetail(result);
   if (name === "list_files") return `${(result.entries ?? []).length} entries`;
   if (name === "search_code") return `${(result.matches ?? []).length} matches`;
-  if (name === "write_file" || name === "edit_code") return String(result.path ?? "");
+  if (["write_file", "edit_code", "write_graph", "edit_graph"].includes(name)) return String(result.path ?? "");
   const stdout = String(result.stdout ?? "").trim();
   if (stdout) return stdout.slice(0, 240);
   const cwd = String(result.cwd ?? "").trim();

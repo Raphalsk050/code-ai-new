@@ -66,6 +66,7 @@ const PT: Record<string, string> = {
   Note: "Nota",
   "A note shown in a bubble above the node": "Uma nota mostrada num balão acima do nó",
   "Show the bubble": "Mostrar o balão",
+  Graphs: "Grafos",
   Orchestrator: "Orquestrador",
   unnamed: "sem nome",
   Node: "Nó",

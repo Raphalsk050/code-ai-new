@@ -143,6 +143,7 @@ TOOL_GROUPS: tuple[tuple[str, str], ...] = (
     ("slides", "Slides"),
     ("design", "Design"),
     ("latex", "LaTeX"),
+    ("graphs", "Graphs"),
     ("android", "Android"),
 )
 

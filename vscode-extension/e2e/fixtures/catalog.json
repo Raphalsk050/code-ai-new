@@ -2722,6 +2722,15 @@
       "enabled": true
     },
     {
+      "name": "edit_graph",
+      "description": "Change an orchestrator graph (*.flow.json) with a list of operations: add, update or remove nodes, connect and disconnect wires, variables, comments and notes",
+      "capabilities": [
+        "local_write"
+      ],
+      "group": "graphs",
+      "enabled": true
+    },
+    {
       "name": "execute_command",
       "description": "Run a bounded non-interactive command",
       "capabilities": [
@@ -2747,6 +2756,15 @@
         "process"
       ],
       "group": "commands",
+      "enabled": true
+    },
+    {
+      "name": "graph_reference",
+      "description": "How orchestrator graphs (*.flow.json, the Code-AI graph editor's files) are written: the spec format, the node kinds with their pins, the professions and the...",
+      "capabilities": [
+        "local_read"
+      ],
+      "group": "graphs",
       "enabled": true
     },
     {
@@ -2991,6 +3009,15 @@
       ],
       "group": "edit",
       "enabled": true
+    },
+    {
+      "name": "write_graph",
+      "description": "Create an orchestrator graph (*.flow.json) the Code-AI graph editor opens and runs, from a short spec: nodes by id, wires as 'a.pin -> b.pin', comments aroun...",
+      "capabilities": [
+        "local_write"
+      ],
+      "group": "graphs",
+      "enabled": true
     }
   ],
   "tool_groups": [
@@ -3037,6 +3064,10 @@
     {
       "name": "latex",
       "title": "LaTeX"
+    },
+    {
+      "name": "graphs",
+      "title": "Graphs"
     },
     {
       "name": "android",

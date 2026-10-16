@@ -136,6 +136,14 @@ DEFERRED_TOOL_GROUPS: tuple[ToolGroup, ...] = (
         tools=frozenset({"design_system", "ui_preview", "ui_audit"}),
     ),
     ToolGroup(
+        name="graphs",
+        summary=(
+            "write and change the orchestrator graphs (*.flow.json) the Code-AI graph "
+            "editor runs: node catalog, a graph from a short spec, edits that keep the layout"
+        ),
+        tools=frozenset({"graph_reference", "write_graph", "edit_graph"}),
+    ),
+    ToolGroup(
         name="latex",
         summary=(
             "write and compile LaTeX articles: IEEE, ACM, Springer, Elsevier, ABNT templates, "
