@@ -9,6 +9,7 @@
       "category": "flow",
       "pure": false,
       "max_instances": 1,
+      "annotation": false,
       "pins": [
         {
           "name": "out",
@@ -30,6 +31,7 @@
       "category": "flow",
       "pure": false,
       "max_instances": 0,
+      "annotation": false,
       "pins": [
         {
           "name": "in",
@@ -61,6 +63,7 @@
       "category": "data",
       "pure": true,
       "max_instances": 0,
+      "annotation": false,
       "pins": [
         {
           "name": "model",
@@ -168,6 +171,7 @@
       "category": "agent",
       "pure": false,
       "max_instances": 0,
+      "annotation": false,
       "pins": [
         {
           "name": "in",
@@ -367,6 +371,7 @@
       "category": "agent",
       "pure": true,
       "max_instances": 0,
+      "annotation": false,
       "pins": [
         {
           "name": "profession",
@@ -497,6 +502,7 @@
       "category": "agent",
       "pure": false,
       "max_instances": 0,
+      "annotation": false,
       "pins": [
         {
           "name": "in",
@@ -605,6 +611,7 @@
       "category": "agent",
       "pure": true,
       "max_instances": 0,
+      "annotation": false,
       "pins": [
         {
           "name": "tools",
@@ -645,6 +652,7 @@
       "category": "flow",
       "pure": false,
       "max_instances": 0,
+      "annotation": false,
       "pins": [
         {
           "name": "in",
@@ -686,6 +694,7 @@
       "category": "flow",
       "pure": false,
       "max_instances": 0,
+      "annotation": false,
       "pins": [
         {
           "name": "in",
@@ -788,6 +797,7 @@
       "category": "flow",
       "pure": false,
       "max_instances": 0,
+      "annotation": false,
       "pins": [
         {
           "name": "in",
@@ -911,6 +921,7 @@
       "category": "agent",
       "pure": false,
       "max_instances": 0,
+      "annotation": false,
       "pins": [
         {
           "name": "in",
@@ -981,6 +992,7 @@
       "category": "data",
       "pure": false,
       "max_instances": 0,
+      "annotation": false,
       "pins": [
         {
           "name": "in",
@@ -1062,6 +1074,7 @@
       "category": "data",
       "pure": true,
       "max_instances": 0,
+      "annotation": false,
       "pins": [
         {
           "name": "value",
@@ -1093,6 +1106,7 @@
       "category": "debug",
       "pure": false,
       "max_instances": 0,
+      "annotation": false,
       "pins": [
         {
           "name": "in",
@@ -1153,6 +1167,7 @@
       "category": "math",
       "pure": true,
       "max_instances": 0,
+      "annotation": false,
       "pins": [
         {
           "name": "a",
@@ -1243,6 +1258,7 @@
       "category": "logic",
       "pure": true,
       "max_instances": 0,
+      "annotation": false,
       "pins": [
         {
           "name": "a",
@@ -1319,6 +1335,7 @@
       "category": "logic",
       "pure": true,
       "max_instances": 0,
+      "annotation": false,
       "pins": [
         {
           "name": "a",
@@ -1393,6 +1410,7 @@
       "category": "logic",
       "pure": true,
       "max_instances": 0,
+      "annotation": false,
       "pins": [
         {
           "name": "condition",
@@ -1472,6 +1490,7 @@
       "category": "text",
       "pure": true,
       "max_instances": 0,
+      "annotation": false,
       "pins": [
         {
           "name": "in_0",
@@ -1523,6 +1542,7 @@
       "category": "text",
       "pure": true,
       "max_instances": 0,
+      "annotation": false,
       "pins": [
         {
           "name": "template",
@@ -1584,6 +1604,7 @@
       "category": "text",
       "pure": true,
       "max_instances": 0,
+      "annotation": false,
       "pins": [
         {
           "name": "text",
@@ -1640,6 +1661,7 @@
       "category": "text",
       "pure": true,
       "max_instances": 0,
+      "annotation": false,
       "pins": [
         {
           "name": "text",
@@ -1728,6 +1750,7 @@
       "category": "text",
       "pure": true,
       "max_instances": 0,
+      "annotation": false,
       "pins": [
         {
           "name": "text",
@@ -1812,6 +1835,7 @@
       "category": "text",
       "pure": true,
       "max_instances": 0,
+      "annotation": false,
       "pins": [
         {
           "name": "text",
@@ -1853,6 +1877,7 @@
       "category": "text",
       "pure": true,
       "max_instances": 0,
+      "annotation": false,
       "pins": [
         {
           "name": "text",
@@ -1932,6 +1957,7 @@
       "category": "text",
       "pure": true,
       "max_instances": 0,
+      "annotation": false,
       "pins": [
         {
           "name": "text",
@@ -2002,6 +2028,7 @@
       "category": "convert",
       "pure": true,
       "max_instances": 0,
+      "annotation": false,
       "pins": [
         {
           "name": "value",
@@ -2057,6 +2084,7 @@
       "category": "convert",
       "pure": true,
       "max_instances": 0,
+      "annotation": false,
       "pins": [
         {
           "name": "value",
@@ -2098,6 +2126,7 @@
       "category": "convert",
       "pure": true,
       "max_instances": 0,
+      "annotation": false,
       "pins": [
         {
           "name": "value",
@@ -2139,6 +2168,7 @@
       "category": "convert",
       "pure": true,
       "max_instances": 0,
+      "annotation": false,
       "pins": [
         {
           "name": "value",
@@ -2167,6 +2197,75 @@
           "kind": "text",
           "label": "Value",
           "default": "",
+          "options": [],
+          "help": "",
+          "group": ""
+        }
+      ]
+    },
+    {
+      "kind": "comment",
+      "title": "Comment",
+      "description": "A box that names a part of the graph. It never runs; moving it moves the nodes inside it.",
+      "category": "note",
+      "pure": false,
+      "max_instances": 0,
+      "annotation": true,
+      "pins": [],
+      "fields": [
+        {
+          "name": "title",
+          "kind": "textarea",
+          "label": "Text",
+          "default": "Comment",
+          "options": [],
+          "help": "",
+          "group": ""
+        },
+        {
+          "name": "color",
+          "kind": "color",
+          "label": "Color",
+          "default": "#64748b",
+          "options": [],
+          "help": "",
+          "group": ""
+        },
+        {
+          "name": "font_size",
+          "kind": "number",
+          "label": "Font size",
+          "default": 18,
+          "options": [],
+          "help": "10 to 48.",
+          "group": ""
+        },
+        {
+          "name": "move_mode",
+          "kind": "select",
+          "label": "Moving it",
+          "default": "group",
+          "options": [
+            "group",
+            "comment"
+          ],
+          "help": "group carries the nodes inside along; comment moves the box alone.",
+          "group": ""
+        },
+        {
+          "name": "width",
+          "kind": "number",
+          "label": "Width",
+          "default": 400,
+          "options": [],
+          "help": "",
+          "group": ""
+        },
+        {
+          "name": "height",
+          "kind": "number",
+          "label": "Height",
+          "default": 240,
           "options": [],
           "help": "",
           "group": ""

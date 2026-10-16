@@ -29,6 +29,7 @@ import { tests as surface } from "./surface.e2e.mjs";
 import { tests as queue } from "./queue.e2e.mjs";
 import { tests as dropdown } from "./dropdown.e2e.mjs";
 import { tests as flow } from "./flow.e2e.mjs";
+import { tests as notes } from "./notes.e2e.mjs";
 
 const GROUPS = [
   {
@@ -43,7 +44,7 @@ const GROUPS = [
     name: "flow",
     build: () => buildFlowWebview(),
     ready: "#root .flow-app",
-    specs: { flow },
+    specs: { flow, notes },
   },
 ];
 

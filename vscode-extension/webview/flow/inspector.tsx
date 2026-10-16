@@ -11,7 +11,7 @@ import {
   wiredToolsets,
 } from "./access";
 import { GlyphBadge } from "./context-menu";
-import { accentOf, dynamicCount, pinsOf } from "./model";
+import { accentOf, COMMENT_COLOR, COMMENT_SWATCHES, dynamicCount, isAnnotation, pinsOf } from "./model";
 import type { Action, EditorState } from "./store";
 import { defaultFor } from "./store";
 
@@ -180,6 +180,8 @@ function NodePanel({
         <DynamicPins node={node} state={state} dispatch={dispatch} />
       )}
 
+      {!isAnnotation(spec) && <NoteField key={node.id} node={node} dispatch={dispatch} />}
+
       {nodeIssues.length > 0 && (
         <div className="flow-field">
           <label>{t("Problems")}</label>
@@ -197,9 +199,49 @@ function NodePanel({
         data-testid="delete-node"
         onClick={() => dispatch({ type: "deleteSelection" })}
       >
-        {t("Delete node")}
+        {isAnnotation(spec) ? t("Delete comment") : t("Delete node")}
       </button>
     </>
+  );
+}
+
+/** A node's note: the text of its bubble, and whether the bubble is open. */
+function NoteField({ node, dispatch }: { node: FlowNode; dispatch(action: Action): void }) {
+  const note = String(node.data.note ?? "");
+  const shown = node.data.note_shown !== false;
+  return (
+    <div className="flow-field">
+      <label htmlFor={`note-${node.id}`}>{t("Note")}</label>
+      <textarea
+        id={`note-${node.id}`}
+        data-testid="field-note"
+        placeholder={t("A note shown in a bubble above the node")}
+        value={note}
+        onChange={(event) => {
+          const text = event.target.value;
+          dispatch({
+            type: "patchNodeData",
+            id: node.id,
+            patch: text
+              ? { note: text, note_shown: node.data.note_shown ?? true }
+              : { note: undefined, note_shown: undefined },
+          });
+        }}
+      />
+      {note && (
+        <label className="row">
+          <input
+            type="checkbox"
+            data-testid="field-note_shown"
+            checked={shown}
+            onChange={(event) =>
+              dispatch({ type: "patchNodeData", id: node.id, patch: { note_shown: event.target.checked } })
+            }
+          />
+          {t("Show the bubble")}
+        </label>
+      )}
+    </div>
   );
 }
 
@@ -331,6 +373,24 @@ function Field({ field, node, state, dispatch, onListModels, onStoreSecret }: Fi
         );
       case "tools":
         return <ToolPicker key={node.id} field={field} node={node} state={state} dispatch={dispatch} />;
+      case "color": {
+        const current = /^#[0-9a-fA-F]{6}$/.test(String(value ?? "")) ? String(value) : COMMENT_COLOR;
+        return (
+          <div className="flow-swatches">
+            {COMMENT_SWATCHES.map((swatch) => (
+              <button
+                key={swatch}
+                className={`flow-swatch${swatch.toLowerCase() === current.toLowerCase() ? " on" : ""}`}
+                data-testid={`swatch-${swatch.slice(1)}`}
+                style={{ background: swatch }}
+                aria-label={swatch}
+                onClick={() => set(swatch)}
+              />
+            ))}
+            <input id={id} data-testid={testId} type="color" value={current} onChange={(e) => set(e.target.value)} />
+          </div>
+        );
+      }
       case "permission":
         return (
           <input

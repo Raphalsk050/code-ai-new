@@ -20,11 +20,16 @@ from pydantic import ValidationError
 
 from code_ai.core.graph.functions import is_function
 from code_ai.core.graph.models import (
+    COMMENT_FONT_SIZES,
+    COMMENT_MAX_SIZE,
+    COMMENT_MIN_SIZE,
+    COMMENT_MOVE_MODES,
     MAX_DYNAMIC_PINS,
     MAX_EDGES,
     MAX_NODES,
     MAX_VARIABLES,
     NODE_KINDS,
+    NOTE_FIELDS,
     PERMISSION_FIELDS,
     SCHEMA_VERSION,
     EdgeSpec,
@@ -41,6 +46,7 @@ from code_ai.core.graph.program import GraphProgram, NodeProgram
 # a secret is refused: this file is committed, and a leaked key is not a problem
 # a later validation pass can fix.
 _KEY_REF_RE = re.compile(r"^(session|env:[A-Za-z_][A-Za-z0-9_]*|secret:[\w.-]+)$")
+_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 SEVERITY_ERROR = "error"
 SEVERITY_WARNING = "warning"
@@ -444,6 +450,8 @@ def _check_node_data(
         for pin in spec.pins:
             if pin.dynamic:
                 known.add("outputs" if pin.direction == "out" else "inputs")
+        known.update(NOTE_FIELDS)
+        _check_note(node_id, node, collector)
         for key in node.data:
             if key not in known:
                 collector.warn(
@@ -471,10 +479,59 @@ def _check_node_data(
                 _check_variable_node(node_id, node, variables, collector)
             case NodeKind.SEQUENCE:
                 _check_sequence_node(node_id, node, collector)
+            case NodeKind.COMMENT:
+                _check_comment_node(node_id, node, collector)
         if node.kind in (NodeKind.APPEND, NodeKind.FORMAT):
             _check_pin_count(node_id, node, "inputs", collector)
         if is_function(node.kind):
             _check_choices(node_id, node, spec, collector)
+
+
+def _check_note(node_id: str, node: NodeSpec, collector: _Collector) -> None:
+    """A node's bubble. Only ever a warning: a note cannot break a run."""
+
+    note = node.data.get("note")
+    if note is not None and not isinstance(note, str):
+        collector.warn("A node's note must be text.", node_id=node_id, field="note")
+    shown = node.data.get("note_shown")
+    if shown is not None and not isinstance(shown, bool):
+        collector.warn("note_shown must be true or false.", node_id=node_id, field="note_shown")
+
+
+def _check_comment_node(node_id: str, node: NodeSpec, collector: _Collector) -> None:
+    """A comment never runs, so nothing about it is worth refusing Play over."""
+
+    data = node.data
+    for key in ("width", "height"):
+        value = data.get(key)
+        if value is None:
+            continue
+        if not _is_number(value) or not COMMENT_MIN_SIZE <= value <= COMMENT_MAX_SIZE:
+            collector.warn(
+                f"A comment's {key} is a number from {COMMENT_MIN_SIZE} to {COMMENT_MAX_SIZE}.",
+                node_id=node_id,
+                field=key,
+            )
+    size = data.get("font_size")
+    low, high = COMMENT_FONT_SIZES
+    if size is not None and (not _is_number(size) or not low <= size <= high):
+        collector.warn(
+            f"A comment's font size is from {low} to {high}.", node_id=node_id, field="font_size"
+        )
+    color = data.get("color")
+    if color is not None and not (isinstance(color, str) and _COLOR_RE.match(color)):
+        collector.warn("A comment's color is written #rrggbb.", node_id=node_id, field="color")
+    mode = data.get("move_mode")
+    if mode is not None and mode not in COMMENT_MOVE_MODES:
+        collector.warn(
+            f"A comment moves as one of: {', '.join(COMMENT_MOVE_MODES)}.",
+            node_id=node_id,
+            field="move_mode",
+        )
+
+
+def _is_number(value: object) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool)
 
 
 def _check_model_node(node_id: str, node: NodeSpec, collector: _Collector) -> None:
@@ -794,6 +851,8 @@ def _build_program(
     built: dict[str, NodeProgram] = {}
     for node_id, node in nodes.items():
         spec = NODE_KINDS[node.kind]
+        if spec.annotation:
+            continue
         ordered = tuple(
             pin.name
             for pin in expanded_pins(spec, node.data)

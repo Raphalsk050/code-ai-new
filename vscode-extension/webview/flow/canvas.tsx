@@ -9,16 +9,22 @@ import {
   PinLayout,
   Point,
   accentOf,
+  commentLook,
   edgeType,
   graphBounds,
+  isAnnotation,
   layoutGraph,
+  movedBy,
   nodesInRect,
   pinPoint,
+  resized,
+  ResizeHandle,
   wireLength,
   wirePath,
 } from "./model";
 import { t } from "../i18n";
 import { NodeView } from "./node-view";
+import { Box, CommentView, NoteBubble, NoteMark } from "./notes";
 import type { Action, EditorState, NodeRunStatus } from "./store";
 import { issuesByNode } from "./store";
 
@@ -46,13 +52,16 @@ export function zoomAround(
 }
 
 interface DragState {
-  kind: "node" | "pan" | "marquee" | "wire";
+  kind: "node" | "pan" | "marquee" | "wire" | "resize";
   startScreen: Point;
   startWorld: Point;
   current: Point;
+  /** What a node drag moves: the selection, and what its comments hold. */
   ids: string[];
   startPan: [number, number];
   pin?: { nodeId: string; pin: PinLayout; direction: "in" | "out" };
+  handle?: ResizeHandle;
+  startBox?: Box;
 }
 
 /** What the right-click landed on, so the menu can offer the right actions. */
@@ -184,8 +193,29 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
       startScreen: { x: event.clientX, y: event.clientY },
       startWorld: toWorld(event.clientX, event.clientY),
       current: toWorld(event.clientX, event.clientY),
-      ids,
+      // A comment carries what it holds, worked out once as the drag starts.
+      ids: movedBy(layouts, ids),
       startPan: [pan[0], pan[1]],
+    });
+  };
+
+  const onHandleDown = (nodeId: string, handle: ResizeHandle, event: React.MouseEvent) => {
+    if (event.button !== 0) return;
+    event.stopPropagation();
+    holdSelection(event);
+    const layout = layouts.get(nodeId);
+    if (!layout) return;
+    dispatch({ type: "select", ids: [nodeId] });
+    const world = toWorld(event.clientX, event.clientY);
+    setDrag({
+      kind: "resize",
+      startScreen: { x: event.clientX, y: event.clientY },
+      startWorld: world,
+      current: world,
+      ids: [nodeId],
+      startPan: [pan[0], pan[1]],
+      handle,
+      startBox: { x: layout.node.pos[0], y: layout.node.pos[1], width: layout.width, height: layout.height },
     });
   };
 
@@ -256,6 +286,11 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
         if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
           dispatch({ type: "moveNodes", ids: drag.ids, dx, dy, commit: true });
         }
+      } else if (drag.kind === "resize" && drag.startBox && drag.handle) {
+        const box = resized(drag.startBox, drag.handle, world.x - drag.startWorld.x, world.y - drag.startWorld.y);
+        if (box.width !== drag.startBox.width || box.height !== drag.startBox.height || box.x !== drag.startBox.x || box.y !== drag.startBox.y) {
+          dispatch({ type: "resizeNode", id: drag.ids[0], pos: [box.x, box.y], width: box.width, height: box.height });
+        }
       } else if (drag.kind === "marquee") {
         const rect = rectOf(drag.startWorld, world);
         if (rect.maxX - rect.minX > 4 || rect.maxY - rect.minY > 4) {
@@ -306,6 +341,41 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
     return { dx: drag.current.x - drag.startWorld.x, dy: drag.current.y - drag.startWorld.y };
   };
 
+  /** Where a comment is drawn: its own box, or the one a drag or resize gives it now. */
+  const boxFor = (layout: NodeLayout): Box => {
+    if (drag?.kind === "resize" && drag.ids[0] === layout.node.id && drag.startBox && drag.handle) {
+      return resized(
+        drag.startBox,
+        drag.handle,
+        drag.current.x - drag.startWorld.x,
+        drag.current.y - drag.startWorld.y
+      );
+    }
+    const offset = offsetFor(layout.node.id);
+    return {
+      x: layout.node.pos[0] + offset.dx,
+      y: layout.node.pos[1] + offset.dy,
+      width: layout.width,
+      height: layout.height,
+    };
+  };
+
+  const nodeContext = (nodeId: string, event: React.MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!state.selection.includes(nodeId)) {
+      dispatch({ type: "select", ids: [nodeId] });
+    }
+    onContext({
+      kind: "node",
+      id: nodeId,
+      at: toWorld(event.clientX, event.clientY),
+      screen: { x: event.clientX, y: event.clientY },
+    });
+  };
+
+  const stopEditing = () => dispatch({ type: "edit", target: null });
+
   // -- render -----------------------------------------------------------
 
   const wires = state.graph.edges.flatMap((edge) => {
@@ -322,6 +392,14 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
   const now = Date.now();
   const marquee =
     drag?.kind === "marquee" ? rectOf(drag.startWorld, drag.current) : null;
+
+  // Comments behind everything, the biggest furthest back so a nested one stays reachable.
+  const all = Array.from(layouts.values());
+  const comments = all
+    .filter((layout) => isAnnotation(layout.spec))
+    .sort((a, b) => b.width * b.height - a.width * a.height);
+  const nodes = all.filter((layout) => !isAnnotation(layout.spec));
+  const editing = state.editing;
 
   return (
     <div className="flow-canvas-wrap">
@@ -374,6 +452,38 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
         <rect width="100%" height="100%" fill="url(#flow-grid-major)" />
 
         <g transform={`translate(${pan[0]}, ${pan[1]}) scale(${zoom})`}>
+          {comments.map((layout) => {
+            const id = layout.node.id;
+            const nodeIssues = problems[id] ?? [];
+            const problem = nodeIssues.some((issue) => issue.severity === "error")
+              ? "error"
+              : nodeIssues.length > 0
+                ? "warning"
+                : null;
+            return (
+              <CommentView
+                key={id}
+                layout={layout}
+                box={boxFor(layout)}
+                zoom={zoom}
+                selected={state.selection.includes(id)}
+                problem={problem}
+                editing={editing?.id === id && editing.what === "title"}
+                onHeaderDown={(event) => onNodeDown(id, event)}
+                onHandleDown={(handle, event) => onHandleDown(id, handle, event)}
+                onContext={(event) => nodeContext(id, event)}
+                onEdit={() => dispatch({ type: "edit", target: { id, what: "title" } })}
+                onCommit={(text) => {
+                  stopEditing();
+                  if (text !== String(layout.node.data?.title ?? "")) {
+                    dispatch({ type: "patchNodeData", id, patch: { title: text } });
+                  }
+                }}
+                onCancel={stopEditing}
+              />
+            );
+          })}
+
           {wires.map(({ edge, a, b, type }) => {
             const color = catalog?.color(type) ?? "#888";
             const litAt = state.run.active[edge.id];
@@ -445,7 +555,7 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
             />
           )}
 
-          {Array.from(layouts.values()).map((layout) => {
+          {nodes.map((layout) => {
             const nodeIssues = problems[layout.node.id] ?? [];
             return (
               <NodeView
@@ -465,21 +575,55 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
                   connected.has(`${layout.node.id}:${pin}:${direction}`)
                 }
                 onNodeDown={onNodeDown}
-                onNodeContext={(nodeId, event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  if (!state.selection.includes(nodeId)) {
-                    dispatch({ type: "select", ids: [nodeId] });
-                  }
-                  onContext({
-                    kind: "node",
-                    id: nodeId,
-                    at: toWorld(event.clientX, event.clientY),
-                    screen: { x: event.clientX, y: event.clientY },
-                  });
-                }}
+                onNodeContext={nodeContext}
                 onPinDown={onPinDown}
                 onPinUp={onPinUp}
+              />
+            );
+          })}
+
+          {nodes.map((layout) => {
+            const id = layout.node.id;
+            const note = String(layout.node.data?.note ?? "");
+            const writing = editing?.id === id && editing.what === "note";
+            const offset = offsetFor(id);
+            const x = layout.node.pos[0] + offset.dx;
+            const y = layout.node.pos[1] + offset.dy;
+            if (writing || (note && layout.node.data?.note_shown !== false)) {
+              return (
+                <NoteBubble
+                  key={`note-${id}`}
+                  nodeId={id}
+                  x={x}
+                  y={y}
+                  nodeWidth={layout.width}
+                  text={note}
+                  editing={writing}
+                  onDown={(event) => onNodeDown(id, event)}
+                  onEdit={() => dispatch({ type: "edit", target: { id, what: "note" } })}
+                  onHide={() => dispatch({ type: "patchNodeData", id, patch: { note_shown: false } })}
+                  onCommit={(text) => {
+                    stopEditing();
+                    const kept = text.trim() ? text : undefined;
+                    if (kept === (note || undefined)) return;
+                    dispatch({
+                      type: "patchNodeData",
+                      id,
+                      patch: kept ? { note: kept, note_shown: true } : { note: undefined, note_shown: undefined },
+                    });
+                  }}
+                  onCancel={stopEditing}
+                />
+              );
+            }
+            if (!note) return null;
+            return (
+              <NoteMark
+                key={`note-${id}`}
+                nodeId={id}
+                x={x + layout.width - 14}
+                y={y - 12}
+                onShow={() => dispatch({ type: "patchNodeData", id, patch: { note_shown: true } })}
               />
             );
           })}
@@ -603,7 +747,26 @@ function Minimap({ layouts, view, size, selection, running, onPan }: MinimapProp
       onContextMenu={(event) => event.preventDefault()}
     >
       <rect className="flow-minimap-bg" width={MAP_W} height={MAP_H} rx={8} ry={8} />
-      {Array.from(layouts.values()).map((layout) => {
+      {Array.from(layouts.values())
+        .filter((layout) => isAnnotation(layout.spec))
+        .map((layout) => {
+          const at = toMap(layout.node.pos[0], layout.node.pos[1]);
+          const color = commentLook(layout.node).color;
+          return (
+            <rect
+              key={layout.node.id}
+              className="flow-minimap-comment"
+              x={at.x}
+              y={at.y}
+              width={Math.max(2, layout.width * scale)}
+              height={Math.max(2, layout.height * scale)}
+              rx={1.5}
+              fill={color}
+              stroke={color}
+            />
+          );
+        })}
+      {Array.from(layouts.values()).filter((layout) => !isAnnotation(layout.spec)).map((layout) => {
         const at = toMap(layout.node.pos[0], layout.node.pos[1]);
         const status = running[layout.node.id];
         const classes = ["flow-minimap-node"];

@@ -17,7 +17,19 @@ import {
   ValidationIssue,
 } from "../../src/flow-schema";
 import { t, tf } from "../i18n";
-import { Catalog, indexCatalog, pinsOf, snap } from "./model";
+import {
+  Catalog,
+  COMMENT_COLOR,
+  COMMENT_FONT,
+  COMMENT_MAX,
+  COMMENT_MIN,
+  commentAround,
+  indexCatalog,
+  layoutGraph,
+  pinsOf,
+  Point,
+  snap,
+} from "./model";
 
 export const UNDO_LIMIT = 100;
 
@@ -106,6 +118,8 @@ export interface EditorState {
   inspectorTab: "node" | "variables" | "run";
   logOpen: boolean;
   dirty: boolean;
+  /** Text being edited on the canvas: a comment's title or a node's note. */
+  editing: { id: string; what: "title" | "note" } | null;
 }
 
 export function initialRun(): RunState {
@@ -144,6 +158,7 @@ export function initialState(): EditorState {
     inspectorTab: "node",
     logOpen: true,
     dirty: false,
+    editing: null,
   };
 }
 
@@ -179,6 +194,12 @@ export type Action =
     }
   | { type: "moveNodes"; ids: string[]; dx: number; dy: number; commit: boolean }
   | { type: "setNodeData"; id: string; key: string; value: unknown }
+  /** Several fields in one undo step; `undefined` removes a key. */
+  | { type: "patchNodeData"; id: string; patch: Record<string, unknown> }
+  | { type: "resizeNode"; id: string; pos: [number, number]; width: number; height: number }
+  /** A comment around `ids`, or at `at` when there is nothing to wrap. */
+  | { type: "wrapInComment"; ids: string[]; at?: Point }
+  | { type: "edit"; target: { id: string; what: "title" | "note" } | null }
   | { type: "deleteSelection" }
   | { type: "connect"; edge: Omit<FlowEdge, "id"> }
   | { type: "deleteEdge"; id: string }
@@ -319,6 +340,65 @@ export function reduce(state: EditorState, action: Action): EditorState {
         graph = { ...graph, edges: graph.edges.filter((edge) => livePin(graph, state, edge)) };
       }
       return withHistory(state, graph);
+    }
+
+    case "patchNodeData": {
+      const nodes = state.graph.nodes.map((node) => {
+        if (node.id !== action.id) return node;
+        const data = { ...node.data };
+        for (const [key, value] of Object.entries(action.patch)) {
+          if (value === undefined) delete data[key];
+          else data[key] = value;
+        }
+        return { ...node, data };
+      });
+      return withHistory(state, { ...state.graph, nodes });
+    }
+
+    case "edit":
+      return { ...state, editing: action.target };
+
+    case "resizeNode": {
+      const size = (value: number) => Math.min(COMMENT_MAX, Math.max(COMMENT_MIN, snap(value)));
+      const nodes = state.graph.nodes.map((node) =>
+        node.id === action.id
+          ? {
+              ...node,
+              pos: [snap(action.pos[0]), snap(action.pos[1])] as [number, number],
+              data: { ...node.data, width: size(action.width), height: size(action.height) },
+            }
+          : node
+      );
+      return withHistory(state, { ...state.graph, nodes });
+    }
+
+    case "wrapInComment": {
+      if (!state.catalog?.kinds.get("comment")) return state;
+      const layouts = layoutGraph(state.graph, state.catalog);
+      const around = commentAround(layouts, action.ids);
+      const at = action.at ?? { x: 0, y: 0 };
+      const box = around ?? { pos: [snap(at.x), snap(at.y)] as [number, number], width: 400, height: 240 };
+      const node: FlowNode = {
+        id: nextId("n", state.graph.nodes.map((item) => item.id)),
+        kind: "comment",
+        pos: box.pos,
+        data: {
+          color: COMMENT_COLOR,
+          font_size: COMMENT_FONT,
+          height: box.height,
+          move_mode: "group",
+          title: t("Comment"),
+          width: box.width,
+        },
+      };
+      // First in the file, so a reader meets the box before what it holds.
+      const graph: FlowGraph = { ...state.graph, nodes: [node, ...state.graph.nodes] };
+      return {
+        ...withHistory(state, graph),
+        selection: [node.id],
+        selectedEdge: null,
+        editing: { id: node.id, what: "title" },
+      };
     }
 
     case "deleteSelection": {

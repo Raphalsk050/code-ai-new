@@ -70,6 +70,8 @@ class NodeKind(StrEnum):
     TO_FLOAT = "to_float"
     TO_TEXT = "to_text"
     TO_BOOL = "to_bool"
+    # An annotation, Unreal-style: never runs, only names and groups.
+    COMMENT = "comment"
 
 
 class PinType(StrEnum):
@@ -114,6 +116,18 @@ PERMISSIONS: tuple[tuple[str, str, str], ...] = (
     ("can_mcp", "mcp", "Use MCP tools"),
 )
 PERMISSION_FIELDS: tuple[str, ...] = tuple(field for field, _, _ in PERMISSIONS)
+
+# A note any node may carry, shown as a bubble above it (Unreal's node
+# comment): the text, and whether the bubble is open. Never read by a run.
+NOTE_FIELDS: tuple[str, ...] = ("note", "note_shown")
+
+# A comment box's geometry and look. Bounds keep a hand-edited file from
+# drawing a box the editor cannot handle.
+COMMENT_COLOR = "#64748b"
+COMMENT_MIN_SIZE = 80
+COMMENT_MAX_SIZE = 20000
+COMMENT_FONT_SIZES = (10, 48)
+COMMENT_MOVE_MODES = ("group", "comment")
 
 # How the editor groups the tool list, in display order. The first five follow
 # the capability a tool needs; the rest are the on-demand groups by name.
@@ -232,10 +246,12 @@ class NodeKindSpec:
     fields: tuple[FieldSpec, ...] = ()
     # A node with no exec pins is pure: it is pulled, never walked into.
     max_instances: int = 0  # 0 = unlimited
+    # Drawn and saved but never compiled into the program: a comment box.
+    annotation: bool = False
 
     @property
     def pure(self) -> bool:
-        return not any(pin.type == PinType.EXEC for pin in self.pins)
+        return not self.annotation and not any(pin.type == PinType.EXEC for pin in self.pins)
 
     def pin(self, name: str, direction: str) -> PinSpec | None:
         for spec in self.pins:
@@ -258,6 +274,7 @@ class NodeKindSpec:
             "category": self.category,
             "pure": self.pure,
             "max_instances": self.max_instances,
+            "annotation": self.annotation,
             "pins": [pin.payload() for pin in self.pins],
             "fields": [item.payload() for item in self.fields],
         }
@@ -1014,6 +1031,39 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
         category="convert",
         pins=(_in("value", PinType.ANY), _out("result", PinType.BOOL)),
         fields=(_text("value", "Value"),),
+    ),
+    # -- annotations --------------------------------------------------------
+    NodeKindSpec(
+        kind=NodeKind.COMMENT,
+        title="Comment",
+        description=(
+            "A box that names a part of the graph. It never runs; moving it moves "
+            "the nodes inside it."
+        ),
+        category="note",
+        pins=(),
+        annotation=True,
+        fields=(
+            FieldSpec(name="title", kind="textarea", label="Text", default="Comment"),
+            FieldSpec(name="color", kind="color", label="Color", default=COMMENT_COLOR),
+            FieldSpec(
+                name="font_size",
+                kind="number",
+                label="Font size",
+                default=18,
+                help=f"{COMMENT_FONT_SIZES[0]} to {COMMENT_FONT_SIZES[1]}.",
+            ),
+            FieldSpec(
+                name="move_mode",
+                kind="select",
+                label="Moving it",
+                default="group",
+                options=COMMENT_MOVE_MODES,
+                help="group carries the nodes inside along; comment moves the box alone.",
+            ),
+            FieldSpec(name="width", kind="number", label="Width", default=400),
+            FieldSpec(name="height", kind="number", label="Height", default=240),
+        ),
     ),
 )
 

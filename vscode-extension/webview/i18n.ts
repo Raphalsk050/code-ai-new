@@ -39,6 +39,33 @@ const PT: Record<string, string> = {
   "(empty)": "(vazio)",
 
   // -- orchestrator graph -------------------------------------------------
+  // Comments and notes.
+  Comment: "Comentário",
+  Notes: "Notas",
+  "A box that names a part of the graph. It never runs; moving it moves the nodes inside it.":
+    "Uma caixa que dá nome a uma parte do grafo. Nunca roda; movê-la move os nós dentro dela.",
+  Color: "Cor",
+  "Font size": "Tamanho da fonte",
+  "Moving it": "Ao mover",
+  "group carries the nodes inside along; comment moves the box alone.":
+    "em grupo leva junto os nós de dentro; só a caixa move apenas o comentário.",
+  group: "em grupo",
+  comment: "só a caixa",
+  Width: "Largura",
+  Height: "Altura",
+  "Edit the text": "Editar o texto",
+  "Select what it holds": "Selecionar o que ela contém",
+  "Add a note": "Adicionar uma nota",
+  "Edit the note": "Editar a nota",
+  "Hide the note": "Esconder a nota",
+  "Show the note": "Mostrar a nota",
+  "Remove the note": "Remover a nota",
+  "Wrap in a comment": "Envolver num comentário",
+  "Wrap {0} nodes in a comment": "Envolver {0} nós num comentário",
+  "Delete comment": "Excluir comentário",
+  Note: "Nota",
+  "A note shown in a bubble above the node": "Uma nota mostrada num balão acima do nó",
+  "Show the bubble": "Mostrar o balão",
   Orchestrator: "Orquestrador",
   unnamed: "sem nome",
   Node: "Nó",

@@ -20,7 +20,7 @@ import { setLanguage, t, tf } from "../i18n";
 import { ContextMenu, MenuEntry } from "./context-menu";
 import { Inspector } from "./inspector";
 import { LogPanel } from "./log";
-import { accentOf, layoutGraph, NODE_W, pinsOf, Point } from "./model";
+import { accentOf, isAnnotation, layoutGraph, NODE_W, nodesInside, pinsOf, Point } from "./model";
 import { FLOW_STYLE } from "./styles";
 import {
   Action,
@@ -231,6 +231,24 @@ function App(): JSX.Element {
       }
       if (event.key === "f" && !mod) {
         frame();
+        return;
+      }
+      if (event.key.toLowerCase() === "c" && !mod && !event.altKey) {
+        // Unreal's gesture: a comment around what is selected, or one where the view is.
+        event.preventDefault();
+        dispatch({
+          type: "wrapInComment",
+          ids: current.selection,
+          at: current.selection.length === 0 ? viewCentre(current.graph.view) : undefined,
+        });
+        return;
+      }
+      if (event.key === "F2" && current.selection.length === 1) {
+        event.preventDefault();
+        const id = current.selection[0];
+        const node = current.graph.nodes.find((item) => item.id === id);
+        const spec = node ? current.catalog?.kinds.get(node.kind) : undefined;
+        if (node) dispatch({ type: "edit", target: { id, what: isAnnotation(spec) ? "title" : "note" } });
       }
     };
 
@@ -335,7 +353,18 @@ function menuTitle(target: ContextTarget): string {
   }
 }
 
+/** The point in the middle of the canvas, in graph coordinates. */
+function viewCentre(view: { pan: [number, number]; zoom: number }): Point {
+  const element = document.querySelector<SVGSVGElement>('[data-testid="flow-canvas"]');
+  const rect = element?.getBoundingClientRect();
+  return {
+    x: ((rect?.width ?? 900) / 2 - view.pan[0]) / view.zoom - 200,
+    y: ((rect?.height ?? 600) / 2 - view.pan[1]) / view.zoom - 120,
+  };
+}
+
 const CATEGORY_LABELS: Record<string, string> = {
+  note: "Notes",
   flow: "Flow",
   agent: "Agents",
   data: "Data",
@@ -386,9 +415,11 @@ function nodeEntries(
   dispatch: (action: Action) => void
 ): MenuEntry[] {
   const node = state.graph.nodes.find((item) => item.id === nodeId);
-  const section = node ? state.catalog?.kinds.get(node.kind)?.title ?? t("Node") : t("Node");
+  const spec = node ? state.catalog?.kinds.get(node.kind) : undefined;
+  const section = spec?.title ?? t("Node");
   const ids = state.selection.includes(nodeId) ? state.selection : [nodeId];
   return [
+    ...noteEntries(state, nodeId, ids, section, dispatch),
     {
       id: "duplicate",
       label: ids.length > 1 ? tf("Duplicate {0} nodes", ids.length) : t("Duplicate"),
@@ -415,6 +446,86 @@ function nodeEntries(
       },
     },
   ];
+}
+
+/** What a node's menu offers about comments and notes. */
+function noteEntries(
+  state: EditorState,
+  nodeId: string,
+  ids: string[],
+  section: string,
+  dispatch: (action: Action) => void
+): MenuEntry[] {
+  const node = state.graph.nodes.find((item) => item.id === nodeId);
+  if (!node || !state.catalog) return [];
+  const colour = "var(--accent)";
+  const entries: MenuEntry[] = [];
+  if (isAnnotation(state.catalog.kinds.get(node.kind))) {
+    entries.push(
+      {
+        id: "edit-comment",
+        label: t("Edit the text"),
+        hint: "F2",
+        section,
+        colour,
+        run: () => dispatch({ type: "edit", target: { id: nodeId, what: "title" } }),
+      },
+      {
+        id: "select-inside",
+        label: t("Select what it holds"),
+        hint: "",
+        section,
+        colour,
+        run: () =>
+          dispatch({ type: "select", ids: nodesInside(layoutGraph(state.graph, state.catalog!), nodeId) }),
+      }
+    );
+  } else if (ids.length === 1) {
+    const note = String(node.data?.note ?? "");
+    const shown = node.data?.note_shown !== false;
+    entries.push({
+      id: "edit-note",
+      label: note ? t("Edit the note") : t("Add a note"),
+      hint: "F2",
+      section,
+      colour,
+      run: () => dispatch({ type: "edit", target: { id: nodeId, what: "note" } }),
+    });
+    if (note) {
+      entries.push(
+        {
+          id: "toggle-note",
+          label: shown ? t("Hide the note") : t("Show the note"),
+          hint: "",
+          section,
+          colour,
+          run: () => dispatch({ type: "patchNodeData", id: nodeId, patch: { note_shown: !shown } }),
+        },
+        {
+          id: "remove-note",
+          label: t("Remove the note"),
+          hint: "",
+          section,
+          colour: "var(--danger)",
+          run: () =>
+            dispatch({
+              type: "patchNodeData",
+              id: nodeId,
+              patch: { note: undefined, note_shown: undefined },
+            }),
+        }
+      );
+    }
+  }
+  entries.push({
+    id: "wrap-comment",
+    label: ids.length > 1 ? tf("Wrap {0} nodes in a comment", ids.length) : t("Wrap in a comment"),
+    hint: "C",
+    section,
+    colour,
+    run: () => dispatch({ type: "wrapInComment", ids }),
+  });
+  return entries;
 }
 
 function canvasEntries(

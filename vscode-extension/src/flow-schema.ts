@@ -80,6 +80,8 @@ export interface NodeKindSpec {
   category: string;
   pure: boolean;
   max_instances: number;
+  /** Drawn and saved, never run: a comment box. */
+  annotation?: boolean;
   pins: PinSpec[];
   fields: FieldSpec[];
 }

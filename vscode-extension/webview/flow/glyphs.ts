@@ -11,6 +11,7 @@ export interface Glyph {
 const CONVERT_GLYPH: Glyph = { d: "M2.5 5.5 H12 L9.5 3 M13.5 10.5 H4 L6.5 13" };
 
 export const GLYPHS: Record<string, Glyph> = {
+  comment: { d: "M2.5 3 H13.5 V10.5 H8 L5 13 V10.5 H2.5 Z M5 6 H11 M5 8 H9" },
   start: { d: "", fill: "M5 3.2 L12.8 8 L5 12.8 Z" },
   end: { d: "M4 14 V2.5 M4 3 H12 L10.2 5.6 L12 8.2 H4" },
   model: {

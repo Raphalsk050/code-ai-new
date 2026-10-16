@@ -29,6 +29,7 @@ export const CATEGORY_COLORS: Record<string, string> = {
   logic: "#9d174d",
   text: "#a21caf",
   convert: "#57534e",
+  note: "#64748b",
 };
 
 /** How many copies of a dynamic pin a node asked for, as the backend counts them. */
@@ -104,7 +105,203 @@ function execFirst(pins: PinSpec[]): PinSpec[] {
   return [...pins.filter((p) => p.type === "exec"), ...pins.filter((p) => p.type !== "exec")];
 }
 
+// -- comments --------------------------------------------------------------
+
+/** A comment box's bounds and defaults; the backend states the same (models.py). */
+export const COMMENT_MIN = 80;
+export const COMMENT_MAX = 20000;
+export const COMMENT_COLOR = "#64748b";
+export const COMMENT_FONT = 18;
+/** Room left around the nodes a new comment is drawn around. */
+export const COMMENT_PAD = 30;
+/** The swatches the inspector offers, Unreal's comment colours tuned for both themes. */
+export const COMMENT_SWATCHES = [
+  "#64748b",
+  "#2563eb",
+  "#0d9488",
+  "#16a34a",
+  "#ca8a04",
+  "#ea580c",
+  "#dc2626",
+  "#9333ea",
+];
+
+export function isAnnotation(spec: NodeKindSpec | undefined): boolean {
+  return Boolean(spec?.annotation);
+}
+
+function bounded(value: unknown, fallback: number, low: number, high: number): number {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.min(high, Math.max(low, number)) : fallback;
+}
+
+/** What a comment's text and size come to, read defensively from a hand-edited file. */
+export function commentLook(node: FlowNode): {
+  text: string;
+  color: string;
+  fontSize: number;
+  width: number;
+  height: number;
+  groups: boolean;
+} {
+  const data = node.data ?? {};
+  const color = String(data.color ?? "");
+  return {
+    text: String(data.title ?? ""),
+    color: /^#[0-9a-fA-F]{6}$/.test(color) ? color : COMMENT_COLOR,
+    fontSize: bounded(data.font_size, COMMENT_FONT, 10, 48),
+    width: bounded(data.width, 400, COMMENT_MIN, COMMENT_MAX),
+    height: bounded(data.height, 240, COMMENT_MIN, COMMENT_MAX),
+    groups: String(data.move_mode ?? "group") !== "comment",
+  };
+}
+
+/** The title bar's height for a comment's text, at the size it is drawn. */
+export function commentHeader(text: string, fontSize: number): number {
+  const lines = Math.max(1, text.split("\n").length);
+  return Math.round(lines * fontSize * 1.3 + 14);
+}
+
+function contains(outer: Bounds, inner: Bounds): boolean {
+  return (
+    inner.minX >= outer.minX &&
+    inner.minY >= outer.minY &&
+    inner.maxX <= outer.maxX &&
+    inner.maxY <= outer.maxY
+  );
+}
+
+export function boundsOf(layout: NodeLayout): Bounds {
+  const [x, y] = layout.node.pos;
+  return { minX: x, minY: y, maxX: x + layout.width, maxY: y + layout.height };
+}
+
+/** Every node a comment holds: what lies wholly inside its box, nested comments included. */
+export function nodesInside(layouts: Map<string, NodeLayout>, commentId: string): string[] {
+  const comment = layouts.get(commentId);
+  if (!comment || !isAnnotation(comment.spec)) return [];
+  const box = boundsOf(comment);
+  const inside: string[] = [];
+  for (const [id, layout] of layouts) {
+    if (id !== commentId && contains(box, boundsOf(layout))) inside.push(id);
+  }
+  return inside;
+}
+
+/**
+ * What a drag of `ids` moves: the nodes themselves, plus what each comment
+ * among them holds, unless that comment is set to move alone.
+ */
+export function movedBy(layouts: Map<string, NodeLayout>, ids: string[]): string[] {
+  const moved = new Set(ids);
+  for (const id of ids) {
+    const layout = layouts.get(id);
+    if (!layout || !isAnnotation(layout.spec) || !commentLook(layout.node).groups) continue;
+    for (const inner of nodesInside(layouts, id)) moved.add(inner);
+  }
+  return [...moved];
+}
+
+/** Where a comment drawn around `ids` goes: their bounds, padded, with room for the title. */
+export function commentAround(
+  layouts: Map<string, NodeLayout>,
+  ids: string[],
+  fontSize = COMMENT_FONT
+): { pos: [number, number]; width: number; height: number } | null {
+  const picked = ids.map((id) => layouts.get(id)).filter((item): item is NodeLayout => !!item);
+  if (picked.length === 0) return null;
+  const box = picked.map(boundsOf).reduce((a, b) => ({
+    minX: Math.min(a.minX, b.minX),
+    minY: Math.min(a.minY, b.minY),
+    maxX: Math.max(a.maxX, b.maxX),
+    maxY: Math.max(a.maxY, b.maxY),
+  }));
+  const header = commentHeader("", fontSize);
+  const x = snap(box.minX - COMMENT_PAD);
+  const y = snap(box.minY - COMMENT_PAD - header);
+  return {
+    pos: [x, y],
+    width: Math.max(COMMENT_MIN, Math.ceil(box.maxX + COMMENT_PAD - x)),
+    height: Math.max(COMMENT_MIN, Math.ceil(box.maxY + COMMENT_PAD - y)),
+  };
+}
+
+export type ResizeHandle = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+
+/** A comment's box after dragging `handle` by (dx, dy), never smaller than the minimum. */
+export function resized(
+  start: { x: number; y: number; width: number; height: number },
+  handle: ResizeHandle,
+  dx: number,
+  dy: number
+): { x: number; y: number; width: number; height: number } {
+  let { x, y, width, height } = start;
+  if (handle.includes("e")) width = start.width + dx;
+  if (handle.includes("s")) height = start.height + dy;
+  if (handle.includes("w")) {
+    width = start.width - dx;
+    x = start.x + dx;
+  }
+  if (handle.includes("n")) {
+    height = start.height - dy;
+    y = start.y + dy;
+  }
+  if (width < COMMENT_MIN) {
+    if (handle.includes("w")) x -= COMMENT_MIN - width;
+    width = COMMENT_MIN;
+  }
+  if (height < COMMENT_MIN) {
+    if (handle.includes("n")) y -= COMMENT_MIN - height;
+    height = COMMENT_MIN;
+  }
+  return { x, y, width: Math.min(width, COMMENT_MAX), height: Math.min(height, COMMENT_MAX) };
+}
+
+/** Lines of `text` at most `perLine` characters wide, breaking at spaces where it can. */
+export function wrapText(text: string, perLine: number, maxLines: number): string[] {
+  const out: string[] = [];
+  for (const paragraph of text.split("\n")) {
+    let line = "";
+    for (const word of paragraph.split(/\s+/)) {
+      if (!word) continue;
+      let rest = word;
+      while (rest.length > perLine) {
+        if (line) {
+          out.push(line);
+          line = "";
+        }
+        out.push(rest.slice(0, perLine));
+        rest = rest.slice(perLine);
+      }
+      if (!line) line = rest;
+      else if (line.length + 1 + rest.length <= perLine) line += ` ${rest}`;
+      else {
+        out.push(line);
+        line = rest;
+      }
+    }
+    out.push(line);
+  }
+  if (out.length <= maxLines) return out;
+  const kept = out.slice(0, maxLines);
+  kept[maxLines - 1] = `${kept[maxLines - 1].slice(0, Math.max(0, perLine - 1))}…`;
+  return kept;
+}
+
 export function layoutNode(node: FlowNode, spec: NodeKindSpec): NodeLayout {
+  if (isAnnotation(spec)) {
+    const look = commentLook(node);
+    return {
+      node,
+      spec,
+      width: look.width,
+      height: look.height,
+      inputs: [],
+      outputs: [],
+      summary: "",
+      footer: 0,
+    };
+  }
   const pins = pinsOf(spec, node);
   const inputs = execFirst(pins.filter((pin) => pin.direction === "in"));
   const outputs = execFirst(pins.filter((pin) => pin.direction === "out"));
@@ -329,10 +526,19 @@ export function graphBounds(layouts: Map<string, NodeLayout>): Bounds | null {
   return { minX, minY, maxX, maxY };
 }
 
+/**
+ * What a marquee over `rect` selects: the nodes it touches, and the comments
+ * it wholly encloses - a marquee drawn inside a comment is about its nodes,
+ * not about the comment.
+ */
 export function nodesInRect(layouts: Map<string, NodeLayout>, rect: Bounds): string[] {
   const hits: string[] = [];
   for (const [id, layout] of layouts) {
     const [x, y] = layout.node.pos;
+    if (isAnnotation(layout.spec)) {
+      if (contains(rect, boundsOf(layout))) hits.push(id);
+      continue;
+    }
     if (
       x + layout.width >= rect.minX &&
       x <= rect.maxX &&

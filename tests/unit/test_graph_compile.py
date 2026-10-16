@@ -647,3 +647,85 @@ def test_a_model_node_reasoning_effort_must_be_a_known_level() -> None:
 
     doc["nodes"][1]["data"]["reasoning_effort"] = "high"
     compile_ok(doc)
+
+
+def warned_fields(issues: list[Any]) -> list[tuple[str, str]]:
+    return [(item.node_id, item.field) for item in issues if item.severity == "warning"]
+
+
+def test_a_comment_box_is_kept_in_the_file_but_never_runs() -> None:
+    doc = graph()
+    doc["nodes"].append(
+        {
+            "id": "c1",
+            "kind": "comment",
+            "pos": [-40, -60],
+            "data": {"title": "Design", "color": "#2563eb", "width": 520, "height": 300},
+        }
+    )
+    program, issues = compile_ok(doc)
+
+    assert "c1" not in program.nodes
+    # Not a pure node nobody reads, not an orphan that never runs: a note.
+    assert not any(node_id == "c1" for node_id, _ in warned_fields(issues))
+
+
+def test_a_wire_to_a_comment_is_refused() -> None:
+    doc = graph()
+    doc["nodes"].append({"id": "c1", "kind": "comment", "pos": [0, 0], "data": {}})
+    doc["edges"].append({"id": "e9", "kind": "exec", "from": ["n4", "out"], "to": ["c1", "in"]})
+    program, issues = compile_graph(doc, professions=PROFESSIONS)
+
+    assert program is None
+    assert any("no input pin" in message for message in errors(issues))
+
+
+def test_a_malformed_comment_only_warns() -> None:
+    doc = graph()
+    doc["nodes"].append(
+        {
+            "id": "c1",
+            "kind": "comment",
+            "pos": [0, 0],
+            "data": {
+                "color": "blue",
+                "width": 5,
+                "height": "tall",
+                "font_size": 200,
+                "move_mode": "sideways",
+            },
+        }
+    )
+    _, issues = compile_ok(doc)
+
+    assert sorted(field for node_id, field in warned_fields(issues) if node_id == "c1") == [
+        "color",
+        "font_size",
+        "height",
+        "move_mode",
+        "width",
+    ]
+
+
+def test_any_node_may_carry_a_note() -> None:
+    doc = graph()
+    doc["nodes"][2]["data"].update({"note": "keep it short", "note_shown": True})
+    _, issues = compile_ok(doc)
+
+    assert not any(node_id == "n3" for node_id, _ in warned_fields(issues))
+
+    doc["nodes"][2]["data"].update({"note": 4, "note_shown": "yes"})
+    _, issues = compile_ok(doc)
+    assert sorted(field for node_id, field in warned_fields(issues) if node_id == "n3") == [
+        "note",
+        "note_shown",
+    ]
+
+
+def test_the_catalog_marks_the_comment_as_an_annotation() -> None:
+    kinds = {row["kind"]: row for row in catalog_payload()["node_kinds"]}
+
+    assert kinds["comment"]["annotation"] is True
+    assert kinds["comment"]["pins"] == []
+    assert kinds["comment"]["pure"] is False
+    assert kinds["print"]["annotation"] is False

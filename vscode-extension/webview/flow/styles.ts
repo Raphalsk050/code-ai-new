@@ -225,6 +225,56 @@ input[type="checkbox"] { width: auto; }
 .flow-node-problem text { font-size: 10px; font-weight: 800; fill: #fff; }
 @keyframes flow-march { to { stroke-dashoffset: -24; } }
 
+/* ---- comments and notes ---- */
+/* The body lets clicks through: a marquee or a right-click inside a comment is
+   about the canvas and its nodes. Only the title bar and the edges are live. */
+.flow-comment-body { fill-opacity: .12; stroke-opacity: .55; stroke-width: 1.2; pointer-events: none; }
+.flow-comment-header { opacity: .82; cursor: move; }
+.flow-comment-title { fill: #fff; font-weight: 650; pointer-events: none; white-space: pre; }
+.flow-comment-halo {
+  fill: none; stroke: var(--accent); stroke-width: 2; opacity: 0; pointer-events: none;
+}
+.flow-comment.selected .flow-comment-halo { opacity: .95; }
+.flow-comment.error .flow-comment-body { stroke: var(--danger); stroke-opacity: 1; }
+.flow-comment .flow-node-problem { pointer-events: none; }
+.flow-comment-handle { fill: transparent; }
+.flow-comment-handle.n, .flow-comment-handle.s { cursor: ns-resize; }
+.flow-comment-handle.e, .flow-comment-handle.w { cursor: ew-resize; }
+.flow-comment-handle.ne, .flow-comment-handle.sw { cursor: nesw-resize; }
+.flow-comment-handle.nw, .flow-comment-handle.se { cursor: nwse-resize; }
+.flow-minimap-comment { fill-opacity: .18; stroke-opacity: .6; stroke-width: 1; }
+.flow-bubble { cursor: default; }
+.flow-bubble-shape {
+  fill: var(--vscode-editorHoverWidget-background, #2d2d30);
+  stroke: var(--vscode-editorHoverWidget-border, var(--border)); stroke-width: 1;
+  filter: url(#flow-shadow);
+}
+.flow-bubble-text { font-size: 11px; fill: var(--vscode-editorHoverWidget-foreground, var(--vscode-foreground)); white-space: pre; }
+.flow-bubble-close { cursor: pointer; opacity: .55; }
+.flow-bubble-close:hover { opacity: 1; }
+.flow-bubble-close circle { fill: var(--surface-2); }
+.flow-bubble-close path { stroke: var(--vscode-foreground); stroke-width: 1.4; stroke-linecap: round; }
+.flow-note-mark { cursor: pointer; }
+.flow-note-mark path {
+  fill: var(--vscode-editorHoverWidget-background, #2d2d30);
+  stroke: var(--muted); stroke-width: 1.2; stroke-linejoin: round;
+}
+.flow-note-mark:hover path { stroke: var(--accent); }
+.flow-inline-edit {
+  width: 100%; height: 100%; resize: none; margin: 0; padding: 2px 4px;
+  font-family: var(--vscode-font-family); line-height: 1.3;
+  color: var(--vscode-input-foreground, var(--vscode-foreground));
+  background: var(--vscode-input-background, #3c3c3c);
+  border: 1px solid var(--accent); border-radius: 4px; outline: none;
+}
+.flow-swatches { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.flow-swatch {
+  width: 18px; height: 18px; padding: 0; border-radius: 50%;
+  border: 2px solid transparent;
+}
+.flow-swatch.on { border-color: var(--vscode-foreground); }
+.flow-swatches input[type="color"] { width: 26px; height: 22px; padding: 0; border: none; background: none; }
+
 /* ---- a node with an agent working inside it ---- */
 /* The running halo already says "this node"; these say "and it is moving". */
 .flow-node-activity { font-size: 10.5px; fill: var(--accent); }
