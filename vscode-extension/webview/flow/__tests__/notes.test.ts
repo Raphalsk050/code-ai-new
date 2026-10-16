@@ -99,6 +99,16 @@ test("a comment drawn around nodes leaves room for its title", () => {
   assert.ok(box.pos[0] + box.width >= 900 + n2.width);
 });
 
+test("a comment drawn around a node with an open note clears the bubble", () => {
+  const plain = commentAround(layoutsOf(boxed()), ["n2"])!;
+  const doc = boxed();
+  doc.nodes[2].data = { note: "a reason this node is here", note_shown: true };
+  const noted = commentAround(layoutsOf(doc), ["n2"])!;
+  assert.ok(noted.pos[1] <= plain.pos[1] - 40, `${noted.pos[1]} vs ${plain.pos[1]}`);
+  doc.nodes[2].data.note_shown = false;
+  assert.deepEqual(commentAround(layoutsOf(doc), ["n2"])!.pos, plain.pos);
+});
+
 test("resizing from the left or the top moves the box with the edge", () => {
   const start = { x: 0, y: 0, width: 400, height: 300 };
   assert.deepEqual(resized(start, "nw", 100, 50), { x: 100, y: 50, width: 300, height: 250 });

@@ -210,7 +210,12 @@ export function commentAround(
 ): { pos: [number, number]; width: number; height: number } | null {
   const picked = ids.map((id) => layouts.get(id)).filter((item): item is NodeLayout => !!item);
   if (picked.length === 0) return null;
-  const box = picked.map(boundsOf).reduce((a, b) => ({
+  // An open note bubble sits above its node: the title must clear it.
+  const withNote = (layout: NodeLayout): Bounds => {
+    const bounds = boundsOf(layout);
+    return { ...bounds, minY: bounds.minY - noteHeight(layout.node) };
+  };
+  const box = picked.map(withNote).reduce((a, b) => ({
     minX: Math.min(a.minX, b.minX),
     minY: Math.min(a.minY, b.minY),
     maxX: Math.max(a.maxX, b.maxX),
@@ -224,6 +229,20 @@ export function commentAround(
     width: Math.max(COMMENT_MIN, Math.ceil(box.maxX + COMMENT_PAD - x)),
     height: Math.max(COMMENT_MIN, Math.ceil(box.maxY + COMMENT_PAD - y)),
   };
+}
+
+/** Bubble geometry, shared with notes.tsx so a comment can make room for it. */
+export const BUBBLE_W = 240;
+export const BUBBLE_FONT = 11;
+export const BUBBLE_LINE = 15;
+export const BUBBLE_TAIL = 9;
+const BUBBLE_CHARS = Math.floor((BUBBLE_W - 20) / (BUBBLE_FONT * 0.56));
+
+/** How far a node's open note bubble reaches above it; 0 when it has none showing. */
+export function noteHeight(node: FlowNode): number {
+  const note = String(node.data?.note ?? "");
+  if (!note.trim() || node.data?.note_shown === false) return 0;
+  return wrapText(note, BUBBLE_CHARS, 12).length * BUBBLE_LINE + 14 + BUBBLE_TAIL + 4;
 }
 
 export type ResizeHandle = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";

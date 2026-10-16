@@ -5,7 +5,17 @@
 import * as React from "react";
 
 import { t } from "../i18n";
-import { commentHeader, commentLook, NodeLayout, ResizeHandle, wrapText } from "./model";
+import {
+  BUBBLE_FONT,
+  BUBBLE_LINE,
+  BUBBLE_TAIL,
+  BUBBLE_W,
+  commentHeader,
+  commentLook,
+  NodeLayout,
+  ResizeHandle,
+  wrapText,
+} from "./model";
 
 const HANDLES: ResizeHandle[] = ["n", "s", "e", "w", "ne", "nw", "se", "sw"];
 // Rough advance of a character at 1px of font size.
@@ -163,10 +173,6 @@ function headerPath(width: number, height: number): string {
   return `M 0 ${height} L 0 ${r} Q 0 0 ${r} 0 L ${width - r} 0 Q ${width} 0 ${width} ${r} L ${width} ${height} Z`;
 }
 
-const BUBBLE_W = 240;
-const BUBBLE_FONT = 11;
-const BUBBLE_LINE = 15;
-const BUBBLE_TAIL = 9;
 
 export interface NoteBubbleProps {
   nodeId: string;
