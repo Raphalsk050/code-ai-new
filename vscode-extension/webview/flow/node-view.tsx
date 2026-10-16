@@ -4,7 +4,8 @@ import { t } from "../i18n";
 import type { Chip } from "./access";
 import { glyphFor } from "./glyphs";
 import { HEADER_H, NodeLayout, PinLayout } from "./model";
-import type { AgentRun, NodeRunStatus } from "./store";
+import { OutputPanel } from "./output-panel";
+import type { AgentRun, NodeRunStatus, OutputPart } from "./store";
 
 const RADIUS = 10;
 const CHIP_H = 15;
@@ -26,6 +27,8 @@ export interface NodeViewProps {
   chips: Chip[];
   /** The agent working inside this node, while one is. */
   activity?: AgentRun;
+  /** The node is open: its output panel, under the pins, at this height. */
+  panel?: { top: number; height: number; parts: OutputPart[]; live: boolean; onClose?: () => void };
   color(type: string): string;
   connected(pin: string, direction: "in" | "out"): boolean;
   onNodeDown(nodeId: string, event: React.MouseEvent): void;
@@ -139,6 +142,23 @@ export function NodeView(props: NodeViewProps): JSX.Element {
           onUp={() => props.onPinUp(layout.node.id, item, "out")}
         />
       ))}
+
+      {props.panel && props.panel.height > 12 && (
+        <foreignObject
+          className="flow-output-frame"
+          x={8}
+          y={props.panel.top}
+          width={Math.max(0, width - 16)}
+          height={props.panel.height - 6}
+        >
+          <OutputPanel
+            nodeId={layout.node.id}
+            parts={props.panel.parts}
+            live={props.panel.live}
+            onClose={props.panel.onClose}
+          />
+        </foreignObject>
+      )}
 
       {layout.footer > 0 && (
         <g transform={`translate(0, ${height - layout.footer})`}>

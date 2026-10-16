@@ -202,6 +202,54 @@ export function movedBy(layouts: Map<string, NodeLayout>, ids: string[]): string
   return [...moved];
 }
 
+/**
+ * The order comments are drawn in, back to front.
+ *
+ * Of two that overlap, one that starts right of the other's middle is laid on
+ * top of it, so it goes in front. Otherwise the bigger goes behind, which keeps
+ * a comment nested in another reachable.
+ */
+export function commentOrder<T extends { id: string; box: Bounds }>(comments: T[]): T[] {
+  const area = (item: T) => (item.box.maxX - item.box.minX) * (item.box.maxY - item.box.minY);
+  const bySize = (a: T, b: T) =>
+    area(b) - area(a) || a.box.minX - b.box.minX || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  const behind = (a: T, b: T): boolean => {
+    if (b.box.minX > (a.box.minX + a.box.maxX) / 2) return true;
+    if (a.box.minX > (b.box.minX + b.box.maxX) / 2) return false;
+    return bySize(a, b) < 0;
+  };
+  // Only overlapping pairs constrain each other; the rest keep the size order.
+  const fallback = [...comments].sort(bySize);
+  const waiting = new Map(fallback.map((item) => [item.id, 0]));
+  const fronts = new Map<string, T[]>(fallback.map((item) => [item.id, []]));
+  for (let i = 0; i < fallback.length; i += 1) {
+    for (let j = i + 1; j < fallback.length; j += 1) {
+      const a = fallback[i];
+      const b = fallback[j];
+      if (!overlaps(a.box, b.box)) continue;
+      const [back, front] = behind(a, b) ? [a, b] : [b, a];
+      fronts.get(back.id)!.push(front);
+      waiting.set(front.id, waiting.get(front.id)! + 1);
+    }
+  }
+  const out: T[] = [];
+  const done = new Set<string>();
+  while (out.length < fallback.length) {
+    // Three comments can disagree in a circle; the size order breaks the tie.
+    const next =
+      fallback.find((item) => !done.has(item.id) && waiting.get(item.id) === 0) ??
+      fallback.find((item) => !done.has(item.id))!;
+    done.add(next.id);
+    out.push(next);
+    for (const front of fronts.get(next.id)!) waiting.set(front.id, waiting.get(front.id)! - 1);
+  }
+  return out;
+}
+
+function overlaps(a: Bounds, b: Bounds): boolean {
+  return a.minX < b.maxX && b.minX < a.maxX && a.minY < b.maxY && b.minY < a.maxY;
+}
+
 /** Where a comment drawn around `ids` goes: their bounds, padded, with room for the title. */
 export function commentAround(
   layouts: Map<string, NodeLayout>,

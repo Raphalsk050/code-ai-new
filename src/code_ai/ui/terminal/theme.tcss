@@ -611,7 +611,7 @@ DoctorModal {
   width: 1fr;
 }
 
-#doctor-experimental {
+#doctor-experimental, #doctor-graph {
   height: 1fr;
   overflow: auto auto;
   scrollbar-size: 1 1;

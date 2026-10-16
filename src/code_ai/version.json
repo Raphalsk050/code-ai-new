@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 44,
-  "patch": 1,
-  "build": 117,
-  "updated": "2026-10-15",
-  "note": "Cache dependencies in the CI build"
+  "minor": 45,
+  "patch": 0,
+  "build": 118,
+  "updated": "2026-10-16",
+  "note": "The graph editor follows a run: the node at work opens to show what it writes"
 }

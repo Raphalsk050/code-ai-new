@@ -30,6 +30,7 @@ export function draftFromSettings(settings: Settings): Draft {
     presence_penalty: settings.presence_penalty ?? null,
     mcp_enabled: settings.mcp_enabled ?? true,
     commands_see_secrets: settings.commands_see_secrets ?? false,
+    graph_follow_run: settings.graph_follow_run ?? true,
   };
 }
 

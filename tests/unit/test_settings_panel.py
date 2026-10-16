@@ -178,6 +178,30 @@ async def test_presence_penalty_is_a_panel_setting(app: CodeAIApplication) -> No
     assert app.session.config.sampling.presence_penalty is None
 
 
+async def test_following_a_graph_run_is_on_and_switches_off_from_the_panel(
+    app: CodeAIApplication, tmp_path: Path
+) -> None:
+    import json
+
+    assert app.get_settings()["graph_follow_run"] is True
+
+    result = await app.update_settings({"graph_follow_run": False})
+
+    assert "graph_follow_run" in result["applied"]
+    assert app.session.config.graph.follow_run is False
+    assert app.get_settings()["graph_follow_run"] is False
+    # The run limits next to it are left as they were.
+    assert app.session.config.graph.max_nodes_executed == 200
+    saved = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert saved["graph"]["follow_run"] is False
+
+
+def test_a_graph_config_switch_is_not_held_to_the_positive_limits() -> None:
+    from code_ai.config.models import GraphConfig
+
+    GraphConfig.from_mapping({"follow_run": False}).validate()
+
+
 async def test_an_unknown_setting_is_reported_not_swallowed(app: CodeAIApplication) -> None:
     result = await app.update_settings({"nao_existe": 1})
 

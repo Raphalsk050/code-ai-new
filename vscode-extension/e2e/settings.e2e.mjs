@@ -53,6 +53,19 @@ export const tests = {
     assert("workspace" in sent.updates, "the form posts untouched fields too");
   },
 
+  async "the Graph tab switches off following a run"(ui, assert) {
+    await openPanel(ui, settingsSnapshot({ graph_follow_run: true }));
+    await goTo(ui, "Graph");
+    const toggle = '[role="switch"][aria-label="Follow the run on the canvas"]';
+    await ui.page.waitForSelector(toggle);
+    assert((await ui.page.getAttribute(toggle, "aria-checked")) === "true", "the switch starts off");
+    await ui.page.click(toggle);
+    await ui.shot("settings-graph-tab");
+    await ui.page.click(SAVE);
+    const [sent] = await ui.toHost("updateSettings");
+    assert(sent?.updates.graph_follow_run === false, "the switch did not reach the backend");
+  },
+
   async "sub-agent models are picked from the provider's list"(ui, assert) {
     await openPanel(ui);
     await goTo(ui, "Sub-agents");

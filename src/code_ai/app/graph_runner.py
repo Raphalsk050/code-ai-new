@@ -46,12 +46,16 @@ from code_ai.tools.output import bound_text
 
 logger = logging.getLogger(__name__)
 
-# Child events worth surfacing per node. Streaming deltas are excluded for the
-# same reason the sub-agent coordinator excludes them: token-level output from a
-# graph would scramble the log without telling the user anything.
+# Child events worth surfacing per node as progress. Streamed text goes apart,
+# as graph.node.output: the node's own panel reads it, the run log never does.
 _FORWARDED = frozenset(
     {"tool.call.started", "tool.call.completed", "tool.call.failed", "model.response.completed"}
 )
+_STREAMED = {"model.stream.delta": "answer", "model.thinking.delta": "thinking"}
+
+# A node's streamed text is passed on in bursts this far apart: token by token,
+# a long answer would repaint the whole canvas hundreds of times a minute.
+_STREAM_FLUSH_S = 0.08
 
 # Grace over a node's own timeout before the run stops waiting for it.
 _HARD_GRACE_SECONDS = 30.0
@@ -201,7 +205,8 @@ class GraphNodeExecutor:
             raw_prompt=raw_prompt,
         )
         tools = built.orchestrator.tool_registry.names()
-        forwarder = self._forwarder(node_id, agent_name, label)
+        stream = _NodeStream(self._output_emitter(node_id, agent_name))
+        forwarder = self._forwarder(node_id, agent_name, label, stream)
         built.event_bus.subscribe(forwarder)
         await self._bus.emit(
             "graph.agent.started",
@@ -251,6 +256,7 @@ class GraphNodeExecutor:
             with contextlib.suppress(BaseException):
                 await mirror
             built.event_bus.unsubscribe(forwarder)
+            await stream.close()
 
         usage = built.usage.to_dict()
         if result.cancelled:
@@ -356,6 +362,9 @@ class GraphNodeExecutor:
                 status="failed", error=str(exc) or type(exc).__name__, agent_name=agent_name
             )
         usage = response.usage
+        # No stream here, so the node's panel gets the answer whole.
+        if response.text:
+            await self._output_emitter(node_id, agent_name)("answer", response.text)
         return AgentOutcome(
             status="completed",
             summary=response.text or "",
@@ -510,10 +519,36 @@ class GraphNodeExecutor:
             return value
         raise ValueError(f"Unsupported API key reference {reference!r}.")
 
-    def _forwarder(self, node_id: str, agent_name: str, profession: str):
+    def _output_emitter(
+        self, node_id: str, agent_name: str
+    ) -> Callable[[str, str], Awaitable[None]]:
+        async def emit(channel: str, text: str) -> None:
+            await self._bus.emit(
+                "graph.node.output",
+                {
+                    "run_id": self._run_id,
+                    "node_id": node_id,
+                    "agent_name": agent_name,
+                    "channel": channel,
+                    "text": text,
+                },
+                source="graph",
+            )
+
+        return emit
+
+    def _forwarder(self, node_id: str, agent_name: str, profession: str, stream: _NodeStream):
         async def handler(envelope: EventEnvelope) -> None:
+            channel = _STREAMED.get(envelope.event_type)
+            if channel is not None:
+                text = (envelope.payload or {}).get("text")
+                if isinstance(text, str) and text:
+                    await stream.add(channel, text)
+                return
             if envelope.event_type not in _FORWARDED:
                 return
+            # What was said before a tool call reads before it.
+            await stream.flush()
             await self._bus.emit(
                 "graph.node.progress",
                 {
@@ -648,6 +683,45 @@ class GraphRunner:
 
 
 # -- helpers --------------------------------------------------------------
+
+
+class _NodeStream:
+    """One agent's streamed text, held back briefly and passed on in bursts."""
+
+    def __init__(self, emit: Callable[[str, str], Awaitable[None]]) -> None:
+        self._emit = emit
+        self._channel = ""
+        self._parts: list[str] = []
+        self._timer: asyncio.Task[None] | None = None
+
+    async def add(self, channel: str, text: str) -> None:
+        # Thinking and answer never share a burst: the panel draws them apart.
+        if channel != self._channel:
+            await self.flush()
+            self._channel = channel
+        self._parts.append(text)
+        if self._timer is None:
+            self._timer = asyncio.ensure_future(self._flush_later())
+
+    async def flush(self) -> None:
+        if not self._parts:
+            return
+        text = "".join(self._parts)
+        self._parts = []
+        await self._emit(self._channel, text)
+
+    async def close(self) -> None:
+        if self._timer is not None:
+            self._timer.cancel()
+            with contextlib.suppress(BaseException):
+                await self._timer
+            self._timer = None
+        await self.flush()
+
+    async def _flush_later(self) -> None:
+        await asyncio.sleep(_STREAM_FLUSH_S)
+        self._timer = None
+        await self.flush()
 
 
 async def _mirror(parent: asyncio.Event, child: asyncio.Event) -> None:

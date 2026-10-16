@@ -187,6 +187,15 @@ function conversation() {
   );
 }
 
+/** The camera as the canvas draws it, read off its transform. */
+async function viewOf(ui) {
+  const transform = await ui.page.evaluate(() =>
+    document.querySelector('[data-testid="flow-canvas"] > g').getAttribute("transform")
+  );
+  const [, x, y, zoom] = transform.match(/translate\(([-\d.e]+), ([-\d.e]+)\) scale\(([-\d.e]+)\)/);
+  return { pan: [Number(x), Number(y)], zoom: Number(zoom) };
+}
+
 export const tests = {
   // 0 -----------------------------------------------------------------
   // At the width an editor tab really has, with the run half-finished: the
@@ -1323,11 +1332,16 @@ export const tests = {
     await boot(ui);
 
     await ui.page.click('[data-testid="zoom-in"]');
-    let sent = await lastGraph(ui);
-    assert(Math.abs(sent.view.zoom - 0.96) < 0.001, `zoom in gave ${sent.view.zoom}`);
+    let view = await viewOf(ui);
+    assert(Math.abs(view.zoom - 0.96) < 0.001, `zoom in gave ${view.zoom}`);
     await ui.page.click('[data-testid="zoom-reset"]');
-    sent = await lastGraph(ui);
-    assert(sent.view.zoom === 1, `reset gave ${sent.view.zoom}`);
+    view = await viewOf(ui);
+    assert(view.zoom === 1, `reset gave ${view.zoom}`);
+    // The camera is not an edit: it reaches the file with the save, not before.
+    assert((await ui.toHost("flowEdit")).length === 0, "zooming wrote the document");
+    await ui.page.keyboard.press("Control+s");
+    const saved = await lastGraph(ui);
+    assert(saved.view.zoom === 1, `the save carried zoom ${saved.view.zoom}`);
     const label = await ui.page.locator('[data-testid="zoom-reset"]').textContent();
     assert(label === "100%", `the zoom label reads ${label}`);
     await ui.shot("43-toolbar");
@@ -1336,22 +1350,16 @@ export const tests = {
   "the minimap centres the view where it is clicked": async (ui, assert) => {
     await ui.page.setViewportSize({ width: 1400, height: 950 });
     await boot(ui);
-    // The map stays away while the whole graph fits; zoom in until it does not.
-    assert(
-      (await ui.page.locator('[data-testid="minimap"]').count()) === 0,
-      "the minimap shows although everything is on screen"
-    );
-    await ui.page.click('[data-testid="zoom-in"]');
-    await ui.page.click('[data-testid="zoom-in"]');
+    // The map is there all along, the whole graph fitting on screen or not.
     await ui.page.waitForSelector('[data-testid="minimap"]');
-    const before = (await lastGraph(ui)).view.pan;
+    const before = (await viewOf(ui)).pan;
     const box = await ui.page.locator('[data-testid="minimap"]').boundingBox();
     await ui.page.mouse.click(box.x + box.width - 12, box.y + box.height - 12);
 
-    const sent = await lastGraph(ui);
+    const after = (await viewOf(ui)).pan;
     assert(
-      sent.view.pan[0] !== before[0] || sent.view.pan[1] !== before[1],
-      `the view did not move: ${JSON.stringify(sent.view.pan)}`
+      after[0] !== before[0] || after[1] !== before[1],
+      `the view did not move: ${JSON.stringify(after)}`
     );
     await ui.shot("45-minimap");
     await ui.page.click('[data-testid="minimap-toggle"]');

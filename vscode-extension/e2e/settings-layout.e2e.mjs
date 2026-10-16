@@ -19,7 +19,7 @@ export const tests = {
   async "an edit is marked on its row, its category and the header, and can be discarded"(ui, assert) {
     await openPanel(ui);
     const nav = await ui.page.$$eval(".settings-nav-item", (els) => els.map((e) => e.textContent));
-    assert(nav.join("|") === "Model|Agent|Editor|Context|Tools and MCP|Sub-agents|Advanced", `nav: ${nav}`);
+    assert(nav.join("|") === "Model|Agent|Editor|Context|Tools and MCP|Sub-agents|Graph|Advanced", `nav: ${nav}`);
     assert(!(await ui.page.$(".save-bar")), "the save bar shows with nothing to save");
     await ui.page.fill(`${row("base_url")} input`, "http://gpu-box:11434/v1");
     assert(await ui.page.$(`${row("base_url")} .dirty-dot`), "the row is not marked");

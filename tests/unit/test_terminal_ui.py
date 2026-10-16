@@ -419,6 +419,35 @@ async def test_doctor_experimental_tab_toggles_on_demand_tools(tmp_path) -> None
         assert config.experimental.on_demand_tools is False
 
 
+async def test_doctor_graph_tab_switches_off_following_a_run(tmp_path) -> None:
+    from textual.widgets import Checkbox, TabbedContent
+
+    from code_ai.ui.terminal.doctor import DoctorModal
+
+    cfg_path = tmp_path / "config.json"
+    fake_app = FakeTerminalApplication(tmp_path)
+    terminal_app = create_terminal_app(fake_app, config_path=cfg_path)
+
+    async with terminal_app.run_test(size=(120, 50)) as pilot:
+        input_widget = terminal_app.query_one("#input", TextArea)
+        input_widget.value = "/doctor"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        modal = terminal_app.screen
+        assert isinstance(modal, DoctorModal)
+        modal.query_one("#doctor-tabs", TabbedContent).active = "doctor-tab-graph"
+        await pilot.pause(0.1)
+
+        switch = modal.query_one("#doctor-graph-follow-run", Checkbox)
+        assert switch.value is True
+        switch.value = False
+        await pilot.pause(0.2)
+        assert fake_app.session.config.graph.follow_run is False
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert saved["graph"]["follow_run"] is False
+        assert "no longer follows" in str(modal.query_one("#doctor-status", Static).render())
+
+
 async def test_subagent_events_populate_agents_panel(tmp_path) -> None:
     fake_app = FakeTerminalApplication(tmp_path)
     terminal_app = create_terminal_app(fake_app)

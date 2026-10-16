@@ -138,6 +138,8 @@ export interface GraphCatalog {
     variables: number;
     run?: { max_nodes_executed: number; max_seconds: number; max_loop_iterations: number };
   };
+  /** The setting: open the node at work while a graph runs. Absent from an older backend. */
+  follow_run?: boolean;
 }
 
 export interface ValidationIssue {

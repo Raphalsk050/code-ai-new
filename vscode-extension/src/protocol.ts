@@ -137,6 +137,8 @@ export interface Settings {
   mcp_enabled?: boolean;
   /** Keys and tokens from the user's environment reach the agent's commands. */
   commands_see_secrets?: boolean;
+  /** The graph editor opens the node at work while a graph runs. */
+  graph_follow_run?: boolean;
   supported: {
     api_mode: string[];
     permission_mode: string[];

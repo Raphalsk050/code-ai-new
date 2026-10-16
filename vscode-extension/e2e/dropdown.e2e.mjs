@@ -16,7 +16,7 @@ async function openAgentSettings(ui) {
 export const tests = {
   async "no native select is left in the panel"(ui, assert) {
     await openAgentSettings(ui);
-    for (const category of ["Model", "Agent", "Editor", "Context", "Tools and MCP", "Sub-agents", "Advanced"]) {
+    for (const category of ["Model", "Agent", "Editor", "Context", "Tools and MCP", "Sub-agents", "Graph", "Advanced"]) {
       await ui.page.click(`.settings-nav-item:has-text("${category}")`);
       assert((await ui.page.$$("select")).length === 0, `${category} still has a native select`);
     }

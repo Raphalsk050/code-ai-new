@@ -24,6 +24,7 @@ import { accentOf, isAnnotation, layoutGraph, NODE_W, nodesInside, pinsOf, Point
 import { FLOW_STYLE } from "./styles";
 import {
   Action,
+  contentKey,
   EditorState,
   hasErrors,
   initialState,
@@ -47,7 +48,7 @@ function App(): JSX.Element {
   // does not write the document. Seeded with the placeholder the panel mounts
   // on: that graph is not the user's, and pushing it blanks the file.
   const pushed = React.useRef<string | null>(null);
-  if (pushed.current === null) pushed.current = JSON.stringify(state.graph);
+  if (pushed.current === null) pushed.current = contentKey(state.graph);
   const stateRef = React.useRef(state);
   stateRef.current = state;
   // The right-click menu is pure UI: it never belongs in the document, so it
@@ -68,7 +69,7 @@ function App(): JSX.Element {
           dispatch({ type: "catalog", catalog: message.catalog });
           break;
         case "flowDocument":
-          pushed.current = JSON.stringify(message.graph);
+          pushed.current = contentKey(message.graph);
           dispatch({ type: "document", graph: message.graph, fileName: message.fileName });
           break;
         case "flowValidation":
@@ -118,13 +119,21 @@ function App(): JSX.Element {
   }, []);
 
   // Every committed graph change goes back to the document, which is what makes
-  // the tab dirty and Ctrl+S meaningful.
+  // the tab dirty and Ctrl+S meaningful. A pan or a zoom alone does not: each
+  // write is a step on VSCode's undo stack, and the camera is not an edit. The
+  // view rides along with the next real change, or with the save.
+  const { nodes, edges, variables, name, version } = state.graph;
   React.useEffect(() => {
-    const serialized = JSON.stringify(state.graph);
+    const serialized = contentKey(stateRef.current.graph);
     if (serialized === pushed.current) return;
     pushed.current = serialized;
-    send({ type: "flowEdit", graph: state.graph });
-  }, [state.graph]);
+    send({ type: "flowEdit", graph: stateRef.current.graph });
+  }, [nodes, edges, variables, name, version]);
+
+  const save = React.useCallback(() => {
+    send({ type: "flowEdit", graph: stateRef.current.graph });
+    send({ type: "flowSave" });
+  }, []);
 
   // -- actions ----------------------------------------------------------
 
@@ -197,7 +206,7 @@ function App(): JSX.Element {
       }
       if (mod && event.key.toLowerCase() === "s") {
         event.preventDefault();
-        send({ type: "flowSave" });
+        save();
         return;
       }
       if (mod && event.key.toLowerCase() === "a") {
@@ -269,7 +278,7 @@ function App(): JSX.Element {
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("paste", onPaste);
     };
-  }, [frame, runGraph, stopGraph]);
+  }, [frame, runGraph, stopGraph, save]);
 
   // -- render -----------------------------------------------------------
 
@@ -282,7 +291,7 @@ function App(): JSX.Element {
         dispatch={dispatch}
         onRun={runGraph}
         onStop={stopGraph}
-        onSave={() => send({ type: "flowSave" })}
+        onSave={save}
         onFrame={frame}
         onZoom={(factor) => zoomTo((zoom) => zoom * factor)}
         onZoomReset={() => zoomTo(() => 1)}

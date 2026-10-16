@@ -974,6 +974,18 @@ const PT: Record<string, string> = {
   "(command)": "(comando)",
   "(earlier output cut)": "(saída anterior cortada)",
   "idle": "ocioso",
+  // The graph editor following a run.
+  "Follow the run on the canvas": "Acompanhar a execução no canvas",
+  "While a graph runs, the node at work opens so you can read what it writes, the nodes around it step aside, and it folds back before the next one opens.":
+    "Enquanto um grafo roda, o node em execução se abre para você ler o que ele escreve, os nodes em volta se afastam, e ele se fecha antes de o próximo abrir.",
+  "Output": "Saída",
+  "Show the output": "Mostrar a saída",
+  "Hide the output": "Esconder a saída",
+  "Thinking": "Pensando",
+  "Working…": "Trabalhando…",
+  "Again": "De novo",
+  "Done in {0}s": "Concluído em {0}s",
+  "a tool": "uma ferramenta",
 };
 
 const TABLES: Record<Lang, Record<string, string>> = { en: {}, pt: PT };

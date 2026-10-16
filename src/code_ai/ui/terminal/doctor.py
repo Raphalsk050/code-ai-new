@@ -174,6 +174,7 @@ _TAB_TITLES = {
     "doctor-tab-tools": "Agent tools",
     "doctor-tab-subagents": "Sub-agents",
     "doctor-tab-mcp": "MCP servers",
+    "doctor-tab-graph": "Orchestrator graph",
     "doctor-tab-experimental": "Experimental",
 }
 
@@ -326,6 +327,8 @@ class DoctorModal(ModalScreen[None]):
                         on_change=self._on_change,
                         status=self._status,
                     )
+                with TabPane("Graph", id="doctor-tab-graph"):
+                    yield VerticalScroll(*self._graph_widgets(), id="doctor-graph")
                 with TabPane("Experimental", id="doctor-tab-experimental"):
                     yield VerticalScroll(
                         *self._experimental_widgets(), id="doctor-experimental"
@@ -938,6 +941,43 @@ class DoctorModal(ModalScreen[None]):
     # ------------------------------------------------------------------ #
     # Experimental tab
     # ------------------------------------------------------------------ #
+    def _graph_widgets(self) -> list[Any]:
+        return [
+            Static(
+                "How the graph editor (.flow.json) behaves while a graph runs. "
+                "Saved at once; an open editor picks it up on its next run.",
+                classes="doctor-intro",
+            ),
+            Checkbox(
+                "Follow the run on the canvas",
+                bool(self._config.graph.follow_run),
+                id="doctor-graph-follow-run",
+                compact=True,
+            ),
+            Static(
+                "The node at work opens to show what it writes, the nodes around it "
+                "step aside, and it folds back before the next one opens.",
+                classes="doctor-experiment-hint",
+            ),
+        ]
+
+    def _apply_graph_follow(self, value: bool) -> str:
+        config = self._config
+        if config.graph.follow_run == value:
+            return ""
+        changes = asdict(config.graph)
+        changes["follow_run"] = value
+        try:
+            validated = persist_config_updates(
+                config, {"graph": changes}, explicit_path=self._config_path
+            )
+        except Exception as exc:  # noqa: BLE001
+            return f"✗ Not saved: {exc}"
+        config.graph = validated.graph
+        if self._on_change is not None:
+            self._on_change()
+        return f"✓ The graph editor {'follows' if value else 'no longer follows'} a run"
+
     def _experimental_widgets(self) -> list[Any]:
         experimental = self._config.experimental
         widgets: list[Any] = [
@@ -983,6 +1023,11 @@ class DoctorModal(ModalScreen[None]):
         checkbox_id = event.checkbox.id or ""
         if checkbox_id == "doctor-commands-secrets":
             self._status(self._apply_commands_secrets(event.value))
+            return
+        if checkbox_id == "doctor-graph-follow-run":
+            message = self._apply_graph_follow(event.value)
+            if message:
+                self._status(message)
             return
         if checkbox_id.startswith("doctor-experiment-"):
             message = self._apply_experiment(

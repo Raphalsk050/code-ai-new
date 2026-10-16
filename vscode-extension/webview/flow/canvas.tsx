@@ -10,6 +10,7 @@ import {
   Point,
   accentOf,
   commentLook,
+  commentOrder,
   edgeType,
   graphBounds,
   isAnnotation,
@@ -23,6 +24,8 @@ import {
   wirePath,
 } from "./model";
 import { t } from "../i18n";
+import { panelTop, presented } from "./focus";
+import { useFollowRun } from "./follow-run";
 import { NodeView } from "./node-view";
 import { Box, CommentView, NoteBubble, NoteMark } from "./notes";
 import type { Action, EditorState, NodeRunStatus } from "./store";
@@ -87,6 +90,7 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
   const svgRef = React.useRef<SVGSVGElement | null>(null);
   const [drag, setDrag] = React.useState<DragState | null>(null);
   const [size, setSize] = React.useState({ width: 900, height: 600 });
+  const lastSlide = React.useRef(-Infinity);
   // Repaint while edges are lit so the glow actually expires.
   const [, setTick] = React.useState(0);
 
@@ -103,7 +107,17 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
     observer.observe(element);
     const rect = element.getBoundingClientRect();
     setSize({ width: rect.width, height: rect.height });
-    return () => observer.disconnect();
+    // React listens to the wheel passively, so its handler cannot stop a pinch
+    // from zooming the whole page. This one can; the text panels keep theirs.
+    const hold = (event: WheelEvent) => {
+      if ((event.target as Element | null)?.closest?.(".flow-output")) return;
+      event.preventDefault();
+    };
+    element.addEventListener("wheel", hold, { passive: false });
+    return () => {
+      observer.disconnect();
+      element.removeEventListener("wheel", hold);
+    };
   }, []);
 
   // Lit wires animate their dots; a running agent moves nothing on its own, and
@@ -115,9 +129,31 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
     return () => window.clearInterval(timer);
   }, [lit]);
 
+  // Keyed on the nodes, not the graph: a pan replaces the graph's view and
+  // nothing else, and the camera following a run pans every frame.
+  const graphNodes = state.graph.nodes;
   const layouts = React.useMemo(
     () => (catalog ? layoutGraph(state.graph, catalog) : new Map<string, NodeLayout>()),
-    [state.graph, catalog]
+    [graphNodes, catalog]
+  );
+
+  // A node opened by hand to read what it did; a new run takes the canvas back.
+  const [pinned, setPinned] = React.useState<string | null>(null);
+  React.useEffect(() => setPinned(null), [state.run.startedAt]);
+  const follow = useFollowRun({
+    run: state.run,
+    enabled: catalog?.raw.follow_run !== false,
+    layouts,
+    size,
+    view: state.graph.view,
+    viewEdits: state.viewEdits,
+    pinned,
+    dispatch,
+  });
+  // The graph as drawn: the open node grown, the ones around it pushed aside.
+  const shown = React.useMemo(
+    () => presented(layouts, follow.focusId, follow.p),
+    [layouts, follow.focusId, follow.p]
   );
   const problems = React.useMemo(() => issuesByNode(state.issues), [state.issues]);
   const chips = React.useMemo(() => {
@@ -329,7 +365,16 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
     const rect = svgRef.current?.getBoundingClientRect();
     const px = event.clientX - (rect?.left ?? 0);
     const py = event.clientY - (rect?.top ?? 0);
-    const factor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
+    const now = performance.now();
+    const gesture = wheelGesture(event.nativeEvent, now - lastSlide.current < 250);
+    if (gesture === "pan") {
+      lastSlide.current = now;
+      dispatch({ type: "setView", pan: [pan[0] - event.deltaX, pan[1] - event.deltaY] });
+      return;
+    }
+    // A pinch comes as small steps; a wheel notch as one big one.
+    const factor =
+      gesture === "pinch" ? Math.exp(-event.deltaY * 0.01) : event.deltaY < 0 ? 1.12 : 1 / 1.12;
     // Keep the point under the cursor fixed; zooming to the corner is the
     // fastest way to lose a graph.
     const view = zoomAround({ pan, zoom }, { x: px, y: py }, zoom * factor);
@@ -379,8 +424,8 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
   // -- render -----------------------------------------------------------
 
   const wires = state.graph.edges.flatMap((edge) => {
-    const from = pinPoint(layouts, edge.from[0], edge.from[1], "out");
-    const to = pinPoint(layouts, edge.to[0], edge.to[1], "in");
+    const from = pinPoint(shown, edge.from[0], edge.from[1], "out");
+    const to = pinPoint(shown, edge.to[0], edge.to[1], "in");
     if (!from || !to) return [];
     const dragOffsetFrom = offsetFor(edge.from[0]);
     const dragOffsetTo = offsetFor(edge.to[0]);
@@ -393,13 +438,38 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
   const marquee =
     drag?.kind === "marquee" ? rectOf(drag.startWorld, drag.current) : null;
 
-  // Comments behind everything, the biggest furthest back so a nested one stays reachable.
-  const all = Array.from(layouts.values());
-  const comments = all
-    .filter((layout) => isAnnotation(layout.spec))
-    .sort((a, b) => b.width * b.height - a.width * a.height);
-  const nodes = all.filter((layout) => !isAnnotation(layout.spec));
+  // Comments behind everything, in the order commentOrder settles between them.
+  const all = Array.from(shown.values());
+  const comments = commentOrder(
+    all
+      .filter((layout) => isAnnotation(layout.spec))
+      .map((layout) => {
+        const at = boxFor(layout);
+        return {
+          id: layout.node.id,
+          layout,
+          box: { minX: at.x, minY: at.y, maxX: at.x + at.width, maxY: at.y + at.height },
+        };
+      })
+  ).map((item) => item.layout);
+  // The open node last, so nothing it pushed aside is drawn over it.
+  const nodes = all
+    .filter((layout) => !isAnnotation(layout.spec))
+    .sort((a, b) => Number(a.node.id === follow.focusId) - Number(b.node.id === follow.focusId));
   const editing = state.editing;
+  const panelFor = (layout: NodeLayout) => {
+    const id = layout.node.id;
+    if (id !== follow.focusId) return undefined;
+    const base = layouts.get(id);
+    const top = panelTop(layout);
+    return {
+      top,
+      height: base ? layout.height - base.height : 0,
+      parts: state.run.output[id] ?? [],
+      live: state.run.nodes[id] === "running",
+      onClose: pinned === id ? () => setPinned(null) : undefined,
+    };
+  };
 
   return (
     <div className="flow-canvas-wrap">
@@ -549,7 +619,7 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
           {drag?.kind === "wire" && drag.pin && (
             <path
               className={`flow-wire ${drag.pin.pin.pin.type === "exec" ? "exec" : "data"}`}
-              d={pendingPath(layouts, drag)}
+              d={pendingPath(shown, drag)}
               stroke={catalog?.color(drag.pin.pin.pin.type) ?? "#fff"}
               strokeDasharray="5 4"
             />
@@ -570,6 +640,7 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
                 accent={accentOf(layout.spec)}
                 chips={chips.get(layout.node.id) ?? []}
                 activity={state.run.agents[layout.node.id]}
+                panel={panelFor(layout)}
                 color={(type) => catalog?.color(type) ?? "#888"}
                 connected={(pin, direction) =>
                   connected.has(`${layout.node.id}:${pin}:${direction}`)
@@ -628,6 +699,33 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
             );
           })}
 
+          {nodes.map((layout) => {
+            // Folded, what a node did stays a click away, the way a finished thought does.
+            const id = layout.node.id;
+            if (id === follow.focusId || !(state.run.output[id] ?? []).length) return null;
+            if (state.run.nodes[id] === "running") return null;
+            const offset = offsetFor(id);
+            return (
+              <g
+                key={`output-${id}`}
+                className="flow-output-pill"
+                data-testid={`output-pill-${id}`}
+                transform={`translate(${layout.node.pos[0] + offset.dx + 12}, ${layout.node.pos[1] + offset.dy + layout.height + 5})`}
+                onMouseDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setPinned(pinned === id ? null : id);
+                }}
+              >
+                <title>{t("Show the output")}</title>
+                <rect width={74} height={18} rx={9} ry={9} />
+                <text x={10} y={12.5}>
+                  ▸ {t("Output")}
+                </text>
+              </g>
+            );
+          })}
+
           {marquee && (
             <rect
               className="flow-marquee"
@@ -645,7 +743,7 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
           {t("Empty graph. Right-click the canvas to create the first node.")}
         </div>
       )}
-      {minimap && offScreen(layouts, state.graph.view, size) && (
+      {minimap && layouts.size > 0 && (
         <Minimap
           layouts={layouts}
           view={state.graph.view}
@@ -659,21 +757,25 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
   );
 }
 
-/** Whether any node sits outside the visible canvas, which is when a map helps. */
-function offScreen(
-  layouts: Map<string, NodeLayout>,
-  view: { pan: [number, number]; zoom: number },
-  size: { width: number; height: number }
-): boolean {
-  const bounds = graphBounds(layouts);
-  if (!bounds) return false;
-  const { pan, zoom } = view;
-  return (
-    bounds.minX * zoom + pan[0] < 0 ||
-    bounds.minY * zoom + pan[1] < 0 ||
-    bounds.maxX * zoom + pan[0] > size.width ||
-    bounds.maxY * zoom + pan[1] > size.height
-  );
+/**
+ * What a wheel event is. A Magic Mouse has no middle button: sliding a finger
+ * on it, like two fingers on a trackpad, sends a stream of small wheel steps,
+ * and those move the camera. A pinch (or Ctrl+wheel) zooms. A wheel with
+ * notches sends one large step per notch and keeps zooming, as it always has.
+ */
+export function wheelGesture(
+  event: { deltaX: number; deltaY: number; deltaMode: number; ctrlKey: boolean; wheelDeltaY?: number },
+  /** A slide was seen a moment ago: its momentum tail is the same slide. */
+  sliding = false
+): "pan" | "pinch" | "wheel" {
+  if (event.ctrlKey) return "pinch";
+  if (event.deltaMode !== 0) return "wheel";
+  if (sliding || event.deltaX !== 0) return "pan";
+  // Chromium reports a notch as a multiple of 120; a surface, as whatever it moved.
+  if (typeof event.wheelDeltaY === "number" && event.wheelDeltaY !== 0) {
+    return event.wheelDeltaY % 120 === 0 ? "wheel" : "pan";
+  }
+  return Number.isInteger(event.deltaY) && Math.abs(event.deltaY) >= 50 ? "wheel" : "pan";
 }
 
 const MAP_W = 200;

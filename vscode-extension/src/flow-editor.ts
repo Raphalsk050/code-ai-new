@@ -155,6 +155,16 @@ class FlowSession {
         // Our own write comes back as a change; re-pushing it would fight the
         // user's cursor and, mid-drag, undo the drag.
         if (sameFlowText(event.document.getText(), this.lastWritten)) return;
+        // Ctrl+Z in the panel reaches VSCode too, which undoes the text under
+        // the canvas's own undo. The canvas is the one history: put its graph back.
+        const reason = event.reason;
+        if (
+          this.lastWritten &&
+          (reason === vscode.TextDocumentChangeReason.Undo || reason === vscode.TextDocumentChangeReason.Redo)
+        ) {
+          void this.queueText(this.lastWritten);
+          return;
+        }
         this.pushDocument();
       }),
       this.bridge.subscribe({
@@ -292,7 +302,8 @@ class FlowSession {
         this.scheduleValidation(message.graph);
         break;
       case "flowSave":
-        void this.document.save();
+        // The panel sends its camera just before saving: the save waits for it.
+        void this.writing.then(() => this.document.save());
         break;
       case "flowValidate":
         this.scheduleValidation(message.graph, 0);
@@ -323,8 +334,21 @@ class FlowSession {
   }
 
   /** Replace the whole document text. VSCode then owns dirty state and Ctrl+S. */
-  private async write(graph: FlowGraph): Promise<void> {
-    const text = serializeFlow(graph);
+  /** Writes in the order they were asked for, and something a save can wait on. */
+  private writing: Promise<void> = Promise.resolve();
+
+  private write(graph: FlowGraph): Promise<void> {
+    return this.queueText(serializeFlow(graph));
+  }
+
+  private queueText(text: string): Promise<void> {
+    this.writing = this.writing.then(() => this.writeText(text)).catch((err) => {
+      console.error("[code-ai] flow write failed", err);
+    });
+    return this.writing;
+  }
+
+  private async writeText(text: string): Promise<void> {
     if (sameFlowText(text, this.document.getText())) return;
     this.lastWritten = text;
     const edit = new vscode.WorkspaceEdit();

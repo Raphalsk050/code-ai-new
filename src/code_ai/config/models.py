@@ -531,6 +531,7 @@ class GraphConfig:
     max_seconds: int = int(DEFAULT_GRAPH["max_seconds"])
     max_loop_iterations: int = int(DEFAULT_GRAPH["max_loop_iterations"])
     max_concurrent_nodes: int = int(DEFAULT_GRAPH["max_concurrent_nodes"])
+    follow_run: bool = bool(DEFAULT_GRAPH["follow_run"])
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any] | None) -> GraphConfig:
@@ -542,10 +543,13 @@ class GraphConfig:
             max_seconds=int(values["max_seconds"]),
             max_loop_iterations=int(values["max_loop_iterations"]),
             max_concurrent_nodes=int(values["max_concurrent_nodes"]),
+            follow_run=bool(values["follow_run"]),
         )
 
     def validate(self) -> None:
         for key, value in asdict(self).items():
+            if isinstance(value, bool):
+                continue
             if value <= 0:
                 raise ConfigurationError(f"Graph value {key} must be positive.")
         if self.max_nodes_executed > 5000:

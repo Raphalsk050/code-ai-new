@@ -77,11 +77,27 @@ export interface AgentRun {
   tools?: number;
 }
 
+/** One piece of what a node did, as its open panel shows it. */
+export interface OutputPart {
+  kind: "text" | "thinking" | "tool" | "info" | "error" | "result";
+  text: string;
+}
+
+/** What a node may keep for its panel; a long agent loses its oldest text first. */
+export const OUTPUT_LIMIT = 60000;
+/** Steps of the run's order kept for the canvas to follow. */
+const ORDER_LIMIT = 400;
+
 export interface RunState {
   running: boolean;
   runId: string;
   status: string;
   nodes: Record<string, NodeRunStatus>;
+  /** Node ids in the order the run reached them; `orderBase` is the index of the first kept. */
+  order: string[];
+  orderBase: number;
+  /** What each node said and did this run, for its panel. */
+  output: Record<string, OutputPart[]>;
   /** Edges lit right now, each with the moment it was lit (for the dots). */
   active: Record<string, number>;
   traveled: string[];
@@ -120,6 +136,8 @@ export interface EditorState {
   dirty: boolean;
   /** Text being edited on the canvas: a comment's title or a node's note. */
   editing: { id: string; what: "title" | "note" } | null;
+  /** Counts the user's own pans and zooms, so the camera following a run knows to back off. */
+  viewEdits: number;
 }
 
 export function initialRun(): RunState {
@@ -128,6 +146,9 @@ export function initialRun(): RunState {
     runId: "",
     status: "",
     nodes: {},
+    order: [],
+    orderBase: 0,
+    output: {},
     active: {},
     traveled: [],
     loops: {},
@@ -159,11 +180,22 @@ export function initialState(): EditorState {
     logOpen: true,
     dirty: false,
     editing: null,
+    viewEdits: 0,
   };
 }
 
 function clone(graph: FlowGraph): FlowGraph {
   return JSON.parse(JSON.stringify(graph)) as FlowGraph;
+}
+
+/** The graph as the file holds it, minus the camera: what makes two graphs the same document. */
+export function contentKey(graph: FlowGraph): string {
+  const { view: _view, ...content } = graph;
+  return JSON.stringify(content);
+}
+
+export function sameContent(a: FlowGraph, b: FlowGraph): boolean {
+  return contentKey(a) === contentKey(b);
 }
 
 /** Record the current graph so the next mutation can be undone. */
@@ -210,7 +242,8 @@ export type Action =
   | { type: "paste"; nodes: FlowNode[]; edges: FlowEdge[] }
   | { type: "undo" }
   | { type: "redo" }
-  | { type: "setView"; pan?: [number, number]; zoom?: number }
+  /** `follow`: the canvas moved the camera itself, following a run - not the user. */
+  | { type: "setView"; pan?: [number, number]; zoom?: number; follow?: boolean }
   | { type: "rename"; name: string }
   | { type: "notice"; level: "info" | "warn" | "error"; text: string }
   | { type: "dismissNotice" }
@@ -231,11 +264,14 @@ export function reduce(state: EditorState, action: Action): EditorState {
       // The document is the authority; an edit the editor did not make (an
       // external change, a revert, an undo in another tab) replaces the graph
       // and the history with it.
-      const same = JSON.stringify(state.graph) === JSON.stringify(action.graph);
+      // The camera is the panel's once it shows the file: an undo in the
+      // document or a reload must not throw the view back to where it was saved.
+      const view = state.fileName ? state.graph.view : action.graph.view;
+      const same = sameContent(state.graph, action.graph);
       if (same) return { ...state, fileName: action.fileName, dirty: false };
       return {
         ...state,
-        graph: action.graph,
+        graph: { ...action.graph, view },
         fileName: action.fileName,
         selection: state.selection.filter((id) =>
           action.graph.nodes.some((node) => node.id === id)
@@ -532,9 +568,11 @@ export function reduce(state: EditorState, action: Action): EditorState {
       };
     }
 
+    // Snapshots carry the view they were taken with; undo restores the graph
+    // and leaves the camera where the user has it now.
     case "undo": {
       if (state.undo.length === 0) return state;
-      const previous = state.undo[state.undo.length - 1];
+      const previous = { ...state.undo[state.undo.length - 1], view: state.graph.view };
       return {
         ...state,
         graph: previous,
@@ -547,7 +585,7 @@ export function reduce(state: EditorState, action: Action): EditorState {
 
     case "redo": {
       if (state.redo.length === 0) return state;
-      const next = state.redo[state.redo.length - 1];
+      const next = { ...state.redo[state.redo.length - 1], view: state.graph.view };
       return {
         ...state,
         graph: next,
@@ -564,7 +602,11 @@ export function reduce(state: EditorState, action: Action): EditorState {
         pan: action.pan ?? state.graph.view.pan,
         zoom: action.zoom ?? state.graph.view.zoom,
       };
-      return { ...state, graph: { ...state.graph, view } };
+      return {
+        ...state,
+        graph: { ...state.graph, view },
+        viewEdits: action.follow ? state.viewEdits : state.viewEdits + 1,
+      };
     }
 
     case "rename":
@@ -773,12 +815,39 @@ function log(state: EditorState, row: Omit<LogRow, "id" | "at">): EditorState {
   return { ...state, log: [...state.log, entry].slice(-400) };
 }
 
+/**
+ * Add to what a node has said. Streamed text joins the piece before it when
+ * that is the same kind, so an answer reads as one paragraph, not a token list.
+ */
+export function said(run: RunState, nodeId: string, part: OutputPart): RunState {
+  if (!nodeId || !part.text) return run;
+  const parts = run.output[nodeId] ?? [];
+  const last = parts[parts.length - 1];
+  let next =
+    last && last.kind === part.kind && (part.kind === "text" || part.kind === "thinking")
+      ? [...parts.slice(0, -1), { kind: last.kind, text: last.text + part.text }]
+      : [...parts, part];
+  let total = next.reduce((sum, item) => sum + item.text.length, 0);
+  while (total > OUTPUT_LIMIT && next.length > 1) {
+    total -= next[0].text.length;
+    next = next.slice(1);
+  }
+  if (total > OUTPUT_LIMIT) next = [{ ...next[0], text: next[0].text.slice(total - OUTPUT_LIMIT) }];
+  return { ...run, output: { ...run.output, [nodeId]: next } };
+}
+
+/** Whether a node has anything worth stopping to read, past its own bookkeeping. */
+export function readable(run: RunState, nodeId: string): boolean {
+  return (run.output[nodeId] ?? []).some((part) => part.kind !== "info");
+}
+
 function applyGraphEvent(
   state: EditorState,
   eventType: string,
   payload: Record<string, any>
 ): EditorState {
   const run = state.run;
+  const nodeId = String(payload.node_id ?? "");
   switch (eventType) {
     case "graph.run.started":
       return {
@@ -824,32 +893,59 @@ function applyGraphEvent(
       return next;
     }
 
-    case "graph.node.started":
+    case "graph.node.started": {
+      // A loop runs a node again: its panel keeps the earlier laps, marked off.
+      const again = (run.output[nodeId] ?? []).length > 0;
+      let order = [...run.order, nodeId];
+      let orderBase = run.orderBase;
+      if (order.length > ORDER_LIMIT) {
+        orderBase += order.length - ORDER_LIMIT;
+        order = order.slice(-ORDER_LIMIT);
+      }
+      const next: RunState = {
+        ...run,
+        nodes: { ...run.nodes, [nodeId]: "running" },
+        nodesExecuted: Number(payload.index ?? run.nodesExecuted),
+        order,
+        orderBase,
+      };
       return {
         ...state,
-        run: {
-          ...run,
-          nodes: { ...run.nodes, [String(payload.node_id)]: "running" },
-          nodesExecuted: Number(payload.index ?? run.nodesExecuted),
-        },
+        run: again ? said(next, nodeId, { kind: "info", text: t("Again") }) : next,
       };
+    }
 
     case "graph.node.completed": {
-      const nodeId = String(payload.node_id);
-      return {
-        ...state,
-        run: { ...run, nodes: { ...run.nodes, [nodeId]: "done" } },
-      };
+      let next: RunState = { ...run, nodes: { ...run.nodes, [nodeId]: "done" } };
+      const summary = String(payload.summary ?? "").trim();
+      const told = (run.output[nodeId] ?? []).some((part) => part.kind === "text" || part.kind === "result");
+      if (summary && !told) next = said(next, nodeId, { kind: "result", text: summary });
+      if (typeof payload.seconds === "number") {
+        next = said(next, nodeId, { kind: "info", text: tf("Done in {0}s", payload.seconds) });
+      }
+      return { ...state, run: next };
     }
 
     case "graph.node.failed":
       return log(
         {
           ...state,
-          run: { ...run, nodes: { ...run.nodes, [String(payload.node_id)]: "failed" } },
+          run: said(
+            { ...run, nodes: { ...run.nodes, [nodeId]: "failed" } },
+            nodeId,
+            { kind: "error", text: String(payload.error ?? "") }
+          ),
         },
-        { kind: "error", nodeId: String(payload.node_id), text: String(payload.error ?? "") }
+        { kind: "error", nodeId, text: String(payload.error ?? "") }
       );
+
+    case "graph.node.output": {
+      const text = String(payload.text ?? "");
+      return {
+        ...state,
+        run: said(run, nodeId, { kind: payload.channel === "thinking" ? "thinking" : "text", text }),
+      };
+    }
 
     case "graph.edge.active": {
       const edgeId = String(payload.edge_id ?? "");
@@ -864,130 +960,127 @@ function applyGraphEvent(
       };
     }
 
-    case "graph.print":
-      return log(state, {
-        kind: "print",
-        nodeId: String(payload.node_id ?? ""),
-        text: payload.label ? `${payload.label}: ${payload.text}` : String(payload.text ?? ""),
-      });
-
-    case "graph.agent.started":
+    case "graph.print": {
+      const text = payload.label ? `${payload.label}: ${payload.text}` : String(payload.text ?? "");
       return log(
-        {
-          ...state,
-          run: {
-            ...run,
-            agents: {
-              ...run.agents,
-              [String(payload.node_id)]: {
-                name: String(payload.agent_name ?? ""),
-                profession: String(payload.profession ?? ""),
-                detail: "",
-                steps: 0,
-                since: Date.now(),
-                tools: typeof payload.tool_count === "number" ? payload.tool_count : undefined,
-              },
-            },
+        { ...state, run: said(run, nodeId, { kind: "text", text: `${String(payload.text ?? "")}\n` }) },
+        { kind: "print", nodeId, text }
+      );
+    }
+
+    case "graph.agent.started": {
+      let next: RunState = {
+        ...run,
+        agents: {
+          ...run.agents,
+          [nodeId]: {
+            name: String(payload.agent_name ?? ""),
+            profession: String(payload.profession ?? ""),
+            detail: "",
+            steps: 0,
+            since: Date.now(),
+            tools: typeof payload.tool_count === "number" ? payload.tool_count : undefined,
           },
         },
+      };
+      next = said(next, nodeId, {
+        kind: "info",
+        text: [payload.agent_name, payload.profession, payload.model].filter(Boolean).join(" · "),
+      });
+      return log(
+        { ...state, run: next },
         {
           kind: "agent",
-          nodeId: String(payload.node_id ?? ""),
+          nodeId,
           text: `${payload.agent_name} (${payload.profession}) on ${payload.model}`,
         }
       );
+    }
 
     case "graph.node.progress": {
-      const nodeId = String(payload.node_id ?? "");
       const agent = run.agents[nodeId];
       if (!agent) return state;
       // Only a call that starts counts: counting its completion too would make
       // the number jump by two and mean nothing.
       const started = payload.event === "tool.call.started";
       const detail = String(payload.detail ?? "");
-      return {
-        ...state,
-        run: {
-          ...run,
-          agents: {
-            ...run.agents,
-            [nodeId]: {
-              ...agent,
-              detail: detail || agent.detail,
-              steps: started ? agent.steps + 1 : agent.steps,
-            },
+      let next: RunState = {
+        ...run,
+        agents: {
+          ...run.agents,
+          [nodeId]: {
+            ...agent,
+            detail: detail || agent.detail,
+            steps: started ? agent.steps + 1 : agent.steps,
           },
         },
+      };
+      if (started) next = said(next, nodeId, { kind: "tool", text: detail || t("a tool") });
+      if (payload.event === "tool.call.failed") next = said(next, nodeId, { kind: "error", text: detail });
+      return { ...state, run: next };
+    }
+
+    case "graph.variable.changed": {
+      const name = String(payload.name);
+      const value = String(payload.value ?? "");
+      return {
+        ...state,
+        run: said(
+          { ...run, variables: { ...run.variables, [name]: value } },
+          nodeId,
+          { kind: "result", text: `${name} = ${value}` }
+        ),
       };
     }
 
-    case "graph.variable.changed":
+    case "graph.loop.iteration": {
+      const index = Number(payload.index ?? 0);
+      const item = String(payload.item ?? "");
       return {
         ...state,
-        run: {
-          ...run,
-          variables: { ...run.variables, [String(payload.name)]: String(payload.value ?? "") },
-        },
+        run: said(
+          { ...run, loops: { ...run.loops, [nodeId]: { index, item } } },
+          nodeId,
+          { kind: "info", text: item ? `#${index + 1}: ${item}` : `#${index + 1}` }
+        ),
       };
+    }
 
-    case "graph.loop.iteration":
-      return {
-        ...state,
-        run: {
-          ...run,
-          loops: {
-            ...run.loops,
-            [String(payload.node_id)]: {
-              index: Number(payload.index ?? 0),
-              item: String(payload.item ?? ""),
-            },
-          },
-        },
-      };
+    case "graph.loop.capped": {
+      const text = tf("The loop stopped at its cap of {0} laps.", payload.cap);
+      return log({ ...state, run: said(run, nodeId, { kind: "error", text }) }, { kind: "warn", nodeId, text });
+    }
 
-    case "graph.loop.capped":
-      return log(state, {
-        kind: "warn",
-        nodeId: String(payload.node_id ?? ""),
-        text: tf("The loop stopped at its cap of {0} laps.", payload.cap),
-      });
+    case "graph.decision": {
+      const text = tf("decision ({0}): {1}", payload.mode, payload.verdict ? "true" : "false");
+      return log({ ...state, run: said(run, nodeId, { kind: "result", text }) }, { kind: "decision", nodeId, text });
+    }
 
-    case "graph.decision":
-      return log(state, {
-        kind: "decision",
-        nodeId: String(payload.node_id ?? ""),
-        text: tf("decision ({0}): {1}", payload.mode, payload.verdict ? "true" : "false"),
-      });
-
-    case "graph.user_chat.requested":
+    case "graph.user_chat.requested": {
+      const prompt = String(payload.prompt ?? "");
       return log(
         {
           ...state,
-          run: {
-            ...run,
-            question: {
-              nodeId: String(payload.node_id ?? ""),
-              callId: String(payload.call_id ?? ""),
-              prompt: String(payload.prompt ?? ""),
-            },
-          },
+          run: said(
+            { ...run, question: { nodeId, callId: String(payload.call_id ?? ""), prompt } },
+            nodeId,
+            { kind: "info", text: prompt || t("Waiting for your answer.") }
+          ),
         },
-        {
-          kind: "info",
-          nodeId: String(payload.node_id ?? ""),
-          text: t("Waiting for your answer."),
-        }
+        { kind: "info", nodeId, text: t("Waiting for your answer.") }
       );
+    }
 
-    case "graph.user_chat.answered":
-      return { ...state, run: { ...run, question: null } };
+    case "graph.user_chat.answered": {
+      const answer = String(payload.text ?? payload.answer ?? "");
+      const next = { ...run, question: null };
+      return { ...state, run: answer ? said(next, nodeId, { kind: "text", text: answer }) : next };
+    }
 
-    case "graph.warning":
-      return log(state, {
-        kind: "warn",
-        nodeId: String(payload.node_id ?? ""),
-        text: String(payload.message ?? ""),
-      });
+    case "graph.warning": {
+      const text = String(payload.message ?? "");
+      return log({ ...state, run: said(run, nodeId, { kind: "error", text }) }, { kind: "warn", nodeId, text });
+    }
 
     case "graph.validation.failed":
       return {

@@ -891,6 +891,7 @@ class CodeAIApplication:
             "presence_penalty": config.sampling.presence_penalty,
             "mcp_enabled": config.mcp_enabled,
             "commands_see_secrets": config.commands_see_secrets,
+            "graph_follow_run": config.graph.follow_run,
             "supported": {
                 "api_mode": sorted(SUPPORTED_API_MODES),
                 "permission_mode": sorted(SUPPORTED_PERMISSION_MODES),
@@ -1029,6 +1030,14 @@ class CodeAIApplication:
                         # Live: the next model request is built from the registry,
                         # so a tool switched off here never reaches the schema.
                         registry.set_disabled(config.disabled_tools)
+                    applied.append(key)
+                elif key == "graph_follow_run":
+                    graph = asdict(config.graph)
+                    graph["follow_run"] = bool(value)
+                    validated = persist_config_updates(config, {"graph": graph})
+                    # Read by the graph editor from its catalog, which a
+                    # settings save already sends again.
+                    config.graph = validated.graph
                     applied.append(key)
                 elif key == "commands_see_secrets":
                     validated = persist_config_updates(config, {key: bool(value)})
@@ -1312,6 +1321,7 @@ class CodeAIApplication:
             "max_seconds": self.session.config.graph.max_seconds,
             "max_loop_iterations": self.session.config.graph.max_loop_iterations,
         }
+        payload["follow_run"] = self.session.config.graph.follow_run
         return payload
 
     def validate_graph(self, graph: dict[str, Any]) -> dict[str, Any]:

@@ -396,6 +396,81 @@ async def test_a_clean_agent_that_fails_reports_instead_of_raising() -> None:
     assert "endpoint down" in outcome.error
 
 
+def capture(executor: GraphNodeExecutor) -> list[tuple[str, dict]]:
+    seen: list[tuple[str, dict]] = []
+
+    async def keep(envelope) -> None:
+        seen.append((envelope.event_type, envelope.payload))
+
+    executor._bus.subscribe(keep)
+    return seen
+
+
+async def test_a_clean_agent_hands_its_answer_to_the_node_panel() -> None:
+    executor = clean_executor(ChatStub("tudo certo"))
+    seen = capture(executor)
+
+    await executor.run_clean(
+        node_id="n1", name="", system="", task="Oi", model=None, timeout_s=0, cancel=asyncio.Event()
+    )
+
+    outputs = [payload for kind, payload in seen if kind == "graph.node.output"]
+    assert [(item["node_id"], item["channel"], item["text"]) for item in outputs] == [
+        ("n1", "answer", "tudo certo")
+    ]
+
+
+async def test_an_agents_stream_reaches_the_node_in_bursts_and_in_order() -> None:
+    from code_ai.app.graph_runner import _NodeStream
+
+    executor = clean_executor(ChatStub())
+    seen = capture(executor)
+    stream = _NodeStream(executor._output_emitter("n1", "ada"))
+    child = AsyncEventBus()
+    child.subscribe(executor._forwarder("n1", "ada", "coder", stream))
+
+    await child.emit("model.thinking.delta", {"text": "hmm "})
+    await child.emit("model.thinking.delta", {"text": "ok"})
+    await child.emit("model.stream.delta", {"text": "Vou ", "channel": "answer"})
+    await child.emit("model.stream.delta", {"text": "ler.", "channel": "answer"})
+    await child.emit("tool.call.started", {"name": "read_file"})
+    await child.emit("model.stream.delta", {"text": "Pronto.", "channel": "answer"})
+    await stream.close()
+
+    shown = [
+        (
+            kind,
+            payload.get("channel") or payload.get("event"),
+            payload.get("text") or payload.get("detail"),
+        )
+        for kind, payload in seen
+    ]
+    assert shown == [
+        ("graph.node.output", "thinking", "hmm ok"),
+        ("graph.node.output", "answer", "Vou ler."),
+        ("graph.node.progress", "tool.call.started", "read_file"),
+        ("graph.node.output", "answer", "Pronto."),
+    ]
+
+
+async def test_a_stream_left_alone_flushes_on_its_own() -> None:
+    from code_ai.app.graph_runner import _STREAM_FLUSH_S, _NodeStream
+
+    sent: list[tuple[str, str]] = []
+
+    async def emit(channel: str, text: str) -> None:
+        sent.append((channel, text))
+
+    stream = _NodeStream(emit)
+    await stream.add("answer", "a")
+    await stream.add("answer", "b")
+    assert sent == []
+    await asyncio.sleep(_STREAM_FLUSH_S * 3)
+    assert sent == [("answer", "ab")]
+    await stream.close()
+    assert sent == [("answer", "ab")]
+
+
 def test_a_model_node_sets_the_reasoning_effort_its_agents_think_at() -> None:
     config = AppConfig.from_mapping(
         {"api_mode": "completions", "model": "qwen", "sampling": {"reasoning_effort": "xhigh"}}

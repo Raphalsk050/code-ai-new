@@ -388,6 +388,9 @@ DEFAULT_GRAPH: dict[str, object] = {
     # Agents running at once inside a graph. One keeps the travelling
     # indicator honest and the approval prompts sequential.
     "max_concurrent_nodes": 1,
+    # The editor follows a run: the node at work opens to show what it writes,
+    # pushes its neighbours aside, and folds back before the next one opens.
+    "follow_run": True,
 }
 
 

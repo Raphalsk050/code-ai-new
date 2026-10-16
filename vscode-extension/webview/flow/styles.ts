@@ -521,6 +521,54 @@ input[type="checkbox"] { width: auto; }
   }
   .flow-play { position: static; transform: none; }
   .flow-toolbar { flex-wrap: wrap; }
-  .flow-minimap { display: none; }
 }
+
+/* ---- an open node: what it writes, inside it ---- */
+.flow-output-frame { overflow: visible; }
+.flow-output {
+  position: relative; width: 100%; height: 100%;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--vscode-editor-background, #1e1e1e);
+  cursor: auto; user-select: text;
+}
+.flow-output-scroll {
+  position: absolute; inset: 0; overflow-y: auto; overflow-x: hidden;
+  padding: 7px 9px 9px; font-size: 11.5px; line-height: 1.45;
+  scrollbar-width: thin;
+}
+.flow-output-part { white-space: pre-wrap; overflow-wrap: anywhere; margin-bottom: 5px; }
+.flow-output-part.thinking {
+  color: var(--muted); font-style: italic;
+  border-left: 2px solid var(--border); padding-left: 7px;
+}
+.flow-output-part.tool {
+  font-family: var(--vscode-editor-font-family, monospace); font-size: 11px;
+  color: var(--accent); margin-bottom: 3px;
+}
+.flow-output-part.info { color: var(--muted); font-size: 10.5px; }
+.flow-output-part.error { color: var(--danger); }
+.flow-output-part.result { font-weight: 600; }
+.flow-output-label {
+  display: block; font-style: normal; font-size: 10px; letter-spacing: .04em;
+  text-transform: uppercase; margin-bottom: 2px;
+}
+.flow-output-caret {
+  display: inline-block; width: 6px; height: 12px; vertical-align: -2px;
+  background: var(--accent); animation: flow-caret 1s steps(2) infinite;
+}
+@keyframes flow-caret { 50% { opacity: 0; } }
+.flow-output-close {
+  position: absolute; top: 3px; right: 5px; z-index: 1;
+  border: 0; background: var(--surface-2); border-radius: 4px;
+  padding: 0 6px; line-height: 16px; opacity: .7;
+}
+.flow-output-close:hover { opacity: 1; }
+.flow-output-pill { cursor: pointer; }
+.flow-output-pill rect {
+  fill: var(--vscode-editorWidget-background, #252526);
+  stroke: var(--border); stroke-width: 1;
+}
+.flow-output-pill text { font-size: 10.5px; fill: var(--muted); }
+.flow-output-pill:hover rect { stroke: var(--accent); }
+.flow-output-pill:hover text { fill: var(--vscode-foreground); }
 `;

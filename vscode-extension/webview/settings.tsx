@@ -27,7 +27,7 @@ export interface SaveState {
 /** Session states that mean no answer is coming, so waiting is pointless. */
 const DEAD = new Set(["DISCONNECTED", "ERROR"]);
 
-type Category = "model" | "agent" | "editor" | "context" | "tools" | "subagents" | "advanced";
+type Category = "model" | "agent" | "editor" | "context" | "tools" | "subagents" | "graph" | "advanced";
 
 const CATEGORIES: { id: Category; title: string; icon: string }[] = [
   { id: "model", title: "Model", icon: "sparkle" },
@@ -36,6 +36,7 @@ const CATEGORIES: { id: Category; title: string; icon: string }[] = [
   { id: "context", title: "Context", icon: "database" },
   { id: "tools", title: "Tools and MCP", icon: "tools" },
   { id: "subagents", title: "Sub-agents", icon: "organization" },
+  { id: "graph", title: "Graph", icon: "type-hierarchy-sub" },
   { id: "advanced", title: "Advanced", icon: "settings" },
 ];
 
@@ -773,6 +774,22 @@ export function SettingsScreen({
           ),
         })
       ),
+      {
+        id: "graph_follow_run",
+        category: "graph",
+        label: t("Follow the run on the canvas"),
+        hint: t(
+          "While a graph runs, the node at work opens so you can read what it writes, the nodes around it step aside, and it folds back before the next one opens."
+        ),
+        keys: ["graph_follow_run"],
+        control: (
+          <Switch
+            checked={Boolean(draft.graph_follow_run)}
+            onChange={(v) => set("graph_follow_run", v)}
+            label={t("Follow the run on the canvas")}
+          />
+        ),
+      },
       {
         id: "commands_see_secrets",
         category: "advanced",
