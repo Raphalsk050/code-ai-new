@@ -11,6 +11,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from functools import partial
+from pathlib import Path
 from typing import Any
 
 from code_ai.config.models import AppConfig
@@ -82,6 +83,7 @@ from code_ai.providers.tool_recovery import (
 from code_ai.tools import on_demand
 from code_ai.tools.base import TOOL_IMAGES_KEY, ToolCapability, ToolContext
 from code_ai.tools.groups import group_named, group_of
+from code_ai.tools.locations import ToolLocation, reaches_outside, resolve_location
 from code_ai.tools.output import bound_text
 from code_ai.tools.registry import ToolRegistry
 from code_ai.tools.summary import call_target
@@ -276,6 +278,11 @@ _APPROVAL_SENSITIVE_CAPABILITIES = frozenset(
         ToolCapability.MCP,
     }
 )
+
+# The file tools that take an absolute path outside the project, and those of
+# them that change what they reach: every such change waits for the user.
+_REACHING_FILE_TOOLS = frozenset({"read_file", "write_file", "edit_code"})
+_OUTSIDE_WRITERS = frozenset({"write_file", "edit_code"})
 
 # Capabilities whose user denial signals "I did not ask you to change anything":
 # the planner drops its mutation demand for the rest of the turn. DELEGATE is
@@ -2871,6 +2878,12 @@ class AgentOrchestrator:
                 self._loaded_tool_groups.add(str(payload.get("group") or ""))
             if call.name == "load_tool" and isinstance(payload, dict):
                 self._loaded_tools.add(str(payload.get("tool") or ""))
+            if self.planner and self.planner.enabled and call.name in _OUTSIDE_WRITERS:
+                # Written outside the project: the planner names it in the
+                # summary, as project verification does not cover it.
+                outside = self._outside_target(call)
+                if outside is not None:
+                    await self.planner.note_external_target(call.name, outside)
             if self.planner and self.planner.enabled and call.name == "complete_task":
                 rejection = await self._completion_rejection(call, payload)
                 if rejection is not None:
@@ -2943,20 +2956,20 @@ class AgentOrchestrator:
             )
             content = str(exc)
             if isinstance(exc, WorkspaceBoundaryError):
-                # The model tried to touch a file outside the workspace. Teach the
-                # planner the task's real target is external and point the model
-                # at the one channel that can do it, instead of leaving it to
-                # invent workspace files in its place.
+                # A relative path (or the sandbox) tried to leave its tree. Teach
+                # the planner the task's real target is external and point the
+                # model at the way there, instead of leaving it to invent
+                # workspace files in its place.
                 if self.planner and self.planner.enabled:
                     await self.planner.note_workspace_boundary_rejection(
                         call.name, call.arguments
                     )
                 content = (
-                    f"{exc}\nFile tools only operate inside the workspace. To "
-                    "change a file outside the workspace, use execute_command "
-                    "(subject to user approval) and confirm the result with a "
-                    "read-back command. Do not create or edit workspace files "
-                    "in its place."
+                    f"{exc}\nA relative path stays inside the project, and the "
+                    "sandbox never leaves itself. For a file elsewhere on the "
+                    "machine, give read_file, write_file or edit_code its absolute "
+                    "path (location 'project'): the user approves each change "
+                    "there. Do not create or edit workspace files in its place."
                 )
             if isinstance(exc, EnvironmentUnavailableError):
                 # Not the model's mistake and not worth a lesson: the host is
@@ -3603,13 +3616,30 @@ class AgentOrchestrator:
         except Exception:
             return frozenset()
 
-    def _requires_user_approval(self, name: str, *, policy_allowed: bool) -> bool:
+    def _outside_target(self, call: ToolCall) -> str | None:
+        """The file outside the project a file tool's call reaches for, if any."""
+        if call.name not in _REACHING_FILE_TOOLS:
+            return None
+        if resolve_location(call.arguments.get("location"), default=ToolLocation.PROJECT) is (
+            ToolLocation.SANDBOX
+        ):
+            return None
+        path = call.arguments.get("path")
+        return str(path) if reaches_outside(Path(self.config.workspace), path) else None
+
+    def _requires_user_approval(
+        self, name: str, *, policy_allowed: bool, outside: bool = False
+    ) -> bool:
         mode = self.permission_mode
         if mode == "bypass":
             return False
         if not policy_allowed:
             # Both "ask" and "auto" escalate a policy denial to the user instead
             # of failing the tool outright.
+            return True
+        if outside and (mode == "ask" or name in _OUTSIDE_WRITERS):
+            # A file outside the project is the user's to hand over call by
+            # call: even "auto" asks before changing one.
             return True
         if mode == "auto":
             return False
@@ -3629,7 +3659,10 @@ class AgentOrchestrator:
         if self.permission_mode == "bypass":
             # Run everything, overriding any policy gate, and never prompt.
             return _Authorization(allowed=True, overrode_policy=not policy_allowed)
-        if not self._requires_user_approval(call.name, policy_allowed=policy_allowed):
+        outside = self._outside_target(call)
+        if not self._requires_user_approval(
+            call.name, policy_allowed=policy_allowed, outside=outside is not None
+        ):
             reason = "" if policy_allowed or decision is None else decision.reason
             return _Authorization(allowed=policy_allowed, reason=reason)
 
@@ -3637,12 +3670,18 @@ class AgentOrchestrator:
         if signature in self._session_allowlist:
             return _Authorization(allowed=True, overrode_policy=not policy_allowed)
 
+        if decision and not policy_allowed:
+            reason = decision.reason
+        elif outside is not None:
+            reason = f"Outside the project: {outside}"
+        else:
+            reason = ""
         request = ApprovalRequest(
             call_id=call.id,
             tool_name=call.name,
             arguments=call.arguments,
             signature=signature,
-            reason=decision.reason if (decision and not policy_allowed) else "",
+            reason=reason,
             capabilities=tuple(sorted(cap.value for cap in self._capabilities_for(call.name))),
             policy_denied=not policy_allowed,
         )

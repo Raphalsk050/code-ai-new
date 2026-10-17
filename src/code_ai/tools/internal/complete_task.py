@@ -56,7 +56,7 @@ class CompleteTaskTool:
                 context.workspace.resolve(path, must_exist=True)
             except WorkspaceBoundaryError:
                 # A task may legitimately change files *outside* the workspace
-                # (applied via commands, since file tools are workspace-bound).
+                # (by absolute path, with the user's approval, or by a command).
                 # Claiming such a path must not blow up the completion claim,
                 # but the file must really exist so the claim stays honest.
                 candidate = Path(path).expanduser()

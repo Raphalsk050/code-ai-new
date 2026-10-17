@@ -496,7 +496,11 @@ class PlannerService:
         the task context point the model at commands for it instead of at
         pointless workspace files, and lets the completion summary name it.
         """
-        path = str(arguments.get("path") or "").strip()
+        await self.note_external_target(tool_name, str(arguments.get("path") or ""))
+
+    async def note_external_target(self, tool_name: str, path: str) -> None:
+        """A file outside the workspace this task acts on: rejected, or written there."""
+        path = path.strip()
         if not path or not self._path_is_outside_workspace(path):
             return
         if path in self.external_targets:
@@ -696,9 +700,9 @@ class PlannerService:
             )
             + (
                 f"Outside-workspace target(s): {sorted(self.external_targets)}. "
-                "File tools only work inside the workspace: change these targets "
-                "with execute_command and confirm with a read-back command. Never "
-                "create or edit workspace files in their place.\n"
+                "Reach them with read_file, write_file and edit_code by their "
+                "absolute path; the user approves each change there. Never create "
+                "or edit workspace files in their place.\n"
                 if self.external_targets
                 else ""
             )
@@ -1433,7 +1437,7 @@ class PlannerService:
             changed_line = (
                 "Outside-workspace target(s): "
                 + ", ".join(self.external_targets)
-                + " (applied via commands; not covered by project verification)"
+                + " (outside the project; not covered by project verification)"
             )
             verification = ""
         else:

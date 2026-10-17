@@ -714,7 +714,7 @@ async def test_turn_ending_in_a_prose_question_settles_the_checklist(tmp_path) -
 
 
 class FakeOutsideWorkspaceEditProvider:
-    """Tries write_file on an external path, falls back to a command, completes.
+    """Writes an external file by its absolute path, then completes.
 
     Scripted by agentic step. Failure-memory reflection requests are answered
     with plain text and consume no step - their timing is asynchronous, so
@@ -745,10 +745,9 @@ class FakeOutsideWorkspaceEditProvider:
         self.agent_steps += 1
         for message in request.messages:
             if message.role == "tool" and message.tool_call_id == "write_1":
-                # The boundary rejection the model saw for its write_file attempt.
                 self.write_file_result = message.content
         completion_args = {
-            "summary": f"Created {self.outside_path} via command.",
+            "summary": f"Created {self.outside_path}.",
             "changed_paths": [self.outside_path],
         }
         script = {
@@ -757,12 +756,7 @@ class FakeOutsideWorkspaceEditProvider:
                 name="write_file",
                 arguments={"path": self.outside_path, "content": "hello\n"},
             ),
-            2: ToolCall(
-                id="cmd_1",
-                name="execute_command",
-                arguments={"command": f"touch {self.outside_path}"},
-            ),
-            3: ToolCall(id="done_1", name="complete_task", arguments=completion_args),
+            2: ToolCall(id="done_1", name="complete_task", arguments=completion_args),
         }
         call = script.get(self.agent_steps)
         if call is not None:
@@ -789,10 +783,10 @@ class FakeOutsideWorkspaceEditProvider:
 
 
 async def test_outside_workspace_edit_completes_without_workspace_evidence(tmp_path) -> None:
-    # Regression: a mutation targeting a file outside the workspace (file tools
-    # are workspace-bound) pushed the model to fabricate workspace files. The
-    # boundary rejection must teach the planner the target is external and
-    # guide the model to execute_command; the completion then names the target.
+    # Regression: a mutation targeting a file outside the workspace pushed the
+    # model to fabricate workspace files. The file tools now reach it by its
+    # absolute path (approved by the user, here by bypass), the planner knows
+    # the target is external, and the completion names it.
     workspace = tmp_path / "ws"
     workspace.mkdir()
     outside = tmp_path / "outside" / "config.txt"
@@ -816,14 +810,13 @@ async def test_outside_workspace_edit_completes_without_workspace_evidence(tmp_p
     )
     await app.close()
 
-    # The boundary error taught the model the right channel...
-    assert "outside the workspace" in provider.write_file_result
-    assert "execute_command" in provider.write_file_result
-    # ...the planner learned the external target...
+    # write_file reached the file outside the project directly...
+    assert '"bytes_written":6' in provider.write_file_result
+    assert outside.read_text(encoding="utf-8") == "hello\n"
+    # ...the planner knew the target was external...
     planner = app.orchestrator.planner
     assert str(outside) in planner.external_targets
-    # ...the command really ran and the completion named the target.
-    assert outside.exists()
+    # ...and the completion named the target.
     assert "planning.completion.accepted" in {e.event_type for e in events}
     assert str(outside) in result.text
     # No fabricated evidence files appeared inside the workspace.

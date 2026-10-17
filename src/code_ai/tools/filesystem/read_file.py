@@ -39,7 +39,10 @@ class ReadFileTool:
         {
             "path": {
                 "type": "string",
-                "description": "Path of the text file to read, relative to the chosen location.",
+                "description": (
+                    "Path of the text file to read, relative to the chosen location, or "
+                    "the absolute path of a file elsewhere on the machine."
+                ),
             },
             "location": LOCATION_SCHEMA,
             "start_line": {
@@ -59,7 +62,7 @@ class ReadFileTool:
         if not path_value:
             raise ToolArgumentError("path is required.")
         location = for_context(context, arguments.get("location"))
-        path = location.resolve(path_value, must_exist=True)
+        path = location.resolve_reaching_out(path_value, must_exist=True)
         policy = RetryPolicy.from_config(context.config.file_io)
         # Reading is blocking, and the orchestrator shares its event loop with
         # the UI: done here it would freeze the screen, the cancel key and the

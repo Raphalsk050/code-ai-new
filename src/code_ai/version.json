@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 46,
-  "patch": 3,
-  "build": 122,
+  "minor": 47,
+  "patch": 0,
+  "build": 123,
   "updated": "2026-10-17",
-  "note": "Local builds carry the desktop avatar; clearer prompt, lessons and memory"
+  "note": "File tools reach files outside the project; core tools preloaded on demand"
 }

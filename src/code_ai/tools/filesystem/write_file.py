@@ -30,7 +30,11 @@ class WriteFileTool:
         {
             "path": {
                 "type": "string",
-                "description": "Path of the file to write, relative to the chosen location.",
+                "description": (
+                    "Path of the file to write, relative to the chosen location. For a "
+                    "file elsewhere on the machine, its absolute path: the user approves "
+                    "each change outside the project."
+                ),
             },
             "location": LOCATION_SCHEMA,
             # Declared before the contents on purpose: arguments stream in the
@@ -60,7 +64,7 @@ class WriteFileTool:
             raise ToolArgumentError("path is required.")
         content = str(arguments.get("content", ""))
         location = for_context(context, arguments.get("location"))
-        path = location.resolve(path_value, must_exist=False)
+        path = location.resolve_reaching_out(path_value, must_exist=False)
         expected_new = bool(arguments.get("expected_new_file", False))
         expected_hash = arguments.get("expected_sha256")
         create_dirs = bool(arguments.get("create_dirs", True))

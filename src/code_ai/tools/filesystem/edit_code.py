@@ -39,7 +39,8 @@ class EditCodeTool:
                 "type": "string",
                 "description": (
                     "Path of the file to edit, relative to the chosen location. Must "
-                    "already exist."
+                    "already exist. For a file elsewhere on the machine, its absolute "
+                    "path: the user approves each change outside the project."
                 ),
             },
             "location": LOCATION_SCHEMA,
@@ -74,7 +75,7 @@ class EditCodeTool:
             raise ToolArgumentError("path is required.")
 
         location = for_context(context, arguments.get("location"))
-        path = location.resolve(path_value, must_exist=True)
+        path = location.resolve_reaching_out(path_value, must_exist=True)
         policy = RetryPolicy.from_config(context.config.file_io)
         original, old_hash = await asyncio.to_thread(read_text_file, path, policy=policy)
         replacements = self._build_replacements(original, edits)

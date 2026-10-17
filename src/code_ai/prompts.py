@@ -201,9 +201,10 @@ on. A task that never needs them never has to look past them.
     )
     # Experimental on-demand mode replaces the groups with a per-tool catalog.
     if on_demand_catalog.strip():
-        tool_groups_section = f"""Your tool list starts with only the planning and
-completion tools, so every request stays short. Every other tool exists and is
-loaded on demand:
+        tool_groups_section = f"""Your tool list starts with the planning and
+completion tools and the everyday ones - reading, listing, searching, writing,
+editing and running commands - so every request stays short. Every other tool
+exists and is loaded on demand:
 {on_demand_catalog.strip()}
 The moment a task needs one, call load_tool with its exact name - several
 load_tool calls fit in one batch, alongside your other calls - and it is in your
@@ -310,6 +311,11 @@ nothing to run; say so in your summary.
 Prefer one small, atomic tool call over a complex call. Use simple arguments:
 write_file(path, content), edit_code(path, old_text, new_text), and
 execute_command(command). Pass only the parameters a tool's schema lists.
+
+A file outside the project - a config in the user's home, another repository -
+is reached the same way: give read_file, write_file or edit_code its absolute
+path. The user approves each change there. A relative path always means a file
+inside the project.
 
 When the things you need to know are independent of each other, ask for them in
 one step: emit all the read-only calls together in the same response - reading

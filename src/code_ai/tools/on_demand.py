@@ -3,7 +3,8 @@
 The deferred groups already keep the browser and desktop schemas out, but the
 everyday tools still travel on every request. With ``experimental.
 on_demand_tools`` on, the request starts with the control tools the planner
-cannot work without, the prompt lists everything else as one line per tool,
+cannot work without and the everyday ones almost every task reads, finds,
+changes and runs with, the prompt lists everything else as one line per tool,
 and ``load_tool`` (or a direct call) brings a tool in for the session.
 """
 
@@ -18,12 +19,27 @@ _CONTROL_CAPABILITIES = frozenset(
 )
 # Loaders are chosen by mode, never by capability.
 _LOADERS = frozenset({"load_tool", "load_tools"})
+# Offered from the first step: loading them first cost every task its opening
+# round trip, and nearly every task needs them.
+CORE_TOOLS = frozenset(
+    {
+        "read_file",
+        "list_files",
+        "search_index",
+        "search_code",
+        "write_file",
+        "edit_code",
+        "execute_command",
+    }
+)
 _SUMMARY_MAX_CHARS = 140
 
 
 def always_offered(registry: ToolRegistry, name: str) -> bool:
     if name in _LOADERS:
         return False
+    if name in CORE_TOOLS:
+        return True
     try:
         caps = registry.capabilities(name)
     except Exception:  # noqa: BLE001 - an unknown tool is simply not offered
