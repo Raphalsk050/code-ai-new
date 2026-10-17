@@ -11,6 +11,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import {
   accessSync,
   constants,
+  copyFileSync,
   cpSync,
   existsSync,
   mkdtempSync,
@@ -323,8 +324,43 @@ export function smokeTest(binary, { timeout = 180_000, spawn = spawnSync } = {})
   );
 }
 
+/**
+ * The desktop avatar, put into the package before it is frozen, as CI's
+ * desktop-avatar job does for its builds: the page it shows, and on this
+ * machine's own platform the window that shows it (desktop-avatar/, in Rust).
+ * Missing either, the backend still builds, only without the avatar, and
+ * switching it on then says it is not part of this build - which is how a
+ * package built here once shipped without it unnoticed. So it is said here.
+ */
+function prepareDesktopAvatar({ host }) {
+  const assets = join(REPO_ROOT, "src", "code_ai", "assets", "desktop_avatar");
+  try {
+    run(process.execPath, [join(EXT_ROOT, "scripts", "desktop-avatar.mjs")], "desktop avatar: page", {
+      quiet: true,
+    });
+  } catch (err) {
+    console.log(`  warning: no desktop avatar in this package, its page did not build: ${err.message ?? err}`);
+    return;
+  }
+  // macOS draws it from Python, already in the package; another platform's
+  // window is CI's to build.
+  if (!host || process.platform === "darwin") return;
+  const name = process.platform === "win32" ? "code-ai-avatar.exe" : "code-ai-avatar";
+  const crate = join(REPO_ROOT, "desktop-avatar");
+  try {
+    run("cargo", ["build", "--release", "--manifest-path", join(crate, "Cargo.toml")], "desktop avatar: window (cargo)");
+    copyFileSync(join(crate, "target", "release", name), join(assets, name));
+  } catch (err) {
+    console.log(
+      "  warning: no desktop avatar in this package, its window did not build. " +
+        `It needs Rust (rustup.rs) and crates.io: ${err.message ?? err}`
+    );
+  }
+}
+
 function buildNative({ verifySsl }) {
   assertDistWritable();
+  prepareDesktopAvatar({ host: true });
   const spec = PLATFORMS[hostPlatform()];
   const output = join(REPO_ROOT, "dist", spec.staged);
   let python = venvPython(BUILD_VENV);
@@ -420,6 +456,7 @@ function buildInDocker(platform, { verifySsl }) {
   const script = containerScript({ platform, verifySsl });
 
   console.log(`  docker: cross-building in ${image} (slow the first time)`);
+  prepareDesktopAvatar({ host: false });
   cleanEggInfo();
   run("docker", dockerRunArgs({ platform, image, script, mount: REPO_ROOT, user: hostUser() }));
   if (!existsSync(output)) throw new Error(`the container finished but ${output} is not there`);

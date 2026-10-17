@@ -64,6 +64,18 @@ def host_command(page: Path = PAGE) -> list[str] | None:
     return None
 
 
+def missing_part(page: Path = PAGE) -> str:
+    """Why ``host_command`` found nothing to run, for the user to act on."""
+    if not page.is_file():
+        what = "its page (assets/desktop_avatar/avatar.html)"
+    else:
+        what = f"its window ({HOST_NAME})"
+    return (
+        f"The desktop avatar is not part of this build: {what} is missing. "
+        "A build made with Rust installed (rustup.rs) includes it, as CI's do."
+    )
+
+
 def _state_dir() -> Path:
     from code_ai.config.defaults import default_config_path
 
@@ -177,7 +189,7 @@ class DesktopAvatar:
         return self.problem
 
     def _missing(self) -> str:
-        self.problem = "The desktop avatar is not part of this build."
+        self.problem = missing_part()
         return self.problem
 
     def show(self) -> str | None:

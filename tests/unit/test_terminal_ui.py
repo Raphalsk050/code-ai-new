@@ -1736,7 +1736,7 @@ def test_config_desktop_avatar_is_off_and_refused_without_a_host(tmp_path) -> No
 
     result = handle_config_command(fake_app, "/config desktop-avatar on", config_path=config_path)
 
-    assert result == "command> Config not changed: The desktop avatar is not part of this build."
+    assert result.startswith("command> Config not changed: The desktop avatar is not part of this build")
     assert fake_app.session.config.desktop_avatar is False
     assert json.loads(config_path.read_text(encoding="utf-8")).get("desktop_avatar", False) is False
 

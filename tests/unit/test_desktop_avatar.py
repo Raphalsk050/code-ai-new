@@ -261,8 +261,17 @@ def test_a_build_without_the_host_says_so(tmp_path: Path) -> None:
     avatar = DesktopAvatar(lambda: config, state_dir=tmp_path, command=lambda: None)
     avatar.attach(SimpleNamespace(subscribe=lambda handler: None))
 
-    assert avatar.set_enabled(True) == "The desktop avatar is not part of this build."
+    problem = avatar.set_enabled(True)
+    assert problem is not None
+    assert problem.startswith("The desktop avatar is not part of this build")
     assert not avatar.running
+
+
+def test_what_is_missing_is_named(tmp_path: Path) -> None:
+    page = tmp_path / "avatar.html"
+    assert "its page" in desktop_avatar.missing_part(page)
+    page.write_text("<html></html>", encoding="utf-8")
+    assert desktop_avatar.HOST_NAME in desktop_avatar.missing_part(page)
 
 
 def test_the_page_and_the_host_are_found_beside_the_package(tmp_path: Path, monkeypatch) -> None:

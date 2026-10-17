@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 46,
-  "patch": 2,
-  "build": 121,
+  "patch": 3,
+  "build": 122,
   "updated": "2026-10-17",
-  "note": "The desktop avatar sits on the panel's logo on the home screen"
+  "note": "Local builds carry the desktop avatar; clearer prompt, lessons and memory"
 }
