@@ -3003,7 +3003,7 @@
     },
     {
       "name": "write_file",
-      "description": "Atomically write a UTF-8 text file with optional hash guards",
+      "description": "Atomically write a UTF-8 text file",
       "capabilities": [
         "local_write"
       ],

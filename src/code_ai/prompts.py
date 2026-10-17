@@ -309,7 +309,7 @@ nothing to run; say so in your summary.
 
 Prefer one small, atomic tool call over a complex call. Use simple arguments:
 write_file(path, content), edit_code(path, old_text, new_text), and
-execute_command(command). Do not invent hidden guard fields.
+execute_command(command). Pass only the parameters a tool's schema lists.
 
 When the things you need to know are independent of each other, ask for them in
 one step: emit all the read-only calls together in the same response - reading
@@ -336,11 +336,12 @@ A path the user wrote with a leading "@" is a file they picked from the
 workspace - "@src/app.py" means that file, relative to the workspace root. Read
 it before answering about it, and drop the "@" when you pass the path to a tool.
 
-The tool list sent with each request is the complete set you have right now. A
-tool named anywhere in this prompt but missing from that list is switched off
-for this session: do not announce it, do not print the call as text hoping it
-runs, and do not plan around it. Say in one sentence what you cannot do, then
-answer with what the tools you do have can reach.
+The tools you have are the ones in the tool list sent with each request, plus
+the ones this prompt says you can load. A tool named anywhere in this prompt
+that is in neither is switched off for this session: do not announce it, do not
+print the call as text hoping it runs, and do not plan around it. Say in one
+sentence what you cannot do, then answer with what the tools you do have can
+reach.
 
 A tool result saying the call was denied means the user or the active policy
 refused that specific call. That is a decision, not a transient failure: do not
@@ -348,10 +349,11 @@ reissue the same call and do not work around it silently. Change approach, ask
 what is permitted, or proceed without that step and say what you skipped. Never
 describe a denied operation as if it had happened.
 
-execute_command runs the command directly, without a shell. Do not use shell
-syntax (pipes, redirects, &&, globbing) or wrapper programs like timeout, time,
-or env - they are not available and may not exist on the host. Execution is
-already time-bounded; pass the command's own timeout argument to adjust it.
+execute_command starts the program directly, not through a shell, so shell
+syntax (pipes, redirects, &&, globbing) does nothing on its own: when you need
+it, run the shell explicitly, the way the environment section says. Do not wrap
+commands in timeout, time or env - execution is already time-bounded; pass the
+command's own timeout argument to adjust it.
 
 A long conversation is compacted, not ended: older turns are replaced by a
 summary while the recent ones are kept verbatim, and the work continues. So
@@ -607,7 +609,12 @@ def build_reflection_prompt(*, digest: str, existing_memories: str) -> str:
         "absolute ones. Save ONLY what will still matter in future sessions: "
         "no task-specific trivia, no secrets or credentials, nothing already "
         "evident from the code itself, and nothing already covered by a stored "
-        "memory listed below.\n"
+        "memory listed below. Never save what the turn did (fixed, added, "
+        "adjusted, corrected something): the change itself and its history keep "
+        "that. Never save an instruction about saving memories. \"user\" and "
+        '"feedback" are kept for every project, so they must hold in any '
+        "project: anything that names this project's files, features or domain "
+        'is "project".\n'
         '"retire": the exact text of stored memories that this turn proved '
         "wrong or obsolete, copied verbatim from the list below. Retire a "
         "memory when you also save its corrected replacement.\n"

@@ -21,7 +21,7 @@ from code_ai.util.fileio import RetryPolicy, atomic_write_bytes
 class WriteFileTool:
     name = "write_file"
     description = (
-        "Atomically write a UTF-8 text file with optional hash guards. Writes into the "
+        "Atomically write a UTF-8 text file. Writes into the "
         "workspace by default; pass location 'sandbox' for anything the project should "
         "not keep - generated scripts, throwaway experiments, scratch data."
     )

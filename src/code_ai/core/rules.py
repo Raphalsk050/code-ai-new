@@ -200,7 +200,11 @@ class RulesService:
             return ""
 
         ordinary = [record for record in records if not record.authoritative]
-        instructions = [record for record in records if record.authoritative]
+        # The user's own files for every project (~/.code-ai, ~/.claude,
+        # ~/.codex...) apart from the workspace's: under one "written for this
+        # workspace" heading, a home-wide habit read as this project's rule.
+        personal = [r for r in records if r.authoritative and r.scope == "global"]
+        instructions = [r for r in records if r.authoritative and r.scope != "global"]
 
         lines: list[str] = []
         if ordinary:
@@ -213,6 +217,17 @@ class RulesService:
                 "",
             ]
             lines += self._render_records(ordinary)
+        if personal:
+            lines += [
+                "# Your instructions (every project)",
+                "",
+                "The user wrote these for every workspace. They outrank your usual way "
+                "of working and the rules above; where the project's own instructions "
+                "below say otherwise, the project's win. Something in them that plainly "
+                "belongs to another kind of project does not apply here.",
+                "",
+            ]
+            lines += self._render_records(personal)
         if instructions:
             lines += [
                 "# Project instructions (HIGHEST PRIORITY)",

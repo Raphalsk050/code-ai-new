@@ -107,7 +107,9 @@ def test_the_warning_says_how_often_it_has_already_happened(tmp_path) -> None:
 
     warning = orchestrator._lesson_warning(("edit_code",), _state(orchestrator))
 
-    assert "4x" in warning
+    assert "4x in earlier sessions" in warning
+    # Not "you hit this": nothing has gone wrong in this session yet.
+    assert "ignore it" in warning
 
 
 def test_an_empty_store_warns_about_nothing(tmp_path) -> None:

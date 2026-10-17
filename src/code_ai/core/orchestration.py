@@ -1968,11 +1968,14 @@ class AgentOrchestrator:
             return None
 
     def _lesson_warning(self, names: tuple[str, ...], state: _TurnState) -> str | None:
-        """Warn about a tool this session has already been burned by.
+        """Warn about a tool earlier sessions were burned by.
 
         Fired on the *first* use of that tool in the turn, before the same
         mistake has a chance to land again. Once per tool per turn: the point is
-        to arrive ahead of the failure, not to narrate every call.
+        to arrive ahead of the failure, not to narrate every call. The lesson is
+        the one noted at the tool's first failure and the count covers every
+        failure since, of any kind, so the model is told it may not apply: read
+        as "you just hit this", it was obeyed when nothing had gone wrong.
         """
 
         for name in names:
@@ -1983,9 +1986,9 @@ class AgentOrchestrator:
                 continue
             state.lessons_surfaced.add(name)
             return (
-                f"You have hit an error with '{name}' before ({lesson.count}x) and "
-                f"recorded what to do about it:\n- {lesson.lesson}\n"
-                "Check that this call already accounts for it."
+                f"'{name}' failed {lesson.count}x in earlier sessions. What you noted "
+                f"the first time:\n- {lesson.lesson}\n"
+                "Account for it if it applies to this call; if it does not, ignore it."
             )
         return None
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -1603,8 +1604,19 @@ _EXTERNAL_DECISION_MARKERS = {
 
 # Path-like tokens in free text: "~", "~/...", or an absolute "/..." segment.
 # The lookbehind keeps URL fragments ("https://host/x"), protocol-relative
-# references and word-internal slashes ("e/ou") from being misread as paths.
-_PATH_TOKEN_RE = re.compile(r"(?<![:\w/])(~(?:/[\w.+-][\w./+-]*)?|/[\w.+-][\w./+-]*)")
+# references, word-internal slashes ("e/ou") and relative paths ("./scratch",
+# "../x") from being misread as absolute ones.
+_PATH_TOKEN_RE = re.compile(r"(?<![:\w/.])(~(?:/[\w.+-][\w./+-]*)?|/[\w.+-][\w./+-]*)")
+
+
+def _is_switch(token: str) -> bool:
+    """A command-line switch rather than a path: cmd's "/s" and "/b", and on
+    Windows any one-segment "/name", which there is a flag far more often than
+    a folder at the root of the current drive."""
+    rest = token[1:] if token.startswith("/") else ""
+    if not rest or "/" in rest:
+        return False
+    return len(rest) <= 2 or os.name == "nt"
 
 
 def _external_path_targets(text: str, workspace: Path | None) -> tuple[str, ...]:
@@ -1625,7 +1637,7 @@ def _external_path_targets(text: str, workspace: Path | None) -> tuple[str, ...]
     targets: list[str] = []
     for token in _PATH_TOKEN_RE.findall(text):
         cleaned = token.rstrip(".,;:!?)('\"")
-        if not cleaned or cleaned == "/":
+        if not cleaned or cleaned == "/" or _is_switch(cleaned):
             continue
         try:
             resolved = Path(cleaned).expanduser().resolve(strict=False)

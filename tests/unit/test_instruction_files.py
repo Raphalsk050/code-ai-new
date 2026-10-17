@@ -129,3 +129,24 @@ def test_global_instruction_file_follows_the_rules_dir_override(
 ) -> None:
     monkeypatch.setenv("CODE_AI_RULES_DIR", str(tmp_path / "elsewhere"))
     assert global_instructions_file() == tmp_path / "elsewhere" / "CODEAI.md"
+
+
+def test_the_users_own_files_are_not_presented_as_the_projects(tmp_path) -> None:
+    """A home-wide CLAUDE.md read as "written for this workspace" was obeyed as if
+    it were the project's, C++ habits and all, in a Python project."""
+    home = tmp_path / "home-CLAUDE.md"
+    home.write_text("Explain everything from scratch.", encoding="utf-8")
+    project = tmp_path / "AGENTS.md"
+    project.write_text("Answer briefly.", encoding="utf-8")
+
+    rendered = _service(
+        tmp_path,
+        RuleSource(path=home, scope="global", authoritative=True),
+        _instructions(project),
+    ).render_for_prompt()
+
+    personal = rendered.index("# Your instructions (every project)")
+    projects = rendered.index("# Project instructions (HIGHEST PRIORITY)")
+    assert personal < rendered.index("Explain everything from scratch.") < projects
+    assert projects < rendered.index("Answer briefly.")
+    assert "the project's win" in rendered

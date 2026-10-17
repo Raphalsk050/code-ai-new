@@ -1235,6 +1235,9 @@ def test_external_path_targets_extraction(tmp_path) -> None:
     assert _external_path_targets("edite ~/.zshrc", None) == ()
     # Deduplicated, order preserved.
     assert _external_path_targets("mude ~/.zshrc e depois ~/.zshrc", root) == ("~/.zshrc",)
+    # Relative paths and command switches are not places outside the workspace.
+    assert _external_path_targets("crie ./scratch/soma.py e ../x", root) == ()
+    assert _external_path_targets('rode cmd /c "dir /s /b | findstr .py"', root) == ()
 
 
 async def test_suspend_pauses_active_plan_and_emits_waiting() -> None:
