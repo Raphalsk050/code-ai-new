@@ -35,6 +35,9 @@ dependencies = [
   "python-pptx>=1.0.0",
   "pillow>=10.0.0",
   "markdown-it-py>=3.0.0",
+  # The desktop avatar's window on macOS (code_ai/desktop_avatar/cocoa.py).
+  # Windows and Linux use the Rust host in desktop-avatar/ instead.
+  "pyobjc-framework-WebKit>=10.0; platform_system == 'Darwin'",
 ]
 
 [project.optional-dependencies]
@@ -67,7 +70,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 "code_ai" = ["version.json"]
 "code_ai.ui.terminal" = ["theme.tcss", "banner.txt"]
-"code_ai.assets" = ["default_skills/**/*.md"]
+"code_ai.assets" = ["default_skills/**/*.md", "desktop_avatar/*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

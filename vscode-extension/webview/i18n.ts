@@ -869,6 +869,10 @@ const PT: Record<string, string> = {
   "What the agent may do without asking.": "O que o agente pode fazer sem perguntar.",
   "What a new conversation opens in.": "Em que modo uma conversa nova abre.",
   "Floating avatar": "Avatar flutuante",
+  "Avatar on the desktop": "Avatar na área de trabalho",
+  "Loose on the desktop, over every window, outside VS Code: drag it anywhere, double-click sends it back to its corner.":
+    "Solto na área de trabalho, por cima de todas as janelas, fora do VS Code: arraste para qualquer lugar; duplo clique manda de volta ao canto.",
+  "Code-AI is waiting for you": "O Code-AI está esperando por você",
   "The agent loose in the panel: drag it anywhere, double-click sends it back to its corner.":
     "O agente solto no painel: arraste para qualquer lugar; duplo clique manda de volta ao canto.",
   "Avatar costume": "Fantasia do avatar",

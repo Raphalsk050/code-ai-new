@@ -17,6 +17,7 @@ export function draftFromSettings(settings: Settings): Draft {
     reasoning_effort: settings.reasoning_effort,
     followup_reasoning_effort: settings.followup_reasoning_effort ?? "none",
     learn: settings.learn,
+    desktop_avatar: settings.desktop_avatar ?? false,
     inline_hints_enabled: settings.inline_hints_enabled,
     inline_model: settings.inline_model,
     max_context_tokens: settings.max_context_tokens,

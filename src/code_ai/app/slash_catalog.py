@@ -199,6 +199,11 @@ SLASH_COMMANDS = [
         "/config learn ",
     ),
     SlashCommand(
+        "/config desktop-avatar <on|off>",
+        "Show/hide the avatar loose on the desktop, over every window.",
+        "/config desktop-avatar ",
+    ),
+    SlashCommand(
         "/config live-code <on|off>",
         "Show/hide the file being written, live, as the model streams it.",
         "/config live-code ",

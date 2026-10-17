@@ -48,6 +48,7 @@ class BridgeServer:
         self._app.orchestrator.approval_gateway = self._gateway
         self._app.subscribe(self._forward_event)
         await self._app.start()
+        self._app.desktop_avatar.attach(self._app)
         try:
             await self._read_loop()
         finally:

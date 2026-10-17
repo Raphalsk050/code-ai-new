@@ -868,7 +868,7 @@ function App(): JSX.Element {
         }
         const field = cmd.action.field;
         const value =
-          field === "learn"
+          field === "learn" || field === "desktop_avatar"
             ? argument.trim() === "on"
             : field === "max_context_tokens"
               ? Number(argument.trim())
@@ -1062,7 +1062,9 @@ function App(): JSX.Element {
 
   // Over every screen, where it was last left. Keyed, so it is the same one on
   // each of them and going from one to another does not put it back.
-  const floater = prefs.floatingAvatar && (
+  // On the desktop it has left the panel: the backend shows it there.
+  const floats = prefs.floatingAvatar && !settings?.desktop_avatar;
+  const floater = floats && (
     <FloatingAvatar
       key="floater"
       pose={pose}
@@ -1141,7 +1143,7 @@ function App(): JSX.Element {
           onDelete={deleteConversation}
           onSettings={openSettings}
           update={updateButton}
-          docked={prefs.floatingAvatar}
+          docked={floats}
           version={settings?.version}
         />
         {floater}

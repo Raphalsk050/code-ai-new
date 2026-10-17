@@ -863,6 +863,9 @@ class AppConfig:
     # every fragment is too expensive (a slow SSH link, a heavy multiplexer).
     terminal_live_code: bool = True
     learn: bool = True
+    # The avatar loose on the desktop, outside the editor and the terminal
+    # (code_ai.desktop_avatar). Off unless asked for: it sits over every window.
+    desktop_avatar: bool = False
     # Tools switched off (Doctor > Tools). The agent is built as if they did not
     # exist: no schema, no prompt catalog entry, and a call is an unknown tool.
     disabled_tools: list[str] = field(default_factory=list)
@@ -966,6 +969,7 @@ class AppConfig:
             terminal_session_collapsed=bool(data.get("terminal_session_collapsed", False)),
             terminal_live_code=bool(data.get("terminal_live_code", True)),
             learn=bool(data.get("learn", True)),
+            desktop_avatar=bool(data.get("desktop_avatar", False)),
             disabled_tools=sorted(
                 {str(name).strip() for name in data.get("disabled_tools") or ()} - {""}
             ),

@@ -12,3 +12,8 @@ __pycache__/
 /build/
 /dist/
 /out/
+
+# The desktop avatar: the host's build, and what CI drops into the package
+# (vscode-extension/scripts/desktop-avatar.mjs and desktop-avatar/).
+/desktop-avatar/target/
+/src/code_ai/assets/desktop_avatar/

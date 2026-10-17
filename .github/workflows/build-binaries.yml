@@ -51,9 +51,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  linux:
-    name: Linux x86_64
-    # Anything but an explicit ubuntu-latest, which includes every push.
+  # ---- the desktop avatar ----------------------------------------------------
+  # What the avatar loose on the desktop shows (vscode-extension/desktop/) and
+  # its window on Linux and Windows (desktop-avatar/), put into each backend
+  # build below before it is frozen; on macOS the window is Python and comes
+  # with the Mac build. A failure here only leaves the avatar out of the
+  # builds, and switching it on then says so.
+
+  desktop-avatar:
+    name: Desktop avatar
     if: inputs.runner != 'ubuntu-latest'
     runs-on: code-linux
     steps:
@@ -63,6 +69,87 @@ jobs:
         run: |
           v() { sed -n "s/.*\"$1\": *\([0-9]*\).*/\1/p" src/code_ai/version.json; }
           echo "CODE_AI_VERSION=$(v major).$(v minor).$(v patch)" >> "$GITHUB_ENV"
+
+      - name: Build the page
+        run: |
+          npm_cache="$HOME/.cache/code-ai-ci/npm"
+          mkdir -p "$npm_cache"
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e npm_config_cache=/npm-cache \
+            -v "$npm_cache":/npm-cache \
+            -v "$PWD":/work -w /work/vscode-extension \
+            node:20-bookworm \
+            bash -euxc '
+              npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+              node scripts/desktop-avatar.mjs ../out/desktop-avatar/avatar.html
+            '
+
+      # Root in the container, for apt; what it writes is handed back after.
+      # cargo never goes online: the script fetches the crates, held to Cargo.lock.
+      - name: Build the Linux and Windows hosts
+        env:
+          CODE_AI_CRATES_MIRROR: ${{ vars.CODE_AI_CRATES_MIRROR }}
+          CODE_AI_RUST_DIST_MIRROR: ${{ vars.CODE_AI_RUST_DIST_MIRROR }}
+        run: |
+          cache="$HOME/.cache/code-ai-ci/desktop-avatar"
+          mkdir -p "$cache"
+          docker run --rm \
+            -e CODE_AI_CRATES_MIRROR \
+            -e CODE_AI_RUST_DIST_MIRROR \
+            -v "$cache":/cache \
+            -v "$PWD":/work -w /work \
+            rust:1.90-bookworm \
+            bash -euxc '
+              apt-get update
+              apt-get install -y --no-install-recommends python3 libwebkit2gtk-4.1-dev gcc-mingw-w64-x86-64
+              python3 scripts/build_desktop_avatar.py --out out/desktop-avatar --cache /cache
+              chown -R '"$(id -u):$(id -g)"' out /cache
+            '
+
+      # Only for the backend builds, which carry it.
+      - uses: actions/upload-artifact@v3
+        with:
+          name: internal-desktop-avatar-v${{ env.CODE_AI_VERSION }}
+          path: out/desktop-avatar/
+          if-no-files-found: error
+          retention-days: 1
+
+  linux:
+    name: Linux x86_64
+    needs: [desktop-avatar]
+    # Anything but an explicit ubuntu-latest, which includes every push; and
+    # whatever came of the desktop avatar, which only goes missing.
+    if: "!cancelled() && inputs.runner != 'ubuntu-latest'"
+    runs-on: code-linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the version
+        run: |
+          v() { sed -n "s/.*\"$1\": *\([0-9]*\).*/\1/p" src/code_ai/version.json; }
+          echo "CODE_AI_VERSION=$(v major).$(v minor).$(v patch)" >> "$GITHUB_ENV"
+
+      # Missing, the build only lacks the desktop avatar.
+      - uses: actions/download-artifact@v3
+        continue-on-error: true
+        with:
+          name: internal-desktop-avatar-v${{ env.CODE_AI_VERSION }}
+          path: out/desktop-avatar
+
+      - name: Put the desktop avatar in the package
+        run: |
+          to=src/code_ai/assets/desktop_avatar
+          mkdir -p "$to"
+          for file in avatar.html code-ai-avatar; do
+            if [ -f "out/desktop-avatar/$file" ]; then
+              cp "out/desktop-avatar/$file" "$to/"
+            else
+              echo "::warning::out/desktop-avatar/$file is missing: no desktop avatar in this build"
+            fi
+          done
+          chmod +x "$to/code-ai-avatar" 2>/dev/null || true
 
       # Built inside a Debian Bullseye image (glibc 2.31) so the resulting
       # binary runs on a wide range of older Linux distributions too.
@@ -103,8 +190,10 @@ jobs:
 
   windows:
     name: Windows x86_64 (cross-built on Linux via Wine)
-    # Anything but an explicit ubuntu-latest, which includes every push.
-    if: inputs.runner != 'ubuntu-latest'
+    needs: [desktop-avatar]
+    # Anything but an explicit ubuntu-latest, which includes every push; and
+    # whatever came of the desktop avatar, which only goes missing.
+    if: "!cancelled() && inputs.runner != 'ubuntu-latest'"
     runs-on: code-linux
     steps:
       - uses: actions/checkout@v4
@@ -113,6 +202,25 @@ jobs:
         run: |
           v() { sed -n "s/.*\"$1\": *\([0-9]*\).*/\1/p" src/code_ai/version.json; }
           echo "CODE_AI_VERSION=$(v major).$(v minor).$(v patch)" >> "$GITHUB_ENV"
+
+      # Missing, the build only lacks the desktop avatar.
+      - uses: actions/download-artifact@v3
+        continue-on-error: true
+        with:
+          name: internal-desktop-avatar-v${{ env.CODE_AI_VERSION }}
+          path: out/desktop-avatar
+
+      - name: Put the desktop avatar in the package
+        run: |
+          to=src/code_ai/assets/desktop_avatar
+          mkdir -p "$to"
+          for file in avatar.html code-ai-avatar.exe WebView2Loader.dll; do
+            if [ -f "out/desktop-avatar/$file" ]; then
+              cp "out/desktop-avatar/$file" "$to/"
+            else
+              echo "::warning::out/desktop-avatar/$file is missing: no desktop avatar in this build"
+            fi
+          done
 
       # The interpreter reports itself as win32, so pip pulls Windows wheels -
       # Playwright's included, with its node.exe. Separate cache from the Linux
@@ -168,7 +276,8 @@ jobs:
 
   macos:
     name: macOS arm64 + x86_64 (assembled on Linux)
-    if: inputs.runner != 'ubuntu-latest'
+    needs: [desktop-avatar]
+    if: "!cancelled() && inputs.runner != 'ubuntu-latest'"
     runs-on: code-linux
     steps:
       - uses: actions/checkout@v4
@@ -177,6 +286,25 @@ jobs:
         run: |
           v() { sed -n "s/.*\"$1\": *\([0-9]*\).*/\1/p" src/code_ai/version.json; }
           echo "CODE_AI_VERSION=$(v major).$(v minor).$(v patch)" >> "$GITHUB_ENV"
+
+      # Missing, the build only lacks the desktop avatar.
+      - uses: actions/download-artifact@v3
+        continue-on-error: true
+        with:
+          name: internal-desktop-avatar-v${{ env.CODE_AI_VERSION }}
+          path: out/desktop-avatar
+
+      - name: Put the desktop avatar in the package
+        run: |
+          to=src/code_ai/assets/desktop_avatar
+          mkdir -p "$to"
+          for file in avatar.html; do
+            if [ -f "out/desktop-avatar/$file" ]; then
+              cp "out/desktop-avatar/$file" "$to/"
+            else
+              echo "::warning::out/desktop-avatar/$file is missing: no desktop avatar in this build"
+            fi
+          done
 
       # The macOS Python comes from github.com; the repository variable
       # CODE_AI_PBS_MIRROR points at an internal copy if that is blocked.
@@ -212,8 +340,8 @@ jobs:
   # there is none here. The machine is thrown away, so the caches go through
   # actions/cache and the setup actions instead of staying on its disk.
 
-  linux-public:
-    name: Linux x86_64 (GitHub-hosted)
+  desktop-avatar-public:
+    name: Desktop avatar (GitHub-hosted)
     if: inputs.runner == 'ubuntu-latest'
     runs-on: ubuntu-latest
     steps:
@@ -223,6 +351,90 @@ jobs:
         run: |
           v() { sed -n "s/.*\"$1\": *\([0-9]*\).*/\1/p" src/code_ai/version.json; }
           echo "CODE_AI_VERSION=$(v major).$(v minor).$(v patch)" >> "$GITHUB_ENV"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/code-ai-ci/npm
+            ~/.cache/code-ai-ci/desktop-avatar
+          key: desktop-avatar-${{ hashFiles('desktop-avatar/Cargo.lock', 'vscode-extension/package-lock.json') }}
+          restore-keys: desktop-avatar-
+
+      - name: Build the page
+        run: |
+          npm_cache="$HOME/.cache/code-ai-ci/npm"
+          mkdir -p "$npm_cache"
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e npm_config_cache=/npm-cache \
+            -v "$npm_cache":/npm-cache \
+            -v "$PWD":/work -w /work/vscode-extension \
+            node:20-bookworm \
+            bash -euxc '
+              npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+              node scripts/desktop-avatar.mjs ../out/desktop-avatar/avatar.html
+            '
+
+      # Root in the container, for apt; what it writes is handed back after.
+      # cargo never goes online: the script fetches the crates, held to Cargo.lock.
+      - name: Build the Linux and Windows hosts
+        run: |
+          cache="$HOME/.cache/code-ai-ci/desktop-avatar"
+          mkdir -p "$cache"
+          docker run --rm \
+            -e CODE_AI_CRATES_MIRROR \
+            -e CODE_AI_RUST_DIST_MIRROR \
+            -v "$cache":/cache \
+            -v "$PWD":/work -w /work \
+            rust:1.90-bookworm \
+            bash -euxc '
+              apt-get update
+              apt-get install -y --no-install-recommends python3 libwebkit2gtk-4.1-dev gcc-mingw-w64-x86-64
+              python3 scripts/build_desktop_avatar.py --out out/desktop-avatar --cache /cache
+              chown -R '"$(id -u):$(id -g)"' out /cache
+            '
+
+      # Only for the backend builds, which carry it.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: internal-desktop-avatar-v${{ env.CODE_AI_VERSION }}
+          path: out/desktop-avatar/
+          if-no-files-found: error
+          retention-days: 1
+
+  linux-public:
+    name: Linux x86_64 (GitHub-hosted)
+    needs: [desktop-avatar-public]
+    if: "!cancelled() && inputs.runner == 'ubuntu-latest'"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the version
+        run: |
+          v() { sed -n "s/.*\"$1\": *\([0-9]*\).*/\1/p" src/code_ai/version.json; }
+          echo "CODE_AI_VERSION=$(v major).$(v minor).$(v patch)" >> "$GITHUB_ENV"
+
+      # Missing, the build only lacks the desktop avatar.
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: internal-desktop-avatar-v${{ env.CODE_AI_VERSION }}
+          path: out/desktop-avatar
+
+      - name: Put the desktop avatar in the package
+        run: |
+          to=src/code_ai/assets/desktop_avatar
+          mkdir -p "$to"
+          for file in avatar.html code-ai-avatar; do
+            if [ -f "out/desktop-avatar/$file" ]; then
+              cp "out/desktop-avatar/$file" "$to/"
+            else
+              echo "::warning::out/desktop-avatar/$file is missing: no desktop avatar in this build"
+            fi
+          done
+          chmod +x "$to/code-ai-avatar" 2>/dev/null || true
 
       - uses: actions/cache@v4
         with:
@@ -266,7 +478,8 @@ jobs:
 
   windows-public:
     name: Windows x86_64 (GitHub-hosted, cross-built via Wine)
-    if: inputs.runner == 'ubuntu-latest'
+    needs: [desktop-avatar-public]
+    if: "!cancelled() && inputs.runner == 'ubuntu-latest'"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -275,6 +488,25 @@ jobs:
         run: |
           v() { sed -n "s/.*\"$1\": *\([0-9]*\).*/\1/p" src/code_ai/version.json; }
           echo "CODE_AI_VERSION=$(v major).$(v minor).$(v patch)" >> "$GITHUB_ENV"
+
+      # Missing, the build only lacks the desktop avatar.
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: internal-desktop-avatar-v${{ env.CODE_AI_VERSION }}
+          path: out/desktop-avatar
+
+      - name: Put the desktop avatar in the package
+        run: |
+          to=src/code_ai/assets/desktop_avatar
+          mkdir -p "$to"
+          for file in avatar.html code-ai-avatar.exe WebView2Loader.dll; do
+            if [ -f "out/desktop-avatar/$file" ]; then
+              cp "out/desktop-avatar/$file" "$to/"
+            else
+              echo "::warning::out/desktop-avatar/$file is missing: no desktop avatar in this build"
+            fi
+          done
 
       - uses: actions/cache@v4
         with:
@@ -322,7 +554,8 @@ jobs:
 
   macos-public:
     name: macOS arm64 + x86_64 (GitHub-hosted, assembled on Linux)
-    if: inputs.runner == 'ubuntu-latest'
+    needs: [desktop-avatar-public]
+    if: "!cancelled() && inputs.runner == 'ubuntu-latest'"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -331,6 +564,25 @@ jobs:
         run: |
           v() { sed -n "s/.*\"$1\": *\([0-9]*\).*/\1/p" src/code_ai/version.json; }
           echo "CODE_AI_VERSION=$(v major).$(v minor).$(v patch)" >> "$GITHUB_ENV"
+
+      # Missing, the build only lacks the desktop avatar.
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: internal-desktop-avatar-v${{ env.CODE_AI_VERSION }}
+          path: out/desktop-avatar
+
+      - name: Put the desktop avatar in the package
+        run: |
+          to=src/code_ai/assets/desktop_avatar
+          mkdir -p "$to"
+          for file in avatar.html; do
+            if [ -f "out/desktop-avatar/$file" ]; then
+              cp "out/desktop-avatar/$file" "$to/"
+            else
+              echo "::warning::out/desktop-avatar/$file is missing: no desktop avatar in this build"
+            fi
+          done
 
       - uses: actions/cache@v4
         with:

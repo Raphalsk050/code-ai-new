@@ -15,6 +15,7 @@ from code_ai.config.models import AppConfig
 from code_ai.context.compression import CompressionResult
 from code_ai.core.orchestration import TurnResult
 from code_ai.core.state import AgentState
+from code_ai.desktop_avatar import DesktopAvatar
 from code_ai.events.models import EventEnvelope
 from code_ai.ui.terminal.app import _NEWLINE_KEYS, create_terminal_app
 from code_ai.ui.terminal.slash_commands import (
@@ -63,6 +64,10 @@ class FakeTerminalApplication:
         # rather than performed, so a test can assert the rebuild was asked for.
         self.compressor = SimpleNamespace(max_context_tokens=0)
         self.provider_reloads = 0
+        # The real one, with no host to start: off by default, and never on screen.
+        self.desktop_avatar = DesktopAvatar(
+            lambda: self.session.config, state_dir=tmp_path, command=lambda: None
+        )
 
     async def _emit_bus(self, event_type: str, payload: dict[str, object], source=None) -> None:
         await self.emit(event_type, payload)
@@ -1722,6 +1727,30 @@ def test_config_learn_command_persists_and_updates_active_config(tmp_path) -> No
     assert "Learn mode off" in result
     assert fake_app.session.config.learn is False
     assert saved["learn"] is False
+
+
+def test_config_desktop_avatar_is_off_and_refused_without_a_host(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    config_path = tmp_path / "config.json"
+    assert fake_app.session.config.desktop_avatar is False
+
+    result = handle_config_command(fake_app, "/config desktop-avatar on", config_path=config_path)
+
+    assert result == "command> Config not changed: The desktop avatar is not part of this build."
+    assert fake_app.session.config.desktop_avatar is False
+    assert json.loads(config_path.read_text(encoding="utf-8")).get("desktop_avatar", False) is False
+
+
+def test_config_desktop_avatar_turns_on_with_a_host(tmp_path) -> None:
+    fake_app = FakeTerminalApplication(tmp_path)
+    fake_app.desktop_avatar = SimpleNamespace(set_enabled=lambda enabled: None)
+    config_path = tmp_path / "config.json"
+
+    result = handle_config_command(fake_app, "/config desktop-avatar on", config_path=config_path)
+
+    assert "Desktop avatar on" in result
+    assert fake_app.session.config.desktop_avatar is True
+    assert json.loads(config_path.read_text(encoding="utf-8"))["desktop_avatar"] is True
 
 
 def test_config_learn_command_rejects_invalid_value(tmp_path) -> None:

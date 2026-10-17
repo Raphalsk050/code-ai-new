@@ -54,6 +54,8 @@ async def test_gateway_close_denies_pending() -> None:
 
 class _StubApp:
     def __init__(self) -> None:
+        # Attached by the server once it starts; a stub that shows nothing.
+        self.desktop_avatar = SimpleNamespace(attach=lambda app: None)
         self._subs: list = []
         self.orchestrator = SimpleNamespace(approval_gateway=None)
         self.started = False

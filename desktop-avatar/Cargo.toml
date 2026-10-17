@@ -1,0 +1,21 @@
+[package]
+name = "code-ai-avatar"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The Code-AI avatar loose on the desktop: a transparent window over the work area."
+
+[dependencies]
+tao = "0.37.1"
+wry = "0.57.0"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

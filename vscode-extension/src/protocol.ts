@@ -117,6 +117,8 @@ export interface Settings {
   reasoning_effort: string;
   followup_reasoning_effort: string;
   learn: boolean;
+  /** The avatar loose on the desktop, outside VS Code; the backend shows it. */
+  desktop_avatar?: boolean;
   inline_hints_enabled: boolean;
   inline_model: string;
   max_context_tokens: number;

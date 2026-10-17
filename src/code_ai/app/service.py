@@ -29,6 +29,7 @@ from code_ai.core.orchestration import AgentOrchestrator, TurnResult
 from code_ai.core.planning import PlannerMode
 from code_ai.core.state import AgentState
 from code_ai.core.workflows import WorkflowService
+from code_ai.desktop_avatar import DesktopAvatar
 from code_ai.events.bus import AsyncEventBus, EventSubscriber
 from code_ai.events.models import EventEnvelope
 from code_ai.index import (
@@ -173,6 +174,9 @@ class CodeAIApplication:
         # embedding model changes; exists only while that work is running.
         self._index_warmup_task: asyncio.Task[None] | None = None
         self._embedding_task: asyncio.Task[Any] | None = None
+        # The avatar loose on the desktop. Only a front end attaches it, so a
+        # headless run never puts a window on anyone's screen.
+        self.desktop_avatar = DesktopAvatar(lambda: self.session.config)
 
     @property
     def conversation_id(self) -> str | None:
@@ -872,6 +876,7 @@ class CodeAIApplication:
             "reasoning_effort": config.sampling.reasoning_effort or "none",
             "followup_reasoning_effort": config.sampling.followup_reasoning_effort or "none",
             "learn": config.learn,
+            "desktop_avatar": config.desktop_avatar,
             "inline_hints_enabled": config.inline_hints_enabled,
             "inline_model": config.inline_model,
             "vision_model": config.vision_model,
@@ -1045,6 +1050,19 @@ class CodeAIApplication:
                     config.commands_see_secrets = validated.commands_see_secrets
                     if changed:
                         self.refresh_environment_note()
+                    applied.append(key)
+                elif key == "desktop_avatar":
+                    enabled = bool(value)
+                    # Posted on every save: only a real change shows or hides it.
+                    if enabled != config.desktop_avatar:
+                        config.desktop_avatar = enabled
+                        problem = self.desktop_avatar.set_enabled(enabled)
+                        if problem:
+                            config.desktop_avatar = False
+                            errors[key] = problem
+                            continue
+                    validated = persist_config_updates(config, {key: enabled})
+                    config.desktop_avatar = validated.desktop_avatar
                     applied.append(key)
                 elif key == "mcp_enabled":
                     enabled = bool(value)
@@ -1752,6 +1770,7 @@ class CodeAIApplication:
         self.event_bus.unsubscribe(subscriber)
 
     async def close(self) -> None:
+        self.desktop_avatar.close()
         if self._graph_runner is not None:
             self._graph_runner.request_stop()
         if self._graph_task and not self._graph_task.done():

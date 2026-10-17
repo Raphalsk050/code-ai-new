@@ -87,6 +87,7 @@ const ROUTES: { prefix: string; action: CommandAction }[] = [
     action: { kind: "settings-update", field: "max_context_tokens" },
   },
   { prefix: "/config learn", action: { kind: "settings-update", field: "learn" } },
+  { prefix: "/config desktop-avatar", action: { kind: "settings-update", field: "desktop_avatar" } },
   { prefix: "/config", action: { kind: "settings" } },
   { prefix: "/quit", action: { kind: "unsupported" } },
 ];

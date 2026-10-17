@@ -449,6 +449,20 @@ export function SettingsScreen({
         ),
       },
       {
+        id: "desktop_avatar",
+        category: "agent",
+        label: t("Avatar on the desktop"),
+        hint: t("Loose on the desktop, over every window, outside VS Code: drag it anywhere, double-click sends it back to its corner."),
+        keys: ["desktop_avatar"],
+        control: (
+          <Switch
+            checked={Boolean(draft.desktop_avatar)}
+            onChange={(v) => set("desktop_avatar", v)}
+            label={t("Avatar on the desktop")}
+          />
+        ),
+      },
+      {
         id: "avatar_watches",
         category: "agent",
         label: t("Avatar looks at the pointer"),

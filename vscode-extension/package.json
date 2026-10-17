@@ -2,7 +2,7 @@
   "name": "code-ai",
   "displayName": "Code-AI",
   "description": "Drive the Code-AI agent from VSCode. Ships the agent with it: no Python, no install.",
-  "version": "0.45.0",
+  "version": "0.46.0",
   "publisher": "code-ai",
   "private": true,
   "engines": {
@@ -132,6 +132,7 @@
     "build": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
     "avatar-lab": "node scripts/avatar-lab.mjs",
+    "desktop-avatar": "node scripts/desktop-avatar.mjs",
     "typecheck": "tsc --noEmit",
     "package": "node scripts/package.mjs",
     "verify-vsix": "node scripts/verify-vsix.mjs",

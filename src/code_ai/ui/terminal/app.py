@@ -1247,6 +1247,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 init=False,
             )
             await application.start()
+            application.desktop_avatar.attach(application)
             self._refresh_status()
             self.query_one("#input", MultilineInput).focus()
             updates.remove_replaced()

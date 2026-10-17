@@ -452,6 +452,35 @@ def handle_config_command(application: Any, command_text: str, *, config_path: P
                 "explanation of why each change is needed."
             )
         return "command> Learn mode off. Approval prompts will no longer show explanations."
+    if action == "desktop-avatar":
+        if len(parts) != 3 or parts[2].strip().lower() not in {"on", "off"}:
+            return "command> Usage: /config desktop-avatar <on|off>"
+        enabled = parts[2].strip().lower() == "on"
+        result = _apply_config_change(
+            application,
+            config_path=config_path,
+            changes={"desktop_avatar": enabled},
+            live_fields={"desktop_avatar"},
+            restart_required=False,
+        )
+        if result.startswith("command> Config not changed"):
+            return result
+        problem = application.desktop_avatar.set_enabled(enabled)
+        if problem:
+            _apply_config_change(
+                application,
+                config_path=config_path,
+                changes={"desktop_avatar": False},
+                live_fields={"desktop_avatar"},
+                restart_required=False,
+            )
+            return f"command> Config not changed: {problem}"
+        if enabled:
+            return (
+                "command> Desktop avatar on. It sits over every window: drag it anywhere, "
+                "double-click sends it back to its corner."
+            )
+        return "command> Desktop avatar off."
     if action == "live-code":
         if len(parts) != 3 or parts[2].strip().lower() not in {"on", "off"}:
             return "command> Usage: /config live-code <on|off>"
@@ -623,6 +652,18 @@ def _value_suggestions(prefix: str) -> list[SlashCommand]:
             SlashCommand(
                 f"/config learn {value}",
                 "Show/hide the model's explanation of why it's making each change.",
+            )
+            for value in ("on", "off")
+            if value.startswith(value_prefix)
+        ]
+
+    desktop_avatar_prefix = "/config desktop-avatar "
+    if prefix.startswith(desktop_avatar_prefix):
+        value_prefix = prefix[len(desktop_avatar_prefix) :].strip().lower()
+        return [
+            SlashCommand(
+                f"/config desktop-avatar {value}",
+                "Show/hide the avatar loose on the desktop, over every window.",
             )
             for value in ("on", "off")
             if value.startswith(value_prefix)
