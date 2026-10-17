@@ -626,6 +626,7 @@ def _config(**overrides):
     config = object.__new__(AppConfig)
     config.api_mode = overrides.get("api_mode", "completions")
     config.base_url = overrides.get("base_url", "https://api.example.com/v1")
+    config.api_key = overrides.get("api_key", "")
     return config
 
 
@@ -650,6 +651,44 @@ def test_models_endpoint_native_ollama():
         models_endpoint(_config(api_mode="ollama", base_url="http://localhost:11434/v1"))
         == "http://localhost:11434/api/tags"
     )
+
+
+def test_listing_sends_a_bearer_key_to_openai_compatible_servers():
+    from code_ai.providers.model_listing import listing_request
+
+    url, headers, params = listing_request(_config(api_key="sk-x"))
+
+    assert url == "https://api.example.com/v1/models"
+    assert headers == {"Authorization": "Bearer sk-x"}
+    assert params == {}
+
+
+def test_listing_speaks_anthropics_own_api():
+    """Bearer alone gets a 400 from api.anthropic.com/v1/models."""
+    from code_ai.providers.model_listing import ANTHROPIC_VERSION, listing_request
+
+    url, headers, params = listing_request(
+        _config(base_url="https://api.anthropic.com/v1", api_key="sk-ant-x")
+    )
+
+    assert url == "https://api.anthropic.com/v1/models"
+    assert headers == {"anthropic-version": ANTHROPIC_VERSION, "x-api-key": "sk-ant-x"}
+    assert params == {"limit": 1000}
+
+
+def test_anthropics_catalog_reads_like_any_other():
+    from code_ai.providers.model_listing import extract_model_ids
+
+    payload = {
+        "data": [
+            {"type": "model", "id": "claude-sonnet-5-5", "display_name": "Claude Sonnet 5.5"},
+            {"type": "model", "id": "claude-opus-5-5", "display_name": "Claude Opus 5.5"},
+        ],
+        "has_more": False,
+        "first_id": "claude-sonnet-5-5",
+        "last_id": "claude-opus-5-5",
+    }
+    assert extract_model_ids(payload) == ["claude-opus-5-5", "claude-sonnet-5-5"]
 
 
 def test_extract_model_ids_openai_shape():

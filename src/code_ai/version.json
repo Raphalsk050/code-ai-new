@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 46,
-  "patch": 0,
-  "build": 119,
+  "patch": 1,
+  "build": 120,
   "updated": "2026-10-17",
-  "note": "The avatar can leave the panel and sit loose on the desktop"
+  "note": "List Anthropic's models with the headers its API wants"
 }
