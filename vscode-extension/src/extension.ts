@@ -893,6 +893,11 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
             });
           });
         break;
+      case "desktopAvatarSeat":
+        client?.request("desktopAvatarSeat", { seat: message.seat }).catch((err) =>
+          console.error("[code-ai] desktopAvatarSeat failed", err)
+        );
+        break;
       case "updateSettings":
         client
           ?.request<{ settings?: { inline_hints_enabled?: boolean; inline_model?: string; model?: string } }>(

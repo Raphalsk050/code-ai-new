@@ -583,6 +583,11 @@ class BridgeServer:
         path = await updates.download(asset, verify_ssl=verify)
         return {"path": str(path), "version": release.version}
 
+    async def _h_desktop_avatar_seat(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Where the panel's logo is on the screen, or None: the desktop avatar sits there."""
+        self._app.desktop_avatar.seat(params.get("seat"))
+        return {}
+
     async def _h_get_profile(self, params: dict[str, Any]) -> dict[str, Any]:
         """Who is signed in on the releases host, for the chat's avatar. Without
         a picture the icon stays, and ``problem`` says why."""
@@ -658,6 +663,7 @@ class BridgeServer:
         "signInForUpdates": _h_sign_in_for_updates,
         "downloadUpdate": _h_download_update,
         "getProfile": _h_get_profile,
+        "desktopAvatarSeat": _h_desktop_avatar_seat,
         "signInForPicture": _h_sign_in_for_picture,
         "shutdown": _h_shutdown,
     }

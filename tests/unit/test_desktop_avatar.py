@@ -180,6 +180,25 @@ def test_the_turn_reaches_it_and_where_it_rests_is_kept(tmp_path: Path) -> None:
         avatar.close()
 
 
+def test_the_logo_seat_is_passed_on_and_given_again_on_showing(tmp_path: Path) -> None:
+    avatar, app, _, log, _ = _avatar(tmp_path)
+    seat = {"x": 300, "y": 200, "w": 62, "h": 62}
+    avatar.seat(seat)  # before it shows: kept for when it does
+    avatar.attach(app)
+    try:
+        assert _until(lambda: _lines(log))[1]["seat"] == seat
+
+        avatar.seat(dict(seat))  # the same place again is not news
+        avatar.seat({"x": "a"})  # nor is nonsense anything but no seat
+        avatar.seat(None)
+        _until(lambda: {"seat": None} in _lines(log))
+        assert [line for line in _lines(log) if "seat" in line and "pose" not in line] == [
+            {"seat": None}
+        ]
+    finally:
+        avatar.close()
+
+
 def test_one_desktop_shows_one(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(desktop_avatar, "_LOCK_RETRY_S", 0.0)
     first, first_app, _, _, _ = _avatar(tmp_path, name="first.log")

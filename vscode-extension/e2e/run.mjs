@@ -31,6 +31,7 @@ import { tests as dropdown } from "./dropdown.e2e.mjs";
 import { tests as flow } from "./flow.e2e.mjs";
 import { tests as notes } from "./notes.e2e.mjs";
 import { tests as follow } from "./follow.e2e.mjs";
+import { tests as desktopAvatar, desk } from "./desktop-avatar.e2e.mjs";
 
 const GROUPS = [
   {
@@ -39,7 +40,15 @@ const GROUPS = [
     ready: "#root .app",
     // The chat panel is a sidebar: its specs assume the width one has.
     viewport: { width: 900, height: 900 },
-    specs: { settings, mcp, update, branch, transcript, stream, chrome, turns, rail, settingsLayout, terminal, avatar, remove, history, perf, surface, queue, dropdown },
+    specs: { settings, mcp, update, branch, transcript, stream, chrome, turns, rail, settingsLayout, terminal, avatar, desktopAvatar, remove, history, perf, surface, queue, dropdown },
+  },
+  {
+    // The page the avatar loose on the desktop shows, as its native host would.
+    name: "desktop",
+    build: () => buildWebview("desktop/avatar.tsx", "desk.js"),
+    ready: "body",
+    viewport: { width: 1200, height: 800 },
+    specs: { desk },
   },
   {
     name: "flow",

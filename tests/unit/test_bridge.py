@@ -55,7 +55,8 @@ async def test_gateway_close_denies_pending() -> None:
 class _StubApp:
     def __init__(self) -> None:
         # Attached by the server once it starts; a stub that shows nothing.
-        self.desktop_avatar = SimpleNamespace(attach=lambda app: None)
+        self.seats: list = []
+        self.desktop_avatar = SimpleNamespace(attach=lambda app: None, seat=self.seats.append)
         self._subs: list = []
         self.orchestrator = SimpleNamespace(approval_gateway=None)
         self.started = False
@@ -306,6 +307,20 @@ async def test_update_settings_forwards_updates() -> None:
     (response,) = _messages(out)
     assert response["id"] == 12
     assert response["result"]["applied"] == ["model"]
+
+
+async def test_the_logo_seat_goes_to_the_desktop_avatar() -> None:
+    app = _StubApp()
+    server, out = _server(app)
+    seat = {"x": 10, "y": 20, "w": 62, "h": 62}
+    await server._handle_line(
+        json.dumps(
+            {"jsonrpc": "2.0", "id": 13, "method": "desktopAvatarSeat", "params": {"seat": seat}}
+        )
+    )
+    assert app.seats == [seat]
+    (response,) = _messages(out)
+    assert response["id"] == 13 and response["result"] == {}
 
 
 async def test_explain_code_returns_markdown() -> None:

@@ -90,6 +90,7 @@ export type BridgeMethod =
   | "signInForUpdates"
   | "downloadUpdate"
   | "getProfile"
+  | "desktopAvatarSeat"
   | "signInForPicture"
   | "shutdown";
 
@@ -459,6 +460,8 @@ export type WebviewToHost =
   | { type: "answerNow"; text: string }
   | { type: "getSettings" }
   | { type: "updateSettings"; updates: Record<string, unknown> }
+  /** Where the logo is on the screen, in physical pixels, for the avatar on the desktop to sit on; null once it is not. */
+  | { type: "desktopAvatarSeat"; seat: { x: number; y: number; w: number; h: number } | null }
   | { type: "listModels" }
   | ({ type: "mcp" } & McpAction)
   | {

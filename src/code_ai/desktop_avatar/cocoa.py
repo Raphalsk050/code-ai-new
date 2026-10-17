@@ -86,6 +86,15 @@ def main(argv: list[str]) -> int:
                 face.update(body[5:])
             elif body == "ready":
                 state["ready"] = True
+                # Where this window is, in physical pixels from the main screen's
+                # top left: the panel says where its logo is on the screen in those.
+                scale = window.backingScaleFactor()
+                at = window.frame()
+                main = AppKit.NSScreen.screens()[0].frame()
+                top = main.size.height - (at.origin.y + at.size.height)
+                frame = f"{at.origin.x * scale:.0f},{top * scale:.0f},{scale}"
+                script = f"window.desk&&desk.frame({frame})"
+                view.evaluateJavaScript_completionHandler_(script, None)
                 for line in waiting:
                     deliver(line)
                 waiting.clear()

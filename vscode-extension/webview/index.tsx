@@ -60,6 +60,7 @@ import { cue } from "./avatar-acts";
 import { stroke, useRapt } from "./avatar-nerves";
 import { avatarPose, turnMood } from "./avatar-pose";
 import { seasonalSkin, setAvatarColor, setAvatarSkin } from "./avatar-skin";
+import { useDesktopSeat } from "./desktop-seat";
 import { FloatingAvatar } from "./floating-avatar";
 import { VersionMark } from "./version-mark";
 import { PromptPin, usePromptPin } from "./prompt-pin";
@@ -580,6 +581,12 @@ function App(): JSX.Element {
   // At work it has its own things to do; waiting on the user, it is anxious while they type.
   const rapt = useRapt();
   const pose = useSteadyPose(busy ? avatarPose(state.session, lastItem) : rapt ? "anxious" : "idle");
+  // On the desktop it has left the panel, and still sits on the logo while the
+  // home screen is up, as the panel's own does: the backend is told where that is.
+  const desktop = Boolean(settings?.desktop_avatar);
+  const seated = useDesktopSeat(desktop && screen === "home", ".home-hero .spark", (seat) =>
+    send({ type: "desktopAvatarSeat", seat })
+  );
   // Nothing written, the agent set to work, or told not to be: nothing to be anxious about.
   const anxious = prefs.avatarAnxious && !busy;
   React.useEffect(() => {
@@ -1062,8 +1069,7 @@ function App(): JSX.Element {
 
   // Over every screen, where it was last left. Keyed, so it is the same one on
   // each of them and going from one to another does not put it back.
-  // On the desktop it has left the panel: the backend shows it there.
-  const floats = prefs.floatingAvatar && !settings?.desktop_avatar;
+  const floats = prefs.floatingAvatar && !desktop;
   const floater = floats && (
     <FloatingAvatar
       key="floater"
@@ -1143,7 +1149,7 @@ function App(): JSX.Element {
           onDelete={deleteConversation}
           onSettings={openSettings}
           update={updateButton}
-          docked={floats}
+          docked={floats || seated}
           version={settings?.version}
         />
         {floater}

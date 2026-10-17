@@ -131,6 +131,9 @@ class DesktopAvatar:
         self._dir = state_dir
         self._command = command
         self._mood = Mood()
+        # Where the panel's logo is on the screen, in physical pixels, while the
+        # home screen shows it: the avatar sits there, as the panel's own does.
+        self._seat: dict[str, int] | None = None
         self._process: subprocess.Popen[str] | None = None
         self._lock: _DesktopLock | None = None
         self._attached = False
@@ -214,8 +217,19 @@ class DesktopAvatar:
             threading.Thread(target=reader, args=(process,), daemon=True).start()
         language = str(getattr(self._settings(), "language", "en"))
         self._send({"at": self._saved_place(), "lang": language})
-        self._send({"pose": self._mood.pose, "waiting": self._mood.waiting})
+        self._send({"pose": self._mood.pose, "waiting": self._mood.waiting, "seat": self._seat})
         return None
+
+    def seat(self, box: Any) -> None:
+        """The panel's logo on the screen, or None once it is not there to sit on."""
+        keys = ("x", "y", "w", "h")
+        valid = isinstance(box, dict) and all(isinstance(box.get(k), (int, float)) for k in keys)
+        seat = {k: int(box[k]) for k in keys} if valid else None
+        if seat == self._seat:
+            return
+        self._seat = seat
+        if self.running:
+            self._send({"seat": seat})
 
     def hide(self) -> None:
         process, self._process = self._process, None

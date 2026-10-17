@@ -133,6 +133,11 @@ fn run(html: String, data: Option<std::path::PathBuf>) -> Result<(), Box<dyn Err
             Event::UserEvent(Ask::Face(at)) => face = at,
             Event::UserEvent(Ask::Ready) => {
                 ready = true;
+                // Where this window is, in physical pixels: the panel says where its
+                // logo is on the screen in those, and the page sits the avatar there.
+                let at = window.inner_position().unwrap_or_default();
+                let scale = window.scale_factor();
+                let _ = webview.evaluate_script(&format!("window.desk&&desk.frame({},{},{scale})", at.x, at.y));
                 for line in waiting.drain(..) {
                     deliver(&webview, &line);
                 }

@@ -10,13 +10,17 @@
 //   {pose}       idle, think, search or type
 //   {cue}        greet, answered, refused, went-well or went-wrong
 //   {waiting}    whether something waits on the user
-// To the host, through `ipc.postMessage`: "ready", "face:x,y,w,h,held" for
+//   {seat}       where the panel's logo is on the screen, in physical pixels,
+//                while its home screen is up; null once it is not
+// From the host, `desk.frame(x, y, scale)`: where this window is, in the same
+// pixels, so the logo's place can be found in it. To the host, through `ipc.postMessage`: "ready", "face:x,y,w,h,held" for
 // where clicks may land, and "out:{rest}" for where it came to rest.
 
 import * as React from "react";
 import { createRoot } from "react-dom/client";
 
 import { useSteadyPose } from "../webview/agent-avatar";
+import type { ScreenBox } from "../webview/desktop-seat";
 import { type Cue, cue } from "../webview/avatar-acts";
 import { isPlace, type Place } from "../webview/avatar-motion";
 import type { AvatarPose } from "../webview/avatar-pose";
@@ -27,7 +31,11 @@ import { STYLE } from "../webview/styles";
 declare global {
   interface Window {
     ipc?: { postMessage(message: string): void };
-    desk?: { receive(message: Message): void; pointer(x: number, y: number): void };
+    desk?: {
+      receive(message: Message): void;
+      pointer(x: number, y: number): void;
+      frame(x: number, y: number, scale: number): void;
+    };
   }
 }
 
@@ -37,7 +45,10 @@ interface Message {
   pose?: AvatarPose;
   cue?: Cue;
   waiting?: boolean;
+  seat?: ScreenBox | null;
 }
+
+type Box = { left: number; top: number; width: number; height: number };
 
 /** The variables a webview gets from VS Code, Dark Modern's: the desktop has no theme to give. */
 const THEME = `
@@ -49,6 +60,7 @@ const THEME = `
 }
 html, body, #root { background: transparent !important; margin: 0; height: 100%; overflow: hidden; }
 .desk-room { position: relative; width: 100vw; height: 100vh; }
+.desk-seat { position: absolute; pointer-events: none; }
 .desk-card {
   position: absolute; padding: 6px 10px; border-radius: 10px; white-space: nowrap;
   font: 12px var(--vscode-font-family); color: var(--vscode-foreground);
@@ -66,6 +78,7 @@ const post = (message: string) => window.ipc?.postMessage(message);
 function Desk({ start }: { start: Place | undefined }): JSX.Element {
   const [pose, setPose] = React.useState<AvatarPose>("idle");
   const [card, setCard] = React.useState<{ left: number; top: number } | null>(null);
+  const [seat, setSeat] = React.useState<Box | null>(null);
   const steady = useSteadyPose(pose);
 
   React.useEffect(() => {
@@ -73,6 +86,7 @@ function Desk({ start }: { start: Place | undefined }): JSX.Element {
       if (message.pose) setPose(message.pose);
       if (message.waiting !== undefined) setCard(message.waiting ? beside() : null);
       if (message.cue) cue(message.cue);
+      if ("seat" in message) setSeat(inRoom(message.seat ?? null));
     };
     early.splice(0).forEach(hear);
     return () => {
@@ -87,14 +101,33 @@ function Desk({ start }: { start: Place | undefined }): JSX.Element {
           {t("Code-AI is waiting for you")}
         </div>
       )}
+      {seat && <div className="desk-seat" style={seat} />}
       <FloatingAvatar
         pose={steady}
         start={start}
+        dock={seat ? ".desk-seat" : undefined}
+        scene={seat ? `${seat.left},${seat.top},${seat.width},${seat.height}` : ""}
         waitsOn={card ? ".desk-card" : undefined}
         onRest={(place) => post(`out:${JSON.stringify({ rest: place })}`)}
       />
     </div>
   );
+}
+
+/** Where this window is on the screen, in physical pixels, and how many of those to a CSS one. */
+let frame = { x: 0, y: 0, scale: 1 };
+
+/** A box on the screen, in this window's CSS pixels; null when it lies off this window. */
+function inRoom(box: ScreenBox | null): Box | null {
+  if (!box) return null;
+  const at = {
+    left: (box.x - frame.x) / frame.scale,
+    top: (box.y - frame.y) / frame.scale,
+    width: box.w / frame.scale,
+    height: box.h / frame.scale,
+  };
+  const off = at.left + at.width < 0 || at.top + at.height < 0 || at.left > innerWidth || at.top > innerHeight;
+  return off ? null : at;
 }
 
 /** Where the card goes: above the face, on whichever side has the room. */
@@ -159,6 +192,9 @@ window.desk = {
     }
     if (hear) hear(message);
     else early.push(message);
+  },
+  frame(x, y, scale) {
+    frame = { x, y, scale: scale || 1 };
   },
   pointer(x, y) {
     // Off its face the window lets the pointer through, so the page never sees it: the host says where it is.
