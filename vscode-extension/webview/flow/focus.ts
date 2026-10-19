@@ -163,6 +163,8 @@ export interface ReelInput {
   status(id: string): NodeRunStatus;
   /** Whether the node has something worth stopping to read. */
   readable(id: string): boolean;
+  /** Whether the node opens at all when its turn comes; every one does when left out. */
+  opens?(id: string): boolean;
   /** A node the user opened by hand, if any. */
   pinned: string | null;
 }
@@ -201,8 +203,10 @@ export class FocusReel {
     if (this.step) this.step.phase = "closing";
   }
 
+  /** Nodes still to be shown: the ones that open, past the next one to show. */
   pending(input: ReelInput): number {
-    return Math.max(0, input.orderBase + input.order.length - this.next);
+    const waiting = input.order.slice(Math.max(0, this.next - input.orderBase));
+    return input.opens ? waiting.filter((id) => input.opens!(id)).length : waiting.length;
   }
 
   /** Advance by `dt` seconds. Returns whether anything is still moving or waiting. */
@@ -250,12 +254,20 @@ export class FocusReel {
   private pick(input: ReelInput): void {
     const end = input.orderBase + input.order.length;
     if (input.enabled && this.next < end) {
-      if (end - this.next > MAX_BACKLOG) this.next = end - MAX_BACKLOG;
       this.next = Math.max(this.next, input.orderBase);
-      const id = input.order[this.next - input.orderBase];
-      this.next += 1;
-      this.step = { id, phase: "opening", manual: false, openedAt: 0, doneAt: 0 };
-      return;
+      // A node with nothing to say runs by in place; of the rest, the newest few.
+      const ahead = input.order.slice(this.next - input.orderBase);
+      const opening = ahead.flatMap((id, index) => (!input.opens || input.opens(id) ? [this.next + index] : []));
+      if (opening.length > 0) {
+        const at = opening[Math.max(0, opening.length - MAX_BACKLOG)];
+        const id = input.order[at - input.orderBase];
+        this.next = at + 1;
+        this.step = { id, phase: "opening", manual: false, openedAt: 0, doneAt: 0 };
+        return;
+      }
+      // One still running may yet say something (a print's line comes after it starts).
+      const last = input.order[input.order.length - 1];
+      this.next = input.status(last) === "running" ? end - 1 : end;
     }
     if (input.pinned) {
       this.step = { id: input.pinned, phase: "opening", manual: true, openedAt: 0, doneAt: 0 };

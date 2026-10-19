@@ -836,6 +836,19 @@ export function said(run: RunState, nodeId: string, part: OutputPart): RunState 
   return { ...run, output: { ...run.output, [nodeId]: next } };
 }
 
+/** Kinds that talk while they run: an agent, a model deciding, a question to the user. */
+const TALKING_KINDS = new Set(["profession", "clean_agent", "decision", "user_chat"]);
+
+/**
+ * Whether following a run opens this node: it talks, or it has said something
+ * to read - a print, a tool, an error. A Start, a sum or a variable runs by in
+ * place; its one-line result is the log's and the folded node's.
+ */
+export function worthOpening(run: RunState, kind: string, nodeId: string): boolean {
+  if (TALKING_KINDS.has(kind)) return true;
+  return (run.output[nodeId] ?? []).some((part) => part.kind !== "info" && part.kind !== "result");
+}
+
 /** Whether a node has anything worth stopping to read, past its own bookkeeping. */
 export function readable(run: RunState, nodeId: string): boolean {
   return (run.output[nodeId] ?? []).some((part) => part.kind !== "info");

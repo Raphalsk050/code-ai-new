@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 48,
-  "patch": 1,
-  "build": 126,
+  "patch": 2,
+  "build": 127,
   "updated": "2026-10-19",
-  "note": "Graph editor: flat n8n-style nodes, names under them, pins in their wire's colour"
+  "note": "Graph editor: a run opens only the nodes that talk, and their text always streams"
 }

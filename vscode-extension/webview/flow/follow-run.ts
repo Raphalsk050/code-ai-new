@@ -12,7 +12,7 @@ import {
   View,
 } from "./focus";
 import type { NodeLayout } from "./model";
-import { Action, readable, RunState } from "./store";
+import { Action, readable, RunState, worthOpening } from "./store";
 
 export interface FollowRunArgs {
   run: RunState;
@@ -75,6 +75,7 @@ export function useFollowRun(args: FollowRunArgs): FollowFrame {
       orderBase: run.orderBase,
       status: (id) => run.nodes[id] ?? "idle",
       readable: (id) => readable(run, id),
+      opens: (id) => worthOpening(run, current.layouts.get(id)?.node.kind ?? "", id),
       pinned: current.pinned,
     };
     const busy = reel.tick(input, dt);

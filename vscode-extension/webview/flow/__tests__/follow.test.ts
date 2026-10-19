@@ -15,7 +15,7 @@ import {
   stepSpring,
 } from "../focus";
 import { Bounds, commentOrder, indexCatalog, layoutGraph, NodeLayout } from "../model";
-import { Action, EditorState, initialState, NodeRunStatus, OUTPUT_LIMIT, readable, reduce } from "../store";
+import { Action, EditorState, initialState, NodeRunStatus, OUTPUT_LIMIT, readable, reduce, worthOpening } from "../store";
 
 const CATALOG = catalogFixture as unknown as GraphCatalog;
 
@@ -315,6 +315,42 @@ test("a backlog past the limit drops its oldest steps", () => {
   const statuses = Object.fromEntries(order.map((id) => [id, "done" as NodeRunStatus]));
   reel.tick(reelInput({ order, statuses }), 1 / 60);
   assert.equal(reel.step?.id, `n${order.length - MAX_BACKLOG}`);
+});
+
+test("a node with nothing to say runs by in place, and the next one that talks opens", () => {
+  const reel = new FocusReel();
+  const statuses: Record<string, NodeRunStatus> = { start: "done", sum: "done", agent: "running" };
+  const seen = play(reel, 2, (now) =>
+    reelInput({ now, order: ["start", "sum", "agent"], statuses, opens: (id) => id === "agent" })
+  );
+  assert.ok(!seen.some((item) => item.startsWith("start:") || item.startsWith("sum:")), "a quiet node opened");
+  assert.equal(seen[seen.length - 1], "agent:open");
+});
+
+test("a quiet node still running is waited on: what it says next may be worth opening for", () => {
+  const reel = new FocusReel();
+  const said = { print: false };
+  const statuses: Record<string, NodeRunStatus> = { print: "running" };
+  const input = (now: number) => reelInput({ now, order: ["print"], statuses, opens: () => said.print });
+  const open = () => reel.step;
+  play(reel, 0.2, input);
+  assert.equal(open(), null);
+  said.print = true;
+  statuses.print = "done";
+  play(reel, 0.2, input, 200);
+  assert.equal(open()?.id, "print");
+});
+
+test("agents, decisions and questions open; a sum, a start or a variable only when it said something", () => {
+  let state = booted(graph([node("p", "print", [0, 0]), node("m", "math", [0, 0])]));
+  const run = () => state.run;
+  assert.ok(worthOpening(run(), "profession", "a"));
+  assert.ok(worthOpening(run(), "user_chat", "q"));
+  assert.ok(!worthOpening(run(), "math", "m"));
+  state = apply(state, event("graph.node.completed", { node_id: "m", summary: "5", seconds: 0 }));
+  assert.ok(!worthOpening(run(), "math", "m"), "a one-line result is not worth opening for");
+  state = apply(state, event("graph.print", { node_id: "p", text: "hello" }));
+  assert.ok(worthOpening(run(), "print", "p"));
 });
 
 test("with the setting off nothing opens on its own, and a node opened by hand still does", () => {
