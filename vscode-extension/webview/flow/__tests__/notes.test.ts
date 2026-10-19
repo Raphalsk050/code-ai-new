@@ -79,7 +79,7 @@ test("a nested comment and its nodes ride along with the outer one", () => {
 
 test("a node only partly inside is left where it is", () => {
   const doc = boxed();
-  doc.nodes[1].pos = [500, 80];
+  doc.nodes[1].pos = [540, 80];
   assert.deepEqual(movedBy(layoutsOf(doc), ["c1"]), ["c1"]);
 });
 

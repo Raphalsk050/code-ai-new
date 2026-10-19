@@ -3,17 +3,13 @@ import * as React from "react";
 import { t } from "../i18n";
 import type { Chip } from "./access";
 import { glyphFor } from "./glyphs";
-import { HEADER_H, NodeLayout, PinLayout, ROUND_D } from "./model";
+import { isWide, NodeLayout, PinLayout, ROUND_D } from "./model";
 import { OutputPanel } from "./output-panel";
 import type { AgentRun, NodeRunStatus, OutputPart } from "./store";
 
-const RADIUS = 14;
+const RADIUS = 16;
 /** How far out the dashed ring of a selected or running node sits. */
-const RING = 6;
-const CHIP_H = 15;
-// Rough advance of the 9.5px chip font; only used to decide what fits.
-const CHIP_CHAR_W = 5.8;
-const CHIP_PAD = 7;
+const RING = 5;
 
 export interface NodeViewProps {
   layout: NodeLayout;
@@ -23,15 +19,17 @@ export interface NodeViewProps {
   hasError: boolean;
   hasWarning: boolean;
   badge: string;
-  /** Header tint. */
+  /** The node's colour. */
   accent: string;
-  /** What the footer says, for the kinds that have one. */
+  /** What an agent may touch, said when the node is pointed at. */
   chips: Chip[];
   /** The agent working inside this node, while one is. */
   activity?: AgentRun;
-  /** The node is open: its output panel, under the pins, at this height. */
+  /** The node is open: its output panel, under its body, at this height. */
   panel?: { top: number; height: number; parts: OutputPart[]; live: boolean; onClose?: () => void };
   color(type: string): string;
+  /** The colour of the wire on a pin, when one is: the pin wears it too. */
+  tint(pin: string, direction: "in" | "out"): string | undefined;
   connected(pin: string, direction: "in" | "out"): boolean;
   onNodeDown(nodeId: string, event: React.MouseEvent): void;
   onNodeContext(nodeId: string, event: React.MouseEvent): void;
@@ -44,17 +42,24 @@ export interface NodeViewProps {
   onPinUp(nodeId: string, pin: PinLayout, direction: "in" | "out"): void;
 }
 
-/** One node: a card in its kind's colour with its glyph, the pins, and an access footer. */
+/**
+ * One node, flat: a square in its colour holding its glyph, with its name and
+ * one line of what it does under it. A node fed from below is wide and keeps
+ * its name inside, its ports named under it. Pins carry no names until pointed
+ * at or a wire is being pulled.
+ */
 export function NodeView(props: NodeViewProps): JSX.Element {
   const { layout, offset, selected, status, hasError, hasWarning, badge, accent } = props;
-  const width = layout.width;
-  const height = layout.height;
-  // An agent node can sit on one step for minutes. While it does, the footer
-  // stops showing what it may do and shows what it is doing.
+  const { width, height, body } = layout;
+  // An agent can sit on one step for minutes: while it does, its line says
+  // what it is doing instead of what it is.
   const activity = status === "running" ? props.activity : undefined;
   const summary = summaryLine(layout, props.connected("profession", "in"));
+  const line = activity ? activityLabel(activity) : summary;
   const glyph = glyphFor(layout.spec.kind);
+  const inside = isWide(layout) || Boolean(props.panel);
   const [x, y] = layout.node.pos;
+  const tip = [layout.spec.title, summary, ...props.chips.map((chip) => chip.label)].filter(Boolean).join(" · ");
 
   const classes = ["flow-node"];
   if (selected) classes.push("selected");
@@ -62,10 +67,11 @@ export function NodeView(props: NodeViewProps): JSX.Element {
   else if (hasWarning) classes.push("warning");
   if (status !== "idle") classes.push(status);
 
-  // The right end of the header: a status mark, then the badge pill left of it.
-  const markRoom = status === "idle" ? 0 : 22;
-  const badgeWidth = badge ? Math.min(90, badge.length * 5.8 + 14) : 0;
-  const textRoom = width - 38 - 10 - markRoom - (badgeWidth ? badgeWidth + 6 : 0);
+  const lineProps = {
+    className: "flow-node-summary",
+    "data-testid": activity ? `activity-${layout.node.id}` : undefined,
+  };
+  const room = Math.floor((width - 70) / 6.6);
 
   return (
     <g
@@ -77,6 +83,7 @@ export function NodeView(props: NodeViewProps): JSX.Element {
       onMouseDown={(event) => props.onNodeDown(layout.node.id, event)}
       onContextMenu={(event) => props.onNodeContext(layout.node.id, event)}
     >
+      <title>{tip}</title>
       <rect
         className="flow-node-halo"
         x={-RING}
@@ -85,47 +92,47 @@ export function NodeView(props: NodeViewProps): JSX.Element {
         height={height + RING * 2}
         rx={RADIUS + RING}
         stroke={accent}
-        style={{ color: accent }}
       />
       <rect className="flow-node-box" width={width} height={height} rx={RADIUS} ry={RADIUS} fill={accent} />
-      <rect className="flow-node-sheen" width={width} height={height} rx={RADIUS} ry={RADIUS} fill="url(#flow-sheen)" />
-      <line className="flow-node-divider" x1={12} y1={HEADER_H} x2={width - 12} y2={HEADER_H} />
 
-      <g className="flow-node-glyph" transform="translate(10, 10)">
-        <rect width={20} height={20} rx={6} ry={6} />
-        <g transform="translate(2, 2)">
-          {glyph.d && <path className="stroke" d={glyph.d} />}
-          {glyph.fill && <path className="fill" d={glyph.fill} />}
-        </g>
-      </g>
-      <text className="flow-node-title" x={38} y={summary ? 18 : 24.5}>
-        {truncate(layout.spec.title, Math.floor(textRoom / 6.6))}
-      </text>
-      {summary && (
-        <text className="flow-node-summary" x={38} y={32}>
-          {truncate(summary, Math.floor(textRoom / 5.6))}
-        </text>
-      )}
-
-      {badge && (
-        <g transform={`translate(${width - 10 - markRoom - badgeWidth}, 12)`}>
-          <rect className="flow-badge-pill" width={badgeWidth} height={16} rx={8} ry={8} />
-          <text className="flow-badge" x={badgeWidth / 2} y={11.5} textAnchor="middle">
-            {truncate(badge, Math.floor((badgeWidth - 10) / 5.8))}
+      {inside ? (
+        <>
+          <Glyph glyph={glyph} x={18} y={body / 2 - 14} scale={1.75} />
+          <text className="flow-node-title" x={60} y={line ? body / 2 - 2 : body / 2 + 4}>
+            {truncate(layout.spec.title, room)}
           </text>
-        </g>
+          {line && (
+            <text {...lineProps} x={60} y={body / 2 + 13}>
+              {truncate(line, Math.floor((width - 70) / 5.6))}
+            </text>
+          )}
+        </>
+      ) : (
+        <>
+          <Glyph glyph={glyph} x={width / 2 - 16} y={body / 2 - 16} scale={2} />
+          <text className="flow-node-title under" x={width / 2} y={height + 16} textAnchor="middle">
+            {truncate(layout.spec.title, 20)}
+          </text>
+          {line && (
+            <text {...lineProps} className="flow-node-summary under" x={width / 2} y={height + 30} textAnchor="middle">
+              {truncate(line, 26)}
+            </text>
+          )}
+        </>
       )}
-      {status === "running" && <Spinner x={width - 20} y={20} />}
-      {status === "done" && <Mark x={width - 20} y={20} kind="done" />}
-      {status === "failed" && <Mark x={width - 20} y={20} kind="failed" />}
+
+      {badge && <Badge text={badge} x={width / 2} />}
+      {status === "running" && <Spinner x={width - 14} y={14} />}
+      {status === "done" && <Mark x={width - 14} y={14} kind="done" />}
+      {status === "failed" && <Mark x={width - 14} y={14} kind="failed" />}
 
       {layout.inputs.map((item) => (
         <Pin
           key={`in-${item.pin.name}`}
           item={item}
           direction="in"
-          width={width}
           color={props.color(item.pin.type)}
+          tint={props.tint(item.pin.name, "in")}
           filled={props.connected(item.pin.name, "in")}
           required={item.pin.required}
           onDown={(event) => props.onPinDown(layout.node.id, item, "in", event)}
@@ -137,8 +144,8 @@ export function NodeView(props: NodeViewProps): JSX.Element {
           key={`out-${item.pin.name}`}
           item={item}
           direction="out"
-          width={width}
           color={props.color(item.pin.type)}
+          tint={props.tint(item.pin.name, "out")}
           filled={props.connected(item.pin.name, "out")}
           required={false}
           onDown={(event) => props.onPinDown(layout.node.id, item, "out", event)}
@@ -163,24 +170,6 @@ export function NodeView(props: NodeViewProps): JSX.Element {
         </foreignObject>
       )}
 
-      {layout.footer > 0 && (
-        <g transform={`translate(0, ${height - layout.footer})`}>
-          <path className="flow-node-footer" d={footerPath(width, layout.footer)} />
-          {activity ? (
-            <text
-              className="flow-node-activity"
-              x={10}
-              y={layout.footer / 2 + 3.5}
-              data-testid={`activity-${layout.node.id}`}
-            >
-              {truncate(activityLabel(activity), 36)}
-            </text>
-          ) : (
-            <Chips chips={props.chips} width={width - 16} y={(layout.footer - CHIP_H) / 2} />
-          )}
-        </g>
-      )}
-
       {(hasError || hasWarning) && (
         <g
           className={`flow-node-problem ${hasError ? "error" : "warning"}`}
@@ -202,10 +191,10 @@ export type RoundNodeViewProps = Omit<NodeViewProps, "chips" | "activity" | "pan
 };
 
 /**
- * A node that holds a value - a model, a variable - as a circle with its name
- * underneath. Its connector rides the rim, facing wherever its wires go, or the
- * pointer while one is being pulled out of it. A wire dropped anywhere on the
- * circle lands on that connector.
+ * A node that holds a value - a model, a variable, a profession, tools - as a
+ * circle with its name underneath. Its connector rides the rim, facing wherever
+ * its wires go, or the pointer while one is being pulled out of it. A wire
+ * dropped anywhere on the circle lands on that connector.
  */
 export function RoundNodeView(props: RoundNodeViewProps): JSX.Element {
   const { layout, offset, selected, status, hasError, hasWarning, accent, aim } = props;
@@ -215,6 +204,8 @@ export function RoundNodeView(props: RoundNodeViewProps): JSX.Element {
   const glyph = glyphFor(layout.spec.kind);
   const [x, y] = layout.node.pos;
   const port = layout.outputs[0];
+  // Which model, not where it is served: the inspector has the address.
+  const line = layout.summary.split(" @ ")[0];
 
   const classes = ["flow-node", "round"];
   if (selected) classes.push("selected");
@@ -232,34 +223,33 @@ export function RoundNodeView(props: RoundNodeViewProps): JSX.Element {
       onMouseDown={(event) => props.onNodeDown(layout.node.id, event)}
       onContextMenu={(event) => props.onNodeContext(layout.node.id, event)}
     >
-      <circle className="flow-node-halo" cx={cx} cy={cy} r={r + RING} stroke={accent} style={{ color: accent }} />
-      <g
-        className="flow-round-body"
+      <title>{[layout.spec.title, layout.summary].filter(Boolean).join(" · ")}</title>
+      <circle className="flow-node-halo" cx={cx} cy={cy} r={r + RING} stroke={accent} />
+      <circle
+        className="flow-node-box"
+        cx={cx}
+        cy={cy}
+        r={r}
+        fill={accent}
         data-pin={port?.pin.name}
         // Not stopped: a drag of the node itself ends on the window's mouseup.
         onMouseUp={() => port && props.onPinUp(layout.node.id, port, "out")}
-      >
-        <circle className="flow-node-box" cx={cx} cy={cy} r={r} fill={accent} />
-        <circle className="flow-node-sheen" cx={cx} cy={cy} r={r} fill="url(#flow-sheen)" />
-      </g>
-      <g className="flow-node-glyph big" transform={`translate(${cx - 14}, ${cy - 14}) scale(1.75)`}>
-        {glyph.d && <path className="stroke" d={glyph.d} />}
-        {glyph.fill && <path className="fill" d={glyph.fill} />}
-      </g>
-      <text className="flow-round-title" x={cx} y={ROUND_D + 15} textAnchor="middle">
+      />
+      <Glyph glyph={glyph} x={cx - 14} y={cy - 14} scale={1.75} />
+      <text className="flow-node-title under" x={cx} y={ROUND_D + 15} textAnchor="middle">
         {truncate(layout.spec.title, 20)}
       </text>
-      {layout.summary && (
-        <text className="flow-round-summary" x={cx} y={ROUND_D + 29} textAnchor="middle">
-          {truncate(layout.summary, 24)}
+      {line && (
+        <text className="flow-node-summary under" x={cx} y={ROUND_D + 29} textAnchor="middle">
+          {truncate(line, 24)}
         </text>
       )}
       {port && (
         <Pin
           item={{ ...port, x: cx + Math.cos(aim) * r, y: cy + Math.sin(aim) * r }}
           direction="out"
-          width={layout.width}
           color={props.color(port.pin.type)}
+          tint={props.tint(port.pin.name, "out")}
           filled={props.connected(port.pin.name, "out")}
           required={false}
           bare
@@ -282,143 +272,144 @@ export function RoundNodeView(props: RoundNodeViewProps): JSX.Element {
   );
 }
 
-/** The header's second line: what the node is set to do. */
+function Glyph({ glyph, x, y, scale }: { glyph: ReturnType<typeof glyphFor>; x: number; y: number; scale: number }) {
+  return (
+    <g className="flow-node-glyph" transform={`translate(${x}, ${y}) scale(${scale})`}>
+      {glyph.d && <path className="stroke" d={glyph.d} />}
+      {glyph.fill && <path className="fill" d={glyph.fill} />}
+    </g>
+  );
+}
+
+/** A loop's turn or an agent's name, on the node's top edge. */
+function Badge({ text, x }: { text: string; x: number }) {
+  const width = Math.min(90, text.length * 5.8 + 14);
+  return (
+    <g transform={`translate(${x - width / 2}, -8)`}>
+      <rect className="flow-badge-pill" width={width} height={16} rx={8} ry={8} />
+      <text className="flow-badge" x={width / 2} y={11.5} textAnchor="middle">
+        {truncate(text, Math.floor((width - 10) / 5.8))}
+      </text>
+    </g>
+  );
+}
+
+/** The second line: what the node is set to do. */
 function summaryLine(layout: NodeLayout, professionWired: boolean): string {
   if (layout.spec.kind !== "profession" || !professionWired) return layout.summary;
   // A wired Profession node answers the dropdown, so the node stops naming one.
   return String(layout.node.data?.name ?? "").trim() || t("wired profession");
 }
 
-function Chips({ chips, width, y }: { chips: Chip[]; width: number; y: number }) {
-  let cursor = 8;
-  return (
-    <g className="flow-chips-row">
-      {fitChips(chips, width).map((chip, index) => {
-        const chipWidth = widthOf(chip.label);
-        const at = cursor;
-        cursor += chipWidth + 4;
-        return (
-          <g key={`${chip.label}-${index}`} transform={`translate(${at}, ${y})`}>
-            {chip.title && <title>{chip.title}</title>}
-            <rect
-              className={`flow-node-chip ${chip.tone}`}
-              width={chipWidth}
-              height={CHIP_H}
-              rx={CHIP_H / 2}
-              ry={CHIP_H / 2}
-            />
-            <text className={`flow-node-chip-text ${chip.tone}`} x={chipWidth / 2} y={10.6} textAnchor="middle">
-              {chip.label}
-            </text>
-          </g>
-        );
-      })}
-    </g>
-  );
-}
-
-function widthOf(label: string): number {
-  return Math.ceil(label.length * CHIP_CHAR_W + CHIP_PAD * 2);
-}
-
-/** As many chips as fit, then one "+N" for the rest. */
-export function fitChips(chips: Chip[], width: number): Chip[] {
-  const out: Chip[] = [];
-  let used = 0;
-  for (let index = 0; index < chips.length; index += 1) {
-    const rest = chips.length - index - 1;
-    const need = widthOf(chips[index].label) + (rest > 0 ? widthOf(`+${rest}`) + 8 : 0);
-    if (used + need > width) {
-      out.push({ label: `+${chips.length - index}`, tone: "muted" });
-      return out;
-    }
-    out.push(chips[index]);
-    used += widthOf(chips[index].label) + 4;
-  }
-  return out;
-}
-
 interface PinProps {
   item: PinLayout;
   direction: "in" | "out";
-  width: number;
   color: string;
+  /** Its wire's colour, which it takes over its type's. */
+  tint?: string;
   filled: boolean;
   required: boolean;
-  /** No label: a round node's connector is the only one it has. */
+  /** No name at all: a round node's connector is the only one it has. */
   bare?: boolean;
   onDown(event: React.MouseEvent): void;
   onUp(): void;
 }
 
-function Pin({ item, direction, width, color, filled, required, bare, onDown, onUp }: PinProps) {
+/**
+ * A pin on the node's edge. A side pin is named only while pointed at or while
+ * a wire is being pulled; one on the bottom edge, which a sub-node feeds, is
+ * always named under it, as n8n names those.
+ */
+function Pin({ item, direction, color: own, tint, filled, required, bare, onDown, onUp }: PinProps) {
   const isExec = item.pin.type === "exec";
+  const color = tint ?? own;
+  // An exec pin's colour comes from CSS until a wire gives it one: inline wins.
+  const worn = isExec && tint && filled ? { fill: tint } : undefined;
   const label = bare ? "" : item.pin.label || item.pin.name;
-  const labelX = direction === "in" ? 13 : width - 13;
+  const below = item.side === "bottom";
+  const named = label && !(isExec && (label === "in" || label === "out"));
   return (
-    <g
-      className="flow-pin"
-      data-testid={`pin-${direction}-${item.pin.name}`}
-      data-pin={item.pin.name}
-      data-direction={direction}
-      onMouseDown={(event) => {
-        event.stopPropagation();
-        onDown(event);
-      }}
-      onMouseUp={(event) => {
-        event.stopPropagation();
-        onUp();
-      }}
-    >
-      <circle className="flow-pin-hit" cx={item.x} cy={item.y} r={9} fill={color} opacity={0} />
-      {isExec && direction === "in" ? (
-        // Where the flow comes in is a bar on the edge, the way n8n draws it.
-        // Exec pins take their colour from CSS, not from the catalog: "white"
-        // is invisible on a light theme.
-        <rect
-          className={`flow-pin-shape exec bar${filled ? " filled" : ""}`}
-          x={item.x - 3.5}
-          y={item.y - 8}
-          width={7}
-          height={16}
-          rx={3.5}
-        />
-      ) : isExec ? (
-        <circle className={`flow-pin-shape exec${filled ? " filled" : ""}`} cx={item.x} cy={item.y} r={5.6} />
-      ) : item.pin.multi ? (
-        // A pin that stacks wires is square, the way a Blueprint draws arrays.
-        <rect
-          className={`flow-pin-shape multi${filled ? " filled" : ""}`}
-          x={item.x - 4.8}
-          y={item.y - 4.8}
-          width={9.6}
-          height={9.6}
-          rx={2.4}
-          fill={filled ? color : undefined}
-          stroke={color}
-        />
-      ) : (
-        <circle
-          className={`flow-pin-shape${filled ? " filled" : ""}`}
-          cx={item.x}
-          cy={item.y}
-          r={5}
-          fill={filled ? color : undefined}
-          stroke={color}
-        />
-      )}
-      {label && !(isExec && (label === "in" || label === "out")) && (
+    // The name is beside the pin, not part of it: what takes the pointer is the dot alone.
+    <>
+      <g
+        className={`flow-pin ${item.side}`}
+        data-testid={`pin-${direction}-${item.pin.name}`}
+        data-pin={item.pin.name}
+        data-direction={direction}
+        onMouseDown={(event) => {
+          event.stopPropagation();
+          onDown(event);
+        }}
+        onMouseUp={(event) => {
+          event.stopPropagation();
+          onUp();
+        }}
+      >
+        <circle className="flow-pin-hit" cx={item.x} cy={item.y} r={9} fill={color} opacity={0} />
+        {isExec && direction === "in" ? (
+          // Where the flow comes in is a bar on the edge, the way n8n draws it.
+          // Exec pins take their colour from CSS, not from the catalog: "white"
+          // is invisible on a light theme.
+          <rect
+            className={`flow-pin-shape exec bar${filled ? " filled" : ""}`}
+            x={item.x - 3.5}
+            y={item.y - 8}
+            width={7}
+            height={16}
+            rx={3.5}
+            style={worn}
+          />
+        ) : isExec ? (
+          <circle
+            className={`flow-pin-shape exec${filled ? " filled" : ""}`}
+            cx={item.x}
+            cy={item.y}
+            r={5.6}
+            style={worn}
+          />
+        ) : below ? (
+          // What a sub-node feeds is a diamond, as in n8n.
+          <path
+            className={`flow-pin-shape${filled ? " filled" : ""}`}
+            d={`M ${item.x} ${item.y - 6} L ${item.x + 6} ${item.y} L ${item.x} ${item.y + 6} L ${item.x - 6} ${item.y} Z`}
+            fill={filled ? color : undefined}
+            stroke={color}
+          />
+        ) : item.pin.multi ? (
+          // A pin that stacks wires is square, the way a Blueprint draws arrays.
+          <rect
+            className={`flow-pin-shape multi${filled ? " filled" : ""}`}
+            x={item.x - 4.8}
+            y={item.y - 4.8}
+            width={9.6}
+            height={9.6}
+            rx={2.4}
+            fill={filled ? color : undefined}
+            stroke={color}
+          />
+        ) : (
+          <circle
+            className={`flow-pin-shape${filled ? " filled" : ""}`}
+            cx={item.x}
+            cy={item.y}
+            r={5}
+            fill={filled ? color : undefined}
+            stroke={color}
+          />
+        )}
+      </g>
+      {named && (
         <text
-          className="flow-pin-label"
-          x={labelX}
-          y={item.y + 3.6}
-          textAnchor={direction === "in" ? "start" : "end"}
+          className={`flow-pin-label${below ? " port" : ""}`}
+          x={below ? item.x : direction === "in" ? item.x - 11 : item.x + 11}
+          y={below ? item.y + 18 : item.y + 3.6}
+          textAnchor={below ? "middle" : direction === "in" ? "end" : "start"}
         >
           {label}
           {required ? "*" : ""}
         </text>
       )}
-    </g>
+    </>
   );
 }
 
@@ -466,15 +457,6 @@ export function elapsed(ms: number): string {
   if (total < 60) return `${total}s`;
   const minutes = Math.floor(total / 60);
   return `${minutes}m ${String(total % 60).padStart(2, "0")}s`;
-}
-
-/** The footer strip, rounded at the bottom to match the box. */
-function footerPath(width: number, height: number): string {
-  const r = RADIUS;
-  return (
-    `M 0 0 L ${width} 0 L ${width} ${height - r} Q ${width} ${height} ${width - r} ${height} ` +
-    `L ${r} ${height} Q 0 ${height} 0 ${height - r} Z`
-  );
 }
 
 function truncate(text: string, max: number): string {

@@ -4,7 +4,6 @@ import test from "node:test";
 import catalogFixture from "../../../e2e/fixtures/catalog.json";
 import type { FlowEdge, FlowGraph, GraphCatalog } from "../../../src/flow-schema";
 import { chipsFor, grantedTools, groupTools, permissionsOf, wiredToolsets } from "../access";
-import { fitChips } from "../node-view";
 import { indexCatalog } from "../model";
 import { Action, EditorState, initialState, reduce } from "../store";
 
@@ -195,9 +194,9 @@ test("the picker groups tools in the catalog's order and filters by every word",
   );
 });
 
-// -- the node's footer ---------------------------------------------------------
+// -- what the node says when pointed at ---------------------------------------
 
-test("an agent's footer names the switches that are on", () => {
+test("an agent names the switches that are on", () => {
   const doc = graph([node("a", "profession", { profession: "architect" })]);
 
   assert.deepEqual(
@@ -230,15 +229,4 @@ test("an agent with every switch off says it can only talk", () => {
   ]);
 
   assert.deepEqual(chipsFor(CATALOG, doc, doc.nodes[0]), [{ label: "talk only", tone: "muted" }]);
-});
-
-test("chips that do not fit collapse into one +N", () => {
-  const chips = ["document_convert", "document_create", "document_edit", "read_file"].map(
-    (label) => ({ label, tone: "tools" as const })
-  );
-
-  const shown = fitChips(chips, 200);
-  assert.ok(shown.length < chips.length);
-  assert.equal(shown[shown.length - 1].label, `+${chips.length - shown.length + 1}`);
-  assert.deepEqual(fitChips(chips.slice(0, 1), 200), chips.slice(0, 1));
 });

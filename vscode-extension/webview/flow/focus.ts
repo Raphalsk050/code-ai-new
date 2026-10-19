@@ -3,7 +3,7 @@
 // before the next one opens. Pure geometry and timing, so it is tested without
 // a DOM; canvas.tsx drives it once per animation frame.
 
-import { BODY_PAD, Bounds, HEADER_H, isAnnotation, NodeLayout, ROW_H } from "./model";
+import { Bounds, isAnnotation, NodeLayout } from "./model";
 import type { NodeRunStatus } from "./store";
 
 /** The width an opened node reads at, and the room its output panel takes. */
@@ -45,10 +45,9 @@ export function settled(spring: Spring, target: number): boolean {
   return Math.abs(spring.x - target) < 0.004 && Math.abs(spring.v) < 0.03;
 }
 
-/** Where a node's pins end: its output panel opens below them. */
+/** Where a node's own body ends: its output panel opens below it. */
 export function panelTop(layout: NodeLayout): number {
-  const rows = Math.max(layout.inputs.length, layout.outputs.length);
-  return HEADER_H + BODY_PAD + rows * ROW_H + BODY_PAD;
+  return layout.body;
 }
 
 /** How much a node grows when it opens, in each direction. */
@@ -70,6 +69,10 @@ function moved(layout: NodeLayout, dx: number, dy: number, dw = 0, dh = 0): Node
     width,
     height: layout.height + dh,
     outputs: dw ? layout.outputs.map((item) => ({ ...item, x: width })) : layout.outputs,
+    // What feeds it from below stays on its bottom edge, under the panel.
+    inputs: dh
+      ? layout.inputs.map((item) => (item.side === "bottom" ? { ...item, y: item.y + dh } : item))
+      : layout.inputs,
   };
 }
 

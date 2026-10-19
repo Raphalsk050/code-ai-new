@@ -461,11 +461,22 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
     const dragOffsetTo = offsetFor(edge.to[0]);
     const a = { ...from, x: from.x + dragOffsetFrom.dx, y: from.y + dragOffsetFrom.dy };
     const b = { ...to, x: to.x + dragOffsetTo.dx, y: to.y + dragOffsetTo.dy };
-    const ends = [shown.get(edge.from[0]), shown.get(edge.to[0])].map((item) =>
-      item ? accentOf(item.spec) : "#888"
-    );
-    return [{ edge, a, b, ends, type: catalog ? edgeType(state.graph, catalog, edge) : "any" }];
+    // The flow takes the colour of the node it leaves; a value, its type's.
+    const source = shown.get(edge.from[0]);
+    const color =
+      edge.kind === "exec"
+        ? source
+          ? accentOf(source.spec)
+          : "#888"
+        : catalog?.color(catalog ? edgeType(state.graph, catalog, edge) : "any") ?? "#888";
+    return [{ edge, a, b, color }];
   });
+  // A wired pin is the colour of its wire, at both ends.
+  const pinTint = new Map<string, string>();
+  for (const { edge, color } of wires) {
+    pinTint.set(`${edge.from[0]}:${edge.from[1]}:out`, color);
+    if (!pinTint.has(`${edge.to[0]}:${edge.to[1]}:in`)) pinTint.set(`${edge.to[0]}:${edge.to[1]}:in`, color);
+  }
 
   const now = Date.now();
   const marquee =
@@ -508,7 +519,7 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
     <div className="flow-canvas-wrap">
       <svg
         ref={svgRef}
-        className={`flow-canvas${drag?.kind === "pan" ? " panning" : ""}`}
+        className={`flow-canvas${drag?.kind === "pan" ? " panning" : ""}${drag?.kind === "wire" ? " wiring" : ""}`}
         data-testid="flow-canvas"
         onMouseDown={onBackgroundDown}
         onWheel={onWheel}
@@ -542,11 +553,6 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
           >
             <circle className="flow-grid-dot major" cx={1.2} cy={1.2} r={1.4} />
           </pattern>
-          <linearGradient id="flow-sheen" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0" stopColor="#ffffff" stopOpacity="0.22" />
-            <stop offset="0.55" stopColor="#ffffff" stopOpacity="0.04" />
-            <stop offset="1" stopColor="#000000" stopOpacity="0.18" />
-          </linearGradient>
           <filter id="flow-shadow" x="-10%" y="-10%" width="120%" height="130%">
             <feDropShadow dx="0" dy="3" stdDeviation="4" floodColor="#000" floodOpacity="0.32" />
           </filter>
@@ -587,11 +593,7 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
             );
           })}
 
-          {wires.map(({ edge, a, b, ends, type }) => {
-            // The flow is drawn from one node's colour into the next one's; a
-            // value goes dashed, in its type's colour.
-            const gradient = `flow-wire-${edge.id.replace(/[^\w-]/g, "_")}`;
-            const color = edge.kind === "exec" ? `url(#${gradient})` : catalog?.color(type) ?? "#888";
+          {wires.map(({ edge, a, b, color }) => {
             const litAt = state.run.active[edge.id];
             const isLit = Boolean(litAt && now - litAt < EDGE_GLOW_MS);
             const traveled = state.run.traveled.includes(edge.id);
@@ -602,15 +604,7 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
             if (isLit) classes.push("lit");
             return (
               <g key={edge.id} data-testid={`edge-${edge.id}`} data-lit={isLit ? "1" : "0"}>
-                {edge.kind === "exec" && (
-                  <defs>
-                    <linearGradient id={gradient} gradientUnits="userSpaceOnUse" x1={a.x} y1={a.y} x2={b.x} y2={b.y}>
-                      <stop offset="0" stopColor={ends[0]} />
-                      <stop offset="1" stopColor={ends[1]} />
-                    </linearGradient>
-                  </defs>
-                )}
-                {(isLit || state.selectedEdge === edge.id) && (
+                {isLit && (
                   <path className={`flow-wire-glow ${edge.kind}`} d={path} stroke={color} />
                 )}
                 <path
@@ -646,7 +640,7 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
                   <circle
                     className={`flow-dot ${edge.kind}`}
                     r={4.5}
-                    fill={edge.kind === "exec" ? ends[0] : color}
+                    fill={color}
                     data-testid={`dot-${edge.id}`}
                   >
                     <animateMotion
@@ -683,6 +677,7 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
                   accent={accentOf(layout.spec)}
                   aim={pulled.get(layout.node.id) ?? aims.get(layout.node.id) ?? 0}
                   color={(type) => catalog?.color(type) ?? "#888"}
+                  tint={(pin, direction) => pinTint.get(`${layout.node.id}:${pin}:${direction}`)}
                   connected={(pin, direction) => connected.has(`${layout.node.id}:${pin}:${direction}`)}
                   onNodeDown={onNodeDown}
                   onNodeContext={nodeContext}
@@ -706,6 +701,7 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
                 activity={state.run.agents[layout.node.id]}
                 panel={panelFor(layout)}
                 color={(type) => catalog?.color(type) ?? "#888"}
+                  tint={(pin, direction) => pinTint.get(`${layout.node.id}:${pin}:${direction}`)}
                 connected={(pin, direction) =>
                   connected.has(`${layout.node.id}:${pin}:${direction}`)
                 }
@@ -774,7 +770,7 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
                 key={`output-${id}`}
                 className="flow-output-pill"
                 data-testid={`output-pill-${id}`}
-                transform={`translate(${layout.node.pos[0] + offset.dx + 12}, ${layout.node.pos[1] + offset.dy + layout.height + 5})`}
+                transform={`translate(${layout.node.pos[0] + offset.dx + layout.width / 2 - 37}, ${layout.node.pos[1] + offset.dy + layout.height + layout.under + 4})`}
                 onMouseDown={(event) => event.stopPropagation()}
                 onClick={(event) => {
                   event.stopPropagation();

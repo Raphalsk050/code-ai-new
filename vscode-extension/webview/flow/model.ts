@@ -11,12 +11,21 @@ import type {
   PinSpec,
 } from "../../src/flow-schema";
 
-export const NODE_W = 216;
-export const HEADER_H = 40;
-export const ROW_H = 20;
-export const BODY_PAD = 8;
-/** The strip under an agent's pins: what it may touch, or what it is doing. */
-export const FOOTER_H = 24;
+/**
+ * A node is a square with its glyph and nothing else, its name under it, as
+ * n8n draws them. Pins sit on the edges, spread out, unlabelled until pointed
+ * at; what a sub-node feeds (a model, a profession, tools) comes in from below.
+ */
+export const NODE_W = 100;
+/** A node fed from below is wide, with its name inside, and its ports labelled under it. */
+export const WIDE_W = 200;
+const PIN_GAP = 20;
+const PORT_GAP = 72;
+/** Room under a square for its name and its one line of what it does. */
+export const UNDER_H = 34;
+/** Room under a wide node for its ports' names. */
+export const PORT_LABEL_H = 18;
+const BELOW_TYPES = new Set(["model", "profession", "tools"]);
 export const GRID = 20;
 
 /** Category -> header tint. Reads as "what kind of work is this node". */
@@ -51,14 +60,12 @@ export const KIND_COLORS: Record<string, string> = {
   print: "#a16207",
 };
 
-const FOOTER_KINDS = new Set(["profession", "clean_agent", "custom_profession", "tools"]);
-
 /**
  * Kinds that hold a value rather than take a step: drawn as circles with the
  * name under them, as n8n draws its sub-nodes, and their one connector turns
  * around the circle to face where its wire goes.
  */
-const ROUND_KINDS = new Set(["model", "var_get"]);
+const ROUND_KINDS = new Set(["model", "var_get", "custom_profession", "tools"]);
 export const ROUND_D = 72;
 /** Room under the circle for its name and what it holds. */
 export const ROUND_LABEL_H = 36;
@@ -91,6 +98,8 @@ export interface PinLayout {
   /** Local offset from the node's own origin. */
   x: number;
   y: number;
+  /** The edge it sits on, which is the way its wire goes. */
+  side: "left" | "right" | "bottom";
 }
 
 export interface NodeLayout {
@@ -101,8 +110,17 @@ export interface NodeLayout {
   inputs: PinLayout[];
   outputs: PinLayout[];
   summary: string;
-  /** Height of the strip under the pins; 0 when the kind has none. */
+  /** Always 0: what an agent may touch is the inspector's to say, not the canvas's. */
   footer: number;
+  /** The body's height before it opens to show what it wrote; the panel starts there. */
+  body: number;
+  /** How far under the body its text reaches: its name, or its ports' names. */
+  under: number;
+}
+
+/** A wide node: one fed from below, with its name inside rather than under it. */
+export function isWide(layout: NodeLayout): boolean {
+  return layout.inputs.some((item) => item.side === "bottom");
 }
 
 /** The pins a node actually shows, after dynamic pins are expanded. */
@@ -396,6 +414,8 @@ export function layoutNode(node: FlowNode, spec: NodeKindSpec): NodeLayout {
       outputs: [],
       summary: "",
       footer: 0,
+      body: look.height,
+      under: 0,
     };
   }
   const pins = pinsOf(spec, node);
@@ -405,35 +425,46 @@ export function layoutNode(node: FlowNode, spec: NodeKindSpec): NodeLayout {
   if (isRound(node.kind)) {
     // Where the connectors rest; pinAnchor turns an output to face its wires.
     const middle = ROUND_W / 2;
+    const height = ROUND_D + ROUND_LABEL_H;
     return {
       node,
       spec,
       width: ROUND_W,
-      height: ROUND_D + ROUND_LABEL_H,
-      inputs: inputs.map((pin) => ({ pin, x: middle - ROUND_D / 2, y: ROUND_D / 2 })),
-      outputs: outputs.map((pin) => ({ pin, x: middle + ROUND_D / 2, y: ROUND_D / 2 })),
+      height,
+      inputs: inputs.map((pin) => ({ pin, x: middle - ROUND_D / 2, y: ROUND_D / 2, side: "left" })),
+      outputs: outputs.map((pin) => ({ pin, x: middle + ROUND_D / 2, y: ROUND_D / 2, side: "right" })),
       summary,
       footer: 0,
+      body: height,
+      under: 0,
     };
   }
-  const rows = Math.max(inputs.length, outputs.length);
-  const footer = FOOTER_KINDS.has(node.kind) ? FOOTER_H : 0;
-  const height = HEADER_H + BODY_PAD + rows * ROW_H + BODY_PAD + footer;
-  const place = (list: PinSpec[], x: number): PinLayout[] =>
-    list.map((pin, index) => ({
-      pin,
-      x,
-      y: HEADER_H + BODY_PAD + index * ROW_H + ROW_H / 2,
-    }));
+  const below = inputs.filter((pin) => BELOW_TYPES.has(pin.type));
+  const left = inputs.filter((pin) => !BELOW_TYPES.has(pin.type));
+  const width = below.length ? Math.max(WIDE_W, below.length * PORT_GAP + 24) : NODE_W;
+  const height = Math.max(NODE_W, Math.max(left.length, outputs.length) * PIN_GAP + 24);
+  // Down the middle of an edge, the flow first.
+  const spread = (list: PinSpec[], x: number, side: "left" | "right"): PinLayout[] =>
+    list.map((pin, index) => ({ pin, x, y: height / 2 + (index - (list.length - 1) / 2) * PIN_GAP, side }));
   return {
     node,
     spec,
-    width: NODE_W,
+    width,
     height,
-    inputs: place(inputs, 0),
-    outputs: place(outputs, NODE_W),
+    inputs: [
+      ...spread(left, 0, "left"),
+      ...below.map((pin, index): PinLayout => ({
+        pin,
+        x: (width * (index + 0.5)) / below.length,
+        y: height,
+        side: "bottom",
+      })),
+    ],
+    outputs: spread(outputs, width, "right"),
     summary,
-    footer,
+    footer: 0,
+    body: height,
+    under: below.length ? PORT_LABEL_H : UNDER_H,
   };
 }
 
@@ -592,8 +623,8 @@ export function pinAnchor(
     const dy = Math.sin(angle);
     return { x: center.x + dx * (ROUND_D / 2), y: center.y + dy * (ROUND_D / 2), dx, dy };
   }
-  const out = direction === "out";
-  return { x: layout.node.pos[0] + found.x, y: layout.node.pos[1] + found.y, dx: out ? 1 : -1, dy: 0 };
+  const way = found.side === "bottom" ? { dx: 0, dy: 1 } : found.side === "left" ? LEFT : RIGHT;
+  return { x: layout.node.pos[0] + found.x, y: layout.node.pos[1] + found.y, ...way };
 }
 
 /** Absolute position of one pin, for drawing wires. */

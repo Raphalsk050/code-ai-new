@@ -114,10 +114,11 @@ async function openCanvasMenu(ui, at = { x: 600, y: 460 }) {
   await ui.page.waitForSelector('[data-testid="context-menu"]');
 }
 
-/** Right-click a node and wait for its menu. */
+/** Right-click a node, near its top-left corner, and wait for its menu. */
 async function openNodeMenu(ui, nodeId) {
-  const point = await centre(ui, `[data-testid="node-${nodeId}"] .flow-node-title`);
-  await ui.page.mouse.click(point.x, point.y, { button: "right" });
+  // A copy pasted over it is offset down and right: the corner stays its own.
+  const box = await ui.page.locator(`[data-testid="node-${nodeId}"] .flow-node-box`).first().boundingBox();
+  await ui.page.mouse.click(box.x + 8, box.y + 8, { button: "right" });
   await ui.page.waitForSelector('[data-testid="context-menu"]');
 }
 
@@ -369,9 +370,11 @@ export const tests = {
 
     // The architect's `report` is a string: it fits a task, a print, a Set
     // string variable - and never an exec pin.
+    // Framed, the graph keeps clear of the canvas's edges.
+    const canvas = await ui.page.locator('[data-testid="flow-canvas"]').boundingBox();
     await dragPinToEmpty(ui, '[data-testid="node-n3"] [data-testid="pin-out-report"]', {
-      x: 620,
-      y: 620,
+      x: canvas.x + 24,
+      y: canvas.y + canvas.height - 24,
     });
     await ui.shot("03b-pin-menu");
 
@@ -472,7 +475,7 @@ export const tests = {
   // 4 -----------------------------------------------------------------
   "dragging between pins creates a wire": async (ui, assert) => {
     const doc = graph(
-      [node("n1", "start", [-200, 0]), node("n2", "print", [120, 0], { label: "x" })],
+      [node("n1", "start", [-60, 0]), node("n2", "print", [160, 0], { label: "x" })],
       []
     );
     await boot(ui, doc);
@@ -493,7 +496,7 @@ export const tests = {
   // 5 -----------------------------------------------------------------
   "an exec pin cannot be wired to a data pin": async (ui, assert) => {
     const doc = graph(
-      [node("n1", "start", [-200, 0]), node("n2", "print", [120, 0], { label: "x" })],
+      [node("n1", "start", [-60, 0]), node("n2", "print", [160, 0], { label: "x" })],
       []
     );
     await boot(ui, doc);
@@ -1460,20 +1463,18 @@ export const tests = {
     let sent = await lastGraph(ui);
     const added = sent.nodes.find((item) => item.kind === "clean_agent");
     assert(Boolean(added), "no clean agent reached the document");
-    let footer = await ui.page
-      .locator(`[data-testid="node-${added.id}"] .flow-node-chip-text`)
-      .allTextContents();
-    assert(footer.includes("no system prompt"), `the footer said ${JSON.stringify(footer)}`);
+    // What it may touch is said when the node is pointed at.
+    const said = () => ui.page.locator(`[data-testid="node-${added.id}"] > title`).textContent();
+    let footer = await said();
+    assert(footer.includes("no system prompt"), `the node said ${JSON.stringify(footer)}`);
 
     await ui.page.fill('[data-testid="field-system"]', "Sempre termine com uma pergunta.");
     await ui.page.fill('[data-testid="field-task"]', "Ola, tudo bem?");
     sent = await lastGraph(ui);
     const edited = sent.nodes.find((item) => item.id === added.id);
     assert(edited.data.system === "Sempre termine com uma pergunta.", "the system prompt was lost");
-    footer = await ui.page
-      .locator(`[data-testid="node-${added.id}"] .flow-node-chip-text`)
-      .allTextContents();
-    assert(footer.includes("own system prompt"), `the footer said ${JSON.stringify(footer)}`);
+    footer = await said();
+    assert(footer.includes("own system prompt"), `the node said ${JSON.stringify(footer)}`);
     await ui.shot("46-clean-agent");
   },
   // -------------------------------------------------------------------

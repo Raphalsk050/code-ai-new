@@ -186,7 +186,7 @@ export const tests = {
     assert(comment.data.title === "Wrap up", `the title is ${JSON.stringify(comment.data.title)}`);
     const end = at(sent, "n3");
     assert(
-      comment.pos[0] < end.pos[0] && comment.pos[1] < end.pos[1] && comment.pos[0] + comment.data.width > end.pos[0] + 200,
+      comment.pos[0] < end.pos[0] && comment.pos[1] < end.pos[1] && comment.pos[0] + comment.data.width > end.pos[0] + 100,
       "the comment does not surround the node"
     );
     await ui.shot("notes-02-wrapped");

@@ -172,63 +172,44 @@ input[type="checkbox"] { width: auto; }
 }
 
 /* ---- nodes ---- */
-/* A card in its kind's colour, n8n-style; values (models, variables) are circles. */
+/* Flat, n8n-style: a square in its kind's colour with its glyph, its name
+   under it; values (models, variables) are circles. */
 .flow-node { cursor: default; }
 /* Paint only: the box underneath takes the clicks, so a drag starts anywhere. */
-.flow-node-sheen, .flow-node-divider, .flow-node-glyph,
-.flow-node-summary, .flow-node-footer, .flow-badge-pill, .flow-badge, .flow-mark,
-.flow-spinner, .flow-node-problem, .flow-node-activity { pointer-events: none; }
-.flow-node-box {
-  stroke: rgba(255,255,255,.16); stroke-width: 1;
-  filter: url(#flow-shadow);
-}
-/* Selected or at work, a dashed ring in the node's colour glows around it. */
+.flow-node-glyph, .flow-node-summary, .flow-badge-pill, .flow-badge, .flow-mark,
+.flow-spinner, .flow-node-problem { pointer-events: none; }
+.flow-node-box { stroke: none; }
+/* Selected or at work, a dashed ring in the node's colour. */
 .flow-node-halo {
-  fill: none; stroke-width: 2.4; stroke-dasharray: 6 5; stroke-linecap: round;
+  fill: none; stroke-width: 2; stroke-dasharray: 6 5; stroke-linecap: round;
   opacity: 0; pointer-events: none; transition: opacity .12s ease;
-  filter: drop-shadow(0 0 4px currentColor);
 }
 .flow-node.selected .flow-node-halo { opacity: 1; }
 .flow-node.running .flow-node-halo { opacity: 1; animation: flow-ring 700ms linear infinite; }
-.flow-node.failed .flow-node-halo { opacity: 1; stroke: var(--danger); color: var(--danger); }
-.flow-node.error .flow-node-box { stroke: var(--danger); stroke-width: 2; }
-.flow-node.done .flow-node-box { stroke: var(--ok); stroke-width: 1.6; }
-.flow-node.failed .flow-node-box { stroke: var(--danger); stroke-width: 2; }
-.flow-node-divider { stroke: rgba(255,255,255,.16); stroke-width: 1; }
-.flow-node-glyph rect { fill: rgba(255,255,255,.2); stroke: rgba(255,255,255,.3); stroke-width: 1; }
+.flow-node.failed .flow-node-halo { opacity: 1; stroke: var(--danger); }
+.flow-node.error .flow-node-box, .flow-node.failed .flow-node-box { stroke: var(--danger); stroke-width: 2; }
 .flow-node-glyph .stroke {
-  fill: none; stroke: #fff; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round;
+  fill: none; stroke: #fff; stroke-width: 1.1; stroke-linecap: round; stroke-linejoin: round;
 }
-.flow-node-glyph.big .stroke { stroke-width: 1.15; }
 .flow-node-glyph .fill { fill: #fff; }
-.flow-round-title {
-  font-size: 11.5px; font-weight: 650; fill: var(--vscode-foreground); letter-spacing: .01em;
-}
-.flow-round-summary { font-size: 10px; fill: var(--muted); }
 @keyframes flow-ring { to { stroke-dashoffset: -22; } }
-.flow-node-title { font-size: 12px; font-weight: 650; fill: #fff; letter-spacing: .01em; }
-.flow-node-summary { font-size: 10.5px; fill: rgba(255,255,255,.8); }
-.flow-badge-pill { fill: rgba(0,0,0,.3); }
-.flow-badge { font-size: 9.5px; fill: #fff; font-weight: 700; }
-.flow-mark circle { stroke: rgba(255,255,255,.85); stroke-width: 1.2; }
+/* Inside a wide node, on its colour; under a square or a circle, on the canvas. */
+.flow-node-title { font-size: 12px; font-weight: 600; fill: #fff; }
+.flow-node-summary { font-size: 10.5px; fill: rgba(255,255,255,.75); }
+.flow-node-title.under { fill: var(--vscode-foreground); }
+.flow-node-summary.under { fill: var(--muted); }
+.flow-badge-pill { fill: var(--vscode-editor-background, #1e1e1e); stroke: var(--border); }
+.flow-badge { font-size: 9.5px; fill: var(--vscode-foreground); font-weight: 600; }
+.flow-mark circle { fill: none; }
 .flow-mark.done circle { fill: var(--ok); }
 .flow-mark.failed circle { fill: var(--danger); }
 .flow-mark path {
   fill: none; stroke: #fff; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
 }
-.flow-node-footer { fill: rgba(0,0,0,.2); }
-.flow-node-chip { stroke-width: 1; }
-.flow-node-chip.cap { fill: rgba(255,255,255,.18); stroke: rgba(255,255,255,.34); }
-.flow-node-chip.tools { fill: rgba(0,0,0,.18); stroke: rgba(255,255,255,.3); }
-.flow-node-chip.muted { fill: none; stroke: rgba(255,255,255,.3); }
-.flow-node-chip-text { font-size: 9.5px; fill: #fff; }
-.flow-node-chip-text.tools { font-family: var(--vscode-editor-font-family, monospace); }
-.flow-node-chip-text.muted { fill: rgba(255,255,255,.75); }
 .flow-node-problem circle { stroke: var(--vscode-editor-background, #1e1e1e); stroke-width: 2; }
 .flow-node-problem.error circle { fill: var(--danger); }
 .flow-node-problem.warning circle { fill: var(--warn); }
 .flow-node-problem text { font-size: 10px; font-weight: 800; fill: #fff; }
-@keyframes flow-march { to { stroke-dashoffset: -24; } }
 
 /* ---- comments and notes ---- */
 /* The body lets clicks through: a marquee or a right-click inside a comment is
@@ -282,7 +263,6 @@ input[type="checkbox"] { width: auto; }
 
 /* ---- a node with an agent working inside it ---- */
 /* The running halo already says "this node"; these say "and it is moving". */
-.flow-node-activity { font-size: 10.5px; fill: #fff; }
 .flow-spinner-track { fill: none; stroke: #fff; stroke-opacity: .3; stroke-width: 1.7; }
 .flow-spinner-arc {
   fill: none; stroke: #fff; stroke-width: 1.9; stroke-linecap: round;
@@ -298,12 +278,21 @@ input[type="checkbox"] { width: auto; }
 }
 
 /* ---- pins and wires ---- */
-.flow-pin-label { font-size: 10.5px; fill: #fff; opacity: .88; }
+/* A side pin is named only while pointed at, or while a wire is being pulled
+   and the name decides where it goes; a bottom port is always named. */
+.flow-pin-label {
+  font-size: 10.5px; fill: var(--vscode-foreground); opacity: 0; pointer-events: none;
+  paint-order: stroke; stroke: var(--vscode-editor-background, #1e1e1e); stroke-width: 3px;
+  stroke-linejoin: round; transition: opacity .1s ease;
+}
+.flow-pin:hover + .flow-pin-label, .flow-canvas.wiring .flow-pin-label { opacity: 1; }
+.flow-pin-label.port { opacity: 1; font-size: 10px; fill: var(--muted); }
 .flow-pin { cursor: crosshair; }
 .flow-pin:hover .flow-pin-hit { opacity: .28; }
 /* A dot on the card's edge, hollow until wired; a wired one is ringed in the
    canvas colour so it stands off a card of its own colour. */
-.flow-pin-shape { stroke-width: 2; fill: var(--vscode-editor-background, #1e1e1e); }
+.flow-pin-shape { stroke-width: 2; }
+.flow-pin-shape:not(.filled) { fill: var(--vscode-editor-background, #1e1e1e); }
 .flow-pin-shape.filled { stroke: var(--vscode-editor-background, #1e1e1e); }
 .flow-pin:hover .flow-pin-shape { stroke-width: 2.6; }
 .flow-pin-shape.exec { fill: var(--vscode-editor-background, #1e1e1e); stroke: var(--flow-exec); }

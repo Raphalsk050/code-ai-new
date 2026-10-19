@@ -265,23 +265,31 @@ test("a clip from another window is read back, and rubbish is ignored", () => {
 
 // -- geometry ------------------------------------------------------------
 
-test("a node grows with the number of pin rows", () => {
-  const start = CATALOG.node_kinds.find((item) => item.kind === "start")!;
-  const agent = CATALOG.node_kinds.find((item) => item.kind === "profession")!;
+test("a node is a square until its pins need more room", () => {
+  const kind = (name: string) => CATALOG.node_kinds.find((item) => item.kind === name)!;
 
-  const small = layoutNode({ id: "a", kind: "start", pos: [0, 0], data: {} }, start);
-  const big = layoutNode(
+  const small = layoutNode({ id: "a", kind: "start", pos: [0, 0], data: {} }, kind("start"));
+  const agent = layoutNode(
     { id: "b", kind: "profession", pos: [0, 0], data: { profession: "architect" } },
-    agent
+    kind("profession")
   );
+  const format = layoutNode({ id: "f", kind: "format", pos: [0, 0], data: { inputs: 8 } }, kind("format"));
 
-  assert.ok(big.height > small.height);
+  assert.equal(small.width, small.height);
+  // An agent is fed a model, a profession and tools from below, so it is wide.
+  assert.ok(agent.width > small.width);
+  assert.deepEqual(
+    agent.inputs.filter((item) => item.side === "bottom").map((item) => item.pin.name),
+    ["model", "profession", "tools"]
+  );
+  // Nine inputs down one edge make it tall.
+  assert.ok(format.height > small.height);
   // exec in, model, profession, tools, task.
-  assert.equal(big.inputs.length, 5);
-  assert.equal(big.outputs.length, 2);
+  assert.equal(agent.inputs.length, 5);
+  assert.equal(agent.outputs.length, 2);
   // Exec pins lead, so the flow reads across the top of the node.
-  assert.equal(big.inputs[0].pin.type, "exec");
-  assert.equal(big.outputs[0].pin.type, "exec");
+  assert.equal(agent.inputs[0].pin.type, "exec");
+  assert.equal(agent.outputs[0].pin.type, "exec");
 });
 
 test("a Sequence shows as many pins as it was asked for", () => {
