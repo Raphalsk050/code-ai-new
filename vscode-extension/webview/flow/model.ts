@@ -53,6 +53,35 @@ export const KIND_COLORS: Record<string, string> = {
 
 const FOOTER_KINDS = new Set(["profession", "clean_agent", "custom_profession", "tools"]);
 
+/**
+ * Kinds that hold a value rather than take a step: drawn as circles with the
+ * name under them, as n8n draws its sub-nodes, and their one connector turns
+ * around the circle to face where its wire goes.
+ */
+const ROUND_KINDS = new Set(["model", "var_get"]);
+export const ROUND_D = 72;
+/** Room under the circle for its name and what it holds. */
+export const ROUND_LABEL_H = 36;
+export const ROUND_W = 136;
+
+export function isRound(kind: string): boolean {
+  return ROUND_KINDS.has(kind);
+}
+
+/** The middle of a round node's circle, in world space. */
+export function roundCenter(layout: NodeLayout): Point {
+  return { x: layout.node.pos[0] + layout.width / 2, y: layout.node.pos[1] + ROUND_D / 2 };
+}
+
+/** The angle a round node's connector faces: towards the middle of where its wires go. */
+export function aimAt(center: Point, targets: Point[]): number {
+  if (targets.length === 0) return 0;
+  const x = targets.reduce((sum, point) => sum + point.x, 0) / targets.length;
+  const y = targets.reduce((sum, point) => sum + point.y, 0) / targets.length;
+  if (Math.abs(x - center.x) < 0.5 && Math.abs(y - center.y) < 0.5) return 0;
+  return Math.atan2(y - center.y, x - center.x);
+}
+
 export function accentOf(spec: NodeKindSpec): string {
   return KIND_COLORS[spec.kind] ?? CATEGORY_COLORS[spec.category] ?? CATEGORY_COLORS.flow;
 }
@@ -373,6 +402,20 @@ export function layoutNode(node: FlowNode, spec: NodeKindSpec): NodeLayout {
   const inputs = execFirst(pins.filter((pin) => pin.direction === "in"));
   const outputs = execFirst(pins.filter((pin) => pin.direction === "out"));
   const summary = summaryOf(node, spec);
+  if (isRound(node.kind)) {
+    // Where the connectors rest; pinAnchor turns an output to face its wires.
+    const middle = ROUND_W / 2;
+    return {
+      node,
+      spec,
+      width: ROUND_W,
+      height: ROUND_D + ROUND_LABEL_H,
+      inputs: inputs.map((pin) => ({ pin, x: middle - ROUND_D / 2, y: ROUND_D / 2 })),
+      outputs: outputs.map((pin) => ({ pin, x: middle + ROUND_D / 2, y: ROUND_D / 2 })),
+      summary,
+      footer: 0,
+    };
+  }
   const rows = Math.max(inputs.length, outputs.length);
   const footer = FOOTER_KINDS.has(node.kind) ? FOOTER_H : 0;
   const height = HEADER_H + BODY_PAD + rows * ROW_H + BODY_PAD + footer;
@@ -517,25 +560,80 @@ export interface Point {
   y: number;
 }
 
-/** Absolute position of one pin, for drawing wires. */
-export function pinPoint(
+/** The way a wire leaves or enters a pin, as a unit vector. */
+export interface Anchor extends Point {
+  dx: number;
+  dy: number;
+}
+
+/** Each round node's connector angle, in radians; one that is missing faces right. */
+export type Aims = Map<string, number>;
+
+/**
+ * Where one pin is in world space, and which way its wire goes. A round node's
+ * output sits on its circle at the angle `aims` gives it, and leaves outwards.
+ */
+export function pinAnchor(
   layouts: Map<string, NodeLayout>,
   nodeId: string,
   pinName: string,
-  direction: "in" | "out"
-): Point | null {
+  direction: "in" | "out",
+  aims?: Aims
+): Anchor | null {
   const layout = layouts.get(nodeId);
   if (!layout) return null;
   const list = direction === "in" ? layout.inputs : layout.outputs;
   const found = list.find((item) => item.pin.name === pinName);
   if (!found) return null;
-  return { x: layout.node.pos[0] + found.x, y: layout.node.pos[1] + found.y };
+  if (isRound(layout.node.kind) && direction === "out") {
+    const angle = aims?.get(nodeId) ?? 0;
+    const center = roundCenter(layout);
+    const dx = Math.cos(angle);
+    const dy = Math.sin(angle);
+    return { x: center.x + dx * (ROUND_D / 2), y: center.y + dy * (ROUND_D / 2), dx, dy };
+  }
+  const out = direction === "out";
+  return { x: layout.node.pos[0] + found.x, y: layout.node.pos[1] + found.y, dx: out ? 1 : -1, dy: 0 };
 }
 
-/** The cubic the editor draws between two pins, Blueprint-style. */
-export function wirePath(from: Point, to: Point): string {
-  const distance = Math.max(48, Math.abs(to.x - from.x) * 0.5);
-  return `M ${from.x} ${from.y} C ${from.x + distance} ${from.y}, ${to.x - distance} ${to.y}, ${to.x} ${to.y}`;
+/** Absolute position of one pin, for drawing wires. */
+export function pinPoint(
+  layouts: Map<string, NodeLayout>,
+  nodeId: string,
+  pinName: string,
+  direction: "in" | "out",
+  aims?: Aims
+): Point | null {
+  const anchor = pinAnchor(layouts, nodeId, pinName, direction, aims);
+  return anchor && { x: anchor.x, y: anchor.y };
+}
+
+const RIGHT = { dx: 1, dy: 0 };
+const LEFT = { dx: -1, dy: 0 };
+
+/**
+ * The cubic the editor draws between two pins: out of the one along its way
+ * out, into the other along its way in. Side pins go straight across, as a
+ * Blueprint wire does; a round node's wire leaves along the circle's radius.
+ */
+export function wirePath(
+  from: Point,
+  to: Point,
+  out: { dx: number; dy: number } = RIGHT,
+  into: { dx: number; dy: number } = LEFT
+): string {
+  const across = Math.max(48, Math.abs(to.x - from.x) * 0.5);
+  const radial = Math.max(48, Math.hypot(to.x - from.x, to.y - from.y) * 0.4);
+  const reach = (way: { dx: number; dy: number }) => (way.dy === 0 ? across : radial);
+  const a = reach(out);
+  const b = reach(into);
+  const c1 = `${round2(from.x + out.dx * a)} ${round2(from.y + out.dy * a)}`;
+  const c2 = `${round2(to.x + into.dx * b)} ${round2(to.y + into.dy * b)}`;
+  return `M ${from.x} ${from.y} C ${c1}, ${c2}, ${to.x} ${to.y}`;
+}
+
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
 }
 
 /** Rough length of that cubic, used to keep the running dot at one speed. */

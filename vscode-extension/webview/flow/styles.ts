@@ -172,35 +172,40 @@ input[type="checkbox"] { width: auto; }
 }
 
 /* ---- nodes ---- */
+/* A card in its kind's colour, n8n-style; values (models, variables) are circles. */
 .flow-node { cursor: default; }
 /* Paint only: the box underneath takes the clicks, so a drag starts anywhere. */
-.flow-node-header, .flow-node-sheen, .flow-node-divider, .flow-node-glyph,
+.flow-node-sheen, .flow-node-divider, .flow-node-glyph,
 .flow-node-summary, .flow-node-footer, .flow-badge-pill, .flow-badge, .flow-mark,
 .flow-spinner, .flow-node-problem, .flow-node-activity { pointer-events: none; }
 .flow-node-box {
-  fill: var(--vscode-editorWidget-background, #252526);
-  stroke: var(--border); stroke-width: 1;
+  stroke: rgba(255,255,255,.16); stroke-width: 1;
   filter: url(#flow-shadow);
 }
+/* Selected or at work, a dashed ring in the node's colour glows around it. */
 .flow-node-halo {
-  fill: none; stroke: var(--accent); stroke-width: 2; opacity: 0;
-  pointer-events: none; transition: opacity .12s ease;
+  fill: none; stroke-width: 2.4; stroke-dasharray: 6 5; stroke-linecap: round;
+  opacity: 0; pointer-events: none; transition: opacity .12s ease;
+  filter: drop-shadow(0 0 4px currentColor);
 }
-.flow-node.selected .flow-node-halo { opacity: .95; }
-.flow-node.running .flow-node-halo {
-  opacity: 1; stroke-dasharray: 7 5; animation: flow-march 700ms linear infinite;
-}
-.flow-node.failed .flow-node-halo { opacity: .9; stroke: var(--danger); }
-.flow-node.error .flow-node-box { stroke: var(--danger); stroke-width: 1.6; }
-.flow-node.done .flow-node-box { stroke: var(--ok); stroke-opacity: .75; }
-.flow-node.failed .flow-node-box { stroke: var(--danger); stroke-width: 1.6; }
-.flow-node-header { opacity: .96; }
-.flow-node-divider { stroke: rgba(0,0,0,.28); stroke-width: 1; }
-.flow-node-glyph rect { fill: rgba(255,255,255,.17); stroke: rgba(255,255,255,.28); stroke-width: 1; }
+.flow-node.selected .flow-node-halo { opacity: 1; }
+.flow-node.running .flow-node-halo { opacity: 1; animation: flow-ring 700ms linear infinite; }
+.flow-node.failed .flow-node-halo { opacity: 1; stroke: var(--danger); color: var(--danger); }
+.flow-node.error .flow-node-box { stroke: var(--danger); stroke-width: 2; }
+.flow-node.done .flow-node-box { stroke: var(--ok); stroke-width: 1.6; }
+.flow-node.failed .flow-node-box { stroke: var(--danger); stroke-width: 2; }
+.flow-node-divider { stroke: rgba(255,255,255,.16); stroke-width: 1; }
+.flow-node-glyph rect { fill: rgba(255,255,255,.2); stroke: rgba(255,255,255,.3); stroke-width: 1; }
 .flow-node-glyph .stroke {
   fill: none; stroke: #fff; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round;
 }
+.flow-node-glyph.big .stroke { stroke-width: 1.15; }
 .flow-node-glyph .fill { fill: #fff; }
+.flow-round-title {
+  font-size: 11.5px; font-weight: 650; fill: var(--vscode-foreground); letter-spacing: .01em;
+}
+.flow-round-summary { font-size: 10px; fill: var(--muted); }
+@keyframes flow-ring { to { stroke-dashoffset: -22; } }
 .flow-node-title { font-size: 12px; font-weight: 650; fill: #fff; letter-spacing: .01em; }
 .flow-node-summary { font-size: 10.5px; fill: rgba(255,255,255,.8); }
 .flow-badge-pill { fill: rgba(0,0,0,.3); }
@@ -211,14 +216,14 @@ input[type="checkbox"] { width: auto; }
 .flow-mark path {
   fill: none; stroke: #fff; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
 }
-.flow-node-footer { fill: rgba(127,127,127,.09); }
+.flow-node-footer { fill: rgba(0,0,0,.2); }
 .flow-node-chip { stroke-width: 1; }
-.flow-node-chip.cap { fill: rgba(55,148,255,.14); stroke: rgba(55,148,255,.45); }
-.flow-node-chip.tools { fill: rgba(157,123,255,.16); stroke: rgba(157,123,255,.5); }
-.flow-node-chip.muted { fill: none; stroke: var(--border); }
-.flow-node-chip-text { font-size: 9.5px; fill: var(--vscode-foreground); }
+.flow-node-chip.cap { fill: rgba(255,255,255,.18); stroke: rgba(255,255,255,.34); }
+.flow-node-chip.tools { fill: rgba(0,0,0,.18); stroke: rgba(255,255,255,.3); }
+.flow-node-chip.muted { fill: none; stroke: rgba(255,255,255,.3); }
+.flow-node-chip-text { font-size: 9.5px; fill: #fff; }
 .flow-node-chip-text.tools { font-family: var(--vscode-editor-font-family, monospace); }
-.flow-node-chip-text.muted { fill: var(--muted); }
+.flow-node-chip-text.muted { fill: rgba(255,255,255,.75); }
 .flow-node-problem circle { stroke: var(--vscode-editor-background, #1e1e1e); stroke-width: 2; }
 .flow-node-problem.error circle { fill: var(--danger); }
 .flow-node-problem.warning circle { fill: var(--warn); }
@@ -277,7 +282,7 @@ input[type="checkbox"] { width: auto; }
 
 /* ---- a node with an agent working inside it ---- */
 /* The running halo already says "this node"; these say "and it is moving". */
-.flow-node-activity { font-size: 10.5px; fill: var(--accent); }
+.flow-node-activity { font-size: 10.5px; fill: #fff; }
 .flow-spinner-track { fill: none; stroke: #fff; stroke-opacity: .3; stroke-width: 1.7; }
 .flow-spinner-arc {
   fill: none; stroke: #fff; stroke-width: 1.9; stroke-linecap: round;
@@ -289,28 +294,36 @@ input[type="checkbox"] { width: auto; }
   /* Still alive, without the movement: the arc pulses in place instead. */
   .flow-spinner-arc { animation: flow-pulse 1.4s ease-in-out infinite; }
   .flow-node.running .flow-node-halo { animation: none; }
+  .flow-wire.data.lit { animation: none; }
 }
 
 /* ---- pins and wires ---- */
-.flow-pin-label { font-size: 10.5px; fill: var(--vscode-foreground); opacity: .82; }
+.flow-pin-label { font-size: 10.5px; fill: #fff; opacity: .88; }
 .flow-pin { cursor: crosshair; }
 .flow-pin:hover .flow-pin-hit { opacity: .28; }
-.flow-pin:hover .flow-pin-shape { stroke-width: 2.4; }
-.flow-pin-shape.exec { fill: none; stroke: var(--flow-exec); }
-.flow-pin-shape.exec.filled { fill: var(--flow-exec); }
+/* A dot on the card's edge, hollow until wired; a wired one is ringed in the
+   canvas colour so it stands off a card of its own colour. */
+.flow-pin-shape { stroke-width: 2; fill: var(--vscode-editor-background, #1e1e1e); }
+.flow-pin-shape.filled { stroke: var(--vscode-editor-background, #1e1e1e); }
+.flow-pin:hover .flow-pin-shape { stroke-width: 2.6; }
+.flow-pin-shape.exec { fill: var(--vscode-editor-background, #1e1e1e); stroke: var(--flow-exec); }
+.flow-pin-shape.exec.filled { fill: var(--flow-exec); stroke: var(--vscode-editor-background, #1e1e1e); }
 .flow-wire {
   fill: none; stroke-width: 2.2; stroke-linecap: round; pointer-events: none;
   transition: stroke-opacity .2s ease;
 }
-.flow-wire.exec { stroke: var(--flow-exec); stroke-width: 2.6; }
+/* The flow is a solid line from one node's colour into the next; a value runs
+   dashed in its type's colour, and its dashes move while it is being passed. */
+.flow-wire.exec { stroke-width: 2.6; }
+.flow-wire.data { stroke-dasharray: 6 5; }
+.flow-wire.data.lit { animation: flow-ring 600ms linear infinite; }
+.flow-wire.pending { stroke-dasharray: 6 5; }
 .flow-wire.traveled { stroke-width: 2.8; }
 .flow-wire.lit { stroke-width: 3; }
-.flow-wire.selected { stroke-dasharray: 7 4; stroke-width: 2.8; }
+.flow-wire.selected { stroke-width: 3; }
 .flow-wire-glow {
   fill: none; stroke-width: 9; stroke-linecap: round; opacity: .22; pointer-events: none;
 }
-.flow-wire-glow.exec { stroke: var(--flow-exec); }
-.flow-dot.exec { fill: var(--flow-exec); }
 .flow-wire-hit { fill: none; stroke: transparent; stroke-width: 12; cursor: pointer; }
 .flow-grid-dot { fill: var(--border); opacity: .75; }
 .flow-grid-dot.major { opacity: 1; }

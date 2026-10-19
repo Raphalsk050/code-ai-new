@@ -3,30 +3,35 @@ import * as React from "react";
 import type { FlowEdge } from "../../src/flow-schema";
 import { chipsFor } from "./access";
 import {
+  Aims,
   Bounds,
   GRID,
   NodeLayout,
   PinLayout,
   Point,
   accentOf,
+  aimAt,
   commentLook,
   commentOrder,
   edgeType,
   graphBounds,
   isAnnotation,
+  isRound,
   layoutGraph,
   movedBy,
   nodesInRect,
+  pinAnchor,
   pinPoint,
   resized,
   ResizeHandle,
+  roundCenter,
   wireLength,
   wirePath,
 } from "./model";
 import { t } from "../i18n";
 import { panelTop, presented } from "./focus";
 import { useFollowRun } from "./follow-run";
-import { NodeView } from "./node-view";
+import { NodeView, RoundNodeView } from "./node-view";
 import { Box, CommentView, NoteBubble, NoteMark } from "./notes";
 import type { Action, EditorState, NodeRunStatus } from "./store";
 import { issuesByNode } from "./store";
@@ -279,6 +284,8 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
     const source = drag?.pin;
     if (!drag || drag.kind !== "wire" || !source) return;
     setDrag(null);
+    // Let go where it started: a click on the pin, not a connection.
+    if (source.nodeId === nodeId) return;
     if (source.direction === direction) {
       dispatch({
         type: "notice",
@@ -423,15 +430,41 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
 
   // -- render -----------------------------------------------------------
 
+  // Where each round node's connector faces: the middle of where its wires go.
+  // One being pulled out of it follows the pointer around the rim instead, and
+  // the wires it already has stay put.
+  const aims: Aims = new Map();
+  const pulled: Aims = new Map();
+  for (const layout of shown.values()) {
+    const id = layout.node.id;
+    if (!isRound(layout.node.kind)) continue;
+    const moved = offsetFor(id);
+    const at = roundCenter(layout);
+    const center = { x: at.x + moved.dx, y: at.y + moved.dy };
+    const targets = state.graph.edges.flatMap((edge) => {
+      if (edge.from[0] !== id) return [];
+      const to = pinPoint(shown, edge.to[0], edge.to[1], "in");
+      const shift = offsetFor(edge.to[0]);
+      return to ? [{ x: to.x + shift.dx, y: to.y + shift.dy }] : [];
+    });
+    if (targets.length) aims.set(id, aimAt(center, targets));
+    if (drag?.kind === "wire" && drag.pin?.nodeId === id && drag.pin.direction === "out") {
+      pulled.set(id, aimAt(center, [drag.current]));
+    }
+  }
+
   const wires = state.graph.edges.flatMap((edge) => {
-    const from = pinPoint(shown, edge.from[0], edge.from[1], "out");
-    const to = pinPoint(shown, edge.to[0], edge.to[1], "in");
+    const from = pinAnchor(shown, edge.from[0], edge.from[1], "out", aims);
+    const to = pinAnchor(shown, edge.to[0], edge.to[1], "in", aims);
     if (!from || !to) return [];
     const dragOffsetFrom = offsetFor(edge.from[0]);
     const dragOffsetTo = offsetFor(edge.to[0]);
-    const a = { x: from.x + dragOffsetFrom.dx, y: from.y + dragOffsetFrom.dy };
-    const b = { x: to.x + dragOffsetTo.dx, y: to.y + dragOffsetTo.dy };
-    return [{ edge, a, b, type: catalog ? edgeType(state.graph, catalog, edge) : "any" }];
+    const a = { ...from, x: from.x + dragOffsetFrom.dx, y: from.y + dragOffsetFrom.dy };
+    const b = { ...to, x: to.x + dragOffsetTo.dx, y: to.y + dragOffsetTo.dy };
+    const ends = [shown.get(edge.from[0]), shown.get(edge.to[0])].map((item) =>
+      item ? accentOf(item.spec) : "#888"
+    );
+    return [{ edge, a, b, ends, type: catalog ? edgeType(state.graph, catalog, edge) : "any" }];
   });
 
   const now = Date.now();
@@ -554,18 +587,29 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
             );
           })}
 
-          {wires.map(({ edge, a, b, type }) => {
-            const color = catalog?.color(type) ?? "#888";
+          {wires.map(({ edge, a, b, ends, type }) => {
+            // The flow is drawn from one node's colour into the next one's; a
+            // value goes dashed, in its type's colour.
+            const gradient = `flow-wire-${edge.id.replace(/[^\w-]/g, "_")}`;
+            const color = edge.kind === "exec" ? `url(#${gradient})` : catalog?.color(type) ?? "#888";
             const litAt = state.run.active[edge.id];
             const isLit = Boolean(litAt && now - litAt < EDGE_GLOW_MS);
             const traveled = state.run.traveled.includes(edge.id);
-            const path = wirePath(a, b);
+            const path = wirePath(a, b, a, b);
             const classes = ["flow-wire", edge.kind];
             if (state.selectedEdge === edge.id) classes.push("selected");
             if (traveled) classes.push("traveled");
             if (isLit) classes.push("lit");
             return (
               <g key={edge.id} data-testid={`edge-${edge.id}`} data-lit={isLit ? "1" : "0"}>
+                {edge.kind === "exec" && (
+                  <defs>
+                    <linearGradient id={gradient} gradientUnits="userSpaceOnUse" x1={a.x} y1={a.y} x2={b.x} y2={b.y}>
+                      <stop offset="0" stopColor={ends[0]} />
+                      <stop offset="1" stopColor={ends[1]} />
+                    </linearGradient>
+                  </defs>
+                )}
                 {(isLit || state.selectedEdge === edge.id) && (
                   <path className={`flow-wire-glow ${edge.kind}`} d={path} stroke={color} />
                 )}
@@ -573,7 +617,7 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
                   className={classes.join(" ")}
                   d={path}
                   stroke={color}
-                  strokeOpacity={isLit ? 1 : traveled ? 0.9 : 0.62}
+                  strokeOpacity={isLit ? 1 : traveled ? 0.95 : 0.8}
                 />
                 <path
                   className="flow-wire-hit"
@@ -602,7 +646,7 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
                   <circle
                     className={`flow-dot ${edge.kind}`}
                     r={4.5}
-                    fill={color}
+                    fill={edge.kind === "exec" ? ends[0] : color}
                     data-testid={`dot-${edge.id}`}
                   >
                     <animateMotion
@@ -618,15 +662,35 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
 
           {drag?.kind === "wire" && drag.pin && (
             <path
-              className={`flow-wire ${drag.pin.pin.pin.type === "exec" ? "exec" : "data"}`}
-              d={pendingPath(shown, drag)}
-              stroke={catalog?.color(drag.pin.pin.pin.type) ?? "#fff"}
-              strokeDasharray="5 4"
+              className={`flow-wire pending ${drag.pin.pin.pin.type === "exec" ? "exec" : "data"}`}
+              d={pendingPath(shown, drag, new Map([...aims, ...pulled]))}
+              stroke={pendingStroke(shown, drag.pin, (type) => catalog?.color(type) ?? "#888")}
             />
           )}
 
           {nodes.map((layout) => {
             const nodeIssues = problems[layout.node.id] ?? [];
+            if (isRound(layout.node.kind)) {
+              return (
+                <RoundNodeView
+                  key={layout.node.id}
+                  layout={layout}
+                  offset={offsetFor(layout.node.id)}
+                  selected={state.selection.includes(layout.node.id)}
+                  status={(state.run.nodes[layout.node.id] ?? "idle") as NodeRunStatus}
+                  hasError={nodeIssues.some((issue) => issue.severity === "error")}
+                  hasWarning={nodeIssues.some((issue) => issue.severity === "warning")}
+                  accent={accentOf(layout.spec)}
+                  aim={pulled.get(layout.node.id) ?? aims.get(layout.node.id) ?? 0}
+                  color={(type) => catalog?.color(type) ?? "#888"}
+                  connected={(pin, direction) => connected.has(`${layout.node.id}:${pin}:${direction}`)}
+                  onNodeDown={onNodeDown}
+                  onNodeContext={nodeContext}
+                  onPinDown={onPinDown}
+                  onPinUp={onPinUp}
+                />
+              );
+            }
             return (
               <NodeView
                 key={layout.node.id}
@@ -882,7 +946,7 @@ function Minimap({ layouts, view, size, selection, running, onPan }: MinimapProp
             y={at.y}
             width={Math.max(2, layout.width * scale)}
             height={Math.max(2, layout.height * scale)}
-            rx={1.5}
+            rx={isRound(layout.node.kind) ? Math.max(1, (layout.height * scale) / 2) : 1.5}
             fill={accentOf(layout.spec)}
           />
         );
@@ -919,14 +983,25 @@ function badgeFor(state: EditorState, nodeId: string): string {
   return "";
 }
 
-function pendingPath(layouts: Map<string, NodeLayout>, drag: DragState): string {
+function pendingPath(layouts: Map<string, NodeLayout>, drag: DragState, aims: Aims): string {
   const source = drag.pin;
   if (!source) return "";
-  const anchor = pinPoint(layouts, source.nodeId, source.pin.pin.name, source.direction);
+  const anchor = pinAnchor(layouts, source.nodeId, source.pin.pin.name, source.direction, aims);
   if (!anchor) return "";
   return source.direction === "out"
-    ? wirePath(anchor, drag.current)
-    : wirePath(drag.current, anchor);
+    ? wirePath(anchor, drag.current, anchor)
+    : wirePath(drag.current, anchor, undefined, anchor);
+}
+
+/** A wire being pulled: in its node's colour for the flow, its type's for a value. */
+function pendingStroke(
+  layouts: Map<string, NodeLayout>,
+  source: NonNullable<DragState["pin"]>,
+  color: (type: string) => string
+): string {
+  if (source.pin.pin.type !== "exec") return color(source.pin.pin.type);
+  const layout = layouts.get(source.nodeId);
+  return layout ? accentOf(layout.spec) : color("exec");
 }
 
 function rectOf(a: Point, b: Point): Bounds {

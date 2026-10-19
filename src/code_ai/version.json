@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 47,
-  "patch": 1,
-  "build": 124,
+  "minor": 48,
+  "patch": 0,
+  "build": 125,
   "updated": "2026-10-19",
-  "note": "Desktop avatar: no trail on Linux, every screen, always above; its build installs what it lacks"
+  "note": "Graph editor: n8n-style nodes; models and variables are circles whose connector orbits them"
 }
