@@ -318,6 +318,13 @@ input[type="checkbox"] { width: auto; }
 .flow-grid-dot.major { opacity: 1; }
 .flow-marquee { fill: var(--accent); fill-opacity: .12; stroke: var(--accent); stroke-dasharray: 4 3; }
 
+.flow-follow {
+  position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 5;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 14px; border-radius: 999px; font-weight: 600;
+  background: var(--accent); border-color: var(--accent); color: #fff;
+}
+.flow-follow:hover:not(:disabled) { background: var(--accent); filter: brightness(1.1); }
 .flow-empty {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   color: var(--muted); text-align: center; pointer-events: none; padding: 24px;

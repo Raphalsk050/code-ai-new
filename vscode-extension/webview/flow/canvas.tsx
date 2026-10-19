@@ -813,6 +813,22 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
           onPan={(next) => dispatch({ type: "setView", pan: next })}
         />
       )}
+      {/* Moving the camera during a run lets go of the run; this takes it back. */}
+      {state.run.running && follow.detached && (
+        <button
+          className="flow-follow"
+          data-testid="follow-run"
+          title={t("Back to the node at work, and follow it from there")}
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={follow.resume}
+        >
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+            <circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" strokeWidth="1.5" />
+            <circle cx="8" cy="8" r="2" fill="currentColor" />
+          </svg>
+          {t("Follow the run")}
+        </button>
+      )}
     </div>
   );
 }

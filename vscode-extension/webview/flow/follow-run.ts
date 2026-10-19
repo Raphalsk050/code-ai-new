@@ -32,7 +32,22 @@ export interface FollowFrame {
   p: number;
 }
 
+export interface Follow extends FollowFrame {
+  /** The user moved the camera during a run, so it no longer follows. */
+  detached: boolean;
+  /** Take the camera back to where the run is, and keep it there. */
+  resume(): void;
+}
+
 const SHUT: FollowFrame = { focusId: null, p: 0 };
+
+/** Where the run is: the newest node still working, or the last one it reached. */
+export function whereRunIs(run: RunState): string | null {
+  for (let index = run.order.length - 1; index >= 0; index -= 1) {
+    if (run.nodes[run.order[index]] === "running") return run.order[index];
+  }
+  return run.order[run.order.length - 1] ?? null;
+}
 
 interface CameraMove {
   from: View;
@@ -47,11 +62,12 @@ interface CameraMove {
  * The camera backs off for the rest of a run as soon as the user pans or zooms
  * themselves: following a run must never fight the hand on the mouse.
  */
-export function useFollowRun(args: FollowRunArgs): FollowFrame {
+export function useFollowRun(args: FollowRunArgs): Follow {
   const reel = React.useRef(new FocusReel()).current;
   const latest = React.useRef(args);
   latest.current = args;
   const [frame, setFrame] = React.useState<FollowFrame>(SHUT);
+  const [detached, setDetached] = React.useState(false);
   const loop = React.useRef<{ handle: number; last: number } | null>(null);
   const camera = React.useRef<{ move: CameraMove | null; edits: number; paused: boolean; shown: string | null }>({
     move: null,
@@ -86,7 +102,10 @@ export function useFollowRun(args: FollowRunArgs): FollowFrame {
     if (current.viewEdits !== cam.edits) {
       cam.edits = current.viewEdits;
       cam.move = null;
-      if (run.running) cam.paused = true;
+      if (run.running) {
+        cam.paused = true;
+        setDetached(true);
+      }
     }
     if (step && step.id !== cam.shown && step.phase === "opening") {
       cam.shown = step.id;
@@ -130,8 +149,29 @@ export function useFollowRun(args: FollowRunArgs): FollowFrame {
     reel.restart(args.run.orderBase);
     camera.current.paused = false;
     camera.current.edits = latest.current.viewEdits;
+    setDetached(false);
     kick();
   }, [args.run.startedAt, reel, kick]);
+
+  // A run that ended has nowhere left to follow.
+  React.useEffect(() => {
+    if (!args.run.running) setDetached(false);
+  }, [args.run.running]);
+
+  const resume = React.useCallback(() => {
+    const current = latest.current;
+    const cam = camera.current;
+    cam.paused = false;
+    cam.edits = current.viewEdits;
+    setDetached(false);
+    const id = reel.step?.id ?? whereRunIs(current.run);
+    const layout = id ? current.layouts.get(id) : undefined;
+    if (id && layout) {
+      cam.shown = id;
+      cam.move = { from: current.view, to: focusView(layout, current.size, current.view.zoom), spring: { x: 0, v: 0 } };
+    }
+    kick();
+  }, [reel, kick]);
 
   React.useEffect(() => {
     kick();
@@ -145,5 +185,5 @@ export function useFollowRun(args: FollowRunArgs): FollowFrame {
     []
   );
 
-  return frame;
+  return { ...frame, detached, resume };
 }

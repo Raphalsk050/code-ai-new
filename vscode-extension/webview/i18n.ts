@@ -983,6 +983,8 @@ const PT: Record<string, string> = {
   "While a graph runs, the node at work opens so you can read what it writes, the nodes around it step aside, and it folds back before the next one opens.":
     "Enquanto um grafo roda, o node em execução se abre para você ler o que ele escreve, os nodes em volta se afastam, e ele se fecha antes de o próximo abrir.",
   "Output": "Saída",
+  "Follow the run": "Seguir a execução",
+  "Back to the node at work, and follow it from there": "Voltar ao node em execução e seguir dali",
   "Show the output": "Mostrar a saída",
   "Hide the output": "Esconder a saída",
   "Thinking": "Pensando",

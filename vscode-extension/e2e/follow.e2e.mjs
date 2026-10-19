@@ -168,6 +168,34 @@ export const tests = {
     assert(zoomAfter === zoomBefore, `the canvas moved under the panel: ${zoomBefore} -> ${zoomAfter}`);
   },
 
+  async "moving the camera lets go of the run, and the follow button takes it back"(ui, assert) {
+    await boot(ui);
+    await startAgent(ui);
+    await ui.event("graph.node.output", { node_id: "agent", channel: "answer", text: "Lendo o projeto." });
+    await settle(ui, 1600);
+    const follow = () => ui.page.locator('[data-testid="follow-run"]').count();
+    assert((await follow()) === 0, "the button shows while the camera follows");
+
+    const canvas = await box(ui, '[data-testid="flow-canvas"]');
+    await ui.page.mouse.move(canvas.x + 60, canvas.y + 60);
+    await ui.page.mouse.wheel(900, 0);
+    await ui.page.waitForSelector('[data-testid="follow-run"]', { timeout: 3000 });
+    await ui.shot("follow-06-detached");
+
+    const middle = canvas.x + canvas.width / 2;
+    const off = async () => {
+      const agent = await box(ui, '[data-testid="node-agent"] .flow-node-box');
+      return Math.abs(agent.x + agent.width / 2 - middle);
+    };
+    const away = await off();
+    await ui.page.click('[data-testid="follow-run"]');
+    await settle(ui, 1500);
+    const back = await off();
+    assert(back < away && back < 40, `the camera did not come back to the agent: ${away} -> ${back}`);
+    assert((await follow()) === 0, "the button stayed once the camera followed again");
+    await ui.shot("follow-07-back");
+  },
+
   async "with the setting off, a run leaves every node shut"(ui, assert) {
     await boot(ui, pipeline(), { ...CATALOG, follow_run: false });
     await startAgent(ui);
