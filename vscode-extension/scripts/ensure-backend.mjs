@@ -345,15 +345,24 @@ function prepareDesktopAvatar({ host }) {
   // macOS draws it from Python, already in the package; another platform's
   // window is CI's to build.
   if (!host || process.platform === "darwin") return;
-  const name = process.platform === "win32" ? "code-ai-avatar.exe" : "code-ai-avatar";
-  const crate = join(REPO_ROOT, "desktop-avatar");
   try {
-    run("cargo", ["build", "--release", "--manifest-path", join(crate, "Cargo.toml")], "desktop avatar: window (cargo)");
-    copyFileSync(join(crate, "target", "release", name), join(assets, name));
+    if (process.platform === "linux") {
+      // CI's script: it installs the system libraries the window links, fetches
+      // Rust when there is none, and the crates past the proxy cargo cannot pass.
+      const python = findPython();
+      if (!python) throw new Error("Python 3.11 or newer is needed to build it");
+      const script = join(REPO_ROOT, "scripts", "build_desktop_avatar.py");
+      run(python.cmd, [...python.args, script, "--out", assets, "--targets", "linux"], "desktop avatar: window");
+    } else {
+      const crate = join(REPO_ROOT, "desktop-avatar");
+      run("cargo", ["build", "--release", "--manifest-path", join(crate, "Cargo.toml")], "desktop avatar: window (cargo)");
+      copyFileSync(join(crate, "target", "release", "code-ai-avatar.exe"), join(assets, "code-ai-avatar.exe"));
+    }
   } catch (err) {
     console.log(
-      "  warning: no desktop avatar in this package, its window did not build. " +
-        `It needs Rust (rustup.rs) and crates.io: ${err.message ?? err}`
+      "  warning: no desktop avatar in this package, its window did not build " +
+        `(${process.platform === "linux" ? "see above" : "it needs Rust, rustup.rs, and crates.io"}): ` +
+        (err.message ?? err)
     );
   }
 }
