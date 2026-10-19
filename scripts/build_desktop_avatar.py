@@ -41,14 +41,27 @@ WINDOWS = "x86_64-pc-windows-gnu"
 WINDOWS_STD_SHA256 = "d82b3240908390cef1ddb88d2d922fa6d5e8abb6e6ef1d47948ec503ba694bf5"
 # CODE_AI_CRATES_MIRROR and CODE_AI_RUST_DIST_MIRROR swap the hosts for internal
 # copies; the hashes still hold.
-CRATES = os.environ.get("CODE_AI_CRATES_MIRROR", "https://static.crates.io/crates").rstrip("/")
-RUST_DIST = os.environ.get("CODE_AI_RUST_DIST_MIRROR", "https://static.rust-lang.org/dist").rstrip("/")
+CRATES = "https://static.crates.io/crates"
+RUST_DIST = "https://static.rust-lang.org/dist"
 
 TARGETS = {"linux": "x86_64-unknown-linux-gnu", "windows": WINDOWS}
 NAMES = {"linux": "code-ai-avatar", "windows": "code-ai-avatar.exe"}
 # Linked statically only by MSVC: a MinGW build loads it from beside the exe.
 # Microsoft's redistributable, inside webview2-com-sys and so under its hash.
 WEBVIEW2_LOADER = "WebView2Loader.dll"
+
+
+def _host(variable: str, default: str) -> str:
+    # The workflow passes the repository variable through even when it is unset.
+    return (os.environ.get(variable) or default).rstrip("/")
+
+
+def crate_url(name: str, version: str) -> str:
+    return f"{_host('CODE_AI_CRATES_MIRROR', CRATES)}/{name}/{name}-{version}.crate"
+
+
+def rust_dist_url(name: str) -> str:
+    return f"{_host('CODE_AI_RUST_DIST_MIRROR', RUST_DIST)}/{name}.tar.xz"
 
 
 def _extract(archive: Path, into: Path | str) -> None:
@@ -84,7 +97,7 @@ def vendor(lock: Path, into: Path, cache: Path) -> None:
         if (folder / ".cargo-checksum.json").is_file():
             continue
         archive = cache / f"{name}-{version}.crate"
-        _download(f"{CRATES}/{name}/{name}-{version}.crate", sha256, archive)
+        _download(crate_url(name, version), sha256, archive)
         _extract(archive, into)
         # No per-file sums: the archive's own was checked against the lock.
         (folder / ".cargo-checksum.json").write_text(
@@ -105,7 +118,7 @@ def windows_std() -> None:
     name = f"rust-std-{RUST}-{WINDOWS}"
     with tempfile.TemporaryDirectory() as scratch:
         archive = Path(scratch) / f"{name}.tar.xz"
-        _download(f"{RUST_DIST}/{name}.tar.xz", WINDOWS_STD_SHA256, archive)
+        _download(rust_dist_url(name), WINDOWS_STD_SHA256, archive)
         _extract(archive, scratch)
         library = Path(scratch) / name / f"rust-std-{WINDOWS}" / "lib" / "rustlib" / WINDOWS
         shutil.copytree(library, sysroot / "lib" / "rustlib" / WINDOWS)
