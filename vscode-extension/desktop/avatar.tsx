@@ -12,9 +12,11 @@
 //   {waiting}    whether something waits on the user
 //   {seat}       where the panel's logo is on the screen, in physical pixels,
 //                while its home screen is up; null once it is not
-// From the host, `desk.frame(x, y, scale)`: where this window is, in the same
-// pixels, so the logo's place can be found in it. To the host, through `ipc.postMessage`: "ready", "face:x,y,w,h,held" for
-// where clicks may land, and "out:{rest}" for where it came to rest.
+// From the host, `desk.frame(x, y, scale, screens)`: where this window is, in
+// the same pixels, so the logo's place can be found in it, and the work area of
+// each screen it spans as [x, y, w, h], the main one first. To the host,
+// through `ipc.postMessage`: "ready", "face:x,y,w,h,held" for where clicks may
+// land, and "out:{rest}" for where it came to rest.
 
 import * as React from "react";
 import { createRoot } from "react-dom/client";
@@ -22,7 +24,7 @@ import { createRoot } from "react-dom/client";
 import { useSteadyPose } from "../webview/agent-avatar";
 import type { ScreenBox } from "../webview/desktop-seat";
 import { type Cue, cue } from "../webview/avatar-acts";
-import { isPlace, type Place } from "../webview/avatar-motion";
+import { isPlace, type Place, type Screen } from "../webview/avatar-motion";
 import type { AvatarPose } from "../webview/avatar-pose";
 import { FloatingAvatar } from "../webview/floating-avatar";
 import { setLanguage, t } from "../webview/i18n";
@@ -34,7 +36,7 @@ declare global {
     desk?: {
       receive(message: Message): void;
       pointer(x: number, y: number): void;
-      frame(x: number, y: number, scale: number): void;
+      frame(x: number, y: number, scale: number, screens?: number[][]): void;
     };
   }
 }
@@ -61,6 +63,11 @@ const THEME = `
 html, body, #root { background: transparent !important; margin: 0; height: 100%; overflow: hidden; }
 .desk-room { position: relative; width: 100vw; height: 100vh; }
 .desk-seat { position: absolute; pointer-events: none; }
+/* Painted without compositing (WebKitGTK on shared memory), a move repaints
+   what WebKit reckons the avatar covers, and its blurred shadow reaches a
+   pixel or two past that: the slivers stay behind. An outline nobody sees
+   widens the reckoning. */
+.av-float { outline: 32px solid transparent; }
 .desk-card {
   position: absolute; padding: 6px 10px; border-radius: 10px; white-space: nowrap;
   font: 12px var(--vscode-font-family); color: var(--vscode-foreground);
@@ -79,9 +86,11 @@ function Desk({ start }: { start: Place | undefined }): JSX.Element {
   const [pose, setPose] = React.useState<AvatarPose>("idle");
   const [card, setCard] = React.useState<{ left: number; top: number } | null>(null);
   const [seat, setSeat] = React.useState<Box | null>(null);
+  const [rooms, setRooms] = React.useState(screens);
   const steady = useSteadyPose(pose);
 
   React.useEffect(() => {
+    framed = () => setRooms(screens);
     hear = (message) => {
       if (message.pose) setPose(message.pose);
       if (message.waiting !== undefined) setCard(message.waiting ? beside() : null);
@@ -91,6 +100,7 @@ function Desk({ start }: { start: Place | undefined }): JSX.Element {
     early.splice(0).forEach(hear);
     return () => {
       hear = null;
+      framed = null;
     };
   }, []);
 
@@ -106,9 +116,10 @@ function Desk({ start }: { start: Place | undefined }): JSX.Element {
         pose={steady}
         start={start}
         dock={seat ? ".desk-seat" : undefined}
-        scene={seat ? `${seat.left},${seat.top},${seat.width},${seat.height}` : ""}
+        scene={`${seat ? `${seat.left},${seat.top},${seat.width},${seat.height}` : ""};${JSON.stringify(rooms)}`}
         waitsOn={card ? ".desk-card" : undefined}
         onRest={(place) => post(`out:${JSON.stringify({ rest: place })}`)}
+        screens={rooms}
       />
     </div>
   );
@@ -116,6 +127,9 @@ function Desk({ start }: { start: Place | undefined }): JSX.Element {
 
 /** Where this window is on the screen, in physical pixels, and how many of those to a CSS one. */
 let frame = { x: 0, y: 0, scale: 1 };
+/** The screens this window spans, in its CSS pixels; none from a host that does not say. */
+let screens: Screen[] | undefined;
+let framed: (() => void) | null = null;
 
 /** A box on the screen, in this window's CSS pixels; null when it lies off this window. */
 function inRoom(box: ScreenBox | null): Box | null {
@@ -193,8 +207,17 @@ window.desk = {
     if (hear) hear(message);
     else early.push(message);
   },
-  frame(x, y, scale) {
+  frame(x, y, scale, list) {
     frame = { x, y, scale: scale || 1 };
+    screens = list?.length
+      ? list.map(([sx, sy, w, h]) => ({
+          left: (sx - x) / frame.scale,
+          top: (sy - y) / frame.scale,
+          width: w / frame.scale,
+          height: h / frame.scale,
+        }))
+      : undefined;
+    framed?.();
   },
   pointer(x, y) {
     // Off its face the window lets the pointer through, so the page never sees it: the host says where it is.

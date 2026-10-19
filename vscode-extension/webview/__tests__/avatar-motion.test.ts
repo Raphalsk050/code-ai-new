@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  type Body, type Bounds, clampTo, glide, isPlace, leanFor, placeOf, pointOf, settled, type Spring, stepSpring,
+  type Body, type Bounds, clampTo, glide, isPlace, leanFor, placeOf, pointOf, screenAt, settled, type Spring,
+  stepSpring,
 } from "../avatar-motion";
 
 const ROOM: Bounds = { left: 8, top: 8, right: 400, bottom: 600 };
@@ -103,4 +104,22 @@ test("a place read back from storage is checked before it is believed", () => {
 test("a room smaller than the avatar still has one place for it", () => {
   assert.deepEqual(clampTo({ left: 8, top: 8, right: -20, bottom: -4 }, 300, 300), { x: 8, y: 8 });
   assert.deepEqual(clampTo(ROOM, -50, 9000), { x: 8, y: 600 });
+});
+
+test("on the desktop it belongs to the screen it is on, or the nearest across a gap", () => {
+  // A laptop on the left, a taller screen on the right: below the laptop is nothing.
+  const screens = [
+    { left: 1366, top: 0, width: 2560, height: 1400 },
+    { left: 0, top: 300, width: 1366, height: 728 },
+  ];
+  assert.equal(screenAt(screens, 2000, 700), 0);
+  assert.equal(screenAt(screens, 500, 600), 1);
+  assert.equal(screenAt(screens, 500, 1300), 1, "the gap under the laptop");
+  assert.equal(screenAt(screens, 1360, 100), 0, "the gap above it, nearer the big one");
+});
+
+test("a place remembers its screen, and one without a screen is still a place", () => {
+  assert.ok(isPlace({ right: true, bottom: true, x: 32, y: 6, screen: 1 }));
+  assert.ok(isPlace({ right: true, bottom: true, x: 32, y: 6 }));
+  assert.ok(!isPlace({ right: true, bottom: true, x: 32, y: 6, screen: "1" }));
 });

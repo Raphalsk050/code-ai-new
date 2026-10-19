@@ -3,9 +3,9 @@
 //!
 //!     code-ai-avatar <page.html> [<data dir>]
 //!
-//! One transparent, borderless, always-on-top window over the work area,
-//! showing the page it is given. Clicks go through it everywhere but on the
-//! face. Each stdin line is a JSON object for the page's `desk.receive`; each
+//! One transparent, borderless, always-on-top window over the work area of
+//! every screen, showing the page it is given. Clicks go through it everywhere
+//! but on the face. Each stdin line is a JSON object for the page's `desk.receive`; each
 //! `out:<json>` the page posts comes back as a stdout line. The end of stdin
 //! closes it, so it never outlives what started it. The web view keeps its
 //! profile in the data dir: beside the executable, where it would go by
@@ -18,7 +18,7 @@ use std::io::{BufRead, Write};
 use std::time::{Duration, Instant};
 
 use tao::{
-    dpi::{Position, Size},
+    dpi::{PhysicalPosition, PhysicalSize},
     event::{Event, StartCause, WindowEvent},
     event_loop::{ControlFlow, EventLoop, EventLoopBuilder},
     window::{Window, WindowBuilder},
@@ -68,11 +68,21 @@ fn main() {
             std::process::exit(2);
         }
     };
-    // Wayland lets no window keep itself on top, put itself somewhere or see
-    // the pointer outside it. XWayland does all three.
     #[cfg(target_os = "linux")]
-    if std::env::var_os("GDK_BACKEND").is_none() && std::env::var_os("DISPLAY").is_some() {
-        std::env::set_var("GDK_BACKEND", "x11");
+    {
+        // Wayland lets no window keep itself on top, put itself somewhere or see
+        // the pointer outside it. XWayland does all three, so it wins over a
+        // GDK_BACKEND=wayland handed down from the editor.
+        if std::env::var_os("DISPLAY").is_some() {
+            std::env::set_var("GDK_BACKEND", "x11");
+        }
+        // Handed DMA-BUFs, GTK 3 paints the window through GL, and on some
+        // drivers what earlier frames left there stays: the avatar leaves a
+        // copy of itself wherever it passes. Shared memory is painted with
+        // cairo over a cleared window.
+        if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
     }
     if let Err(err) = run(html, data) {
         eprintln!("{err}");
@@ -83,7 +93,9 @@ fn main() {
 fn run(html: String, data: Option<std::path::PathBuf>) -> Result<(), Box<dyn Error>> {
     let event_loop = EventLoopBuilder::<Ask>::with_user_event().build();
     // After the loop: it is what makes the process DPI-aware, and starts GTK.
-    let (position, size) = work_area(&event_loop);
+    let screens = work_areas(&event_loop);
+    let all = span(&screens);
+    let size = PhysicalSize::new(all.w as u32, all.h as u32);
     let builder = WindowBuilder::new()
         .with_title("Code-AI")
         .with_decorations(false)
@@ -91,7 +103,7 @@ fn run(html: String, data: Option<std::path::PathBuf>) -> Result<(), Box<dyn Err
         .with_always_on_top(true)
         .with_focused(false)
         .with_resizable(false)
-        .with_position(position)
+        .with_position(PhysicalPosition::new(all.x, all.y))
         .with_inner_size(size);
     #[cfg(windows)]
     let builder = {
@@ -101,12 +113,27 @@ fn run(html: String, data: Option<std::path::PathBuf>) -> Result<(), Box<dyn Err
     #[cfg(target_os = "linux")]
     let builder = {
         use tao::platform::unix::WindowBuilderExtUnix;
-        builder.with_skip_taskbar(true)
+        // Shown once it is out of the window manager's hands, below.
+        builder.with_skip_taskbar(true).with_visible(false)
     };
     let window = builder.build(&event_loop)?;
+    #[cfg(target_os = "linux")]
+    {
+        // Unmanaged, as a menu is: no window manager raises another window
+        // over it, keeps it to one screen or moves it.
+        use gtk::prelude::WidgetExt;
+        use tao::platform::unix::WindowExtUnix;
+        let gtk = window.gtk_window();
+        gtk.realize();
+        if let Some(gdk) = gtk.window() {
+            gdk.set_override_redirect(true);
+        }
+    }
     // After the loop too: on Linux it is a WebKitGTK object, and GTK must be up.
     let mut context = WebContext::new(data);
     let webview = webview(&window, html, &event_loop, &mut context)?;
+    #[cfg(target_os = "linux")]
+    window.set_visible(true);
 
     let lines = event_loop.create_proxy();
     std::thread::spawn(move || {
@@ -133,15 +160,20 @@ fn run(html: String, data: Option<std::path::PathBuf>) -> Result<(), Box<dyn Err
             Event::UserEvent(Ask::Face(at)) => face = at,
             Event::UserEvent(Ask::Ready) => {
                 ready = true;
-                // Where this window is, in physical pixels: the panel says where its
-                // logo is on the screen in those, and the page sits the avatar there.
-                let at = window.inner_position().unwrap_or_default();
-                let scale = window.scale_factor();
-                let _ = webview.evaluate_script(&format!("window.desk&&desk.frame({},{},{scale})", at.x, at.y));
+                frame(&window, &webview, &screens);
                 for line in waiting.drain(..) {
                     deliver(&webview, &line);
                 }
             }
+            // A window over screens of different densities is given the size
+            // one of them would want: it keeps its own, and the page its scale.
+            Event::WindowEvent { event: WindowEvent::ScaleFactorChanged { new_inner_size, .. }, .. } => {
+                *new_inner_size = size;
+                if ready {
+                    frame(&window, &webview, &screens);
+                }
+            }
+            Event::WindowEvent { event: WindowEvent::Moved(_), .. } if ready => frame(&window, &webview, &screens),
             Event::UserEvent(Ask::Line(line)) if ready => deliver(&webview, &line),
             Event::UserEvent(Ask::Line(line)) => waiting.push(line),
             Event::UserEvent(Ask::Quit)
@@ -206,46 +238,128 @@ fn deliver(webview: &WebView, line: &str) {
     let _ = webview.evaluate_script(&format!("window.desk&&desk.receive({line})"));
 }
 
-/// The main screen less the taskbar.
-#[cfg(windows)]
-fn work_area<T>(_: &EventLoop<T>) -> (Position, Size) {
-    use tao::dpi::{PhysicalPosition, PhysicalSize};
-    use windows_sys::Win32::{
-        Foundation::RECT,
-        UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETWORKAREA},
-    };
-    let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
-    unsafe { SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut r as *mut RECT as *mut _, 0) };
-    (
-        PhysicalPosition::new(r.left, r.top).into(),
-        PhysicalSize::new((r.right - r.left) as u32, (r.bottom - r.top) as u32).into(),
-    )
+/// Tells the page where this window is and where the screens are, in physical
+/// pixels: the panel says where its logo is in those, and the page keeps the
+/// avatar on a screen rather than in the gaps between them.
+fn frame(window: &Window, webview: &WebView, screens: &[Area]) {
+    let at = window.inner_position().unwrap_or_default();
+    let scale = window.scale_factor();
+    let list: Vec<String> = screens.iter().map(|a| format!("[{},{},{},{}]", a.x, a.y, a.w, a.h)).collect();
+    let _ = webview.evaluate_script(&format!(
+        "window.desk&&desk.frame({},{},{scale},[{}])",
+        at.x,
+        at.y,
+        list.join(",")
+    ));
 }
 
-/// The main screen less the panels.
-#[cfg(target_os = "linux")]
-fn work_area<T>(event_loop: &EventLoop<T>) -> (Position, Size) {
-    use gtk::prelude::MonitorExt;
-    use tao::dpi::{LogicalPosition, LogicalSize};
-    match gtk::gdk::Display::default().and_then(|d| d.primary_monitor().or_else(|| d.monitor(0))) {
-        Some(monitor) => {
-            let a = monitor.workarea();
-            (LogicalPosition::new(a.x(), a.y()).into(), LogicalSize::new(a.width() as u32, a.height() as u32).into())
-        }
-        None => whole_screen(event_loop),
+/// A screen's work area, in physical pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Area {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+}
+
+/// The smallest area holding them all.
+fn span(areas: &[Area]) -> Area {
+    let left = areas.iter().map(|a| a.x).min().unwrap_or(0);
+    let top = areas.iter().map(|a| a.y).min().unwrap_or(0);
+    let right = areas.iter().map(|a| a.x + a.w).max().unwrap_or(1280);
+    let bottom = areas.iter().map(|a| a.y + a.h).max().unwrap_or(720);
+    Area { x: left, y: top, w: right - left, h: bottom - top }
+}
+
+/// The main one first: an avatar with no place of its own starts there.
+fn main_first(mut found: Vec<(bool, Area)>, otherwise: impl FnOnce() -> Vec<Area>) -> Vec<Area> {
+    found.sort_by_key(|(main, _)| !main);
+    let areas: Vec<Area> = found.into_iter().map(|(_, area)| area).collect();
+    if areas.is_empty() {
+        otherwise()
+    } else {
+        areas
     }
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
-fn work_area<T>(event_loop: &EventLoop<T>) -> (Position, Size) {
-    whole_screen(event_loop)
+/// Every screen less its taskbar.
+#[cfg(windows)]
+fn work_areas<T>(event_loop: &EventLoop<T>) -> Vec<Area> {
+    use tao::platform::windows::MonitorHandleExtWindows;
+    use windows_sys::Win32::{
+        Graphics::Gdi::{GetMonitorInfoW, MONITORINFO},
+        UI::WindowsAndMessaging::MONITORINFOF_PRIMARY,
+    };
+    let found = event_loop
+        .available_monitors()
+        .filter_map(|monitor| {
+            let mut info: MONITORINFO = unsafe { std::mem::zeroed() };
+            info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+            if unsafe { GetMonitorInfoW(monitor.hmonitor() as _, &mut info) } == 0 {
+                return None;
+            }
+            let r = info.rcWork;
+            let area = Area { x: r.left, y: r.top, w: r.right - r.left, h: r.bottom - r.top };
+            Some((info.dwFlags & MONITORINFOF_PRIMARY != 0, area))
+        })
+        .collect();
+    main_first(found, || whole_screens(event_loop))
 }
 
-#[allow(dead_code)]
-fn whole_screen<T>(event_loop: &EventLoop<T>) -> (Position, Size) {
-    use tao::dpi::{PhysicalPosition, PhysicalSize};
-    match event_loop.primary_monitor() {
-        Some(m) => (m.position().into(), m.size().into()),
-        None => (PhysicalPosition::new(0, 0).into(), PhysicalSize::new(1280u32, 720u32).into()),
+/// Every screen less its panels.
+#[cfg(target_os = "linux")]
+fn work_areas<T>(event_loop: &EventLoop<T>) -> Vec<Area> {
+    use gtk::prelude::MonitorExt;
+    let Some(display) = gtk::gdk::Display::default() else {
+        return whole_screens(event_loop);
+    };
+    let main = display.primary_monitor().or_else(|| display.monitor(0));
+    let found = (0..display.n_monitors())
+        .filter_map(|i| display.monitor(i))
+        .map(|monitor| {
+            // GDK counts in its own pixels; the window and the panel count in the screen's.
+            let (a, s) = (monitor.workarea(), monitor.scale_factor());
+            let area = Area { x: a.x() * s, y: a.y() * s, w: a.width() * s, h: a.height() * s };
+            (Some(&monitor) == main.as_ref(), area)
+        })
+        .collect();
+    main_first(found, || whole_screens(event_loop))
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn work_areas<T>(event_loop: &EventLoop<T>) -> Vec<Area> {
+    whole_screens(event_loop)
+}
+
+fn whole_screens<T>(event_loop: &EventLoop<T>) -> Vec<Area> {
+    let main = event_loop.primary_monitor();
+    let found = event_loop
+        .available_monitors()
+        .map(|m| {
+            let (at, size) = (m.position(), m.size());
+            let area = Area { x: at.x, y: at.y, w: size.width as i32, h: size.height as i32 };
+            (main.as_ref().map(|p| p.name() == m.name()).unwrap_or(false), area)
+        })
+        .collect();
+    main_first(found, || vec![Area { x: 0, y: 0, w: 1280, h: 720 }])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_window_spans_every_screen() {
+        let left = Area { x: -1920, y: 0, w: 1920, h: 1040 };
+        let main = Area { x: 0, y: 0, w: 2560, h: 1400 };
+        assert_eq!(span(&[main, left]), Area { x: -1920, y: 0, w: 4480, h: 1400 });
+    }
+
+    #[test]
+    fn the_main_screen_comes_first() {
+        let a = Area { x: 0, y: 0, w: 10, h: 10 };
+        let b = Area { x: 10, y: 0, w: 10, h: 10 };
+        assert_eq!(main_first(vec![(false, a), (true, b)], Vec::new), vec![b, a]);
+        assert_eq!(main_first(Vec::new(), || vec![a]), vec![a]);
     }
 }

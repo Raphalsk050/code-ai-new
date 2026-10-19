@@ -64,6 +64,33 @@ export interface Place {
   bottom: boolean;
   x: number;
   y: number;
+  /** On the desktop, which screen: 0 is the main one. A panel has one room and no screens. */
+  screen?: number;
+}
+
+/** One of the desktop's screens, in the room's CSS pixels. */
+export interface Screen {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/** Which screen holds the point, or is nearest to it when it lies between them. */
+export function screenAt(screens: Screen[], x: number, y: number): number {
+  let best = 0;
+  let far = Infinity;
+  screens.forEach((s, i) => {
+    const d = Math.hypot(
+      Math.max(s.left - x, 0, x - s.left - s.width),
+      Math.max(s.top - y, 0, y - s.top - s.height)
+    );
+    if (d < far) {
+      far = d;
+      best = i;
+    }
+  });
+  return best;
 }
 
 export function placeOf(bounds: Bounds, x: number, y: number): Place {
@@ -91,7 +118,8 @@ export function isPlace(value: unknown): value is Place {
   return (
     typeof place === "object" && place !== null &&
     typeof place.right === "boolean" && typeof place.bottom === "boolean" &&
-    Number.isFinite(place.x) && Number.isFinite(place.y)
+    Number.isFinite(place.x) && Number.isFinite(place.y) &&
+    (place.screen === undefined || Number.isInteger(place.screen))
   );
 }
 

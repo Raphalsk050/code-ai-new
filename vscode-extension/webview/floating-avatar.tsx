@@ -4,7 +4,8 @@ import { type Acted, type ActName, Actor, type Effects, LAIR, type Manners, onCu
 import { AgentAvatar } from "./agent-avatar";
 import { across, LOOPED } from "./avatar-blend";
 import {
-  type Body, type Bounds, clampTo, glide, leanFor, type Place, placeOf, pointOf, settled, type Spring, stepSpring,
+  type Body, type Bounds, clampTo, glide, leanFor, type Place, placeOf, pointOf, type Screen, screenAt, settled,
+  type Spring, stepSpring,
 } from "./avatar-motion";
 import { type Felt, Nerves, onStroke, UNFELT } from "./avatar-nerves";
 import type { AvatarPose } from "./avatar-pose";
@@ -178,7 +179,8 @@ const still = (): Spring => ({ x: 0, v: 0 });
 /** Falling asleep and waking change the breathing and the zs as well as the loops. */
 const ASLEEP = `${LOOPED}, .av-float-zs path`;
 const within = (value: number, most: number) => Math.max(-most, Math.min(most, value));
-const same = (a: Place, b: Place) => a.right === b.right && a.bottom === b.bottom && a.x === b.x && a.y === b.y;
+const same = (a: Place, b: Place) =>
+  a.right === b.right && a.bottom === b.bottom && a.x === b.x && a.y === b.y && a.screen === b.screen;
 
 /**
  * The avatar loose in the panel: picked up, dropped anywhere, thrown. Lives
@@ -195,6 +197,8 @@ const same = (a: Place, b: Place) => a.right === b.right && a.bottom === b.botto
  * @param manners what it may do of its own accord; all of it when left out
  * @param waitsOn selector of what waits on the user; while one is on screen it waits by it
  * @param onRest called with where it came to rest, for remembering it
+ * @param screens on the desktop, the screens the room spans: it keeps to one
+ *   at a time, never the gaps between, and is remembered on the one it was left on
  */
 export function FloatingAvatar({
   pose,
@@ -208,6 +212,7 @@ export function FloatingAvatar({
   manners = EVERYTHING,
   waitsOn,
   onRest,
+  screens,
 }: {
   pose: AvatarPose | null;
   skin?: AvatarSkin;
@@ -220,6 +225,7 @@ export function FloatingAvatar({
   manners?: Manners;
   waitsOn?: string;
   onRest?: (place: Place) => void;
+  screens?: Screen[];
 }): JSX.Element {
   const ref = React.useRef<HTMLDivElement>(null);
   const effects = React.useRef<SVGSVGElement>(null);
@@ -258,6 +264,43 @@ export function FloatingAvatar({
     );
     return { left: MARGIN, top: MARGIN, right: width - size - MARGIN, bottom: height - size - MARGIN };
   }, [room, size]);
+  // On the desktop the room spans every screen and the gaps between them.
+  const screensRef = React.useRef(screens);
+  screensRef.current = screens;
+  const inside = React.useCallback(
+    (s: Screen): Bounds => ({
+      left: s.left + MARGIN,
+      top: s.top + MARGIN,
+      right: s.left + s.width - size - MARGIN,
+      bottom: s.top + s.height - size - MARGIN,
+    }),
+    [size]
+  );
+  /** Where it may go from (x, y): the screen it is on, or the room. */
+  const boundsAt = React.useCallback(
+    (x: number, y: number): Bounds => {
+      const list = screensRef.current;
+      return list?.length ? inside(list[screenAt(list, x + size / 2, y + size / 2)]) : bounds();
+    },
+    [bounds, inside, size]
+  );
+  /** Where a place is: on its own screen, or the main one when that is gone. */
+  const spot = React.useCallback(
+    (place: Place): { x: number; y: number } => {
+      const list = screensRef.current;
+      return list?.length ? pointOf(inside(list[place.screen ?? 0] ?? list[0]), place) : pointOf(bounds(), place);
+    },
+    [bounds, inside]
+  );
+  const placeAt = React.useCallback(
+    (x: number, y: number): Place => {
+      const list = screensRef.current;
+      if (!list?.length) return placeOf(bounds(), x, y);
+      const screen = screenAt(list, x + size / 2, y + size / 2);
+      return { ...placeOf(inside(list[screen]), x, y), screen };
+    },
+    [bounds, inside, size]
+  );
   /** Where the screen's seat puts it: its face on the middle of the seat. */
   const seat = React.useCallback((): { x: number; y: number } | null => {
     const box = room();
@@ -336,14 +379,14 @@ export function FloatingAvatar({
       if (s.lurking && !lair) {
         // Let go: back the way it always goes, to its seat or to where it was left.
         s.lurking = false;
-        if (!s.held && !s.dock) s.home = pointOf(bounds(), s.place);
+        if (!s.held && !s.dock) s.home = spot(s.place);
       } else if (lair && !s.lurking) {
         Object.assign(s, { lurking: true, home: null });
       }
 
       if (s.held) {
         // Under the pointer, exactly. The speed is only measured, to throw with.
-        const to = clampTo(bounds(), s.wantX, s.wantY);
+        const to = clampTo(boundsAt(s.wantX, s.wantY), s.wantX, s.wantY);
         s.vx += ((to.x - s.x) / dt - s.vx) * 0.5;
         s.vy += ((to.y - s.y) / dt - s.vy) * 0.5;
         s.x = to.x;
@@ -371,7 +414,7 @@ export function FloatingAvatar({
           Object.assign(s, { x: s.home.x, y: s.home.y, vx: 0, vy: 0, home: null });
         }
       } else if (weighty) {
-        const next = glide(s, dt, bounds());
+        const next = glide(s, dt, boundsAt(s.x, s.y));
         hit = next.hit;
         Object.assign(s, { x: next.x, y: next.y, vx: next.vx, vy: next.vy });
         if (hit > DIZZY_AT && may.touch) s.actor.play("dizzy", now);
@@ -456,7 +499,7 @@ export function FloatingAvatar({
       if (s.moved && !moving && !s.dock) {
         // Where it came to rest, whatever its eyes go on doing. A seat is the
         // screen's, not somewhere it was put: that is not remembered.
-        const place = placeOf(bounds(), s.x, s.y);
+        const place = placeAt(s.x, s.y);
         if (!same(place, s.place)) {
           s.place = place;
           live.current.onRest?.(place);
@@ -475,7 +518,7 @@ export function FloatingAvatar({
       // At rest nothing runs: no frame is asked for until it is touched again.
       s.frame = 0;
     },
-    [bounds, paint, room, size]
+    [boundsAt, paint, placeAt, room, size, spot]
   );
 
   const wake = React.useCallback(() => {
@@ -500,7 +543,7 @@ export function FloatingAvatar({
   React.useLayoutEffect(() => {
     if (placed.current || !room()) return;
     placed.current = true;
-    Object.assign(sim.current, pointOf(bounds(), sim.current.place));
+    Object.assign(sim.current, spot(sim.current.place));
     paint();
   });
   // The room changes size under it, or it does: at rest it keeps its place,
@@ -529,7 +572,7 @@ export function FloatingAvatar({
         s.dock = seat() ?? s.dock;
         if (!flying) Object.assign(s, s.dock);
       } else {
-        Object.assign(s, flying ? clampTo(bounds(), s.x, s.y) : pointOf(bounds(), s.place));
+        Object.assign(s, flying ? clampTo(boundsAt(s.x, s.y), s.x, s.y) : spot(s.place));
       }
       paint();
     };
@@ -556,7 +599,7 @@ export function FloatingAvatar({
       box.removeEventListener("scroll", carry, true);
       observer?.disconnect();
     };
-  }, [bounds, paint, room, scene, seat, waited]);
+  }, [boundsAt, paint, room, scene, seat, spot, waited]);
   React.useEffect(() => () => cancelAnimationFrame(sim.current.frame), []);
 
   // A screen with a seat for it: it goes there. One without: back to its own place.
@@ -568,7 +611,7 @@ export function FloatingAvatar({
       Object.assign(s, { dock: to, home: null });
       if (moved) wake();
     } else if (s.dock) {
-      Object.assign(s, { dock: null, home: pointOf(bounds(), s.place) });
+      Object.assign(s, { dock: null, home: spot(s.place) });
       wake();
     }
   });
@@ -737,7 +780,7 @@ export function FloatingAvatar({
     wake();
   };
   const goHome = () => {
-    sim.current.home = pointOf(bounds(), HOME);
+    sim.current.home = spot(HOME);
     wake();
   };
 
@@ -754,7 +797,7 @@ export function FloatingAvatar({
       s.vx += push[event.key][0] * by;
       s.vy += push[event.key][1] * by;
       // With no inertia a key is a plain step.
-      if (!by) Object.assign(s, clampTo(bounds(), s.x + push[event.key][0] * 16, s.y + push[event.key][1] * 16));
+      if (!by) Object.assign(s, clampTo(boundsAt(s.x, s.y), s.x + push[event.key][0] * 16, s.y + push[event.key][1] * 16));
       wake();
     } else {
       return;
