@@ -56,6 +56,18 @@ def compile_ok(doc: dict[str, Any]):
     return program, issues
 
 
+def on_the_run(doc: dict[str, Any], node_id: str, output: str = "") -> dict[str, Any]:
+    """Put ``node_id`` on the run's path: walked into after the Print, or, given
+    an ``output``, read by the Print. Off it, a broken node only warns."""
+
+    for edge in doc["edges"]:
+        if output and edge["id"] == "e4":
+            edge["from"] = [node_id, output]
+        if not output and edge["id"] == "e5":
+            edge["to"] = [node_id, "in"]
+    return doc
+
+
 def test_valid_graph_compiles_with_resolved_wiring() -> None:
     program, issues = compile_ok(graph())
 
@@ -69,7 +81,7 @@ def test_valid_graph_compiles_with_resolved_wiring() -> None:
 def test_unknown_node_kind_is_refused() -> None:
     doc = graph()
     doc["nodes"].append({"id": "nx", "kind": "teleporter", "pos": [0, 0], "data": {}})
-    program, issues = compile_graph(doc, professions=PROFESSIONS)
+    program, issues = compile_graph(on_the_run(doc, "nx"), professions=PROFESSIONS)
 
     assert program is None
     assert any("Unknown node kind" in message for message in errors(issues))
@@ -167,7 +179,7 @@ def test_unknown_variable_reference_is_refused() -> None:
     doc["nodes"].append(
         {"id": "n7", "kind": "var_get", "pos": [0, 600], "data": {"variable": "ghost"}}
     )
-    program, issues = compile_graph(doc, professions=PROFESSIONS)
+    program, issues = compile_graph(on_the_run(doc, "n7", "value"), professions=PROFESSIONS)
 
     assert program is None
     assert any("No variable named 'ghost'" in message for message in errors(issues))
@@ -324,7 +336,9 @@ def test_loop_cap_above_the_configured_ceiling_is_refused() -> None:
             "data": {"kind": "count", "count": 2, "max_iterations": 999},
         }
     )
-    program, issues = compile_graph(doc, professions=PROFESSIONS, max_loop_iterations=50)
+    program, issues = compile_graph(
+        on_the_run(doc, "n6"), professions=PROFESSIONS, max_loop_iterations=50
+    )
 
     assert program is None
     assert any("capped at 50" in message for message in errors(issues))
@@ -335,7 +349,7 @@ def test_judge_decision_needs_a_question() -> None:
     doc["nodes"].append(
         {"id": "n6", "kind": "decision", "pos": [200, 300], "data": {"mode": "judge"}}
     )
-    program, issues = compile_graph(doc, professions=PROFESSIONS)
+    program, issues = compile_graph(on_the_run(doc, "n6"), professions=PROFESSIONS)
 
     assert program is None
     assert any("needs a question" in message for message in errors(issues))
@@ -346,7 +360,7 @@ def test_sequence_outputs_are_bounded() -> None:
     doc["nodes"].append(
         {"id": "n6", "kind": "sequence", "pos": [200, 300], "data": {"outputs": 40}}
     )
-    program, issues = compile_graph(doc, professions=PROFESSIONS)
+    program, issues = compile_graph(on_the_run(doc, "n6"), professions=PROFESSIONS)
 
     assert program is None
     assert any("between 1 and 12" in message for message in errors(issues))
@@ -601,7 +615,7 @@ def test_an_int_math_result_may_feed_an_int_pin_and_a_float_one_may_not() -> Non
         fnode("lp", "loop", kind="count"),
         edges=[{"id": "x1", "kind": "data", "from": ["m", "result"], "to": ["lp", "count"]}],
     )
-    program, issues = compile_graph(bad, professions=PROFESSIONS)
+    program, issues = compile_graph(on_the_run(bad, "lp"), professions=PROFESSIONS)
     assert program is None
     assert "A float value cannot feed a int pin." in errors(issues)
 
@@ -612,7 +626,7 @@ def test_a_wire_into_an_input_the_node_no_longer_has_is_refused() -> None:
         fnode("s", "var_get", variable=""),
         edges=[{"id": "x1", "kind": "data", "from": ["n3", "report"], "to": ["j", "in_4"]}],
     )
-    program, issues = compile_graph(doc, professions=PROFESSIONS)
+    program, issues = compile_graph(on_the_run(doc, "j", "result"), professions=PROFESSIONS)
 
     assert program is None
     assert any("in_4" in message and "not on this node" in message for message in errors(issues))
@@ -620,7 +634,7 @@ def test_a_wire_into_an_input_the_node_no_longer_has_is_refused() -> None:
 
 def test_a_function_dropdown_must_hold_one_of_its_options() -> None:
     doc = function_graph(fnode("m", "math", op="teleport"))
-    program, issues = compile_graph(doc, professions=PROFESSIONS)
+    program, issues = compile_graph(on_the_run(doc, "m", "result"), professions=PROFESSIONS)
 
     assert program is None
     assert any("Operation must be one of" in message for message in errors(issues))
@@ -632,7 +646,7 @@ def test_dynamic_input_counts_are_bounded_and_their_literals_are_known() -> None
     assert not any("has no field" in message for message in warnings(issues))
 
     too_many = function_graph(fnode("j", "append", inputs=13))
-    program, issues = compile_graph(too_many, professions=PROFESSIONS)
+    program, issues = compile_graph(on_the_run(too_many, "j", "result"), professions=PROFESSIONS)
     assert program is None
     assert any("between 1 and 12 inputs" in message for message in errors(issues))
 
@@ -729,3 +743,56 @@ def test_the_catalog_marks_the_comment_as_an_annotation() -> None:
     assert kinds["comment"]["pins"] == []
     assert kinds["comment"]["pure"] is False
     assert kinds["print"]["annotation"] is False
+
+
+# -- what the run never reaches ---------------------------------------------
+
+
+def test_a_broken_node_off_the_run_only_warns() -> None:
+    doc = graph()
+    doc["nodes"].append(
+        {"id": "n6", "kind": "decision", "pos": [200, 300], "data": {"mode": "judge"}}
+    )
+    program, issues = compile_graph(doc, professions=PROFESSIONS)
+
+    assert program is not None, errors(issues)
+    assert any("needs a question" in message for message in warnings(issues))
+
+
+def test_a_broken_pure_node_only_an_idle_node_reads_only_warns() -> None:
+    doc = function_graph(
+        fnode("m", "math", op="teleport"),
+        fnode("idle", "print"),
+        edges=[{"id": "x1", "kind": "data", "from": ["m", "result"], "to": ["idle", "value"]}],
+    )
+    program, issues = compile_graph(doc, professions=PROFESSIONS)
+
+    assert program is not None, errors(issues)
+    assert any("Operation must be one of" in message for message in warnings(issues))
+
+
+def test_a_broken_pure_node_feeding_another_the_run_reads_still_blocks() -> None:
+    doc = function_graph(
+        fnode("m", "math", op="teleport"),
+        fnode("up", "text_case", op="upper"),
+        edges=[{"id": "x1", "kind": "data", "from": ["m", "result"], "to": ["up", "text"]}],
+    )
+    program, issues = compile_graph(on_the_run(doc, "up", "result"), professions=PROFESSIONS)
+
+    assert program is None
+    assert any("Operation must be one of" in message for message in errors(issues))
+
+
+def test_a_node_the_run_reaches_through_a_broken_wire_still_blocks() -> None:
+    doc = graph()
+    doc["nodes"].append(
+        {"id": "n6", "kind": "decision", "pos": [200, 300], "data": {"mode": "judge"}}
+    )
+    for edge in doc["edges"]:
+        if edge["id"] == "e5":
+            edge["to"] = ["n6", "nowhere"]
+    program, issues = compile_graph(doc, professions=PROFESSIONS)
+
+    assert program is None
+    assert any("needs a question" in message for message in errors(issues))
+

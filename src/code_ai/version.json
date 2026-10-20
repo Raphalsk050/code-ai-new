@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 48,
-  "patch": 6,
-  "build": 131,
+  "patch": 7,
+  "build": 132,
   "updated": "2026-10-20",
-  "note": "Flow: Ctrl/Alt+click breaks a link, Ctrl/Alt+drag carries it to another pin"
+  "note": "Flow: broken nodes off the run's path warn instead of blocking Run"
 }

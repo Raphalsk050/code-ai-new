@@ -13,7 +13,7 @@ second opinion.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from pydantic import ValidationError
@@ -116,6 +116,7 @@ def compile_graph(
     )
     _check_required_inputs(nodes, wired, collector)
     _check_data_cycles(edges, collector)
+    _spare_off_path(doc, nodes, start_id, collector)
 
     if collector.failed:
         return None, collector.issues
@@ -887,6 +888,59 @@ def _label_for(node: NodeSpec, fallback: str) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()[:60]
     return fallback
+
+
+def _on_path(doc: GraphDoc, nodes: dict[str, NodeSpec], start_id: str) -> set[str]:
+    """The nodes a run can touch: walked into from Start, or pure and pulled by one that is.
+
+    Read off the edges as drawn, broken ones included, so a node wired into the
+    run stays on it while that wire is being fixed.
+    """
+
+    flow: dict[str, set[str]] = {}
+    pulls: dict[str, set[str]] = {}
+    for edge in doc.edges:
+        if edge.kind == PinType.EXEC:
+            flow.setdefault(edge.source[0], set()).add(edge.target[0])
+        else:
+            pulls.setdefault(edge.target[0], set()).add(edge.source[0])
+    seen: set[str] = set()
+    stack = [start_id] if start_id else []
+    while stack:
+        node_id = stack.pop()
+        if node_id in seen:
+            continue
+        seen.add(node_id)
+        stack.extend(flow.get(node_id, ()))
+        # A pure node is computed when it is read, so it runs with its reader.
+        # Anything else that feeds it only hands over what it already did.
+        for source in pulls.get(node_id, ()):
+            node = nodes.get(source)
+            if node is not None and NODE_KINDS[node.kind].pure:
+                stack.append(source)
+    return seen
+
+
+def _spare_off_path(
+    doc: GraphDoc, nodes: dict[str, NodeSpec], start_id: str, collector: _Collector
+) -> None:
+    """A broken node the run never reaches is a warning, not a reason to refuse the run."""
+
+    on_path = _on_path(doc, nodes, start_id)
+    ids = [node.id for node in doc.nodes]
+    # Two nodes under one id cannot be told apart, and a second Start leaves
+    # where the run begins in doubt: those stay errors wherever they are.
+    spared = {
+        node.id
+        for node in doc.nodes
+        if node.id not in on_path and ids.count(node.id) == 1 and node.kind != NodeKind.START
+    }
+    collector.issues = [
+        replace(issue, severity=SEVERITY_WARNING)
+        if issue.severity == SEVERITY_ERROR and issue.node_id in spared
+        else issue
+        for issue in collector.issues
+    ]
 
 
 def _warn_unreachable(program: GraphProgram, collector: _Collector) -> None:
