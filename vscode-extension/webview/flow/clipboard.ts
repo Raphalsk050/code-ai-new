@@ -9,6 +9,7 @@
 
 import type { FlowEdge, FlowGraph, FlowNode } from "../../src/flow-schema";
 import { nextId } from "../../src/flow-schema";
+import { idPrefix, takenEdgeIds, takenNodeIds } from "./functions";
 
 export const CLIP_MARKER = "codeai.flow.clip";
 export const PASTE_OFFSET = 24;
@@ -78,12 +79,12 @@ export function instantiate(
   graph: FlowGraph,
   offset = PASTE_OFFSET
 ): { nodes: FlowNode[]; edges: FlowEdge[] } {
-  const usedNodes = new Set(graph.nodes.map((node) => node.id));
-  const usedEdges = new Set(graph.edges.map((edge) => edge.id));
+  const usedNodes = new Set(takenNodeIds(graph));
+  const usedEdges = new Set(takenEdgeIds(graph));
   const remap = new Map<string, string>();
 
   const nodes = clip.nodes.map((node) => {
-    const id = nextId("n", usedNodes);
+    const id = nextId(idPrefix(graph, "n"), usedNodes);
     usedNodes.add(id);
     remap.set(node.id, id);
     return {
@@ -98,7 +99,7 @@ export function instantiate(
     const from = remap.get(edge.from[0]);
     const to = remap.get(edge.to[0]);
     if (!from || !to) return [];
-    const id = nextId("e", usedEdges);
+    const id = nextId(idPrefix(graph, "e"), usedEdges);
     usedEdges.add(id);
     return [
       {

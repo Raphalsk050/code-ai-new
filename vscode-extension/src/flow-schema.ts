@@ -39,6 +39,30 @@ export interface FlowView {
   zoom: number;
 }
 
+/** One input or output of a function. Its id names the pin, so a rename keeps the wires. */
+export interface FlowParam {
+  id: string;
+  name: string;
+  type: string;
+}
+
+/**
+ * A graph of its own inside the document, Blueprint-style: entered at its Entry
+ * node, left at a Return, run by Call nodes. A collapsed one was made from a
+ * selection and is not offered for reuse.
+ */
+export interface FlowFunction {
+  id: string;
+  name: string;
+  description?: string;
+  collapsed?: boolean;
+  inputs: FlowParam[];
+  outputs: FlowParam[];
+  nodes: FlowNode[];
+  edges: FlowEdge[];
+  view: FlowView;
+}
+
 export interface FlowGraph {
   version: number;
   name: string;
@@ -46,6 +70,9 @@ export interface FlowGraph {
   nodes: FlowNode[];
   edges: FlowEdge[];
   view: FlowView;
+  functions?: FlowFunction[];
+  /** Editor only, never written: the function this graph is a view of. */
+  scope?: string;
 }
 
 // -- the catalog the backend serves --------------------------------------
@@ -82,6 +109,8 @@ export interface NodeKindSpec {
   max_instances: number;
   /** Drawn and saved, never run: a comment box. */
   annotation?: boolean;
+  /** Pins from a function's signature: "params_out" (Entry), "results_in" (Return), "call". */
+  signature?: string;
   pins: PinSpec[];
   fields: FieldSpec[];
 }
@@ -128,6 +157,8 @@ export interface GraphCatalog {
   node_kinds: NodeKindSpec[];
   pin_colors: Record<string, string>;
   variable_types: string[];
+  /** What a function may take or give back. */
+  param_types?: string[];
   professions: ProfessionSpec[];
   permissions?: PermissionSpec[];
   tools?: ToolSpec[];
@@ -136,6 +167,8 @@ export interface GraphCatalog {
     nodes: number;
     edges: number;
     variables: number;
+    functions?: number;
+    params?: number;
     run?: { max_nodes_executed: number; max_seconds: number; max_loop_iterations: number };
   };
   /** The setting: open the node at work while a graph runs. Absent from an older backend. */
@@ -221,16 +254,17 @@ export function parseFlow(text: string): { graph?: FlowGraph; error?: string } {
       error: `This graph was written for format ${version}; this build reads up to ${FLOW_SCHEMA_VERSION}.`,
     };
   }
-  return {
-    graph: {
-      version,
-      name: typeof doc.name === "string" ? doc.name : "",
-      variables: asVariables(doc.variables),
-      nodes: asNodes(doc.nodes),
-      edges: asEdges(doc.edges),
-      view: asView(doc.view),
-    },
+  const graph: FlowGraph = {
+    version,
+    name: typeof doc.name === "string" ? doc.name : "",
+    variables: asVariables(doc.variables),
+    nodes: asNodes(doc.nodes),
+    edges: asEdges(doc.edges),
+    view: asView(doc.view),
   };
+  const functions = asFunctions(doc.functions);
+  if (functions.length) graph.functions = functions;
+  return { graph };
 }
 
 /**
@@ -241,7 +275,7 @@ export function parseFlow(text: string): { graph?: FlowGraph; error?: string } {
  * unreviewable and the file stops being worth keeping in git.
  */
 export function serializeFlow(graph: FlowGraph): string {
-  const doc = {
+  const doc: Record<string, unknown> = {
     version: graph.version || FLOW_SCHEMA_VERSION,
     name: graph.name ?? "",
     variables: graph.variables.map((variable) => ({
@@ -250,24 +284,51 @@ export function serializeFlow(graph: FlowGraph): string {
       type: variable.type,
       default: variable.default ?? null,
     })),
-    nodes: graph.nodes.map((node) => ({
-      id: node.id,
-      kind: node.kind,
-      pos: [Math.round(node.pos[0]), Math.round(node.pos[1])],
-      data: sortedKeys(node.data),
-    })),
-    edges: graph.edges.map((edge) => ({
-      id: edge.id,
-      kind: edge.kind,
-      from: [edge.from[0], edge.from[1]],
-      to: [edge.to[0], edge.to[1]],
-    })),
-    view: {
-      pan: [round(graph.view.pan[0]), round(graph.view.pan[1])],
-      zoom: round(graph.view.zoom),
-    },
+    nodes: writtenNodes(graph.nodes),
+    edges: writtenEdges(graph.edges),
+    view: writtenView(graph.view),
   };
+  // Absent rather than empty: a graph without functions reads as it always did.
+  if (graph.functions?.length) {
+    doc.functions = graph.functions.map((item) => {
+      const written: Record<string, unknown> = { id: item.id, name: item.name };
+      if (item.description) written.description = item.description;
+      if (item.collapsed) written.collapsed = true;
+      written.inputs = item.inputs.map(writtenParam);
+      written.outputs = item.outputs.map(writtenParam);
+      written.nodes = writtenNodes(item.nodes);
+      written.edges = writtenEdges(item.edges);
+      written.view = writtenView(item.view);
+      return written;
+    });
+  }
   return JSON.stringify(doc, null, 2) + "\n";
+}
+
+function writtenNodes(nodes: FlowNode[]): unknown[] {
+  return nodes.map((node) => ({
+    id: node.id,
+    kind: node.kind,
+    pos: [Math.round(node.pos[0]), Math.round(node.pos[1])],
+    data: sortedKeys(node.data),
+  }));
+}
+
+function writtenEdges(edges: FlowEdge[]): unknown[] {
+  return edges.map((edge) => ({
+    id: edge.id,
+    kind: edge.kind,
+    from: [edge.from[0], edge.from[1]],
+    to: [edge.to[0], edge.to[1]],
+  }));
+}
+
+function writtenView(view: FlowView): unknown {
+  return { pan: [round(view.pan[0]), round(view.pan[1])], zoom: round(view.zoom) };
+}
+
+function writtenParam(param: FlowParam): unknown {
+  return { id: param.id, name: param.name, type: param.type };
 }
 
 /**
@@ -345,6 +406,34 @@ function asEdges(raw: unknown): FlowEdge[] {
         to: [String(to[0]), String(to[1])] as [string, string],
       },
     ];
+  });
+}
+
+function asFunctions(raw: unknown): FlowFunction[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const row = item as Record<string, unknown>;
+    const params = (list: unknown): FlowParam[] =>
+      Array.isArray(list)
+        ? list.flatMap((param) => {
+            if (!param || typeof param !== "object") return [];
+            const cell = param as Record<string, unknown>;
+            return [{ id: String(cell.id ?? ""), name: String(cell.name ?? ""), type: String(cell.type ?? "any") }];
+          })
+        : [];
+    const found: FlowFunction = {
+      id: String(row.id ?? ""),
+      name: String(row.name ?? ""),
+      inputs: params(row.inputs),
+      outputs: params(row.outputs),
+      nodes: asNodes(row.nodes),
+      edges: asEdges(row.edges),
+      view: asView(row.view),
+    };
+    if (typeof row.description === "string" && row.description) found.description = row.description;
+    if (row.collapsed === true) found.collapsed = true;
+    return [found];
   });
 }
 

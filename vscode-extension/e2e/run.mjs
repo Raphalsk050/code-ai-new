@@ -31,6 +31,7 @@ import { tests as dropdown } from "./dropdown.e2e.mjs";
 import { tests as flow } from "./flow.e2e.mjs";
 import { tests as notes } from "./notes.e2e.mjs";
 import { tests as follow } from "./follow.e2e.mjs";
+import { tests as functions } from "./functions.e2e.mjs";
 import { tests as desktopAvatar, desk } from "./desktop-avatar.e2e.mjs";
 
 const GROUPS = [
@@ -54,7 +55,7 @@ const GROUPS = [
     name: "flow",
     build: () => buildFlowWebview(),
     ready: "#root .flow-app",
-    specs: { flow, notes, follow },
+    specs: { flow, notes, follow, functions },
   },
 ];
 

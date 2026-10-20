@@ -20,12 +20,14 @@ import { setLanguage, t, tf } from "../i18n";
 import { ContextMenu, MenuEntry } from "./context-menu";
 import { Inspector } from "./inspector";
 import { LogPanel } from "./log";
-import { accentOf, isAnnotation, layoutGraph, NODE_W, nodesInside, pinsOf, Point } from "./model";
+import { accentOf, CATEGORY_COLORS, isAnnotation, layoutGraph, NODE_W, nodesInside, pinsOf, Point } from "./model";
 import { copyText, selectAllOutput, selectionInOutput } from "./output-panel";
+import { callable, offeredHere, signatureOf } from "./functions";
 import { FLOW_STYLE } from "./styles";
 import {
   Action,
   contentKey,
+  documentOf,
   EditorState,
   hasErrors,
   initialState,
@@ -49,7 +51,7 @@ function App(): JSX.Element {
   // does not write the document. Seeded with the placeholder the panel mounts
   // on: that graph is not the user's, and pushing it blanks the file.
   const pushed = React.useRef<string | null>(null);
-  if (pushed.current === null) pushed.current = contentKey(state.graph);
+  if (pushed.current === null) pushed.current = contentKey(state.doc);
   const stateRef = React.useRef(state);
   stateRef.current = state;
   // The right-click menu is pure UI: it never belongs in the document, so it
@@ -123,16 +125,16 @@ function App(): JSX.Element {
   // the tab dirty and Ctrl+S meaningful. A pan or a zoom alone does not: each
   // write is a step on VSCode's undo stack, and the camera is not an edit. The
   // view rides along with the next real change, or with the save.
-  const { nodes, edges, variables, name, version } = state.graph;
+  const { nodes, edges, variables, name, version, functions } = state.doc;
   React.useEffect(() => {
-    const serialized = contentKey(stateRef.current.graph);
+    const serialized = contentKey(stateRef.current.doc);
     if (serialized === pushed.current) return;
     pushed.current = serialized;
-    send({ type: "flowEdit", graph: stateRef.current.graph });
-  }, [nodes, edges, variables, name, version]);
+    send({ type: "flowEdit", graph: documentOf(stateRef.current) });
+  }, [nodes, edges, variables, name, version, functions]);
 
   const save = React.useCallback(() => {
-    send({ type: "flowEdit", graph: stateRef.current.graph });
+    send({ type: "flowEdit", graph: documentOf(stateRef.current) });
     send({ type: "flowSave" });
   }, []);
 
@@ -153,7 +155,7 @@ function App(): JSX.Element {
       const override = current.overrides[variable.name];
       if (override !== undefined && override !== "") variables[variable.name] = override;
     }
-    send({ type: "flowRun", graph: current.graph, variables });
+    send({ type: "flowRun", graph: documentOf(current), variables });
   }, []);
 
   const stopGraph = React.useCallback(() => {
@@ -395,6 +397,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   logic: "Logic",
   text: "Text",
   convert: "Convert",
+  function: "Functions",
 };
 
 /**
@@ -539,6 +542,17 @@ function noteEntries(
       );
     }
   }
+  if (ids.some((id) => !isAnnotation(state.catalog?.kinds.get(state.graph.nodes.find((item) => item.id === id)?.kind ?? "")))) {
+    entries.push({
+      id: "collapse-function",
+      label: ids.length > 1 ? tf("Collapse {0} nodes into a function", ids.length) : t("Collapse into a function"),
+      hint: "",
+      section,
+      colour: CATEGORY_COLORS.function,
+      glyph: "call_function",
+      run: () => dispatch({ type: "collapseToFunction", ids }),
+    });
+  }
   entries.push({
     id: "wrap-comment",
     label: ids.length > 1 ? tf("Wrap {0} nodes in a comment", ids.length) : t("Wrap in a comment"),
@@ -557,6 +571,7 @@ function canvasEntries(
 ): MenuEntry[] {
   const entries: MenuEntry[] = [];
   for (const spec of state.catalog?.raw.node_kinds ?? []) {
+    if (!offeredHere(spec.kind, state.scope)) continue;
     entries.push({
       id: `kind-${spec.kind}`,
       label: t(spec.title),
@@ -568,6 +583,17 @@ function canvasEntries(
     });
   }
   entries.push(...variableEntries(state, at, dispatch));
+  for (const found of callable(state.graph, state.scope)) {
+    entries.push({
+      id: `call-${found.id}`,
+      label: tf("Call {0}", found.name),
+      hint: "",
+      section: t("Functions"),
+      colour: CATEGORY_COLORS.function,
+      glyph: "call_function",
+      run: () => dispatch({ type: "addNode", kind: "call_function", at, data: { function: found.id } }),
+    });
+  }
   return entries;
 }
 
@@ -622,14 +648,28 @@ function pinEntries(
   const wanted = source.direction === "out" ? "in" : "out";
   const entries: MenuEntry[] = [];
 
-  for (const spec of state.catalog?.raw.node_kinds ?? []) {
+  // A call to each function is a kind of its own here, its pins its signature's.
+  const call = state.catalog?.kinds.get("call_function");
+  const kinds = [
+    ...(state.catalog?.raw.node_kinds ?? [])
+      .filter((spec) => offeredHere(spec.kind, state.scope))
+      .map((spec) => ({ spec, title: t(spec.title), data: {} as Record<string, unknown> })),
+    ...(call
+      ? callable(state.graph, state.scope).map((found) => ({
+          spec: call,
+          title: tf("Call {0}", found.name),
+          data: { function: found.id, signature: signatureOf(found) } as Record<string, unknown>,
+        }))
+      : []),
+  ];
+  for (const { spec, title, data } of kinds) {
     // The pins a *fresh* node of this kind would have, so a Sequence offers the
     // two it is born with rather than only the one its declaration lists.
     const probe = {
       id: "__probe",
       kind: spec.kind,
       pos: [0, 0] as [number, number],
-      data: { outputs: 2, inputs: 2 },
+      data: { outputs: 2, inputs: 2, ...data },
     };
     for (const pin of pinsOf(spec, probe)) {
       if (pin.direction !== wanted) continue;
@@ -639,8 +679,8 @@ function pinEntries(
           : connectableTypes(pin.type, sourceType);
       if (!fits) continue;
       entries.push({
-        id: `wire-${spec.kind}-${pin.name}`,
-        label: `${t(spec.title)} - ${pin.label || pin.name}`,
+        id: data.function ? `wire-call-${String(data.function)}-${pin.name}` : `wire-${spec.kind}-${pin.name}`,
+        label: `${title} - ${pin.label || pin.name}`,
         hint: pin.type === "exec" ? "" : pin.type,
         section: CATEGORY_LABELS[spec.category] ?? spec.category,
         colour: accentOf(spec),
@@ -650,6 +690,7 @@ function pinEntries(
             type: "addNode",
             kind: spec.kind,
             at: target.at,
+            data: data.function ? { function: data.function } : undefined,
             wire: {
               newPin: pin.name,
               kind: pin.type === "exec" ? "exec" : "data",

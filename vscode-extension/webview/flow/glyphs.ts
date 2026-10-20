@@ -56,6 +56,14 @@ export const GLYPHS: Record<string, Glyph> = {
     fill: "M6 8 A2 2 0 1 0 10 8 A2 2 0 1 0 6 8 Z",
   },
   print: { d: "M2.5 3.5 H13.5 V12.5 H2.5 Z M5 6.5 L7 8 L5 9.5 M8.5 10 H11" },
+  // A door opening: where a function's graph begins.
+  function_entry: { d: "M7 2.5 H13 V13.5 H7 M2 8 H10 M7.5 5.5 L10 8 L7.5 10.5" },
+  // Back out the way it came.
+  function_return: { d: "M9 2.5 H3 V13.5 H9 M14 8 H6 M8.5 5.5 L6 8 L8.5 10.5" },
+  // f(x), as a Blueprint draws a function call.
+  call_function: {
+    d: "M7.5 3 Q5.5 3 5.5 5.5 V13 M3.5 7 H8 M9.5 6 Q8.5 9 9.5 12 M13 6 Q14 9 13 12 M10.4 7.6 L12.1 10.4 M12.1 7.6 L10.4 10.4",
+  },
   // -- functions --------------------------------------------------------
   math: {
     d:

@@ -91,7 +91,8 @@ export function useFollowRun(args: FollowRunArgs): Follow {
       orderBase: run.orderBase,
       status: (id) => run.nodes[id] ?? "idle",
       readable: (id) => readable(run, id),
-      opens: (id) => worthOpening(run, current.layouts.get(id)?.node.kind ?? "", id),
+      // A node inside a function not on the canvas has nothing to open there.
+      opens: (id) => current.layouts.has(id) && worthOpening(run, current.layouts.get(id)!.node.kind, id),
       pinned: current.pinned,
     };
     const busy = reel.tick(input, dt);

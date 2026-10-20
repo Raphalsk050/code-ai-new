@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 49,
+  "minor": 50,
   "patch": 0,
-  "build": 133,
+  "build": 134,
   "updated": "2026-10-20",
-  "note": "Graph: functions with Entry, Return and Call nodes (backend)"
+  "note": "Flow: functions and sub-graphs in the editor, Blueprint-style"
 }

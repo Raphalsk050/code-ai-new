@@ -988,6 +988,40 @@ const PT: Record<string, string> = {
   "Show the output": "Mostrar a saída",
   "Hide the output": "Esconder a saída",
   "Copy the output": "Copiar a saída",
+  "Function": "Função",
+  "Functions": "Funções",
+  "Sub-graphs": "Subgrafos",
+  "Main graph": "Grafo principal",
+  "pick a function": "escolha uma função",
+  "Call {0}": "Chamar {0}",
+  "Input": "Entrada",
+  "Wired.": "Ligado por fio.",
+  "Open {0}": "Abrir {0}",
+  "Entry": "Entrada da função",
+  "Return": "Retorno",
+  "Call function": "Chamar função",
+  "Back to the main graph": "Voltar ao grafo principal",
+  "Edit the inputs and outputs": "Editar entradas e saídas",
+  "Delete the function and every call to it": "Excluir a função e todas as chamadas a ela",
+  "There is already a function named {0}.": "Já existe uma função chamada {0}.",
+  "A function is a graph of its own: build it once, then call it from anywhere with its inputs.":
+    "Uma função é um grafo próprio: monte uma vez e chame de qualquer lugar com as entradas dela.",
+  "Where a function begins. Its pins are what the function is given.":
+    "Onde a função começa. Os pinos dela são o que a função recebe.",
+  "Ends the function and hands its outputs back to the caller.":
+    "Termina a função e devolve as saídas para quem chamou.",
+  "Runs one of this graph's functions and goes on once it returns.":
+    "Roda uma das funções deste grafo e segue quando ela retorna.",
+  "Collapse into a function": "Colapsar em uma função",
+  "Collapsed graph": "Subgrafo",
+  "Select the nodes to collapse.": "Selecione os nodes para colapsar.",
+  "Start, End, Entry and Return stay where they are; leave them out of the selection.":
+    "Start, End, Entrada e Retorno ficam onde estão; deixe-os fora da seleção.",
+  "A function has one way in, and the flow enters this selection in more than one place.":
+    "Uma função tem uma única entrada, e o fluxo entra nesta seleção por mais de um lugar.",
+  "A function has one way out, and the flow leaves this selection in more than one place.":
+    "Uma função tem uma única saída, e o fluxo sai desta seleção por mais de um lugar.",
+  "Collapse {0} nodes into a function": "Colapsar {0} nodes em uma função",
   "Thinking": "Pensando",
   "Working…": "Trabalhando…",
   "Again": "De novo",

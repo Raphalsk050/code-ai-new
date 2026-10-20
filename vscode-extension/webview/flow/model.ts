@@ -39,6 +39,7 @@ export const CATEGORY_COLORS: Record<string, string> = {
   text: "#a21caf",
   convert: "#57534e",
   note: "#64748b",
+  function: "#0e7490",
 };
 
 /** How many copies of a dynamic pin a node asked for, as the backend counts them. */
@@ -145,7 +146,39 @@ export function pinsOf(spec: NodeKindSpec, node: FlowNode): PinSpec[] {
       pins.push({ ...pin, name: `${base}_${index}`, label });
     }
   }
+  if (spec.signature) pins.push(...signaturePins(spec.signature, node.data?.signature));
   return pins;
+}
+
+/**
+ * The data pins a function's signature puts on its Entry, its Returns and the
+ * nodes that call it, from the copy the node carries (the store keeps it in
+ * step). Named by parameter id, labelled by name: models.py does the same.
+ */
+export function signaturePins(mode: string, raw: unknown): PinSpec[] {
+  const side = (key: "inputs" | "outputs", direction: "in" | "out"): PinSpec[] => {
+    const rows = raw && typeof raw === "object" ? (raw as Record<string, unknown>)[key] : undefined;
+    if (!Array.isArray(rows)) return [];
+    return rows.flatMap((row) => {
+      if (!row || typeof row !== "object" || !(row as { id?: unknown }).id) return [];
+      const param = row as { id: string; name?: string; type?: string };
+      return [
+        {
+          name: param.id,
+          type: param.type || "any",
+          direction,
+          label: param.name || param.id,
+          required: false,
+          dynamic: false,
+          color: "",
+        },
+      ];
+    });
+  };
+  if (mode === "params_out") return side("inputs", "out");
+  if (mode === "results_in") return side("outputs", "in");
+  if (mode === "call") return [...side("inputs", "in"), ...side("outputs", "out")];
+  return [];
 }
 
 function execFirst(pins: PinSpec[]): PinSpec[] {
@@ -486,6 +519,12 @@ export function summaryOf(node: FlowNode, spec: NodeKindSpec): string {
     }
     case "clean_agent":
       return String(data.name ?? "").trim() || t("clean agent");
+    case "call_function":
+    case "function_entry":
+    case "function_return": {
+      const name = String((data.signature as { name?: unknown } | undefined)?.name ?? "");
+      return name || (node.kind === "call_function" ? t("pick a function") : "");
+    }
     case "tools": {
       const name = String(data.name ?? "").trim();
       const count = Array.isArray(data.tools) ? data.tools.length : 0;

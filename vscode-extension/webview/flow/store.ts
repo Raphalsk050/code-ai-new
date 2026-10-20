@@ -11,6 +11,7 @@ import {
   FlowEdge,
   FlowGraph,
   FlowNode,
+  FlowParam,
   FlowVariable,
   GraphCatalog,
   nextId,
@@ -30,6 +31,17 @@ import {
   Point,
   snap,
 } from "./model";
+import {
+  collapse,
+  embed,
+  freshFunctionName,
+  idPrefix,
+  newFunction,
+  takenEdgeIds,
+  takenNodeIds,
+  project,
+  withSignatures,
+} from "./functions";
 
 export const UNDO_LIMIT = 100;
 
@@ -116,7 +128,11 @@ export interface ModelListState {
 }
 
 export interface EditorState {
+  /** The graph on the canvas: the main one, or the function `scope` names. */
   graph: FlowGraph;
+  /** The whole document, every function in it; the main graph itself when `scope` is null. */
+  doc: FlowGraph;
+  scope: string | null;
   catalog: Catalog | null;
   fileName: string;
   selection: string[];
@@ -131,7 +147,7 @@ export interface EditorState {
   models: Record<string, ModelListState>;
   /** Variable overrides typed into the toolbar for the next run. */
   overrides: Record<string, string>;
-  inspectorTab: "node" | "variables" | "run";
+  inspectorTab: "node" | "variables" | "functions" | "run";
   logOpen: boolean;
   dirty: boolean;
   /** Text being edited on the canvas: a comment's title or a node's note. */
@@ -161,8 +177,11 @@ export function initialRun(): RunState {
 }
 
 export function initialState(): EditorState {
+  const graph = emptyFlow();
   return {
-    graph: emptyFlow(),
+    graph,
+    doc: graph,
+    scope: null,
     catalog: null,
     fileName: "",
     selection: [],
@@ -188,20 +207,68 @@ function clone(graph: FlowGraph): FlowGraph {
   return JSON.parse(JSON.stringify(graph)) as FlowGraph;
 }
 
-/** The graph as the file holds it, minus the camera: what makes two graphs the same document. */
+/** The graph as the file holds it, minus the cameras: what makes two graphs the same document. */
 export function contentKey(graph: FlowGraph): string {
-  const { view: _view, ...content } = graph;
-  return JSON.stringify(content);
+  const { view: _view, scope: _scope, functions, ...content } = graph;
+  if (!functions?.length) return JSON.stringify(content);
+  return JSON.stringify({ ...content, functions: functions.map(({ view: _camera, ...rest }) => rest) });
+}
+
+/** The document to write: the open function's camera included. */
+export function documentOf(state: EditorState): FlowGraph {
+  return embed(state.doc, state.graph, true);
 }
 
 export function sameContent(a: FlowGraph, b: FlowGraph): boolean {
   return contentKey(a) === contentKey(b);
 }
 
-/** Record the current graph so the next mutation can be undone. */
+/** Record the whole document so the next mutation can be undone, in whichever graph it happens. */
 function withHistory(state: EditorState, graph: FlowGraph): EditorState {
-  const undo = [...state.undo, clone(state.graph)].slice(-UNDO_LIMIT);
+  const undo = [...state.undo, clone(documentOf(state))].slice(-UNDO_LIMIT);
   return { ...state, graph, undo, redo: [], dirty: true };
+}
+
+/** A change made to the document itself - its functions - rather than to the graph on the canvas. */
+function withDocument(state: EditorState, doc: FlowGraph, scope = state.scope): EditorState {
+  const undo = [...state.undo, clone(documentOf(state))].slice(-UNDO_LIMIT);
+  return { ...state, ...shown(withSignatures(doc), scope, state), undo, redo: [], dirty: true };
+}
+
+/**
+ * A document put on the canvas: the graph `scope` names if it still exists,
+ * else the main one, with the camera kept when it is the same graph as before.
+ */
+function shown(
+  doc: FlowGraph,
+  scope: string | null,
+  state: EditorState,
+  keepCamera = true
+): Pick<EditorState, "doc" | "graph" | "scope"> {
+  const live = scope && doc.functions?.some((item) => item.id === scope) ? scope : null;
+  const camera = keepCamera && live === state.scope ? state.graph.view : undefined;
+  if (!live) {
+    const main = camera ? { ...doc, view: camera } : doc;
+    return { doc: main, graph: main, scope: null };
+  }
+  const view = project(doc, live);
+  return { doc, graph: camera ? { ...view, view: camera } : view, scope: live };
+}
+
+/**
+ * Every action, then the graph on the canvas written back into the document.
+ * The reducers below only ever see one graph; this is what keeps the rest of
+ * the document - and the pins a function's signature puts on its calls - in step.
+ */
+export function reduce(state: EditorState, action: Action): EditorState {
+  const next = reduceGraph(state, action);
+  if (next === state || next.doc !== state.doc || next.graph === state.graph) return next;
+  const doc = embed(next.doc, next.graph);
+  if (next.graph.nodes !== state.graph.nodes) {
+    const synced = withSignatures(doc);
+    if (synced !== doc) return { ...next, ...shown(synced, next.scope, next) };
+  }
+  return { ...next, doc };
 }
 
 export type Action =
@@ -235,6 +302,15 @@ export type Action =
   | { type: "deleteSelection" }
   | { type: "connect"; edge: Omit<FlowEdge, "id"> }
   | { type: "deleteEdge"; id: string }
+  /** Show the main graph (null) or a function's on the canvas. */
+  | { type: "openScope"; scope: string | null }
+  | { type: "addFunction"; name?: string }
+  | { type: "updateFunction"; id: string; patch: { name?: string; description?: string } }
+  | { type: "deleteFunction"; id: string }
+  /** A function's inputs or outputs, as the list now stands. */
+  | { type: "setParams"; id: string; side: "inputs" | "outputs"; params: FlowParam[] }
+  /** Unreal's Collapse to Function: the nodes move into a new function, a Call takes their place. */
+  | { type: "collapseToFunction"; ids: string[] }
   /** Several wires in one undo step: a pin's links broken at once. */
   | { type: "deleteEdges"; ids: string[] }
   /** Wires picked up by one end and dropped on `target`; the `keep` end stays put. */
@@ -259,7 +335,7 @@ export type Action =
   | { type: "clearLog" }
   | { type: "saved" };
 
-export function reduce(state: EditorState, action: Action): EditorState {
+function reduceGraph(state: EditorState, action: Action): EditorState {
   switch (action.type) {
     case "catalog":
       return { ...state, catalog: indexCatalog(action.catalog) };
@@ -270,16 +346,17 @@ export function reduce(state: EditorState, action: Action): EditorState {
       // and the history with it.
       // The camera is the panel's once it shows the file: an undo in the
       // document or a reload must not throw the view back to where it was saved.
-      const view = state.fileName ? state.graph.view : action.graph.view;
-      const same = sameContent(state.graph, action.graph);
+      const same = sameContent(state.doc, action.graph);
       if (same) return { ...state, fileName: action.fileName, dirty: false };
+      const doc = withSignatures(action.graph);
+      const next = shown(doc, state.scope, state);
+      // A first load takes the file's camera; after that the panel's is kept.
+      if (!state.fileName && !next.scope) next.graph = next.doc = doc;
       return {
         ...state,
-        graph: { ...action.graph, view },
+        ...next,
         fileName: action.fileName,
-        selection: state.selection.filter((id) =>
-          action.graph.nodes.some((node) => node.id === id)
-        ),
+        selection: state.selection.filter((id) => next.graph.nodes.some((node) => node.id === id)),
         undo: [],
         redo: [],
         dirty: false,
@@ -316,7 +393,7 @@ export function reduce(state: EditorState, action: Action): EditorState {
           },
         };
       }
-      const id = nextId("n", state.graph.nodes.map((node) => node.id));
+      const id = nextId(idPrefix(state.graph, "n"), takenNodeIds(state.graph));
       const data: Record<string, unknown> = {};
       for (const field of spec.fields) {
         if (field.default !== null && field.default !== undefined) data[field.name] = field.default;
@@ -419,7 +496,7 @@ export function reduce(state: EditorState, action: Action): EditorState {
       const at = action.at ?? { x: 0, y: 0 };
       const box = around ?? { pos: [snap(at.x), snap(at.y)] as [number, number], width: 400, height: 240 };
       const node: FlowNode = {
-        id: nextId("n", state.graph.nodes.map((item) => item.id)),
+        id: nextId(idPrefix(state.graph, "n"), takenNodeIds(state.graph)),
         kind: "comment",
         pos: box.pos,
         data: {
@@ -479,6 +556,79 @@ export function reduce(state: EditorState, action: Action): EditorState {
       return { ...withHistory(state, graph), selectedEdge: null };
     }
 
+    case "openScope": {
+      if (action.scope === state.scope) return state;
+      // The graph being left keeps its camera for when it is opened again.
+      const doc = documentOf(state);
+      return {
+        ...state,
+        ...shown(doc, action.scope, state, false),
+        selection: [],
+        selectedEdge: null,
+        editing: null,
+      };
+    }
+
+    case "addFunction": {
+      const doc = documentOf(state);
+      const made = newFunction(doc, action.name?.trim() || freshFunctionName(doc, t("Function")));
+      const next = withDocument(state, { ...doc, functions: [...(doc.functions ?? []), made] }, made.id);
+      return { ...next, selection: [], selectedEdge: null, editing: null, inspectorTab: "functions" };
+    }
+
+    case "updateFunction": {
+      const doc = documentOf(state);
+      const name = action.patch.name?.trim();
+      if (action.patch.name !== undefined && !name) return state;
+      if (name && doc.functions?.some((item) => item.id !== action.id && item.name === name)) {
+        return { ...state, notice: { level: "warn", text: tf("There is already a function named {0}.", name) } };
+      }
+      const functions = (doc.functions ?? []).map((item) =>
+        item.id === action.id
+          ? { ...item, ...(name ? { name } : {}), ...(action.patch.description !== undefined ? { description: action.patch.description } : {}) }
+          : item
+      );
+      return withDocument(state, { ...doc, functions });
+    }
+
+    case "deleteFunction": {
+      const doc = documentOf(state);
+      // Its calls go with it, wires and all: a call to nothing is only an error to clean up.
+      const strip = (nodes: FlowNode[], edges: FlowEdge[]) => {
+        const gone = new Set(
+          nodes.filter((node) => node.kind === "call_function" && node.data?.function === action.id).map((node) => node.id)
+        );
+        return {
+          nodes: nodes.filter((node) => !gone.has(node.id)),
+          edges: edges.filter((edge) => !gone.has(edge.from[0]) && !gone.has(edge.to[0])),
+        };
+      };
+      const functions = (doc.functions ?? [])
+        .filter((item) => item.id !== action.id)
+        .map((item) => ({ ...item, ...strip(item.nodes, item.edges) }));
+      const next: FlowGraph = { ...doc, ...strip(doc.nodes, doc.edges) };
+      if (functions.length) next.functions = functions;
+      else delete next.functions;
+      return { ...withDocument(state, next), selection: [], selectedEdge: null };
+    }
+
+    case "setParams": {
+      const doc = documentOf(state);
+      const functions = (doc.functions ?? []).map((item) =>
+        item.id === action.id ? { ...item, [action.side]: action.params } : item
+      );
+      return withDocument(state, { ...doc, functions });
+    }
+
+    case "collapseToFunction": {
+      const doc = documentOf(state);
+      const typeOf = (nodeId: string, pin: string, direction: "in" | "out") =>
+        pinTypeOf(state, nodeId, pin, direction);
+      const done = collapse(doc, state.graph, action.ids, typeOf, freshFunctionName(doc, t("Collapsed graph")));
+      if ("problem" in done) return { ...state, notice: { level: "warn", text: t(done.problem) } };
+      return { ...withDocument(state, done.doc), selection: [done.callId], selectedEdge: null, editing: null };
+    }
+
     case "deleteEdges": {
       const gone = new Set(action.ids);
       if (!state.graph.edges.some((edge) => gone.has(edge.id))) return state;
@@ -528,7 +678,7 @@ export function reduce(state: EditorState, action: Action): EditorState {
       };
       const kind = action.mode === "get" ? "var_get" : "var_set";
       const node: FlowNode = {
-        id: nextId("n", state.graph.nodes.map((item) => item.id)),
+        id: nextId(idPrefix(state.graph, "n"), takenNodeIds(state.graph)),
         kind,
         pos: [snap(action.at.x), snap(action.at.y)],
         data: { variable: variable.name },
@@ -603,25 +753,25 @@ export function reduce(state: EditorState, action: Action): EditorState {
     // and leaves the camera where the user has it now.
     case "undo": {
       if (state.undo.length === 0) return state;
-      const previous = { ...state.undo[state.undo.length - 1], view: state.graph.view };
+      const next = shown(state.undo[state.undo.length - 1], state.scope, state);
       return {
         ...state,
-        graph: previous,
+        ...next,
         undo: state.undo.slice(0, -1),
-        redo: [...state.redo, clone(state.graph)].slice(-UNDO_LIMIT),
-        selection: state.selection.filter((id) => previous.nodes.some((node) => node.id === id)),
+        redo: [...state.redo, clone(documentOf(state))].slice(-UNDO_LIMIT),
+        selection: state.selection.filter((id) => next.graph.nodes.some((node) => node.id === id)),
         dirty: true,
       };
     }
 
     case "redo": {
       if (state.redo.length === 0) return state;
-      const next = { ...state.redo[state.redo.length - 1], view: state.graph.view };
+      const next = shown(state.redo[state.redo.length - 1], state.scope, state);
       return {
         ...state,
-        graph: next,
+        ...next,
         redo: state.redo.slice(0, -1),
-        undo: [...state.undo, clone(state.graph)].slice(-UNDO_LIMIT),
+        undo: [...state.undo, clone(documentOf(state))].slice(-UNDO_LIMIT),
         dirty: true,
       };
     }
@@ -704,7 +854,7 @@ export function insertEdge(
   edge: Omit<FlowEdge, "id">,
   multi = false
 ): FlowGraph {
-  const id = nextId("e", graph.edges.map((item) => item.id));
+  const id = nextId(idPrefix(graph, "e"), takenEdgeIds(graph));
   const edges = graph.edges.filter((item) => {
     if (edge.kind === "exec") {
       return !(item.from[0] === edge.from[0] && item.from[1] === edge.from[1]);

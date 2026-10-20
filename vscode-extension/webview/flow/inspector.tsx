@@ -1,6 +1,6 @@
 import * as React from "react";
 
-import type { FieldSpec, FlowNode } from "../../src/flow-schema";
+import type { FieldSpec, FlowFunction, FlowNode, FlowParam } from "../../src/flow-schema";
 import { t, tf } from "../i18n";
 import {
   grantedTools,
@@ -11,6 +11,7 @@ import {
   wiredToolsets,
 } from "./access";
 import { GlyphBadge } from "./context-menu";
+import { callable, freshParamId } from "./functions";
 import { accentOf, COMMENT_COLOR, COMMENT_SWATCHES, dynamicCount, isAnnotation, pinsOf } from "./model";
 import type { Action, EditorState } from "./store";
 import { defaultFor } from "./store";
@@ -34,20 +35,27 @@ export function Inspector(props: InspectorProps): JSX.Element {
   return (
     <aside className="flow-inspector" data-testid="inspector">
       <div className="flow-tabs">
-        {(["node", "variables", "run"] as const).map((name) => (
+        {(["node", "variables", "functions", "run"] as const).map((name) => (
           <button
             key={name}
             className={tab === name ? "active" : ""}
             data-testid={`tab-${name}`}
             onClick={() => dispatch({ type: "inspectorTab", tab: name })}
           >
-            {name === "node" ? t("Node") : name === "variables" ? t("Variables") : t("Run", "tab")}
+            {name === "node"
+              ? t("Node")
+              : name === "variables"
+                ? t("Variables")
+                : name === "functions"
+                  ? t("Functions")
+                  : t("Run", "tab")}
           </button>
         ))}
       </div>
       <div className="flow-inspector-body">
         {tab === "node" && <NodePanel {...props} collapsed={collapsed} onCollapse={onCollapse} />}
         {tab === "variables" && <VariablesPanel state={state} dispatch={dispatch} />}
+        {tab === "functions" && <FunctionsPanel state={state} dispatch={dispatch} />}
         {tab === "run" && <RunPanel state={state} />}
       </div>
     </aside>
@@ -179,6 +187,8 @@ function NodePanel({
       {spec.pins.some((pin) => pin.dynamic) && (
         <DynamicPins node={node} state={state} dispatch={dispatch} />
       )}
+
+      {spec.signature && <SignatureValues node={node} mode={spec.signature} state={state} dispatch={dispatch} />}
 
       {!isAnnotation(spec) && <NoteField key={node.id} node={node} dispatch={dispatch} />}
 
@@ -359,6 +369,21 @@ function Field({ field, node, state, dispatch, onListModels, onStoreSecret }: Fi
             ))}
           </select>
         );
+      case "function": {
+        const options = callable(state.graph, state.scope);
+        const current = state.graph.functions?.find((item) => item.id === value);
+        if (current && !options.includes(current)) options.unshift(current);
+        return (
+          <select id={id} data-testid={testId} value={String(value ?? "")} onChange={(e) => set(e.target.value)}>
+            <option value="">{t("(choose)")}</option>
+            {options.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name}
+              </option>
+            ))}
+          </select>
+        );
+      }
       case "profession":
         return (
           <select id={id} data-testid={testId} value={String(value ?? "")} onChange={(e) => set(e.target.value)}>
@@ -949,6 +974,264 @@ function VariablesPanel({
           ))}
         </>
       )}
+    </>
+  );
+}
+
+// -- functions -----------------------------------------------------------
+
+/**
+ * What a Call passes in, or a Return hands back, when no wire does: one field
+ * per parameter. An Entry has none - its values come from whoever calls.
+ */
+function SignatureValues({
+  node,
+  mode,
+  state,
+  dispatch,
+}: {
+  node: FlowNode;
+  mode: string;
+  state: EditorState;
+  dispatch(action: Action): void;
+}) {
+  const target = mode === "call" ? String(node.data.function ?? "") : state.scope ?? "";
+  const found = state.graph.functions?.find((item) => item.id === target);
+  if (!found) return null;
+  const open = () =>
+    mode === "call"
+      ? dispatch({ type: "openScope", scope: found.id })
+      : dispatch({ type: "inspectorTab", tab: "functions" });
+  const params = mode === "call" ? found.inputs : mode === "results_in" ? found.outputs : [];
+  const wired = new Set(state.graph.edges.filter((edge) => edge.to[0] === node.id).map((edge) => edge.to[1]));
+  return (
+    <>
+      {params.length > 0 && (
+        <div className="flow-section-title">
+          <span>{mode === "call" ? t("Inputs") : t("Outputs")}</span>
+          <span className="line" />
+        </div>
+      )}
+      {params.map((param) => (
+        <div className="flow-field" key={param.id}>
+          <label htmlFor={`param-${node.id}-${param.id}`}>
+            {param.name} <span className="flow-hint-inline">{param.type}</span>
+          </label>
+          {wired.has(param.id) ? (
+            <p className="flow-hint">{t("Wired.")}</p>
+          ) : (
+            <ValueInput
+              id={`param-${node.id}-${param.id}`}
+              type={param.type}
+              value={node.data[param.id]}
+              onChange={(value) => dispatch({ type: "setNodeData", id: node.id, key: param.id, value })}
+            />
+          )}
+        </div>
+      ))}
+      <button data-testid="open-function" onClick={open}>
+        {mode === "call" ? tf("Open {0}", found.name) : t("Edit the inputs and outputs")}
+      </button>
+    </>
+  );
+}
+
+function ValueInput({
+  id,
+  type,
+  value,
+  onChange,
+}: {
+  id: string;
+  type: string;
+  value: unknown;
+  onChange(value: unknown): void;
+}) {
+  if (type === "bool") {
+    return <input id={id} type="checkbox" checked={Boolean(value)} onChange={(e) => onChange(e.target.checked)} />;
+  }
+  if (type === "int" || type === "float") {
+    return (
+      <input
+        id={id}
+        type="number"
+        value={value === null || value === undefined ? "" : String(value)}
+        onChange={(e) => onChange(e.target.value === "" ? undefined : Number(e.target.value))}
+      />
+    );
+  }
+  return <input id={id} value={String(value ?? "")} onChange={(e) => onChange(e.target.value || undefined)} />;
+}
+
+/** Text that is only taken when the user is done with it: a name may not go blank midway. */
+function CommitInput({
+  value,
+  testId,
+  onCommit,
+}: {
+  value: string;
+  testId: string;
+  onCommit(value: string): void;
+}) {
+  const [draft, setDraft] = React.useState(value);
+  React.useEffect(() => setDraft(value), [value]);
+  const commit = () => {
+    if (draft.trim() && draft !== value) onCommit(draft);
+    else setDraft(value);
+  };
+  return (
+    <input
+      data-testid={testId}
+      value={draft}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") (event.target as HTMLInputElement).blur();
+        if (event.key === "Escape") setDraft(value);
+      }}
+    />
+  );
+}
+
+function FunctionsPanel({ state, dispatch }: { state: EditorState; dispatch(action: Action): void }) {
+  const all = state.graph.functions ?? [];
+  const open = all.find((item) => item.id === state.scope);
+  const row = (item: FlowFunction) => (
+    <div key={item.id} className={`flow-fn-row${item.id === state.scope ? " active" : ""}`} data-testid={`fn-${item.id}`}>
+      <button
+        className="name"
+        data-testid={`fn-open-${item.id}`}
+        onClick={() => dispatch({ type: "openScope", scope: item.id === state.scope ? null : item.id })}
+      >
+        {item.name}
+      </button>
+      <span className="flow-hint-inline">
+        {item.inputs.length} → {item.outputs.length}
+      </span>
+      <button
+        className="danger"
+        data-testid={`fn-delete-${item.id}`}
+        title={t("Delete the function and every call to it")}
+        onClick={() => dispatch({ type: "deleteFunction", id: item.id })}
+      >
+        ×
+      </button>
+    </div>
+  );
+  return (
+    <>
+      <div className="flow-section-title">
+        <span>{t("Functions")}</span>
+        <span className="line" />
+      </div>
+      <button data-testid="add-function" onClick={() => dispatch({ type: "addFunction" })}>
+        + {t("Function")}
+      </button>
+      {all.length === 0 && (
+        <p className="flow-hint">
+          {t("A function is a graph of its own: build it once, then call it from anywhere with its inputs.")}
+        </p>
+      )}
+      {all.filter((item) => !item.collapsed).map(row)}
+      {all.some((item) => item.collapsed) && (
+        <>
+          <div className="flow-section-title">
+            <span>{t("Sub-graphs")}</span>
+            <span className="line" />
+          </div>
+          {all.filter((item) => item.collapsed).map(row)}
+        </>
+      )}
+      {open && <FunctionEditor found={open} state={state} dispatch={dispatch} />}
+    </>
+  );
+}
+
+function FunctionEditor({
+  found,
+  state,
+  dispatch,
+}: {
+  found: FlowFunction;
+  state: EditorState;
+  dispatch(action: Action): void;
+}) {
+  const types = state.catalog?.raw.param_types ?? ["string", "int", "float", "bool", "any"];
+  const side = (key: "inputs" | "outputs", title: string, add: string) => {
+    const params = found[key];
+    const set = (next: FlowParam[]) => dispatch({ type: "setParams", id: found.id, side: key, params: next });
+    return (
+      <>
+        <div className="flow-section-title">
+          <span>{title}</span>
+          <span className="line" />
+        </div>
+        {params.map((param, index) => (
+          <div key={param.id} className="flow-var-row" data-testid={`param-${key}-${index}`}>
+            <span className="swatch" style={{ background: state.catalog?.color(param.type) ?? "#888" }} />
+            <input
+              className="name"
+              data-testid={`param-name-${key}-${index}`}
+              value={param.name}
+              onChange={(event) =>
+                set(params.map((item) => (item.id === param.id ? { ...item, name: event.target.value } : item)))
+              }
+            />
+            <select
+              data-testid={`param-type-${key}-${index}`}
+              value={param.type}
+              onChange={(event) =>
+                set(params.map((item) => (item.id === param.id ? { ...item, type: event.target.value } : item)))
+              }
+            >
+              {types.map((type) => (
+                <option key={type} value={type}>
+                  {type}
+                </option>
+              ))}
+            </select>
+            <button
+              className="danger"
+              data-testid={`param-delete-${key}-${index}`}
+              onClick={() => set(params.filter((item) => item.id !== param.id))}
+            >
+              ×
+            </button>
+          </div>
+        ))}
+        <button
+          data-testid={`add-${key}`}
+          onClick={() => {
+            const taken = new Set(params.map((item) => item.name));
+            let name = key === "inputs" ? "input" : "output";
+            for (let index = 2; taken.has(name); index += 1) name = `${key === "inputs" ? "input" : "output"}${index}`;
+            set([...params, { id: freshParamId(found), name, type: "string" }]);
+          }}
+        >
+          + {add}
+        </button>
+      </>
+    );
+  };
+  return (
+    <>
+      <div className="flow-section-title">
+        <span>{found.name}</span>
+        <span className="line" />
+      </div>
+      <div className="flow-field">
+        <label>{t("Name")}</label>
+        <CommitInput
+          value={found.name}
+          testId="function-name"
+          onCommit={(name) => dispatch({ type: "updateFunction", id: found.id, patch: { name } })}
+        />
+      </div>
+      {side("inputs", t("Inputs"), t("Input"))}
+      {side("outputs", t("Outputs"), t("Output"))}
+      <button data-testid="back-to-main" onClick={() => dispatch({ type: "openScope", scope: null })}>
+        {t("Back to the main graph")}
+      </button>
     </>
   );
 }

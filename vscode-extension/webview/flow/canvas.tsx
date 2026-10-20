@@ -234,6 +234,16 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
 
   const onNodeDown = (nodeId: string, event: React.MouseEvent) => {
     if (event.button !== 0) return;
+    // A double-click on a call goes into the function, as in a Blueprint.
+    if (event.detail === 2) {
+      const node = state.graph.nodes.find((item) => item.id === nodeId);
+      const target = String(node?.data?.function ?? "");
+      if (node?.kind === "call_function" && state.graph.functions?.some((item) => item.id === target)) {
+        event.stopPropagation();
+        dispatch({ type: "openScope", scope: target });
+        return;
+      }
+    }
     event.stopPropagation();
     holdSelection(event);
     const alreadySelected = state.selection.includes(nodeId);
@@ -906,6 +916,17 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
           running={state.run.nodes}
           onPan={(next) => dispatch({ type: "setView", pan: next })}
         />
+      )}
+      {state.scope && (
+        <div className="flow-crumbs" data-testid="crumbs" onMouseDown={(event) => event.stopPropagation()}>
+          <button data-testid="crumb-main" onClick={() => dispatch({ type: "openScope", scope: null })}>
+            {t("Main graph")}
+          </button>
+          <span className="sep">›</span>
+          <span className="here" data-testid="crumb-here">
+            {state.graph.functions?.find((item) => item.id === state.scope)?.name ?? ""}
+          </span>
+        </div>
       )}
       {/* Moving the camera during a run lets go of the run; this takes it back. */}
       {state.run.running && follow.detached && (

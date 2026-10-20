@@ -326,6 +326,20 @@ input[type="checkbox"] { width: auto; }
   background: var(--accent); border-color: var(--accent); color: #fff;
 }
 .flow-follow:hover:not(:disabled) { background: var(--accent); filter: brightness(1.1); }
+.flow-crumbs {
+  position: absolute; left: 12px; top: 10px; z-index: 5;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 6px; border-radius: 6px;
+  background: var(--vscode-editorWidget-background, #252526); border: 1px solid var(--border);
+}
+.flow-crumbs button { border: 0; background: none; color: var(--accent); padding: 2px 4px; }
+.flow-crumbs button:hover { text-decoration: underline; }
+.flow-crumbs .sep { color: var(--muted); }
+.flow-crumbs .here { font-weight: 600; padding-right: 4px; }
+.flow-fn-row { display: flex; align-items: center; gap: 6px; margin: 4px 0; }
+.flow-fn-row .name { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flow-fn-row.active .name { border-color: var(--accent); color: var(--accent); }
+.flow-hint-inline { color: var(--muted); font-size: 10.5px; }
 .flow-empty {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   color: var(--muted); text-align: center; pointer-events: none; padding: 24px;
