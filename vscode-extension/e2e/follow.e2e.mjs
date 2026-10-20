@@ -282,6 +282,45 @@ export const tests = {
     assert(!(await transform()).endsWith("scale(0.7)"), "a wheel notch no longer zooms");
   },
 
+  async "Ctrl+wheel zooms one toolbar step per notch"(ui, assert) {
+    await boot(ui);
+    const zoom = () =>
+      ui.page.evaluate(() => {
+        const value = document.querySelector('[data-testid="flow-canvas"] > g').getAttribute("transform");
+        return Number(/scale\(([\d.]+)\)/.exec(value)[1]);
+      });
+    const notch = (deltaY) =>
+      ui.page.evaluate((deltaY) => {
+        const canvas = document.querySelector('[data-testid="flow-canvas"]');
+        canvas.dispatchEvent(
+          new WheelEvent("wheel", { deltaY, wheelDeltaY: deltaY < 0 ? 120 : -120, ctrlKey: true, clientX: 400, clientY: 300, bubbles: true, cancelable: true })
+        );
+      }, deltaY);
+    const before = await zoom();
+    await notch(-100);
+    await settle(ui, 100);
+    const wheeled = await zoom();
+    assert(Math.abs(wheeled / before - 1.2) < 0.01, `one Ctrl notch zoomed ${before} -> ${wheeled}`);
+    await notch(100);
+    await settle(ui, 100);
+    await ui.page.click('[data-testid="zoom-in"]');
+    await settle(ui, 100);
+    const clicked = await zoom();
+    assert(Math.abs(clicked - wheeled) < 0.01, `the button zoomed to ${clicked}, the notch to ${wheeled}`);
+  },
+
+  async "the flow runs in white wires, whatever node it leaves"(ui, assert) {
+    await boot(ui);
+    const strokes = await ui.page.evaluate(() =>
+      ["e1", "e2", "e3"].map((id) => getComputedStyle(document.querySelector(`[data-testid="edge-${id}"] .flow-wire`)).stroke)
+    );
+    assert(strokes.every((stroke) => stroke === "rgb(255, 255, 255)"), `exec wires are ${strokes.join(", ")}`);
+    const pin = await ui.page.evaluate(() =>
+      getComputedStyle(document.querySelector('[data-testid="node-agent"] [data-testid="pin-out-out"] .flow-pin-shape')).fill
+    );
+    assert(pin === "rgb(255, 255, 255)", `a wired exec pin is ${pin}`);
+  },
+
   async "a comment starting right of another's middle is drawn in front"(ui, assert) {
     const graph = {
       ...pipeline(),

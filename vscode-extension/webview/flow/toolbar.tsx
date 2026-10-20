@@ -15,6 +15,7 @@ import {
   IconWarn,
   IconX,
 } from "../icons";
+import { ZOOM_STEP } from "./canvas";
 import type { Action, EditorState } from "./store";
 import { hasErrors } from "./store";
 
@@ -94,7 +95,7 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
           className="icon"
           data-testid="zoom-out"
           title={t("Zoom out")}
-          onClick={() => props.onZoom(1 / 1.2)}
+          onClick={() => props.onZoom(1 / ZOOM_STEP)}
         >
           <IconMinus size={15} />
         </button>
@@ -110,7 +111,7 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
           className="icon"
           data-testid="zoom-in"
           title={t("Zoom in")}
-          onClick={() => props.onZoom(1.2)}
+          onClick={() => props.onZoom(ZOOM_STEP)}
         >
           <IconPlus size={15} />
         </button>

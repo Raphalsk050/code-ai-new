@@ -39,8 +39,12 @@ import { issuesByNode } from "./store";
 // How long an edge stays lit after the flow walked it. The dot is a hint about
 // where the run is, not a progress bar, so it fades on its own.
 const EDGE_GLOW_MS = 2600;
+/** The flow's colour: white, or the theme's text colour where white would vanish. */
+const EXEC_STROKE = "var(--flow-exec)";
 export const MIN_ZOOM = 0.25;
 export const MAX_ZOOM = 2.5;
+/** One click of the toolbar's zoom, and one notch of the wheel. */
+export const ZOOM_STEP = 1.2;
 
 /** The view after zooming to `next`, keeping `point` (screen space) where it is. */
 export function zoomAround(
@@ -379,9 +383,9 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
       dispatch({ type: "setView", pan: [pan[0] - event.deltaX, pan[1] - event.deltaY] });
       return;
     }
-    // A pinch comes as small steps; a wheel notch as one big one.
+    // A pinch comes as small steps; a wheel notch, with Ctrl or without, as one button's step.
     const factor =
-      gesture === "pinch" ? Math.exp(-event.deltaY * 0.01) : event.deltaY < 0 ? 1.12 : 1 / 1.12;
+      gesture === "pinch" ? Math.exp(-event.deltaY * 0.01) : event.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
     // Keep the point under the cursor fixed; zooming to the corner is the
     // fastest way to lose a graph.
     const view = zoomAround({ pan, zoom }, { x: px, y: py }, zoom * factor);
@@ -461,19 +465,17 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
     const dragOffsetTo = offsetFor(edge.to[0]);
     const a = { ...from, x: from.x + dragOffsetFrom.dx, y: from.y + dragOffsetFrom.dy };
     const b = { ...to, x: to.x + dragOffsetTo.dx, y: to.y + dragOffsetTo.dy };
-    // The flow takes the colour of the node it leaves; a value, its type's.
-    const source = shown.get(edge.from[0]);
+    // The flow is always white; a value runs in its type's colour.
     const color =
       edge.kind === "exec"
-        ? source
-          ? accentOf(source.spec)
-          : "#888"
+        ? EXEC_STROKE
         : catalog?.color(catalog ? edgeType(state.graph, catalog, edge) : "any") ?? "#888";
     return [{ edge, a, b, color }];
   });
-  // A wired pin is the colour of its wire, at both ends.
+  // A wired value pin is the colour of its wire, at both ends; exec pins are white already.
   const pinTint = new Map<string, string>();
   for (const { edge, color } of wires) {
+    if (edge.kind === "exec") continue;
     pinTint.set(`${edge.from[0]}:${edge.from[1]}:out`, color);
     if (!pinTint.has(`${edge.to[0]}:${edge.to[1]}:in`)) pinTint.set(`${edge.to[0]}:${edge.to[1]}:in`, color);
   }
@@ -605,12 +607,12 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
             return (
               <g key={edge.id} data-testid={`edge-${edge.id}`} data-lit={isLit ? "1" : "0"}>
                 {isLit && (
-                  <path className={`flow-wire-glow ${edge.kind}`} d={path} stroke={color} />
+                  <path className={`flow-wire-glow ${edge.kind}`} d={path} style={{ stroke: color }} />
                 )}
                 <path
                   className={classes.join(" ")}
                   d={path}
-                  stroke={color}
+                  style={{ stroke: color }}
                   strokeOpacity={isLit ? 1 : traveled ? 0.95 : 0.8}
                 />
                 <path
@@ -640,7 +642,7 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
                   <circle
                     className={`flow-dot ${edge.kind}`}
                     r={4.5}
-                    fill={color}
+                    style={{ fill: color }}
                     data-testid={`dot-${edge.id}`}
                   >
                     <animateMotion
@@ -658,7 +660,7 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
             <path
               className={`flow-wire pending ${drag.pin.pin.pin.type === "exec" ? "exec" : "data"}`}
               d={pendingPath(shown, drag, new Map([...aims, ...pulled]))}
-              stroke={pendingStroke(shown, drag.pin, (type) => catalog?.color(type) ?? "#888")}
+              style={{ stroke: pendingStroke(drag.pin, (type) => catalog?.color(type) ?? "#888") }}
             />
           )}
 
@@ -836,22 +838,25 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
 /**
  * What a wheel event is. A Magic Mouse has no middle button: sliding a finger
  * on it, like two fingers on a trackpad, sends a stream of small wheel steps,
- * and those move the camera. A pinch (or Ctrl+wheel) zooms. A wheel with
- * notches sends one large step per notch and keeps zooming, as it always has.
+ * and those move the camera. A pinch zooms smoothly. A wheel with notches
+ * sends one large step per notch and zooms a toolbar step at a time, Ctrl held
+ * or not: Chromium marks a pinch with Ctrl too, so a notch is told by its size.
  */
 export function wheelGesture(
   event: { deltaX: number; deltaY: number; deltaMode: number; ctrlKey: boolean; wheelDeltaY?: number },
   /** A slide was seen a moment ago: its momentum tail is the same slide. */
   sliding = false
 ): "pan" | "pinch" | "wheel" {
-  if (event.ctrlKey) return "pinch";
   if (event.deltaMode !== 0) return "wheel";
+  if (event.ctrlKey) return event.deltaX === 0 && isNotch(event) ? "wheel" : "pinch";
   if (sliding || event.deltaX !== 0) return "pan";
-  // Chromium reports a notch as a multiple of 120; a surface, as whatever it moved.
-  if (typeof event.wheelDeltaY === "number" && event.wheelDeltaY !== 0) {
-    return event.wheelDeltaY % 120 === 0 ? "wheel" : "pan";
-  }
-  return Number.isInteger(event.deltaY) && Math.abs(event.deltaY) >= 50 ? "wheel" : "pan";
+  return isNotch(event) ? "wheel" : "pan";
+}
+
+/** Chromium reports a notch as a multiple of 120; a surface, as whatever it moved. */
+function isNotch(event: { deltaY: number; wheelDeltaY?: number }): boolean {
+  if (typeof event.wheelDeltaY === "number" && event.wheelDeltaY !== 0) return event.wheelDeltaY % 120 === 0;
+  return Number.isInteger(event.deltaY) && Math.abs(event.deltaY) >= 50;
 }
 
 const MAP_W = 200;
@@ -1005,15 +1010,9 @@ function pendingPath(layouts: Map<string, NodeLayout>, drag: DragState, aims: Ai
     : wirePath(drag.current, anchor, undefined, anchor);
 }
 
-/** A wire being pulled: in its node's colour for the flow, its type's for a value. */
-function pendingStroke(
-  layouts: Map<string, NodeLayout>,
-  source: NonNullable<DragState["pin"]>,
-  color: (type: string) => string
-): string {
-  if (source.pin.pin.type !== "exec") return color(source.pin.pin.type);
-  const layout = layouts.get(source.nodeId);
-  return layout ? accentOf(layout.spec) : color("exec");
+/** A wire being pulled: white for the flow, its type's colour for a value. */
+function pendingStroke(source: NonNullable<DragState["pin"]>, color: (type: string) => string): string {
+  return source.pin.pin.type === "exec" ? EXEC_STROKE : color(source.pin.pin.type);
 }
 
 function rectOf(a: Point, b: Point): Bounds {

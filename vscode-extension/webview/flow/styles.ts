@@ -12,10 +12,11 @@ export const FLOW_STYLE = `
   --warn: var(--vscode-editorWarning-foreground, #cca700);
   --ok: var(--vscode-testing-iconPassed, #3fb950);
   --radius: 8px;
-  /* Exec pins and wires are "white" semantically; on a light theme white is
-     invisible, so the flow colour follows the foreground instead. */
-  --flow-exec: var(--vscode-editor-foreground, var(--vscode-foreground, #e6e6e6));
+  /* Exec pins and wires are white; on a light theme white is invisible, so
+     there the flow follows the foreground instead. */
+  --flow-exec: #ffffff;
 }
+body.vscode-light { --flow-exec: var(--vscode-editor-foreground, #333333); }
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
@@ -301,8 +302,8 @@ input[type="checkbox"] { width: auto; }
   fill: none; stroke-width: 2.2; stroke-linecap: round; pointer-events: none;
   transition: stroke-opacity .2s ease;
 }
-/* The flow is a solid line from one node's colour into the next; a value runs
-   dashed in its type's colour, and its dashes move while it is being passed. */
+/* The flow is a solid white line; a value runs dashed in its type's colour,
+   and its dashes move while it is being passed. */
 .flow-wire.exec { stroke-width: 2.6; }
 .flow-wire.data { stroke-dasharray: 6 5; }
 .flow-wire.data.lit { animation: flow-ring 600ms linear infinite; }

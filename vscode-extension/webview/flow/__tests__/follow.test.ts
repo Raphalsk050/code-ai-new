@@ -427,6 +427,10 @@ test("a Magic Mouse slide moves the camera, a wheel notch zooms, a pinch zooms",
   assert.equal(wheelGesture({ ...base, deltaY: 100, wheelDeltaY: -120 }), "wheel");
   assert.equal(wheelGesture({ ...base, deltaY: 125, wheelDeltaY: -120 }), "wheel");
   assert.equal(wheelGesture({ ...base, deltaY: -3, ctrlKey: true }), "pinch");
+  assert.equal(wheelGesture({ ...base, deltaY: -2.75, ctrlKey: true, wheelDeltaY: 3 }), "pinch");
+  // Ctrl+wheel is a notch, not a pinch: one toolbar step, never ~3x.
+  assert.equal(wheelGesture({ ...base, deltaY: 100, ctrlKey: true, wheelDeltaY: -120 }), "wheel");
+  assert.equal(wheelGesture({ ...base, deltaY: -53, ctrlKey: true, wheelDeltaY: 120 }), "wheel");
   assert.equal(wheelGesture({ ...base, deltaY: 3, deltaMode: 1 }), "wheel");
   // The momentum of a slide that happens to land on 120 is still the slide.
   assert.equal(wheelGesture({ ...base, deltaY: 40, wheelDeltaY: -120 }, true), "pan");

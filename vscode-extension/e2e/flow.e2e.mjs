@@ -1240,6 +1240,10 @@ export const tests = {
     }
 
     await ui.page.waitForSelector('[data-testid="activity-n6"]');
+    // The node is opening on its spring: until it is wide, the line is cut short.
+    await ui.page
+      .waitForFunction(() => document.querySelector('[data-testid="activity-n6"]')?.textContent.includes("step 2"), null, { timeout: 2000 })
+      .catch(() => {});
     const line = await ui.page.locator('[data-testid="activity-n6"]').textContent();
     // The tool it is in, and a step count that moved twice.
     assert(line.includes("grep_search"), `no tool on the node: ${JSON.stringify(line)}`);
