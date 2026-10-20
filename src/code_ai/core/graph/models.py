@@ -34,6 +34,9 @@ SCHEMA_VERSION = 1
 MAX_NODES = 400
 MAX_EDGES = 1200
 MAX_VARIABLES = 100
+MAX_FUNCTIONS = 50
+# A function's inputs or outputs.
+MAX_PARAMS = 16
 # A Sequence's outputs, an Append's parts: how far "+ Add pin" goes.
 MAX_DYNAMIC_PINS = 12
 
@@ -72,6 +75,11 @@ class NodeKind(StrEnum):
     TO_BOOL = "to_bool"
     # An annotation, Unreal-style: never runs, only names and groups.
     COMMENT = "comment"
+    # Functions, Blueprint-style: a graph of its own, entered at its Entry node
+    # and left at a Return, called from anywhere by a Call node.
+    FUNCTION_ENTRY = "function_entry"
+    FUNCTION_RETURN = "function_return"
+    CALL_FUNCTION = "call_function"
 
 
 class PinType(StrEnum):
@@ -103,6 +111,15 @@ PIN_COLORS: dict[str, str] = {
 # The types a user-declared variable may have. Deliberately scalar: a graph
 # variable is a knob, not a data structure.
 VARIABLE_TYPES: tuple[str, ...] = (PinType.STRING, PinType.INT, PinType.FLOAT, PinType.BOOL)
+
+# What a function may take or give back: any data, never the flow itself.
+PARAM_TYPES: tuple[str, ...] = (
+    *VARIABLE_TYPES,
+    PinType.MODEL,
+    PinType.PROFESSION,
+    PinType.TOOLS,
+    PinType.ANY,
+)
 
 # The switches that say what an agent may touch: node field, the capability it
 # grants, and its label. The interpreter only sees field names; the executor
@@ -249,6 +266,10 @@ class NodeKindSpec:
     max_instances: int = 0  # 0 = unlimited
     # Drawn and saved but never compiled into the program: a comment box.
     annotation: bool = False
+    # Pins that come from a function's signature, copied into data["signature"]:
+    # "params_out" (an Entry hands its inputs on), "results_in" (a Return takes
+    # its outputs), or "call" (both, the other way round).
+    signature: str = ""
 
     @property
     def pure(self) -> bool:
@@ -276,6 +297,7 @@ class NodeKindSpec:
             "pure": self.pure,
             "max_instances": self.max_instances,
             "annotation": self.annotation,
+            "signature": self.signature,
             "pins": [pin.payload() for pin in self.pins],
             "fields": [item.payload() for item in self.fields],
         }
@@ -361,7 +383,63 @@ def expanded_pins(spec: NodeKindSpec, data: dict[str, Any]) -> list[PinSpec]:
         for index in range(dynamic_count(data, pin.direction)):
             label = pin.label.replace("#", str(index)) if "#" in pin.label else str(index)
             pins.append(dataclasses.replace(pin, name=f"{base}_{index}", label=label))
+    if spec.signature:
+        pins.extend(signature_pins(spec.signature, data.get("signature")))
     return pins
+
+
+def signature_params(raw: Any, side: str) -> list[dict[str, str]]:
+    """A signature's ``inputs`` or ``outputs``, each as {id, name, type}, junk dropped."""
+
+    rows = raw.get(side) if isinstance(raw, dict) else None
+    if not isinstance(rows, list):
+        return []
+    params: list[dict[str, str]] = []
+    for row in rows[:MAX_PARAMS]:
+        if not isinstance(row, dict) or not isinstance(row.get("id"), str) or not row["id"]:
+            continue
+        kind = row.get("type")
+        params.append(
+            {
+                "id": row["id"],
+                "name": str(row.get("name") or row["id"]),
+                "type": kind if kind in PARAM_TYPES else PinType.ANY,
+            }
+        )
+    return params
+
+
+def signature_pins(mode: str, raw: Any) -> list[PinSpec]:
+    """The data pins a function's signature puts on an Entry, a Return or a Call.
+
+    A pin is named by its parameter's id, so renaming a parameter keeps its wires.
+    """
+
+    def pins(side: str, direction: str) -> list[PinSpec]:
+        return [
+            PinSpec(name=row["id"], type=row["type"], direction=direction, label=row["name"])
+            for row in signature_params(raw, side)
+        ]
+
+    if mode == "params_out":
+        return pins("inputs", "out")
+    if mode == "results_in":
+        return pins("outputs", "in")
+    if mode == "call":
+        return [*pins("inputs", "in"), *pins("outputs", "out")]
+    return []
+
+
+def node_pin(spec: NodeKindSpec, data: dict[str, Any], name: str, direction: str) -> PinSpec | None:
+    """A pin by name on this node, its signature's included."""
+
+    found = spec.pin(name, direction)
+    if found is not None or not spec.signature:
+        return found
+    for pin in signature_pins(spec.signature, data.get("signature")):
+        if pin.name == name and pin.direction == direction:
+            return pin
+    return None
 
 
 _KIND_LIST: tuple[NodeKindSpec, ...] = (
@@ -791,6 +869,32 @@ _KIND_LIST: tuple[NodeKindSpec, ...] = (
             FieldSpec(name="value", kind="textarea", label="Value", default=""),
         ),
     ),
+    # -- functions ------------------------------------------------------------
+    NodeKindSpec(
+        kind=NodeKind.FUNCTION_ENTRY,
+        title="Entry",
+        description="Where a function begins. Its pins are what the function is given.",
+        category="function",
+        pins=(_exec_out(),),
+        signature="params_out",
+    ),
+    NodeKindSpec(
+        kind=NodeKind.FUNCTION_RETURN,
+        title="Return",
+        description="Ends the function and hands its outputs back to the caller.",
+        category="function",
+        pins=(_exec_in(),),
+        signature="results_in",
+    ),
+    NodeKindSpec(
+        kind=NodeKind.CALL_FUNCTION,
+        title="Call function",
+        description="Runs one of this graph's functions and goes on once it returns.",
+        category="function",
+        pins=(_exec_in(), _exec_out()),
+        fields=(FieldSpec(name="function", kind="function", label="Function", default=""),),
+        signature="call",
+    ),
     # -- pure functions -----------------------------------------------------
     NodeKindSpec(
         kind=NodeKind.MATH,
@@ -1090,6 +1194,7 @@ def catalog_payload(
         "node_kinds": [spec.payload() for spec in _KIND_LIST],
         "pin_colors": {str(key): value for key, value in PIN_COLORS.items()},
         "variable_types": [str(item) for item in VARIABLE_TYPES],
+        "param_types": [str(item) for item in PARAM_TYPES],
         "professions": professions or [],
         "permissions": [
             {"field": field, "capability": capability, "label": label}
@@ -1097,7 +1202,13 @@ def catalog_payload(
         ],
         "tools": tools or [],
         "tool_groups": [{"name": name, "title": title} for name, title in TOOL_GROUPS],
-        "limits": {"nodes": MAX_NODES, "edges": MAX_EDGES, "variables": MAX_VARIABLES},
+        "limits": {
+            "nodes": MAX_NODES,
+            "edges": MAX_EDGES,
+            "variables": MAX_VARIABLES,
+            "functions": MAX_FUNCTIONS,
+            "params": MAX_PARAMS,
+        },
     }
 
 
@@ -1164,6 +1275,49 @@ class ViewSpec(BaseModel):
     zoom: float = 1.0
 
 
+class ParamSpec(BaseModel):
+    """One input or output of a function. Its id names the pin, so a rename keeps the wires."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    name: str
+    type: str = PinType.ANY
+
+    @field_validator("type")
+    @classmethod
+    def _known_type(cls, value: str) -> str:
+        if value not in PARAM_TYPES:
+            raise ValueError(f"parameter type must be one of {', '.join(PARAM_TYPES)}")
+        return value
+
+
+class FunctionSpec(BaseModel):
+    """A graph of its own inside the document, run by Call nodes.
+
+    ``collapsed`` marks one made by collapsing a selection, Unreal's collapsed
+    graph: it runs the same way, but the palette does not offer it for reuse.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    name: str
+    description: str = ""
+    collapsed: bool = False
+    inputs: list[ParamSpec] = Field(default_factory=list)
+    outputs: list[ParamSpec] = Field(default_factory=list)
+    nodes: list[NodeSpec] = Field(default_factory=list)
+    edges: list[EdgeSpec] = Field(default_factory=list)
+    view: ViewSpec = Field(default_factory=ViewSpec)
+
+    def signature(self) -> dict[str, Any]:
+        return {
+            "inputs": [param.model_dump() for param in self.inputs],
+            "outputs": [param.model_dump() for param in self.outputs],
+        }
+
+
 class GraphDoc(BaseModel):
     """A `*.flow.json` file, parsed but not yet validated as a program."""
 
@@ -1175,6 +1329,7 @@ class GraphDoc(BaseModel):
     nodes: list[NodeSpec] = Field(default_factory=list)
     edges: list[EdgeSpec] = Field(default_factory=list)
     view: ViewSpec = Field(default_factory=ViewSpec)
+    functions: list[FunctionSpec] = Field(default_factory=list)
 
     def node(self, node_id: str) -> NodeSpec | None:
         for item in self.nodes:
@@ -1205,7 +1360,15 @@ class GraphScaffold:
 
 # Key order used when a graph is written back to disk. A node nudged four pixels
 # must not reorder the file, or every save becomes an unreadable diff.
-DOC_KEY_ORDER: tuple[str, ...] = ("version", "name", "variables", "nodes", "edges", "view")
+DOC_KEY_ORDER: tuple[str, ...] = (
+    "version",
+    "name",
+    "variables",
+    "nodes",
+    "edges",
+    "view",
+    "functions",
+)
 NODE_KEY_ORDER: tuple[str, ...] = ("id", "kind", "pos", "data")
 EDGE_KEY_ORDER: tuple[str, ...] = ("id", "kind", "from", "to")
 VARIABLE_KEY_ORDER: tuple[str, ...] = ("id", "name", "type", "default")

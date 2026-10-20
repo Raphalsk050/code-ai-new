@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 48,
-  "patch": 7,
-  "build": 132,
+  "minor": 49,
+  "patch": 0,
+  "build": 133,
   "updated": "2026-10-20",
-  "note": "Flow: broken nodes off the run's path warn instead of blocking Run"
+  "note": "Graph: functions with Entry, Return and Call nodes (backend)"
 }

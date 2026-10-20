@@ -24,7 +24,13 @@ from enum import StrEnum
 from typing import Any, Protocol
 
 from code_ai.core.graph.functions import evaluate, is_function, text_of
-from code_ai.core.graph.models import PERMISSION_FIELDS, NodeKind, PinType, expanded_pins
+from code_ai.core.graph.models import (
+    PERMISSION_FIELDS,
+    NodeKind,
+    PinType,
+    expanded_pins,
+    node_pin,
+)
 from code_ai.core.graph.program import GraphProgram, NodeProgram
 
 # How the interpreter talks to the outside world: one async callable per event.
@@ -254,6 +260,10 @@ class _LoopHead:
 _Step = _Visit | _SequenceStep | _LoopHead
 
 
+class _Return(Exception):
+    """Raised by a Return node to leave the function graph it is in."""
+
+
 class _Stop(Exception):
     """Raised inside the walk to unwind it: End, cancel, or a budget."""
 
@@ -297,6 +307,8 @@ class GraphInterpreter:
         self._deadline = 0.0
         self._result: Any = None
         self._last_report = ""
+        # The Call nodes whose functions are running, innermost last.
+        self._calls: list[str] = []
 
     @property
     def cancel_event(self) -> asyncio.Event:
@@ -359,7 +371,12 @@ class GraphInterpreter:
             raise _Stop(RunStatus.FAILED, "The graph has no Start node.")
         # Start is walked into like any other node, so the editor lights it up
         # and the node counter agrees with what the user sees.
-        stack: list[_Step] = [_Visit(start.id)]
+        await self._walk_from(start.id)
+
+    async def _walk_from(self, first: str) -> None:
+        """Run the flow from ``first`` until nothing is left to do on this graph."""
+
+        stack: list[_Step] = [_Visit(first)]
 
         while stack:
             self._checkpoint()
@@ -423,6 +440,19 @@ class GraphInterpreter:
         )
         try:
             summary = await self._dispatch(node, stack)
+        except _Return:
+            await self._emit(
+                "graph.node.completed",
+                {
+                    "run_id": self._run_id,
+                    "node_id": node.id,
+                    "kind": node.kind,
+                    "status": "completed",
+                    "summary": "",
+                    "seconds": round(time.monotonic() - started, 2),
+                },
+            )
+            raise
         except _Stop as stop:
             # End is a normal completion, so the node still reports as done
             # before the walk unwinds - the editor must not leave it spinning.
@@ -492,6 +522,14 @@ class GraphInterpreter:
                 return await self._run_user_chat(node, stack)
             case NodeKind.VAR_SET:
                 return await self._run_var_set(node, stack)
+            case NodeKind.FUNCTION_ENTRY:
+                await self._enter(node, "out", stack)
+                return ""
+            case NodeKind.CALL_FUNCTION:
+                return await self._run_call(node, stack)
+            case NodeKind.FUNCTION_RETURN:
+                await self._run_return(node)
+                return ""
             case _:
                 # A pure node reached by an exec wire cannot happen (the
                 # compiler refuses the wire), so this is a genuine bug.
@@ -566,6 +604,35 @@ class GraphInterpreter:
         self._last_report = report
         await self._enter(node, "out", stack)
         return report
+
+    async def _run_call(self, node: NodeProgram, stack: list[_Step]) -> str:
+        function = self._program.functions.get(str(node.data.get("function") or ""))
+        if function is None:
+            raise RuntimeError("the function this node calls is gone")
+        # What the call is given becomes what its Entry hands on, before anything inside reads it.
+        for param in function.inputs:
+            self._outputs[(function.entry_id, param)] = await self._pull(node, param)
+        for param in function.outputs:
+            self._outputs.pop((node.id, param), None)
+        self._calls.append(node.id)
+        try:
+            await self._walk_from(function.entry_id)
+        except _Return:
+            pass
+        finally:
+            self._calls.pop()
+        await self._enter(node, "out", stack)
+        given = [self._outputs.get((node.id, param)) for param in function.outputs]
+        return ", ".join(_preview(value) for value in given if value is not None)
+
+    async def _run_return(self, node: NodeProgram) -> None:
+        if not self._calls:
+            raise RuntimeError("a Return ran outside any call")
+        caller = self._calls[-1]
+        for spec in expanded_pins(node.spec, node.data):
+            if spec.direction == "in" and spec.type != PinType.EXEC:
+                self._outputs[(caller, spec.name)] = await self._pull(node, spec.name)
+        raise _Return()
 
     async def _run_print(self, node: NodeProgram, stack: list[_Step]) -> str:
         value = await self._pull(node, "value")
@@ -726,6 +793,11 @@ class GraphInterpreter:
         node = self._program.node(node_id)
         if node is None:
             return None
+        # A parameter or a result left empty is empty, not a node that has yet to run.
+        if node.kind in (NodeKind.FUNCTION_ENTRY, NodeKind.CALL_FUNCTION) and (
+            (node_id, pin) in self._outputs
+        ):
+            return None
         if node.kind == NodeKind.MODEL:
             binding = _binding_from(node)
             self._outputs[(node_id, pin)] = binding
@@ -778,7 +850,7 @@ class GraphInterpreter:
         return value
 
     def _coerce_pin(self, node: NodeProgram, pin: str, value: Any) -> Any:
-        spec = node.spec.pin(pin, "in")
+        spec = node_pin(node.spec, node.data, pin, "in")
         if spec is None:
             return value
         return _coerce(value, str(spec.type))

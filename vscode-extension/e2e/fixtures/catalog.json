@@ -10,6 +10,7 @@
       "pure": false,
       "max_instances": 1,
       "annotation": false,
+      "signature": "",
       "pins": [
         {
           "name": "out",
@@ -32,6 +33,7 @@
       "pure": false,
       "max_instances": 0,
       "annotation": false,
+      "signature": "",
       "pins": [
         {
           "name": "in",
@@ -64,6 +66,7 @@
       "pure": true,
       "max_instances": 0,
       "annotation": false,
+      "signature": "",
       "pins": [
         {
           "name": "model",
@@ -172,6 +175,7 @@
       "pure": false,
       "max_instances": 0,
       "annotation": false,
+      "signature": "",
       "pins": [
         {
           "name": "in",
@@ -372,6 +376,7 @@
       "pure": true,
       "max_instances": 0,
       "annotation": false,
+      "signature": "",
       "pins": [
         {
           "name": "profession",
@@ -503,6 +508,7 @@
       "pure": false,
       "max_instances": 0,
       "annotation": false,
+      "signature": "",
       "pins": [
         {
           "name": "in",
@@ -612,6 +618,7 @@
       "pure": true,
       "max_instances": 0,
       "annotation": false,
+      "signature": "",
       "pins": [
         {
           "name": "tools",
@@ -653,6 +660,7 @@
       "pure": false,
       "max_instances": 0,
       "annotation": false,
+      "signature": "",
       "pins": [
         {
           "name": "in",
@@ -695,6 +703,7 @@
       "pure": false,
       "max_instances": 0,
       "annotation": false,
+      "signature": "",
       "pins": [
         {
           "name": "in",
@@ -798,6 +807,7 @@
       "pure": false,
       "max_instances": 0,
       "annotation": false,
+      "signature": "",
       "pins": [
         {
           "name": "in",
@@ -922,6 +932,7 @@
       "pure": false,
       "max_instances": 0,
       "annotation": false,
+      "signature": "",
       "pins": [
         {
           "name": "in",
@@ -993,6 +1004,7 @@
       "pure": false,
       "max_instances": 0,
       "annotation": false,
+      "signature": "",
       "pins": [
         {
           "name": "in",
@@ -1075,6 +1087,7 @@
       "pure": true,
       "max_instances": 0,
       "annotation": false,
+      "signature": "",
       "pins": [
         {
           "name": "value",
@@ -1107,6 +1120,7 @@
       "pure": false,
       "max_instances": 0,
       "annotation": false,
+      "signature": "",
       "pins": [
         {
           "name": "in",
@@ -1161,6 +1175,95 @@
       ]
     },
     {
+      "kind": "function_entry",
+      "title": "Entry",
+      "description": "Where a function begins. Its pins are what the function is given.",
+      "category": "function",
+      "pure": false,
+      "max_instances": 0,
+      "annotation": false,
+      "signature": "params_out",
+      "pins": [
+        {
+          "name": "out",
+          "type": "exec",
+          "direction": "out",
+          "label": "out",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#FFFFFF"
+        }
+      ],
+      "fields": []
+    },
+    {
+      "kind": "function_return",
+      "title": "Return",
+      "description": "Ends the function and hands its outputs back to the caller.",
+      "category": "function",
+      "pure": false,
+      "max_instances": 0,
+      "annotation": false,
+      "signature": "results_in",
+      "pins": [
+        {
+          "name": "in",
+          "type": "exec",
+          "direction": "in",
+          "label": "in",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#FFFFFF"
+        }
+      ],
+      "fields": []
+    },
+    {
+      "kind": "call_function",
+      "title": "Call function",
+      "description": "Runs one of this graph's functions and goes on once it returns.",
+      "category": "function",
+      "pure": false,
+      "max_instances": 0,
+      "annotation": false,
+      "signature": "call",
+      "pins": [
+        {
+          "name": "in",
+          "type": "exec",
+          "direction": "in",
+          "label": "in",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#FFFFFF"
+        },
+        {
+          "name": "out",
+          "type": "exec",
+          "direction": "out",
+          "label": "out",
+          "required": false,
+          "dynamic": false,
+          "multi": false,
+          "color": "#FFFFFF"
+        }
+      ],
+      "fields": [
+        {
+          "name": "function",
+          "kind": "function",
+          "label": "Function",
+          "default": "",
+          "options": [],
+          "help": "",
+          "group": ""
+        }
+      ]
+    },
+    {
       "kind": "math",
       "title": "Math",
       "description": "Arithmetic on two numbers. Int works in whole numbers, float keeps the fraction; text on a pin gives up its first number.",
@@ -1168,6 +1271,7 @@
       "pure": true,
       "max_instances": 0,
       "annotation": false,
+      "signature": "",
       "pins": [
         {
           "name": "a",
@@ -1259,6 +1363,7 @@
       "pure": true,
       "max_instances": 0,
       "annotation": false,
+      "signature": "",
       "pins": [
         {
           "name": "a",
@@ -1336,6 +1441,7 @@
       "pure": true,
       "max_instances": 0,
       "annotation": false,
+      "signature": "",
       "pins": [
         {
           "name": "a",
@@ -1411,6 +1517,7 @@
       "pure": true,
       "max_instances": 0,
       "annotation": false,
+      "signature": "",
       "pins": [
         {
           "name": "condition",
@@ -1491,6 +1598,7 @@
       "pure": true,
       "max_instances": 0,
       "annotation": false,
+      "signature": "",
       "pins": [
         {
           "name": "in_0",
@@ -1543,6 +1651,7 @@
       "pure": true,
       "max_instances": 0,
       "annotation": false,
+      "signature": "",
       "pins": [
         {
           "name": "template",
@@ -1605,6 +1714,7 @@
       "pure": true,
       "max_instances": 0,
       "annotation": false,
+      "signature": "",
       "pins": [
         {
           "name": "text",
@@ -1662,6 +1772,7 @@
       "pure": true,
       "max_instances": 0,
       "annotation": false,
+      "signature": "",
       "pins": [
         {
           "name": "text",
@@ -1751,6 +1862,7 @@
       "pure": true,
       "max_instances": 0,
       "annotation": false,
+      "signature": "",
       "pins": [
         {
           "name": "text",
@@ -1836,6 +1948,7 @@
       "pure": true,
       "max_instances": 0,
       "annotation": false,
+      "signature": "",
       "pins": [
         {
           "name": "text",
@@ -1878,6 +1991,7 @@
       "pure": true,
       "max_instances": 0,
       "annotation": false,
+      "signature": "",
       "pins": [
         {
           "name": "text",
@@ -1958,6 +2072,7 @@
       "pure": true,
       "max_instances": 0,
       "annotation": false,
+      "signature": "",
       "pins": [
         {
           "name": "text",
@@ -2029,6 +2144,7 @@
       "pure": true,
       "max_instances": 0,
       "annotation": false,
+      "signature": "",
       "pins": [
         {
           "name": "value",
@@ -2085,6 +2201,7 @@
       "pure": true,
       "max_instances": 0,
       "annotation": false,
+      "signature": "",
       "pins": [
         {
           "name": "value",
@@ -2127,6 +2244,7 @@
       "pure": true,
       "max_instances": 0,
       "annotation": false,
+      "signature": "",
       "pins": [
         {
           "name": "value",
@@ -2169,6 +2287,7 @@
       "pure": true,
       "max_instances": 0,
       "annotation": false,
+      "signature": "",
       "pins": [
         {
           "name": "value",
@@ -2211,6 +2330,7 @@
       "pure": false,
       "max_instances": 0,
       "annotation": true,
+      "signature": "",
       "pins": [],
       "fields": [
         {
@@ -2289,6 +2409,16 @@
     "int",
     "float",
     "bool"
+  ],
+  "param_types": [
+    "string",
+    "int",
+    "float",
+    "bool",
+    "model",
+    "profession",
+    "tools",
+    "any"
   ],
   "professions": [
     {
@@ -3078,6 +3208,8 @@
     "nodes": 400,
     "edges": 1200,
     "variables": 100,
+    "functions": 50,
+    "params": 16,
     "run": {
       "max_nodes_executed": 200,
       "max_seconds": 3600,

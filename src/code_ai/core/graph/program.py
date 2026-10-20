@@ -61,6 +61,19 @@ class NodeProgram:
 
 
 @dataclass(frozen=True, slots=True)
+class FunctionProgram:
+    """A function's graph, as a Call node needs it: where to go in, and what it takes and gives."""
+
+    id: str
+    name: str
+    entry_id: str
+    # Parameter ids, which are also the pin names on its Entry, Return and Calls.
+    inputs: tuple[str, ...]
+    outputs: tuple[str, ...]
+    node_ids: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True, slots=True)
 class GraphProgram:
     """A validated graph, ready to run."""
 
@@ -72,6 +85,7 @@ class GraphProgram:
     # Resolved output type per pure node pin, so a var_get reports the declared
     # type of the variable it reads rather than "any".
     pin_types: dict[tuple[str, str], str] = field(default_factory=dict)
+    functions: dict[str, FunctionProgram] = field(default_factory=dict)
 
     def node(self, node_id: str) -> NodeProgram | None:
         return self.nodes.get(node_id)

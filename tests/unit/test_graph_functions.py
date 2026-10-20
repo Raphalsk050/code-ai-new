@@ -1,184 +1,322 @@
-"""The pure function nodes, one computation at a time."""
+"""Functions, Blueprint-style: a graph of its own, entered at its Entry, left at a
+Return, and run by Call nodes from the main graph or from another function."""
 
 from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
-from code_ai.core.graph.functions import evaluate, is_function, number_of, text_of
-
-
-def run(kind: str, pin: str = "result", **inputs: Any) -> tuple[Any, list[str]]:
-    data = inputs.pop("data", {})
-    warnings: list[str] = []
-    return evaluate(kind, data, inputs, pin, warnings.append), warnings
+from code_ai.core.graph.compile import compile_graph
+from code_ai.core.graph.models import NODE_KINDS, catalog_payload, expanded_pins
+from code_ai.core.graph.runtime import RunStatus
+from tests.unit.test_graph_runtime import PROFESSIONS, FakeExecutor, doc, node, run, wire
 
 
-def value(kind: str, pin: str = "result", **inputs: Any) -> Any:
-    return run(kind, pin, **inputs)[0]
+def function(
+    function_id: str,
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    *,
+    inputs: list[tuple[str, str, str]] = (),
+    outputs: list[tuple[str, str, str]] = (),
+    name: str = "",
+) -> dict[str, Any]:
+    return {
+        "id": function_id,
+        "name": name or function_id,
+        "inputs": [{"id": pid, "name": pname, "type": ptype} for pid, pname, ptype in inputs],
+        "outputs": [{"id": pid, "name": pname, "type": ptype} for pid, pname, ptype in outputs],
+        "nodes": nodes,
+        "edges": edges,
+        "view": {"pan": [0, 0], "zoom": 1},
+    }
 
 
-# -- math ----------------------------------------------------------------------
+def summarize() -> dict[str, Any]:
+    """Takes a topic, has an agent write about it, hands the report back."""
 
-
-@pytest.mark.parametrize(
-    ("op", "a", "b", "expected"),
-    [
-        ("add", 2, 3, 5.0),
-        ("subtract", 2, 3, -1.0),
-        ("multiply", 2.5, 4, 10.0),
-        ("divide", 7, 2, 3.5),
-        ("modulo", 7, 3, 1.0),
-        ("power", 2, 10, 1024.0),
-        ("min", 2, 3, 2.0),
-        ("max", 2, 3, 3.0),
-    ],
-)
-def test_float_math(op: str, a: float, b: float, expected: float) -> None:
-    assert value("math", a=a, b=b, data={"op": op}) == pytest.approx(expected)
-
-
-def test_int_math_works_in_whole_numbers_and_truncates_division() -> None:
-    assert value("math", a=7, b=2, data={"op": "divide", "type": "int"}) == 3
-    assert value("math", a=-7, b=2, data={"op": "divide", "type": "int"}) == -3
-    assert value("math", a=2.9, b=1, data={"op": "add", "type": "int"}) == 3
-    assert isinstance(value("math", a=1, b=1, data={"op": "add", "type": "int"}), int)
-
-
-def test_text_on_a_math_pin_gives_up_its_first_number() -> None:
-    assert value("math", a="nota 8/10", b="1", data={"op": "add"}) == pytest.approx(9.0)
-
-
-def test_division_by_zero_is_zero_and_says_so() -> None:
-    result, warnings = run("math", a=1, b=0, data={"op": "divide"})
-
-    assert result == 0.0
-    assert warnings and "division by zero" in warnings[0]
-
-
-def test_a_power_with_no_real_result_is_zero_and_says_so() -> None:
-    result, warnings = run("math", a=-8, b=0.5, data={"op": "power"})
-
-    assert result == 0.0
-    assert warnings
-
-
-# -- logic ---------------------------------------------------------------------
-
-
-def test_numbers_compare_as_numbers_and_text_as_text() -> None:
-    assert value("compare", a="10", b="9", data={"op": "greater"}) is True
-    assert value("compare", a="banana", b="apple", data={"op": "greater"}) is True
-    assert value("compare", a=3, b="3.0", data={"op": "equal"}) is True
-    assert value("compare", a="ok", b="OK", data={"op": "equal"}) is False
-
-
-@pytest.mark.parametrize(
-    ("op", "a", "b", "expected"),
-    [
-        ("and", True, False, False),
-        ("or", True, False, True),
-        ("xor", True, True, False),
-        ("not", False, True, True),
-    ],
-)
-def test_logic(op: str, a: bool, b: bool, expected: bool) -> None:
-    assert value("logic", a=a, b=b, data={"op": op}) is expected
-
-
-def test_select_picks_by_the_condition() -> None:
-    assert value("select", "value", condition=True, if_true="sim", if_false="nao") == "sim"
-    assert value("select", "value", condition="false", if_true="sim", if_false="nao") == "nao"
-
-
-# -- text ------------------------------------------------------------------------
-
-
-def test_append_joins_its_parts_in_pin_order() -> None:
-    joined = value("append", in_1="Mendel", in_0="Goodall", in_2="!", data={"separator": "\\n"})
-
-    assert joined == "Goodall\nMendel\n!"
-
-
-def test_format_fills_numbered_placeholders_and_leaves_unknown_ones() -> None:
-    filled = value("format", template="{0} disse: {1} {2}", arg_0="Ana", arg_1="oi")
-
-    assert filled == "Ana disse: oi {2}"
-
-
-def test_text_case() -> None:
-    assert value("text_case", text=" ola ", data={"op": "trim"}) == "ola"
-    assert value("text_case", text="ola", data={"op": "upper"}) == "OLA"
-    assert value("text_case", text="ola mundo", data={"op": "capitalize"}) == "Ola mundo"
-
-
-def test_replace_honours_case_sensitivity() -> None:
-    assert value("text_replace", text="Oi oi", find="oi", replace_with="tchau") == "Oi tchau"
-    assert (
-        value(
-            "text_replace",
-            text="Oi oi",
-            find="oi",
-            replace_with="tchau",
-            data={"case_sensitive": False},
-        )
-        == "tchau tchau"
+    return function(
+        "f1",
+        [
+            node("f1.entry", "function_entry"),
+            node("f1.agent", "profession", profession="architect"),
+            node("f1.return", "function_return"),
+        ],
+        [
+            wire("f1.e1", ("f1.entry", "out"), ("f1.agent", "in")),
+            wire("f1.e2", ("f1.entry", "p1"), ("f1.agent", "task"), "data"),
+            wire("f1.e3", ("f1.agent", "out"), ("f1.return", "in")),
+            wire("f1.e4", ("f1.agent", "report"), ("f1.return", "p2"), "data"),
+        ],
+        inputs=[("p1", "topic", "string")],
+        outputs=[("p2", "summary", "string")],
+        name="Summarize",
     )
 
 
-def test_text_check_ignores_case_unless_told() -> None:
-    assert value("text_check", text="Status: APPROVED", part="approved") is True
-    assert (
-        value(
-            "text_check",
-            text="Status: APPROVED",
-            part="approved",
-            data={"case_sensitive": True},
-        )
-        is False
+def calling(*calls: dict[str, Any], functions: list[dict[str, Any]]) -> dict[str, Any]:
+    """Start -> each call in turn, each followed by a Print of its first output -> End."""
+
+    nodes = [node("start", "start")]
+    edges = []
+    previous = ("start", "out")
+    for index, call in enumerate(calls):
+        show = f"show{index}"
+        nodes += [call, node(show, "print")]
+        edges += [
+            wire(f"c{index}", previous, (call["id"], "in")),
+            wire(f"s{index}", (call["id"], "out"), (show, "in")),
+            wire(f"v{index}", (call["id"], "p2"), (show, "value"), "data"),
+        ]
+        previous = (show, "out")
+    nodes.append(node("end", "end"))
+    edges.append(wire("last", previous, ("end", "in")))
+    return doc(nodes, edges, functions=functions)
+
+
+async def test_a_call_runs_its_function_with_what_it_is_given_and_gets_the_result_back() -> None:
+    call = node("call", "call_function", function="f1", p1="the importer")
+    graph = calling(call, functions=[summarize()])
+    executor = FakeExecutor(reports={"f1.agent": lambda task: f"about {task}"})
+
+    outcome, recorder, _ = await run(graph, executor)
+
+    assert outcome.status is RunStatus.COMPLETED
+    assert recorder.node_order() == [
+        *("start", "call", "f1.entry", "f1.agent", "f1.return"),
+        *("show0", "end"),
+    ]
+    assert executor.agent_calls[0]["task"] == "the importer"
+    assert recorder.printed() == ["about the importer"]
+
+
+async def test_each_call_gets_its_own_values() -> None:
+    graph = calling(
+        node("a", "call_function", function="f1", p1="one"),
+        node("b", "call_function", function="f1", p1="two"),
+        functions=[summarize()],
     )
-    assert value("text_check", text="  ", data={"op": "is_empty"}) is True
-    assert value("text_check", text="abc", part="ab", data={"op": "starts_with"}) is True
+    executor = FakeExecutor(reports={"f1.agent": lambda task: f"about {task}"})
+
+    outcome, recorder, _ = await run(graph, executor)
+
+    assert outcome.status is RunStatus.COMPLETED
+    assert recorder.printed() == ["about one", "about two"]
 
 
-def test_length_substring_and_split() -> None:
-    assert value("text_length", "length", text="ola") == 3
-    assert value("substring", text="orquestrador", start=0, length=5) == "orque"
-    assert value("substring", text="orquestrador", start=-3, length=0) == "dor"
-    assert value("split", "lines", text="a, b,,c", separator=",") == "a\nb\nc"
-    assert value("split", "count", text="a, b,,c", separator=",") == 3
-    assert value("split", "lines", text="um dois\ntres", separator="") == "um\ndois\ntres"
+async def test_a_return_leaves_the_function_on_the_spot() -> None:
+    body = function(
+        "f1",
+        [
+            node("f1.entry", "function_entry"),
+            node("f1.seq", "sequence", outputs=2),
+            node("f1.return", "function_return", p2="early"),
+            node("f1.never", "print", value="never"),
+        ],
+        [
+            wire("f1.e1", ("f1.entry", "out"), ("f1.seq", "in")),
+            wire("f1.e2", ("f1.seq", "out_0"), ("f1.return", "in")),
+            wire("f1.e3", ("f1.seq", "out_1"), ("f1.never", "in")),
+        ],
+        outputs=[("p2", "summary", "string")],
+    )
+    graph = calling(node("call", "call_function", function="f1"), functions=[body])
+
+    outcome, recorder, _ = await run(graph)
+
+    assert outcome.status is RunStatus.COMPLETED
+    assert "f1.never" not in recorder.node_order()
+    assert recorder.printed() == ["early"]
 
 
-# -- conversions -------------------------------------------------------------------
+async def test_a_function_may_call_another() -> None:
+    outer = function(
+        "f2",
+        [
+            node("f2.entry", "function_entry"),
+            node("f2.call", "call_function", function="f1"),
+            node("f2.return", "function_return"),
+        ],
+        [
+            wire("f2.e1", ("f2.entry", "out"), ("f2.call", "in")),
+            wire("f2.e2", ("f2.entry", "p1"), ("f2.call", "p1"), "data"),
+            wire("f2.e3", ("f2.call", "out"), ("f2.return", "in")),
+            wire("f2.e4", ("f2.call", "p2"), ("f2.return", "p2"), "data"),
+        ],
+        inputs=[("p1", "topic", "string")],
+        outputs=[("p2", "summary", "string")],
+    )
+    graph = calling(
+        node("call", "call_function", function="f2", p1="nesting"), functions=[summarize(), outer]
+    )
+    executor = FakeExecutor(reports={"f1.agent": lambda task: f"about {task}"})
+
+    outcome, recorder, _ = await run(graph, executor)
+
+    assert outcome.status is RunStatus.COMPLETED
+    assert recorder.printed() == ["about nesting"]
 
 
-@pytest.mark.parametrize(
-    ("mode", "given", "expected"),
-    [
-        ("truncate", "7.9", 7),
-        ("round", 2.5, 3),
-        ("round", -2.5, -3),
-        ("floor", -1.2, -2),
-        ("ceil", 1.2, 2),
-        ("truncate", "Nota final: 8/10", 8),
-        ("truncate", "nada aqui", 0),
-    ],
-)
-def test_to_int(mode: str, given: Any, expected: int) -> None:
-    assert value("to_int", value=given, data={"mode": mode}) == expected
+async def test_a_function_changes_the_graphs_variables() -> None:
+    body = function(
+        "f1",
+        [
+            node("f1.entry", "function_entry"),
+            node("f1.set", "var_set", variable="count", value=7),
+            node("f1.return", "function_return"),
+        ],
+        [
+            wire("f1.e1", ("f1.entry", "out"), ("f1.set", "in")),
+            wire("f1.e2", ("f1.set", "out"), ("f1.return", "in")),
+        ],
+    )
+    graph = doc(
+        [node("start", "start"), node("call", "call_function", function="f1"), node("end", "end")],
+        [wire("e1", ("start", "out"), ("call", "in")), wire("e2", ("call", "out"), ("end", "in"))],
+        functions=[body],
+        variables=[{"id": "v1", "name": "count", "type": "int", "default": 0}],
+    )
+
+    outcome, _, _ = await run(graph)
+
+    assert outcome.variables["count"] == 7
 
 
-def test_the_other_conversions() -> None:
-    assert value("to_float", value="7,5") == pytest.approx(7.5)
-    assert value("to_text", value=5.0) == "5"
-    assert value("to_text", value=True) == "true"
-    assert value("to_bool", value="sim") is True
-    assert value("to_bool", value="0") is False
+async def test_an_input_left_unwired_reads_the_calls_own_value_in_its_type() -> None:
+    body = function(
+        "f1",
+        [node("f1.entry", "function_entry"), node("f1.return", "function_return")],
+        [
+            wire("f1.e1", ("f1.entry", "out"), ("f1.return", "in")),
+            wire("f1.e2", ("f1.entry", "p1"), ("f1.return", "p2"), "data"),
+        ],
+        inputs=[("p1", "n", "int")],
+        outputs=[("p2", "n", "int")],
+    )
+    graph = calling(node("call", "call_function", function="f1", p1="41"), functions=[body])
+
+    _, recorder, interpreter = await run(graph)
+
+    assert recorder.printed() == ["41"]
+    assert interpreter._outputs[("call", "p2")] == 41
 
 
-def test_readers_and_the_kind_list() -> None:
-    assert number_of(None) == 0.0
-    assert text_of(None) == ""
-    assert is_function("math") and not is_function("print")
+# -- what the compiler refuses ---------------------------------------------
+
+
+def problems(graph: dict[str, Any]) -> tuple[Any, list[str], list[str]]:
+    program, issues = compile_graph(graph, professions=PROFESSIONS)
+    errors = [item.message for item in issues if item.severity == "error"]
+    warnings = [item.message for item in issues if item.severity == "warning"]
+    return program, errors, warnings
+
+
+def test_a_function_that_calls_itself_is_refused() -> None:
+    body = function(
+        "f1",
+        [
+            node("f1.entry", "function_entry"),
+            node("f1.again", "call_function", function="f1"),
+        ],
+        [wire("f1.e1", ("f1.entry", "out"), ("f1.again", "in"))],
+    )
+    graph = calling(node("call", "call_function", function="f1"), functions=[body])
+
+    program, errors, _ = problems(graph)
+
+    assert program is None
+    assert any("cannot call itself" in message for message in errors)
+
+
+def test_a_wire_between_two_graphs_is_refused() -> None:
+    body = summarize()
+    graph = calling(node("call", "call_function", function="f1"), functions=[body])
+    graph["edges"].append(wire("x", ("f1.agent", "report"), ("end", "result"), "data"))
+
+    program, errors, _ = problems(graph)
+
+    assert program is None
+    assert any("cross from one graph into another" in message for message in errors)
+
+
+def test_start_and_end_stay_in_the_main_graph_and_entry_and_return_in_functions() -> None:
+    body = summarize()
+    # The agent's flow goes to an End instead of the Return.
+    body["nodes"].append(node("f1.end", "end"))
+    body["edges"] = [edge for edge in body["edges"] if edge["id"] != "f1.e3"]
+    body["edges"].append(wire("f1.x", ("f1.agent", "out"), ("f1.end", "in")))
+    graph = calling(node("call", "call_function", function="f1"), functions=[body])
+    graph["nodes"].append(node("stray", "function_return"))
+    graph["edges"].append(wire("y", ("show0", "out"), ("stray", "in")))
+    graph["edges"] = [edge for edge in graph["edges"] if edge["id"] != "last"]
+
+    program, errors, _ = problems(graph)
+
+    assert program is None
+    assert any("belongs to the main graph" in message for message in errors)
+    assert any("belongs inside a function" in message for message in errors)
+
+
+def test_a_function_nobody_calls_only_warns_even_when_broken() -> None:
+    body = summarize()
+    body["nodes"][1]["data"]["profession"] = "no-such-profession"
+    graph = doc(
+        [node("start", "start"), node("end", "end")],
+        [wire("e1", ("start", "out"), ("end", "in"))],
+        functions=[body],
+    )
+
+    program, errors, warnings = problems(graph)
+
+    assert program is not None, errors
+    assert "Nothing calls this function." in warnings
+
+
+def test_a_broken_node_in_a_called_function_blocks_the_run() -> None:
+    body = summarize()
+    body["nodes"][1]["data"]["profession"] = "no-such-profession"
+    graph = calling(node("call", "call_function", function="f1"), functions=[body])
+
+    program, errors, _ = problems(graph)
+
+    assert program is None
+    assert errors
+
+
+def test_a_call_to_nothing_asks_for_its_function() -> None:
+    graph = calling(node("call", "call_function"), functions=[])
+    graph["edges"] = [edge for edge in graph["edges"] if edge["id"] != "v0"]
+
+    program, errors, _ = problems(graph)
+
+    assert program is None
+    assert "Pick the function this node calls." in errors
+
+
+# -- pins ------------------------------------------------------------------
+
+
+def test_a_signature_puts_its_pins_on_the_entry_the_return_and_the_call() -> None:
+    signature = {
+        "inputs": [{"id": "p1", "name": "topic", "type": "string"}],
+        "outputs": [{"id": "p2", "name": "summary", "type": "string"}],
+    }
+
+    def pins(kind: str) -> list[tuple[str, str, str]]:
+        spec = NODE_KINDS[kind]
+        return [
+            (pin.name, pin.direction, pin.label)
+            for pin in expanded_pins(spec, {"signature": signature})
+            if pin.type != "exec"
+        ]
+
+    assert pins("function_entry") == [("p1", "out", "topic")]
+    assert pins("function_return") == [("p2", "in", "summary")]
+    assert pins("call_function") == [("p1", "in", "topic"), ("p2", "out", "summary")]
+
+
+def test_the_catalog_offers_the_function_kinds_and_parameter_types() -> None:
+    catalog = catalog_payload()
+    kinds = {row["kind"]: row for row in catalog["node_kinds"]}
+
+    assert kinds["call_function"]["signature"] == "call"
+    assert "model" in catalog["param_types"] and "exec" not in catalog["param_types"]

@@ -26,7 +26,9 @@ from code_ai.core.graph.models import (
     COMMENT_MOVE_MODES,
     MAX_DYNAMIC_PINS,
     MAX_EDGES,
+    MAX_FUNCTIONS,
     MAX_NODES,
+    MAX_PARAMS,
     MAX_VARIABLES,
     NODE_KINDS,
     NOTE_FIELDS,
@@ -39,8 +41,9 @@ from code_ai.core.graph.models import (
     PinType,
     can_connect,
     expanded_pins,
+    node_pin,
 )
-from code_ai.core.graph.program import GraphProgram, NodeProgram
+from code_ai.core.graph.program import FunctionProgram, GraphProgram, NodeProgram
 
 # An api_key_ref the runtime knows how to resolve. Anything else that looks like
 # a secret is refused: this file is committed, and a leaked key is not a problem
@@ -102,10 +105,14 @@ def compile_graph(
     if doc is None:
         return None, collector.issues
 
-    _check_limits(doc, collector)
-    nodes = _index_nodes(doc, collector)
+    # The main graph and every function's graph are checked and run as one:
+    # ids are unique across all of them, and each node remembers its graph.
+    flat, scopes = _flatten(doc, collector)
+    _check_limits(flat, collector)
+    nodes = _index_nodes(flat, collector)
     variables = _index_variables(doc, collector)
-    edges = _check_edges(doc, nodes, collector)
+    edges = _check_edges(flat, nodes, collector)
+    edges, entries = _check_functions(doc, nodes, edges, scopes, collector)
     start_id = _find_start(doc, collector)
 
     pin_types = _resolve_pin_types(nodes, variables)
@@ -116,13 +123,15 @@ def compile_graph(
     )
     _check_required_inputs(nodes, wired, collector)
     _check_data_cycles(edges, collector)
-    _spare_off_path(doc, nodes, start_id, collector)
+    calls = _calls(nodes, entries)
+    _spare_off_path(flat, nodes, start_id, calls, collector)
 
     if collector.failed:
         return None, collector.issues
 
-    program = _build_program(doc, nodes, variables, edges, start_id, pin_types)
-    _warn_unreachable(program, collector)
+    functions = _function_programs(doc, scopes, entries)
+    program = _build_program(flat, nodes, variables, edges, start_id, pin_types, functions)
+    _warn_unreachable(program, calls, collector)
     return program, collector.issues
 
 
@@ -156,6 +165,197 @@ def _check_limits(doc: GraphDoc, collector: _Collector) -> None:
         collector.error(f"A graph may hold at most {MAX_EDGES} edges ({len(doc.edges)} found).")
     if len(doc.variables) > MAX_VARIABLES:
         collector.error(f"A graph may declare at most {MAX_VARIABLES} variables.")
+
+
+# -- functions --------------------------------------------------------------
+
+
+def _flatten(doc: GraphDoc, collector: _Collector) -> tuple[GraphDoc, dict[str, str]]:
+    """Every graph's nodes and wires in one document, and which graph each node is in.
+
+    An Entry, a Return and a Call get their function's signature stamped into
+    their data: the function is the truth, whatever copy the file carries.
+    """
+
+    if len(doc.functions) > MAX_FUNCTIONS:
+        collector.error(f"A graph may hold at most {MAX_FUNCTIONS} functions.")
+    scopes: dict[str, str] = {node.id: "" for node in doc.nodes}
+    nodes = list(doc.nodes)
+    edges = list(doc.edges)
+    signatures: dict[str, dict[str, Any]] = {}
+    for function in doc.functions:
+        if function.id in signatures or not function.id:
+            collector.error(f"Duplicate or empty function id {function.id!r}.")
+            continue
+        _check_params(function, collector)
+        signatures[function.id] = function.signature()
+        for node in function.nodes:
+            scopes.setdefault(node.id, function.id)
+        nodes.extend(function.nodes)
+        edges.extend(function.edges)
+
+    stamped = []
+    for node in nodes:
+        spec = NODE_KINDS.get(node.kind)
+        if spec is not None and spec.signature:
+            owner = (
+                str(node.data.get("function") or "")
+                if node.kind == NodeKind.CALL_FUNCTION
+                else scopes.get(node.id, "")
+            )
+            signature = signatures.get(owner) or {"inputs": [], "outputs": []}
+            node = node.model_copy(update={"data": {**node.data, "signature": signature}})
+        stamped.append(node)
+    flat = GraphDoc.model_construct(
+        version=doc.version,
+        name=doc.name,
+        variables=doc.variables,
+        nodes=stamped,
+        edges=edges,
+        view=doc.view,
+        functions=[],
+    )
+    return flat, scopes
+
+
+def _check_params(function: Any, collector: _Collector) -> None:
+    if len(function.inputs) > MAX_PARAMS or len(function.outputs) > MAX_PARAMS:
+        collector.error(
+            f"Function {function.name!r} may take and give back at most {MAX_PARAMS} values each."
+        )
+    seen: set[str] = set()
+    names: dict[str, set[str]] = {"inputs": set(), "outputs": set()}
+    for side, rows in (("inputs", function.inputs), ("outputs", function.outputs)):
+        for param in rows:
+            # A parameter's id is its pin's name; "in" and "out" are the flow's.
+            if not param.id or param.id in seen or param.id in ("in", "out"):
+                collector.error(f"Function {function.name!r} has a bad parameter id {param.id!r}.")
+            seen.add(param.id)
+            name = param.name.strip()
+            if not name:
+                collector.error(f"Function {function.name!r} has a parameter without a name.")
+            elif name in names[side]:
+                collector.error(f"Function {function.name!r} has two {side} named {name!r}.")
+            names[side].add(name)
+
+
+def _check_functions(
+    doc: GraphDoc,
+    nodes: dict[str, NodeSpec],
+    edges: list[EdgeSpec],
+    scopes: dict[str, str],
+    collector: _Collector,
+) -> tuple[list[EdgeSpec], dict[str, str]]:
+    """Each graph keeps to itself, each function has one Entry, and none calls itself.
+
+    Returns the wires that stay inside one graph, and each function's Entry.
+    """
+
+    functions = {function.id: function for function in doc.functions}
+    entries: dict[str, str] = {}
+    calls: dict[str, set[str]] = {}
+    for node_id, node in nodes.items():
+        scope = scopes.get(node_id, "")
+        title = NODE_KINDS[node.kind].title
+        if scope and node.kind in (NodeKind.START, NodeKind.END):
+            collector.error(
+                f"{title} belongs to the main graph: a function begins at its Entry and "
+                "ends at a Return.",
+                node_id=node_id,
+            )
+        if not scope and node.kind in (NodeKind.FUNCTION_ENTRY, NodeKind.FUNCTION_RETURN):
+            collector.error(f"{title} belongs inside a function.", node_id=node_id)
+        if node.kind == NodeKind.FUNCTION_ENTRY and scope:
+            if scope in entries:
+                collector.error("A function has one Entry.", node_id=node_id)
+            else:
+                entries[scope] = node_id
+        if node.kind == NodeKind.CALL_FUNCTION:
+            target = str(node.data.get("function") or "")
+            if target not in functions:
+                collector.error(
+                    "Pick the function this node calls." if not target else
+                    f"There is no function {target!r} any more.",
+                    node_id=node_id,
+                    field="function",
+                )
+                continue
+            calls.setdefault(scope, set()).add(target)
+
+    for node_id, node in nodes.items():
+        if node.kind != NodeKind.CALL_FUNCTION:
+            continue
+        target = str(node.data.get("function") or "")
+        if target in functions and target not in entries:
+            collector.error(
+                f"Function {functions[target].name!r} has no Entry node.", node_id=node_id
+            )
+        # A call that comes back round to its own graph would never return.
+        if target in functions and _reaches(calls, target, scopes.get(node_id, "")):
+            collector.error(
+                "A function cannot call itself, directly or through another.",
+                node_id=node_id,
+                field="function",
+            )
+
+    kept: list[EdgeSpec] = []
+    for edge in edges:
+        if scopes.get(edge.source[0], "") != scopes.get(edge.target[0], ""):
+            collector.error(
+                "A wire cannot cross from one graph into another.",
+                node_id=edge.target[0],
+                pin=edge.target[1],
+            )
+            continue
+        kept.append(edge)
+    return kept, entries
+
+
+def _reaches(calls: dict[str, set[str]], start: str, goal: str) -> bool:
+    if not goal:
+        return False
+    seen: set[str] = set()
+    stack = [start]
+    while stack:
+        current = stack.pop()
+        if current == goal:
+            return True
+        if current in seen:
+            continue
+        seen.add(current)
+        stack.extend(calls.get(current, ()))
+    return False
+
+
+def _calls(nodes: dict[str, NodeSpec], entries: dict[str, str]) -> dict[str, str]:
+    """Each Call node and the Entry it jumps to."""
+
+    return {
+        node_id: entries[str(node.data.get("function") or "")]
+        for node_id, node in nodes.items()
+        if node.kind == NodeKind.CALL_FUNCTION and str(node.data.get("function") or "") in entries
+    }
+
+
+def _function_programs(
+    doc: GraphDoc, scopes: dict[str, str], entries: dict[str, str]
+) -> dict[str, FunctionProgram]:
+    members: dict[str, list[str]] = {}
+    for node_id, scope in scopes.items():
+        if scope:
+            members.setdefault(scope, []).append(node_id)
+    return {
+        function.id: FunctionProgram(
+            id=function.id,
+            name=function.name,
+            entry_id=entries[function.id],
+            inputs=tuple(param.id for param in function.inputs),
+            outputs=tuple(param.id for param in function.outputs),
+            node_ids=frozenset(members.get(function.id, ())),
+        )
+        for function in doc.functions
+        if function.id in entries
+    }
 
 
 def _index_nodes(doc: GraphDoc, collector: _Collector) -> dict[str, NodeSpec]:
@@ -237,8 +437,8 @@ def _check_edges(
 
         source_spec = NODE_KINDS[nodes[source_node].kind]
         target_spec = NODE_KINDS[nodes[target_node].kind]
-        out_pin = source_spec.pin(source_pin, "out")
-        in_pin = target_spec.pin(target_pin, "in")
+        out_pin = node_pin(source_spec, nodes[source_node].data, source_pin, "out")
+        in_pin = node_pin(target_spec, nodes[target_node].data, target_pin, "in")
         if out_pin is None:
             collector.error(
                 f"{source_spec.title} has no output pin {source_pin!r}.",
@@ -451,6 +651,8 @@ def _check_node_data(
         for pin in spec.pins:
             if pin.dynamic:
                 known.add("outputs" if pin.direction == "out" else "inputs")
+        if spec.signature:
+            known.add("signature")
         known.update(NOTE_FIELDS)
         _check_note(node_id, node, collector)
         for key in node.data:
@@ -832,6 +1034,7 @@ def _build_program(
     edges: list[EdgeSpec],
     start_id: str,
     pin_types: dict[tuple[str, str], str],
+    functions: dict[str, FunctionProgram],
 ) -> GraphProgram:
     exec_out: dict[str, dict[str, tuple[str, str]]] = {node_id: {} for node_id in nodes}
     data_in: dict[str, dict[str, tuple[str, str, str]]] = {node_id: {} for node_id in nodes}
@@ -843,7 +1046,8 @@ def _build_program(
             exec_out[source_node][source_pin] = (target_node, edge.id)
             continue
         wire = (source_node, source_pin, edge.id)
-        in_pin = NODE_KINDS[nodes[target_node].kind].pin(target_pin, "in")
+        target = nodes[target_node]
+        in_pin = node_pin(NODE_KINDS[target.kind], target.data, target_pin, "in")
         if in_pin is not None and in_pin.multi:
             multi_in[target_node].setdefault(target_pin, []).append(wire)
         else:
@@ -864,7 +1068,7 @@ def _build_program(
             kind=str(node.kind),
             spec=spec,
             data=dict(node.data),
-            label=_label_for(node, spec.title),
+            label=_called(node, functions) or _label_for(node, spec.title),
             exec_out=exec_out[node_id],
             data_in=data_in[node_id],
             multi_in={pin: tuple(wires) for pin, wires in multi_in[node_id].items()},
@@ -877,7 +1081,15 @@ def _build_program(
         nodes=built,
         variables=dict(variables),
         pin_types=pin_types,
+        functions=functions,
     )
+
+
+def _called(node: NodeSpec, functions: dict[str, FunctionProgram]) -> str:
+    if node.kind != NodeKind.CALL_FUNCTION:
+        return ""
+    function = functions.get(str(node.data.get("function") or ""))
+    return function.name if function else ""
 
 
 def _label_for(node: NodeSpec, fallback: str) -> str:
@@ -890,7 +1102,9 @@ def _label_for(node: NodeSpec, fallback: str) -> str:
     return fallback
 
 
-def _on_path(doc: GraphDoc, nodes: dict[str, NodeSpec], start_id: str) -> set[str]:
+def _on_path(
+    doc: GraphDoc, nodes: dict[str, NodeSpec], start_id: str, calls: dict[str, str]
+) -> set[str]:
     """The nodes a run can touch: walked into from Start, or pure and pulled by one that is.
 
     Read off the edges as drawn, broken ones included, so a node wired into the
@@ -912,6 +1126,9 @@ def _on_path(doc: GraphDoc, nodes: dict[str, NodeSpec], start_id: str) -> set[st
             continue
         seen.add(node_id)
         stack.extend(flow.get(node_id, ()))
+        # A call runs its function's graph from the Entry.
+        if node_id in calls:
+            stack.append(calls[node_id])
         # A pure node is computed when it is read, so it runs with its reader.
         # Anything else that feeds it only hands over what it already did.
         for source in pulls.get(node_id, ()):
@@ -922,11 +1139,15 @@ def _on_path(doc: GraphDoc, nodes: dict[str, NodeSpec], start_id: str) -> set[st
 
 
 def _spare_off_path(
-    doc: GraphDoc, nodes: dict[str, NodeSpec], start_id: str, collector: _Collector
+    doc: GraphDoc,
+    nodes: dict[str, NodeSpec],
+    start_id: str,
+    calls: dict[str, str],
+    collector: _Collector,
 ) -> None:
     """A broken node the run never reaches is a warning, not a reason to refuse the run."""
 
-    on_path = _on_path(doc, nodes, start_id)
+    on_path = _on_path(doc, nodes, start_id, calls)
     ids = [node.id for node in doc.nodes]
     # Two nodes under one id cannot be told apart, and a second Start leaves
     # where the run begins in doubt: those stay errors wherever they are.
@@ -943,7 +1164,9 @@ def _spare_off_path(
     ]
 
 
-def _warn_unreachable(program: GraphProgram, collector: _Collector) -> None:
+def _warn_unreachable(
+    program: GraphProgram, calls: dict[str, str], collector: _Collector
+) -> None:
     reachable: set[str] = set()
     stack = [program.start_id]
     while stack:
@@ -952,6 +1175,15 @@ def _warn_unreachable(program: GraphProgram, collector: _Collector) -> None:
             continue
         reachable.add(node_id)
         stack.extend(target for target, _ in program.nodes[node_id].exec_out.values())
+        if node_id in calls:
+            stack.append(calls[node_id])
+
+    # A function nobody calls says so once, at its Entry, rather than on every node.
+    idle: set[str] = set()
+    for function in program.functions.values():
+        if function.entry_id not in reachable:
+            collector.warn("Nothing calls this function.", node_id=function.entry_id)
+            idle |= function.node_ids
 
     # A pure node is pulled rather than walked into, so "unreachable" means
     # something different for it: nobody reads it.
@@ -961,6 +1193,8 @@ def _warn_unreachable(program: GraphProgram, collector: _Collector) -> None:
             consumed.add(source)
 
     for node_id, node in program.nodes.items():
+        if node_id in idle:
+            continue
         if node.spec.pure:
             if node_id not in consumed:
                 collector.warn("Nothing reads this node.", node_id=node_id)
