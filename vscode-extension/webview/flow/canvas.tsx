@@ -64,7 +64,8 @@ export function zoomAround(
 }
 
 interface DragState {
-  kind: "node" | "pan" | "marquee" | "wire" | "resize";
+  /** `grab`: Ctrl/Alt held down on a wire or a wired pin, not yet moved - a click breaks it, a drag moves it. */
+  kind: "node" | "pan" | "marquee" | "wire" | "resize" | "grab";
   startScreen: Point;
   startWorld: Point;
   current: Point;
@@ -72,9 +73,17 @@ interface DragState {
   ids: string[];
   startPan: [number, number];
   pin?: { nodeId: string; pin: PinLayout; direction: "in" | "out" };
+  /** Wires picked up by one end; the `keep` end stays where it is. */
+  moving?: { ids: string[]; keep: "from" | "to" };
   handle?: ResizeHandle;
   startBox?: Box;
 }
+
+/** Unreal's modifiers on a link: held, a click breaks it and a drag carries it elsewhere. */
+const grabs = (event: React.MouseEvent): boolean => event.ctrlKey || event.altKey || event.metaKey;
+
+/** How far a grabbed wire must travel before it is carried rather than clicked. */
+const GRAB_SLOP = 4;
 
 /** What the right-click landed on, so the menu can offer the right actions. */
 export type ContextTarget =
@@ -141,6 +150,7 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
   // Keyed on the nodes, not the graph: a pan replaces the graph's view and
   // nothing else, and the camera following a run pans every frame.
   const graphNodes = state.graph.nodes;
+  const edges = state.graph.edges;
   const layouts = React.useMemo(
     () => (catalog ? layoutGraph(state.graph, catalog) : new Map<string, NodeLayout>()),
     [graphNodes, catalog]
@@ -264,6 +274,21 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
     });
   };
 
+  const startGrab = (ids: string[], keep: "from" | "to", event: React.MouseEvent) => {
+    event.preventDefault();
+    holdSelection(event);
+    const world = toWorld(event.clientX, event.clientY);
+    setDrag({
+      kind: "grab",
+      startScreen: { x: event.clientX, y: event.clientY },
+      startWorld: world,
+      current: world,
+      ids: [],
+      startPan: [pan[0], pan[1]],
+      moving: { ids, keep },
+    });
+  };
+
   const onPinDown = (
     nodeId: string,
     pin: PinLayout,
@@ -271,6 +296,16 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
     event: React.MouseEvent
   ) => {
     if (event.button !== 0) return;
+    if (grabs(event)) {
+      const at = `${nodeId}:${pin.pin.name}`;
+      const ids = state.graph.edges
+        .filter((edge) => (direction === "out" ? edge.from : edge.to).join(":") === at)
+        .map((edge) => edge.id);
+      if (ids.length) {
+        startGrab(ids, direction === "out" ? "to" : "from", event);
+        return;
+      }
+    }
     holdSelection(event);
     const world = toWorld(event.clientX, event.clientY);
     setDrag({
@@ -298,6 +333,10 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
       });
       return;
     }
+    if (drag.moving) {
+      dispatch({ type: "rewire", ids: drag.moving.ids, keep: drag.moving.keep, target: [nodeId, pin.pin.name] });
+      return;
+    }
     const from = source.direction === "out" ? source : { nodeId, pin };
     const to = source.direction === "out" ? { nodeId, pin } : source;
     dispatch({
@@ -323,7 +362,24 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
         });
         return;
       }
-      setDrag({ ...drag, current: toWorld(event.clientX, event.clientY) });
+      const world = toWorld(event.clientX, event.clientY);
+      const moving = drag.moving;
+      if (drag.kind === "grab" && moving) {
+        if (Math.hypot(event.clientX - drag.startScreen.x, event.clientY - drag.startScreen.y) < GRAB_SLOP) return;
+        // Carried: from here on it is a wire being pulled out of the end that stays.
+        const first = edges.find((edge) => edge.id === moving.ids[0]);
+        const kept = first ? (moving.keep === "from" ? first.from : first.to) : null;
+        const direction = moving.keep === "from" ? "out" : "in";
+        const layout = kept ? layouts.get(kept[0]) : undefined;
+        const pin = layout?.[direction === "out" ? "outputs" : "inputs"].find((item) => item.pin.name === kept?.[1]);
+        if (!kept || !pin) {
+          setDrag(null);
+          return;
+        }
+        setDrag({ ...drag, kind: "wire", current: world, pin: { nodeId: kept[0], pin, direction } });
+        return;
+      }
+      setDrag({ ...drag, current: world });
     };
     const onUp = (event: MouseEvent) => {
       const world = toWorld(event.clientX, event.clientY);
@@ -347,6 +403,12 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
             additive: event.shiftKey,
           });
         }
+      } else if (drag.kind === "grab" && drag.moving) {
+        dispatch({ type: "deleteEdges", ids: drag.moving.ids });
+      } else if (drag.kind === "wire" && drag.moving) {
+        // A wire carried off and let go over no pin is broken, as in Unreal.
+        const under = document.elementFromPoint(event.clientX, event.clientY);
+        if (!under?.closest("[data-pin]")) dispatch({ type: "deleteEdges", ids: drag.moving.ids });
       } else if (drag.kind === "wire" && drag.pin) {
         // A wire dropped on empty canvas is the Blueprint gesture for "make me
         // a node that fits here". Dropping it on a pin is handled by the pin
@@ -369,7 +431,7 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [drag, dispatch, layouts, toWorld, onContext]);
+  }, [drag, dispatch, layouts, edges, toWorld, onContext]);
 
   const onWheel = (event: React.WheelEvent) => {
     event.preventDefault();
@@ -457,7 +519,8 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
     }
   }
 
-  const wires = state.graph.edges.flatMap((edge) => {
+  const carried = new Set(drag?.kind === "wire" ? drag.moving?.ids ?? [] : []);
+  const allWires = state.graph.edges.flatMap((edge) => {
     const from = pinAnchor(shown, edge.from[0], edge.from[1], "out", aims);
     const to = pinAnchor(shown, edge.to[0], edge.to[1], "in", aims);
     if (!from || !to) return [];
@@ -472,6 +535,18 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
         : catalog?.color(catalog ? edgeType(state.graph, catalog, edge) : "any") ?? "#888";
     return [{ edge, a, b, color }];
   });
+  const wires = allWires.filter(({ edge }) => !carried.has(edge.id));
+  // A wire being carried runs from the end that stays to the pointer.
+  const carriedPaths = drag
+    ? allWires
+        .filter(({ edge }) => carried.has(edge.id))
+        .map(({ edge, a, b, color }) => ({
+          id: edge.id,
+          kind: edge.kind,
+          color,
+          d: drag.moving?.keep === "from" ? wirePath(a, drag.current, a) : wirePath(drag.current, b, undefined, b),
+        }))
+    : [];
   // A wired value pin is the colour of its wire, at both ends; exec pins are white already.
   const pinTint = new Map<string, string>();
   for (const { edge, color } of wires) {
@@ -621,6 +696,13 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
                   onMouseDown={(event) => {
                     if (event.button !== 0) return;
                     event.stopPropagation();
+                    if (grabs(event)) {
+                      // The end nearer the pointer is the one carried off.
+                      const at = toWorld(event.clientX, event.clientY);
+                      const nearTo = Math.hypot(at.x - b.x, at.y - b.y) <= Math.hypot(at.x - a.x, at.y - a.y);
+                      startGrab([edge.id], nearTo ? "from" : "to", event);
+                      return;
+                    }
                     dispatch({ type: "selectEdge", id: edge.id });
                   }}
                   onDoubleClick={(event) => {
@@ -656,7 +738,17 @@ export function Canvas({ state, dispatch, onContext, minimap }: CanvasProps): JS
             );
           })}
 
-          {drag?.kind === "wire" && drag.pin && (
+          {carriedPaths.map((item) => (
+            <path
+              key={`carried-${item.id}`}
+              className={`flow-wire pending ${item.kind}`}
+              data-testid={`carried-${item.id}`}
+              d={item.d}
+              style={{ stroke: item.color }}
+            />
+          ))}
+
+          {drag?.kind === "wire" && drag.pin && !drag.moving && (
             <path
               className={`flow-wire pending ${drag.pin.pin.pin.type === "exec" ? "exec" : "data"}`}
               d={pendingPath(shown, drag, new Map([...aims, ...pulled]))}

@@ -231,6 +231,59 @@ test("the same wire cannot be made twice", () => {
   assert.match(state.notice?.text ?? "", /already exists/);
 });
 
+// -- Unreal's link gestures: break with a click, carry with a drag ---------
+
+function chain(): EditorState {
+  return booted(
+    graph({
+      nodes: [node("s", "start"), node("a", "print", { label: "a" }), node("b", "print", { label: "b" }), node("e", "end")],
+      edges: [
+        { id: "e1", kind: "exec", from: ["s", "out"], to: ["a", "in"] },
+        { id: "e2", kind: "exec", from: ["a", "out"], to: ["e", "in"] },
+      ],
+    })
+  );
+}
+
+test("a pin's links break together, in one undo step", () => {
+  let state = apply(chain(), { type: "deleteEdges", ids: ["e1", "e2"] });
+  assert.deepEqual(state.graph.edges, []);
+  state = apply(state, { type: "undo" });
+  assert.deepEqual(state.graph.edges.map((edge) => edge.id), ["e1", "e2"]);
+});
+
+test("a wire carried by its far end lands on the pin it is dropped on", () => {
+  let state = apply(chain(), { type: "rewire", ids: ["e1"], keep: "from", target: ["b", "in"] });
+  assert.deepEqual(
+    state.graph.edges.map((edge) => [edge.from.join(":"), edge.to.join(":")]),
+    [
+      ["a:out", "e:in"],
+      ["s:out", "b:in"],
+    ]
+  );
+  state = apply(state, { type: "undo" });
+  assert.deepEqual(state.graph.edges.find((edge) => edge.id === "e1")?.to, ["a", "in"]);
+});
+
+test("a wire carried by its near end keeps where it goes", () => {
+  const state = apply(chain(), { type: "rewire", ids: ["e2"], keep: "to", target: ["b", "out"] });
+  const moved = state.graph.edges.find((edge) => edge.to[0] === "e");
+  assert.deepEqual(moved?.from, ["b", "out"]);
+});
+
+test("a carried wire that does not fit stays where it was", () => {
+  const before = chain();
+  const state = apply(before, { type: "rewire", ids: ["e1"], keep: "from", target: ["b", "value"] });
+  assert.equal(state.graph, before.graph);
+  assert.match(state.notice?.text ?? "", /exec pin/);
+});
+
+test("a wire put back on its own pin changes nothing", () => {
+  const before = chain();
+  const state = apply(before, { type: "rewire", ids: ["e1"], keep: "from", target: ["a", "in"] });
+  assert.equal(state, before);
+});
+
 test("shrinking a Sequence drops the wires on the pins it lost", () => {
   const doc = graph({
     nodes: [node("n1", "sequence", { outputs: 3 }), node("n2", "end"), node("n3", "end")],

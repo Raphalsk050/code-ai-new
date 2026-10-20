@@ -309,6 +309,56 @@ export const tests = {
     assert(Math.abs(clicked - wheeled) < 0.01, `the button zoomed to ${clicked}, the notch to ${wheeled}`);
   },
 
+  async "Ctrl+click breaks a link; Alt+drag carries it to another node"(ui, assert) {
+    await boot(ui);
+    /** A point `t` of the way along a wire, on screen. */
+    const along = (id, t) =>
+      ui.page.evaluate(
+        ([id, t]) => {
+          const path = document.querySelector(`[data-testid="edge-${id}"] .flow-wire-hit`);
+          const point = path.getPointAtLength(path.getTotalLength() * t);
+          const screen = point.matrixTransform(path.getScreenCTM());
+          return { x: screen.x, y: screen.y };
+        },
+        [id, t]
+      );
+    const edgesSent = async () => {
+      const edits = await ui.toHost("flowEdit");
+      return edits[edits.length - 1].graph.edges.map((edge) => `${edge.from.join(":")}>${edge.to.join(":")}`);
+    };
+
+    const middle = await along("e3", 0.5);
+    await ui.page.keyboard.down("Control");
+    await ui.page.mouse.click(middle.x, middle.y);
+    await ui.page.keyboard.up("Control");
+    await settle(ui, 100);
+    let edges = await edgesSent();
+    assert(!edges.includes("print:out>end:in"), `Ctrl+click left the link: ${edges}`);
+
+    // Grabbed near its end, the agent's link to the print comes off that end and goes to the node above.
+    const grip = await along("e2", 0.85);
+    const target = await box(ui, '[data-testid="node-above"] [data-testid="pin-in-in"]');
+    await ui.page.keyboard.down("Alt");
+    await ui.page.mouse.move(grip.x, grip.y);
+    await ui.page.mouse.down();
+    await ui.page.mouse.move(grip.x + 30, grip.y - 30, { steps: 4 });
+    await ui.page.waitForSelector('[data-testid="carried-e2"]', { timeout: 2000 });
+    await ui.shot("follow-08-carried");
+    await ui.page.mouse.move(target.x + target.width / 2, target.y + target.height / 2, { steps: 8 });
+    await ui.page.mouse.up();
+    await ui.page.keyboard.up("Alt");
+    await settle(ui, 100);
+    edges = await edgesSent();
+    assert(edges.includes("agent:out>above:in"), `Alt+drag did not land on the node above: ${edges}`);
+    assert(!edges.includes("agent:out>print:in"), `the link was copied, not carried: ${edges}`);
+
+    // Undo puts it back in one step.
+    await ui.page.keyboard.press("Control+z");
+    await settle(ui, 100);
+    edges = await edgesSent();
+    assert(edges.includes("agent:out>print:in"), `undo did not put the link back: ${edges}`);
+  },
+
   async "the flow runs in white wires, whatever node it leaves"(ui, assert) {
     await boot(ui);
     const strokes = await ui.page.evaluate(() =>

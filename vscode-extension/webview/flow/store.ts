@@ -235,6 +235,10 @@ export type Action =
   | { type: "deleteSelection" }
   | { type: "connect"; edge: Omit<FlowEdge, "id"> }
   | { type: "deleteEdge"; id: string }
+  /** Several wires in one undo step: a pin's links broken at once. */
+  | { type: "deleteEdges"; ids: string[] }
+  /** Wires picked up by one end and dropped on `target`; the `keep` end stays put. */
+  | { type: "rewire"; ids: string[]; keep: "from" | "to"; target: [string, string] }
   | { type: "addVariable"; varType: string }
   | { type: "setVariable"; id: string; patch: Partial<FlowVariable> }
   | { type: "deleteVariable"; id: string }
@@ -472,6 +476,33 @@ export function reduce(state: EditorState, action: Action): EditorState {
         ...state.graph,
         edges: state.graph.edges.filter((edge) => edge.id !== action.id),
       };
+      return { ...withHistory(state, graph), selectedEdge: null };
+    }
+
+    case "deleteEdges": {
+      const gone = new Set(action.ids);
+      if (!state.graph.edges.some((edge) => gone.has(edge.id))) return state;
+      const graph = { ...state.graph, edges: state.graph.edges.filter((edge) => !gone.has(edge.id)) };
+      return { ...withHistory(state, graph), selectedEdge: null };
+    }
+
+    case "rewire": {
+      const picked = new Set(action.ids);
+      const moved = state.graph.edges.filter((edge) => picked.has(edge.id));
+      const end = (edge: FlowEdge) => (action.keep === "from" ? edge.to : edge.from).join(":");
+      // Put back where they were: nothing to undo.
+      if (moved.length === 0 || moved.every((edge) => end(edge) === action.target.join(":"))) return state;
+      let graph: FlowGraph = { ...state.graph, edges: state.graph.edges.filter((edge) => !picked.has(edge.id)) };
+      for (const edge of moved) {
+        const next: Omit<FlowEdge, "id"> =
+          action.keep === "from"
+            ? { kind: edge.kind, from: edge.from, to: action.target }
+            : { kind: edge.kind, from: action.target, to: edge.to };
+        // All or nothing: a drop that fits only some of the wires leaves them all where they were.
+        const rejection = connectionProblem({ ...state, graph }, next);
+        if (rejection) return { ...state, notice: { level: "warn", text: rejection } };
+        graph = insertEdge(graph, next, acceptsMany(graph, state.catalog, next.to[0], next.to[1]));
+      }
       return { ...withHistory(state, graph), selectedEdge: null };
     }
 
