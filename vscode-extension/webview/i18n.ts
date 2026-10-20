@@ -987,6 +987,7 @@ const PT: Record<string, string> = {
   "Back to the node at work, and follow it from there": "Voltar ao node em execução e seguir dali",
   "Show the output": "Mostrar a saída",
   "Hide the output": "Esconder a saída",
+  "Copy the output": "Copiar a saída",
   "Thinking": "Pensando",
   "Working…": "Trabalhando…",
   "Again": "De novo",

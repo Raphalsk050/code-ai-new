@@ -26,6 +26,12 @@ export interface SpringTune {
 export const OPEN_SPRING: SpringTune = { k: 210, c: 17 };
 /** For a backlog: the same motion, twice as fast. */
 export const QUICK_SPRING: SpringTune = { k: 520, c: 34 };
+/**
+ * Folding back takes as long as opening, without the bounce: critically damped,
+ * since an overshoot would be cut off at the node's own size and read as a snap.
+ */
+export const FOLD_SPRING: SpringTune = { k: 169, c: 26 };
+export const QUICK_FOLD_SPRING: SpringTune = { k: 520, c: 46 };
 /** The camera never overshoots: a view that swings past the node is seasickness. */
 export const CAMERA_SPRING: SpringTune = { k: 120, c: 21 };
 
@@ -215,8 +221,9 @@ export class FocusReel {
     const step = this.step;
     if (!step) return false;
     const busy = this.pending(input) >= 2;
-    const target = step.phase === "closing" ? 0 : 1;
-    this.spring = stepSpring(this.spring, target, dt, busy ? QUICK_SPRING : OPEN_SPRING);
+    const folding = step.phase === "closing";
+    const tune = folding ? (busy ? QUICK_FOLD_SPRING : FOLD_SPRING) : busy ? QUICK_SPRING : OPEN_SPRING;
+    this.spring = stepSpring(this.spring, folding ? 0 : 1, dt, tune);
     // Folding back ends at rest, not overshooting into a node smaller than it is.
     if (step.phase === "closing" && this.spring.x < 0) this.spring = { x: 0, v: 0 };
 

@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 48,
-  "patch": 3,
-  "build": 128,
-  "updated": "2026-10-19",
-  "note": "Graph editor: a Follow the run button takes the camera back after moving it"
+  "patch": 4,
+  "build": 129,
+  "updated": "2026-10-20",
+  "note": "Flow: clean agent streams, nodes fold smoothly, outputs copy, agents keep their node's name"
 }

@@ -538,7 +538,14 @@ input[type="checkbox"] { width: auto; }
   position: relative; width: 100%; height: 100%;
   border: 1px solid var(--border); border-radius: 6px;
   background: var(--vscode-editor-background, #1e1e1e);
-  cursor: auto; user-select: text;
+  cursor: auto;
+}
+/* What a node wrote is read and copied: it opts out of the canvas's no-select. */
+.flow-canvas .flow-output, .flow-canvas .flow-output * {
+  -webkit-user-select: text; user-select: text;
+}
+.flow-canvas .flow-output-tools, .flow-canvas .flow-output-tools * {
+  -webkit-user-select: none; user-select: none;
 }
 .flow-output-scroll {
   position: absolute; inset: 0; overflow-y: auto; overflow-x: hidden;
@@ -566,12 +573,16 @@ input[type="checkbox"] { width: auto; }
   background: var(--accent); animation: flow-caret 1s steps(2) infinite;
 }
 @keyframes flow-caret { 50% { opacity: 0; } }
-.flow-output-close {
+.flow-output-tools {
   position: absolute; top: 3px; right: 5px; z-index: 1;
+  display: flex; gap: 3px;
+}
+.flow-output-tools button {
   border: 0; background: var(--surface-2); border-radius: 4px;
   padding: 0 6px; line-height: 16px; opacity: .7;
 }
-.flow-output-close:hover { opacity: 1; }
+.flow-output-tools button:hover { opacity: 1; }
+.flow-output-copy.done { color: var(--accent); opacity: 1; }
 .flow-output-pill { cursor: pointer; }
 .flow-output-pill rect {
   fill: var(--vscode-editorWidget-background, #252526);

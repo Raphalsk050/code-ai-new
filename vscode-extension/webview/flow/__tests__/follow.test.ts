@@ -15,6 +15,7 @@ import {
   stepSpring,
 } from "../focus";
 import { Bounds, commentOrder, indexCatalog, layoutGraph, NodeLayout } from "../model";
+import { copyable } from "../output-panel";
 import { Action, EditorState, initialState, NodeRunStatus, OUTPUT_LIMIT, readable, reduce, worthOpening } from "../store";
 
 const CATALOG = catalogFixture as unknown as GraphCatalog;
@@ -184,6 +185,26 @@ test("a node's text is bounded, oldest first", () => {
   assert.equal(total, OUTPUT_LIMIT);
 });
 
+test("copying a node's output takes its answer, without the run's bookkeeping", () => {
+  assert.equal(
+    copyable([
+      { kind: "info", text: "Ana · clean agent · gemma" },
+      { kind: "thinking", text: "hmm" },
+      { kind: "text", text: "Oi, tudo bem?" },
+      { kind: "info", text: "Done in 2s" },
+    ]),
+    "Oi, tudo bem?"
+  );
+  // With no answer, everything it wrote goes: its tools, its errors.
+  assert.equal(
+    copyable([
+      { kind: "tool", text: "read_file" },
+      { kind: "error", text: "boom" },
+    ]),
+    "› read_file\nboom"
+  );
+});
+
 // -- making room -----------------------------------------------------------
 
 /** A 3x3 grid of print nodes, 300 apart, the focus in the middle. */
@@ -290,6 +311,26 @@ function play(reel: FocusReel, seconds: number, input: (now: number) => ReelInpu
   }
   return seen;
 }
+
+test("a node folds back about as slowly as it opened, and never below its own size", () => {
+  const reel = new FocusReel();
+  const statuses: Record<string, NodeRunStatus> = { a: "running" };
+  const sizes: number[] = [];
+  const phases: string[] = [];
+  for (let frame = 0; frame < 6 * 60; frame += 1) {
+    if (frame === 3 * 60) statuses.a = "done";
+    reel.tick(reelInput({ now: (frame * 1000) / 60, order: ["a"], statuses }), 1 / 60);
+    sizes.push(reel.spring.x);
+    phases.push(reel.step?.phase ?? "-");
+  }
+  const opening = phases.filter((phase) => phase === "opening").length;
+  const closing = phases.filter((phase) => phase === "closing").length;
+  assert.ok(closing >= opening * 0.8, `opened in ${opening} frames, folded in ${closing}`);
+  assert.ok(Math.min(...sizes) >= 0);
+  // Halfway through folding it is still visibly open: the motion is seen, not snapped.
+  const folding = sizes.filter((_, index) => phases[index] === "closing");
+  assert.ok(folding[Math.floor(folding.length / 4)] > 0.1, `quarter way ${folding[Math.floor(folding.length / 4)]}`);
+});
 
 test("the next node opens only once the one before has folded all the way back", () => {
   const reel = new FocusReel();

@@ -303,19 +303,24 @@ async def test_a_second_question_with_the_same_id_releases_the_first() -> None:
 
 
 class ChatStub:
-    """A provider that answers once and remembers exactly what it was sent."""
+    """A provider that answers once, word by word, and remembers what it was sent."""
 
     def __init__(self, reply: str = "oi") -> None:
         self.reply = reply
         self.requests: list = []
 
-    async def complete(self, request):
-        from code_ai.providers.models import ModelResponse, TokenUsage
+    async def stream(self, request):
+        from code_ai.providers.models import ModelResponse, ProviderEvent, TokenUsage
 
         self.requests.append(request)
-        return ModelResponse(
-            text=self.reply,
-            usage=TokenUsage(input_tokens=5, output_tokens=2, total_tokens=7),
+        for start in range(0, len(self.reply), 3):
+            yield ProviderEvent(kind="text_delta", text_delta=self.reply[start : start + 3])
+        yield ProviderEvent(
+            kind="completed",
+            response=ModelResponse(
+                text=self.reply,
+                usage=TokenUsage(input_tokens=5, output_tokens=2, total_tokens=7),
+            ),
         )
 
 
@@ -379,8 +384,9 @@ async def test_a_clean_agent_sends_its_system_prompt_verbatim() -> None:
 
 async def test_a_clean_agent_that_fails_reports_instead_of_raising() -> None:
     class Broken(ChatStub):
-        async def complete(self, request):
+        async def stream(self, request):
             raise RuntimeError("endpoint down")
+            yield
 
     outcome = await clean_executor(Broken()).run_clean(
         node_id="n1",
@@ -418,6 +424,74 @@ async def test_a_clean_agent_hands_its_answer_to_the_node_panel() -> None:
     assert [(item["node_id"], item["channel"], item["text"]) for item in outputs] == [
         ("n1", "answer", "tudo certo")
     ]
+
+
+async def test_a_clean_agent_streams_while_the_model_is_still_writing() -> None:
+    from code_ai.app.graph_runner import _STREAM_FLUSH_S
+    from code_ai.providers.models import ModelResponse, ProviderEvent
+
+    class Slow(ChatStub):
+        async def stream(self, request):
+            for piece in ("Era ", "uma ", "vez."):
+                yield ProviderEvent(kind="text_delta", text_delta=piece)
+                await asyncio.sleep(_STREAM_FLUSH_S * 2)
+            yield ProviderEvent(kind="completed", response=ModelResponse(text="Era uma vez."))
+
+    executor = clean_executor(Slow())
+    seen = capture(executor)
+
+    outcome = await executor.run_clean(
+        node_id="n1", name="", system="", task="Oi", model=None, timeout_s=0, cancel=asyncio.Event()
+    )
+
+    outputs = [payload["text"] for kind, payload in seen if kind == "graph.node.output"]
+    assert outputs == ["Era ", "uma ", "vez."]
+    assert outcome.summary == "Era uma vez."
+
+
+async def test_a_clean_agents_inline_thinking_streams_apart_and_stays_out_of_its_report() -> None:
+    executor = clean_executor(ChatStub("<think>hmm</think>Oi!"))
+    seen = capture(executor)
+
+    outcome = await executor.run_clean(
+        node_id="n1", name="", system="", task="Oi", model=None, timeout_s=0, cancel=asyncio.Event()
+    )
+
+    shown = [(p["channel"], p["text"]) for kind, p in seen if kind == "graph.node.output"]
+    assert "".join(text for channel, text in shown if channel == "thinking") == "hmm"
+    assert "".join(text for channel, text in shown if channel == "answer") == "Oi!"
+    assert outcome.summary == "Oi!"
+
+
+async def test_a_clean_agent_goes_by_the_name_on_its_node() -> None:
+    executor = clean_executor(ChatStub())
+    seen = capture(executor)
+
+    outcome = await executor.run_clean(
+        node_id="n1",
+        name=" Ana ",
+        system="",
+        task="Oi",
+        model=None,
+        timeout_s=0,
+        cancel=asyncio.Event(),
+    )
+
+    started = next(payload for kind, payload in seen if kind == "graph.agent.started")
+    assert started["agent_name"] == "Ana"
+    assert outcome.agent_name == "Ana"
+
+
+async def test_a_nameless_clean_agent_still_gets_a_name() -> None:
+    executor = clean_executor(ChatStub())
+    seen = capture(executor)
+
+    await executor.run_clean(
+        node_id="n1", name="", system="", task="Oi", model=None, timeout_s=0, cancel=asyncio.Event()
+    )
+
+    started = next(payload for kind, payload in seen if kind == "graph.agent.started")
+    assert started["agent_name"]
 
 
 async def test_an_agents_stream_reaches_the_node_in_bursts_and_in_order() -> None:

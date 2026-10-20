@@ -673,7 +673,9 @@ async def test_wired_tools_are_exactly_what_the_agent_gets(tmp_path) -> None:
 
     assert _offered(provider) == {"read_file", "list_files", "web_search"}
     assert set(started["tools"]) == {"read_file", "list_files", "web_search"}
-    assert started["profession"] == "Scout"
+    # The node's name is the agent's; the profession stays what it was hired as.
+    assert started["agent_name"] == "Scout"
+    assert started["profession"] == "code_writer"
 
 
 async def test_switches_override_the_profession_and_blocked_tools_go(tmp_path) -> None:

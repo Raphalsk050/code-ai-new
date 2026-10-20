@@ -49,6 +49,66 @@ export function useTyped(parts: OutputPart[], fromStart: boolean): { parts: Outp
   return { parts: cut(parts, shown.current), typing: shown.current < total };
 }
 
+/**
+ * What the copy button takes: the answer when the node gave one, else all it
+ * wrote. The run's own bookkeeping ("Done in 2s") never goes with it.
+ */
+export function copyable(parts: OutputPart[]): string {
+  const answer = parts.filter((part) => part.kind === "text" || part.kind === "result");
+  const kept = answer.length ? answer : parts.filter((part) => part.kind !== "info");
+  return kept
+    .map((part) => (part.kind === "tool" ? `› ${part.text}` : part.text))
+    .join("\n")
+    .trim();
+}
+
+/** Text selected inside a node's output, if that is where the selection is. */
+export function selectionInOutput(): { panel: HTMLElement; text: string } | null {
+  const selection = window.getSelection();
+  const anchor = selection?.anchorNode;
+  const element = anchor instanceof Element ? anchor : anchor?.parentElement;
+  const panel = element?.closest<HTMLElement>(".flow-output");
+  // A panel folded since keeps no claim on the keys.
+  if (!selection || !panel?.isConnected) return null;
+  return { panel, text: selection.toString() };
+}
+
+/** Select everything a node wrote, as Ctrl+A does in a page. */
+export function selectAllOutput(panel: HTMLElement): void {
+  const scroll = panel.querySelector(".flow-output-scroll");
+  const selection = window.getSelection();
+  if (!scroll || !selection) return;
+  const range = document.createRange();
+  range.selectNodeContents(scroll);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+/** Best-effort: a webview may refuse the clipboard API, and then the old command still copies. */
+export function copyText(text: string): void {
+  if (!text) return;
+  const fallback = () => {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.select();
+    try {
+      document.execCommand("copy");
+    } finally {
+      area.remove();
+    }
+  };
+  try {
+    const pending = navigator.clipboard?.writeText(text);
+    if (pending) pending.catch(fallback);
+    else fallback();
+  } catch {
+    fallback();
+  }
+}
+
 function cut(parts: OutputPart[], length: number): OutputPart[] {
   const out: OutputPart[] = [];
   let left = length;
@@ -71,6 +131,13 @@ export function OutputPanel({ nodeId, parts: all, live, onClose }: OutputPanelPr
   // Opened by the run, it writes out from the start; by hand, it shows what is there.
   const { parts, typing } = useTyped(all, !onClose);
   const written = parts.reduce((sum, part) => sum + part.text.length, 0);
+  const [copied, setCopied] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(false), 1200);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
 
   React.useLayoutEffect(() => {
     const element = ref.current;
@@ -86,16 +153,31 @@ export function OutputPanel({ nodeId, parts: all, live, onClose }: OutputPanelPr
       onMouseDown={(event) => event.stopPropagation()}
       onContextMenu={(event) => event.stopPropagation()}
     >
-      {onClose && (
-        <button
-          className="flow-output-close"
-          data-testid={`output-close-${nodeId}`}
-          title={t("Hide the output")}
-          onClick={onClose}
-        >
-          ▴
-        </button>
-      )}
+      <div className="flow-output-tools">
+        {all.length > 0 && (
+          <button
+            className={`flow-output-copy${copied ? " done" : ""}`}
+            data-testid={`output-copy-${nodeId}`}
+            title={copied ? t("Copied") : t("Copy the output")}
+            onClick={() => {
+              copyText(copyable(all));
+              setCopied(true);
+            }}
+          >
+            {copied ? "✓" : "⧉"}
+          </button>
+        )}
+        {onClose && (
+          <button
+            className="flow-output-close"
+            data-testid={`output-close-${nodeId}`}
+            title={t("Hide the output")}
+            onClick={onClose}
+          >
+            ▴
+          </button>
+        )}
+      </div>
       <div
         ref={ref}
         className="flow-output-scroll"

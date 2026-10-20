@@ -2,6 +2,7 @@ import * as React from "react";
 
 import { t } from "../i18n";
 import type { Chip } from "./access";
+import { PANEL_H } from "./focus";
 import { glyphFor } from "./glyphs";
 import { isWide, NodeLayout, PinLayout, ROUND_D } from "./model";
 import { OutputPanel } from "./output-panel";
@@ -160,6 +161,8 @@ export function NodeView(props: NodeViewProps): JSX.Element {
           y={props.panel.top}
           width={Math.max(0, width - 16)}
           height={props.panel.height - 6}
+          // The text fades as the panel opens and folds, rather than being sliced off.
+          opacity={Math.min(1, props.panel.height / (PANEL_H * 0.6))}
         >
           <OutputPanel
             nodeId={layout.node.id}

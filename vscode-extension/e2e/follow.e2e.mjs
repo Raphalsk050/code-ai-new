@@ -148,6 +148,46 @@ export const tests = {
     assert((await ui.page.locator('[data-testid="output-agent"]').count()) === 0, "the panel did not close");
   },
 
+  async "what a node wrote is selected and copied as text, not as nodes"(ui, assert) {
+    await boot(ui);
+    await ui.page.evaluate(() => {
+      window.__copied = [];
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: { writeText: (text) => (window.__copied.push(text), Promise.resolve()) },
+      });
+    });
+    const lastCopy = () => ui.page.evaluate(() => window.__copied[window.__copied.length - 1] ?? "");
+    await startAgent(ui);
+    await ui.event("graph.node.output", { node_id: "agent", channel: "answer", text: "Feito, sem erros." });
+    await ui.event("graph.node.completed", { node_id: "agent", summary: "Feito, sem erros.", seconds: 1 });
+    await ui.event("graph.run.completed", { run_id: "r1", status: "completed", seconds: 1, nodes_executed: 2 });
+    await ui.fromHost({ type: "flowRunState", running: false, runId: "r1", message: "completed" });
+    await ui.page.waitForSelector('[data-testid="output-pill-agent"]', { timeout: 6000 });
+    // A node selected: Ctrl+C would copy it, unless the keys belong to the text.
+    await ui.page.click('[data-testid="node-print"] .flow-node-box');
+    await ui.page.click('[data-testid="output-pill-agent"]');
+    await ui.page.waitForSelector('[data-testid="output-copy-agent"]', { timeout: 3000 });
+    await settle(ui, 900);
+
+    const answer = ui.page.locator('[data-testid="output-agent"] .flow-output-part.text');
+    await answer.click({ clickCount: 3 });
+    const selected = await ui.page.evaluate(() => window.getSelection().toString());
+    assert(selected.includes("Feito, sem erros."), `the text could not be selected: ${JSON.stringify(selected)}`);
+    await ui.page.keyboard.press("Control+c");
+    assert((await lastCopy()).trim() === "Feito, sem erros.", `Ctrl+C copied ${JSON.stringify(await lastCopy())}`);
+
+    await ui.page.keyboard.press("Control+a");
+    const all = await ui.page.evaluate(() => window.getSelection().toString());
+    assert(all.includes("Feito, sem erros.") && all.includes("Done in"), `Ctrl+A selected ${JSON.stringify(all)}`);
+    const picked = await ui.page.locator('[data-testid="flow-canvas"] g.flow-node.selected').count();
+    assert(picked === 1, `Ctrl+A in the panel selected ${picked} nodes`);
+
+    await ui.page.click('[data-testid="output-copy-agent"]');
+    assert((await lastCopy()) === "Feito, sem erros.", `the button copied ${JSON.stringify(await lastCopy())}`);
+    await ui.shot("follow-05-copied");
+  },
+
   async "the panel scrolls with the wheel instead of zooming the canvas"(ui, assert) {
     await boot(ui);
     await startAgent(ui);

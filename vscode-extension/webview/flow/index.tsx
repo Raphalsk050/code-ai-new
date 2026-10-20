@@ -21,6 +21,7 @@ import { ContextMenu, MenuEntry } from "./context-menu";
 import { Inspector } from "./inspector";
 import { LogPanel } from "./log";
 import { accentOf, isAnnotation, layoutGraph, NODE_W, nodesInside, pinsOf, Point } from "./model";
+import { copyText, selectAllOutput, selectionInOutput } from "./output-panel";
 import { FLOW_STYLE } from "./styles";
 import {
   Action,
@@ -207,6 +208,18 @@ function App(): JSX.Element {
       if (mod && event.key.toLowerCase() === "s") {
         event.preventDefault();
         save();
+        return;
+      }
+      // Inside a node's output the keys mean its text, as they do on any page.
+      const reading = selectionInOutput();
+      if (mod && event.key.toLowerCase() === "a" && reading) {
+        event.preventDefault();
+        selectAllOutput(reading.panel);
+        return;
+      }
+      if (mod && event.key === "c" && reading?.text) {
+        event.preventDefault();
+        copyText(reading.text);
         return;
       }
       if (mod && event.key.toLowerCase() === "a") {

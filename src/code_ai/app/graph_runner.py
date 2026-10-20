@@ -41,7 +41,8 @@ from code_ai.core.subagents.runtime import SubagentRuntime
 from code_ai.events.bus import AsyncEventBus
 from code_ai.events.models import EventEnvelope
 from code_ai.providers.base import ModelProvider
-from code_ai.providers.models import Message, ModelRequest
+from code_ai.providers.models import Message, ModelRequest, ModelResponse
+from code_ai.providers.reasoning import ReasoningTagFilter, split_reasoning_tags
 from code_ai.tools.output import bound_text
 
 logger = logging.getLogger(__name__)
@@ -187,8 +188,9 @@ class GraphNodeExecutor:
                 ),
             )
         profile = apply_access(profile, access, self._runtime.base_registry)
-        label = name.strip() or profile.name
-        agent_name = generate_agent_name()
+        label = profile.name
+        # The name on the node is the agent's name; only a nameless node gets one made up.
+        agent_name = name.strip() or generate_agent_name()
         try:
             provider, overrides = self._endpoint_for(model)
         except ValueError as exc:
@@ -302,7 +304,7 @@ class GraphNodeExecutor:
     ) -> AgentOutcome:
         """One model call carrying exactly what the node says: no framing, no tools."""
 
-        agent_name = generate_agent_name()
+        agent_name = name.strip() or generate_agent_name()
         try:
             provider, _ = self._endpoint_for(model)
         except ValueError as exc:
@@ -315,7 +317,7 @@ class GraphNodeExecutor:
             messages=messages,
             max_output_tokens=self._config.output_token_reserve,
         )
-        label = name.strip() or "clean agent"
+        label = "clean agent"
         await self._bus.emit(
             "graph.agent.started",
             {
@@ -344,9 +346,11 @@ class GraphNodeExecutor:
             source="graph",
         )
         timeout = timeout_s or self._config.budgets.subagent_worker_timeout_s
+        stream = _NodeStream(self._output_emitter(node_id, agent_name))
         try:
             response = await asyncio.wait_for(
-                (provider or self._runtime.provider).complete(request), timeout=timeout
+                _stream_clean(provider or self._runtime.provider, request, stream),
+                timeout=timeout,
             )
         except TimeoutError:
             return AgentOutcome(
@@ -361,10 +365,9 @@ class GraphNodeExecutor:
             return AgentOutcome(
                 status="failed", error=str(exc) or type(exc).__name__, agent_name=agent_name
             )
+        finally:
+            await stream.close()
         usage = response.usage
-        # No stream here, so the node's panel gets the answer whole.
-        if response.text:
-            await self._output_emitter(node_id, agent_name)("answer", response.text)
         return AgentOutcome(
             status="completed",
             summary=response.text or "",
@@ -722,6 +725,44 @@ class _NodeStream:
         await asyncio.sleep(_STREAM_FLUSH_S)
         self._timer = None
         await self.flush()
+
+
+async def _stream_clean(
+    provider: ModelProvider, request: ModelRequest, stream: _NodeStream
+) -> ModelResponse:
+    """A clean agent's one call, streamed to its node as it arrives.
+
+    Inline ``<think>`` blocks go to the thinking channel, as they do for an
+    agent; the report keeps only the answer.
+    """
+
+    tags = ReasoningTagFilter()
+    answer: list[str] = []
+    completed: ModelResponse | None = None
+    async with contextlib.aclosing(provider.stream(request)) as events:
+        async for event in events:
+            if event.kind == "text_delta" and event.text_delta:
+                said, thought = tags.feed(event.text_delta)
+                if thought:
+                    await stream.add("thinking", thought)
+                if said:
+                    answer.append(said)
+                    await stream.add("answer", said)
+            elif event.kind == "reasoning_delta" and event.reasoning_delta:
+                await stream.add("thinking", event.reasoning_delta)
+            elif event.kind == "completed" and event.response:
+                completed = event.response
+    said, thought = tags.flush()
+    if thought:
+        await stream.add("thinking", thought)
+    if said:
+        answer.append(said)
+        await stream.add("answer", said)
+    text = "".join(answer)
+    if completed is None:
+        return ModelResponse(text=text)
+    completed.text = split_reasoning_tags(completed.text)[0] if completed.text else text
+    return completed
 
 
 async def _mirror(parent: asyncio.Event, child: asyncio.Event) -> None:
