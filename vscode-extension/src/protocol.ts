@@ -60,6 +60,7 @@ export type BridgeMethod =
   | "boardPlay"
   | "boardStop"
   | "boardCommand"
+  | "boardAttach"
   | "listAssets"
   | "listRules"
   | "listAgents"

@@ -120,6 +120,40 @@ class Criterion:
 
 
 @dataclass(slots=True)
+class Attachment:
+    """A file the user attached to a task, kept in the board's own store."""
+
+    id: str
+    name: str
+    path: str
+    size: int = 0
+    mime: str = ""
+
+    @property
+    def is_image(self) -> bool:
+        return self.mime.startswith("image/")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "path": self.path,
+            "size": self.size,
+            "mime": self.mime,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> Attachment:
+        return cls(
+            id=str(raw.get("id") or ""),
+            name=str(raw.get("name") or ""),
+            path=str(raw.get("path") or ""),
+            size=int(raw.get("size") or 0),
+            mime=str(raw.get("mime") or ""),
+        )
+
+
+@dataclass(slots=True)
 class SubTask:
     """One piece of a task, given to one sub-agent."""
 
@@ -135,6 +169,10 @@ class SubTask:
     agent: str = ""
     report: str = ""
     error: str = ""
+    # What its agent is doing right now, and when it started and stopped (epoch s).
+    activity: str = ""
+    started_at: float = 0.0
+    finished_at: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -148,6 +186,9 @@ class SubTask:
             "agent": self.agent,
             "report": self.report,
             "error": self.error,
+            "activity": self.activity,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
         }
 
     @classmethod
@@ -164,6 +205,9 @@ class SubTask:
             agent=str(raw.get("agent") or ""),
             report=str(raw.get("report") or ""),
             error=str(raw.get("error") or ""),
+            activity=str(raw.get("activity") or ""),
+            started_at=float(raw.get("started_at") or 0.0),
+            finished_at=float(raw.get("finished_at") or 0.0),
         )
 
 
@@ -181,11 +225,14 @@ class Task:
     criteria: list[Criterion] = field(default_factory=list)
     # Other tasks that must be done before this one starts.
     depends_on: list[str] = field(default_factory=list)
+    attachments: list[Attachment] = field(default_factory=list)
     report: str = ""
     error: str = ""
     # The last thing one of its agents did, for the card.
     activity: str = ""
     next_sub: int = 1
+    started_at: float = 0.0
+    finished_at: float = 0.0
 
     def subtask(self, ref: str) -> SubTask | None:
         key = ref.strip().lower()
@@ -220,10 +267,13 @@ class Task:
             "checklist": [item.to_dict() for item in self.checklist],
             "criteria": [item.to_dict() for item in self.criteria],
             "depends_on": list(self.depends_on),
+            "attachments": [item.to_dict() for item in self.attachments],
             "report": self.report,
             "error": self.error,
             "activity": self.activity,
             "next_sub": self.next_sub,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
         }
 
     @classmethod
@@ -239,10 +289,13 @@ class Task:
             checklist=[CheckItem.from_dict(item) for item in _dicts(raw.get("checklist"))],
             criteria=[Criterion.from_dict(item) for item in _dicts(raw.get("criteria"))],
             depends_on=[str(item) for item in raw.get("depends_on") or []],
+            attachments=[Attachment.from_dict(item) for item in _dicts(raw.get("attachments"))],
             report=str(raw.get("report") or ""),
             error=str(raw.get("error") or ""),
             activity=str(raw.get("activity") or ""),
             next_sub=max(1, int(raw.get("next_sub") or 1)),
+            started_at=float(raw.get("started_at") or 0.0),
+            finished_at=float(raw.get("finished_at") or 0.0),
         )
 
 
@@ -349,6 +402,15 @@ class Board:
             "next_item": self.next_item,
         }
 
+    def to_view(self) -> dict[str, Any]:
+        """The board as the front ends draw it: each sub-task says which lane its sub-card is in."""
+
+        payload = self.to_dict()
+        for task, raw in zip(self.tasks, payload["tasks"], strict=True):
+            for sub, raw_sub in zip(task.subtasks, raw["subtasks"], strict=True):
+                raw_sub["lane"] = subtask_lane(self, task, sub)
+        return payload
+
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> Board:
         board = cls(
@@ -384,9 +446,37 @@ class Board:
                 task.status = TASK_READY if task.subtasks else TASK_DRAFT
             elif task.status in BUSY_STATUSES:
                 task.status = TASK_STOPPED
+            task.activity = ""
             for sub in task.subtasks:
+                sub.activity = ""
                 if sub.status in (SUB_QUEUED, SUB_RUNNING):
                     sub.status = SUB_STOPPED
+
+
+# A task the run has pulled spreads its sub-cards over the lanes by their own
+# state; any other keeps them all nested under its card.
+_PULLED = frozenset({TASK_RUNNING, TASK_VERIFYING, TASK_FAILED, TASK_STOPPED})
+_SUB_LANE = {
+    SUB_PENDING: ROLE_TODO,
+    SUB_QUEUED: ROLE_TODO,
+    SUB_RUNNING: ROLE_DOING,
+    SUB_FAILED: ROLE_DOING,
+    SUB_STOPPED: ROLE_DOING,
+    SUB_BLOCKED: ROLE_DOING,
+    SUB_DONE: ROLE_DONE,
+}
+
+
+def subtask_lane(board: Board, task: Task, sub: SubTask) -> str:
+    """The lane a sub-card is drawn in.
+
+    Pulled to In Progress when its agent starts and to Done when it ends,
+    once the run has pulled its task.
+    """
+
+    if task.status not in _PULLED or board.role_of(task) != ROLE_DOING:
+        return task.lane
+    return board.lane_for(_SUB_LANE.get(sub.status, ROLE_TODO)).id
 
 
 def _dicts(value: Any) -> list[dict[str, Any]]:

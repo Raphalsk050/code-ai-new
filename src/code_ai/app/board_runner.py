@@ -14,11 +14,13 @@ edit the user makes, so it looks tasks up by id inside ``mutate`` each time.
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from functools import partial
+from pathlib import Path
 from typing import Any
 
 from code_ai.core.board import prompts
@@ -54,6 +56,7 @@ from code_ai.core.subagents.naming import generate_agent_name
 from code_ai.core.subagents.profiles import SubagentProfileRegistry, default_profile_registry
 from code_ai.core.subagents.runtime import SubagentRuntime
 from code_ai.events.models import EventEnvelope
+from code_ai.providers.models import ImageContent
 from code_ai.tools.output import bound_text
 
 logger = logging.getLogger(__name__)
@@ -67,8 +70,19 @@ _STOP_GRACE_S = 2.0
 # Rounds of "fix what the check found" before a task is left failed.
 FIX_ROUNDS = 1
 
-# A card shows its agents' latest step; more often than this is only repaint.
-_ACTIVITY_EVERY_S = 0.4
+# What an agent writes is passed on this often, as its last words, this long.
+_SAY_EVERY_S = 1.0
+_SAY_CHARS = 180
+
+# Pictures attached to a task go with every request about it, up to these.
+_MAX_IMAGES = 4
+_MAX_IMAGE_BYTES = 5 * 1024 * 1024
+
+_TOOL_STATES = {
+    "tool.call.started": "started",
+    "tool.call.completed": "done",
+    "tool.call.failed": "failed",
+}
 
 Mutate = Callable[..., Awaitable[None]]
 Emit = Callable[[str, dict[str, Any]], Awaitable[None]]
@@ -178,6 +192,8 @@ class BoardRunner:
                     if sub.status != SUB_DONE:
                         sub.status = SUB_PENDING
                         sub.error = ""
+                        sub.activity = ""
+                        sub.started_at = sub.finished_at = 0.0
 
         await self._mutate(queue)
         await asyncio.gather(*(self._run_task(task_id) for task_id in task_ids))
@@ -392,9 +408,12 @@ class BoardRunner:
         watch = built.event_bus.subscribe(pulse.beat)
         forward = built.event_bus.subscribe(self._forwarder(task_id, sub_id, agent))
         if activity:
-            await self._activity(task_id, sub_id, agent, activity, force=True)
+            await self._activity(task_id, sub_id, agent, kind="phase", text=activity)
         child_cancel = asyncio.Event()
-        turn = asyncio.ensure_future(built.orchestrator.run_turn(prompt, cancel_event=child_cancel))
+        images = await asyncio.to_thread(_attached_images, self._read().task(task_id))
+        turn = asyncio.ensure_future(
+            built.orchestrator.run_turn(prompt, cancel_event=child_cancel, images=images or None)
+        )
         watching = asyncio.ensure_future(
             pulse.watch(turn, quiet_for=built.timeout_seconds + _GRACE_S)
         )
@@ -445,31 +464,76 @@ class BoardRunner:
         return name
 
     def _forwarder(self, task_id: str, sub_id: str | None, agent: str):
+        """Each step an agent takes, as the board shows it: the tool, what on, how it ended."""
+
+        said: list[str] = []
+
         async def handler(envelope: EventEnvelope) -> None:
-            if envelope.event_type != "tool.call.started":
-                return
             payload = envelope.payload or {}
-            tool = str(payload.get("name") or "")
-            target = bound_text(str(payload.get("target") or ""), 100)
-            text = f"{tool} {target}".strip()
-            await self._activity(task_id, sub_id, agent, text)
+            kind = envelope.event_type
+            if kind == "model.stream.delta":
+                text = payload.get("text")
+                if isinstance(text, str) and text:
+                    said.append(text)
+                    await self._say(task_id, sub_id, agent, said)
+                return
+            state = _TOOL_STATES.get(kind)
+            if state is None:
+                return
+            if state == "started":
+                # A new step: what it said before belongs to the step before.
+                said.clear()
+            await self._activity(
+                task_id,
+                sub_id,
+                agent,
+                kind="tool",
+                state=state,
+                tool=str(payload.get("name") or ""),
+                target=bound_text(str(payload.get("target") or ""), 120),
+                call=str(payload.get("tool_call_id") or ""),
+            )
 
         return handler
 
-    async def _activity(
-        self, task_id: str, sub_id: str | None, agent: str, text: str, *, force: bool = False
-    ) -> None:
+    async def _say(self, task_id: str, sub_id: str | None, agent: str, said: list[str]) -> None:
+        """What the agent is writing, in bursts: its last sentence, on one line."""
+
         now = time.monotonic()
-        key = f"{task_id}/{sub_id or ''}"
-        if not force and now - self._last_activity.get(key, 0.0) < _ACTIVITY_EVERY_S:
+        key = f"say:{task_id}/{sub_id or ''}"
+        if now - self._last_activity.get(key, 0.0) < _SAY_EVERY_S:
             return
         self._last_activity[key] = now
-        line = bound_text(f"{agent}: {text}", 160)
+        line = " ".join("".join(said).split())
+        if not line:
+            return
+        await self._activity(task_id, sub_id, agent, kind="say", text=line[-_SAY_CHARS:])
+
+    async def _activity(
+        self,
+        task_id: str,
+        sub_id: str | None,
+        agent: str,
+        *,
+        kind: str,
+        state: str = "",
+        tool: str = "",
+        target: str = "",
+        text: str = "",
+        call: str = "",
+    ) -> None:
+        line = f"{tool} {target}".strip() if kind == "tool" else text
+        card_line = bound_text(f"{agent}: {line}", 160)
 
         def note(board: Board) -> None:
             task = board.task(task_id)
-            if task is not None:
-                task.activity = line
+            if task is None:
+                return
+            if kind != "say":
+                task.activity = card_line
+            sub = task.subtask(sub_id) if sub_id else None
+            if sub is not None and kind != "say":
+                sub.activity = bound_text(line, 160)
 
         await self._mutate(note, persist=False, quiet=True)
         await self._emit(
@@ -479,7 +543,13 @@ class BoardRunner:
                 "task": task_id,
                 "subtask": sub_id or "",
                 "agent": agent,
-                "text": line,
+                "kind": kind,
+                "state": state,
+                "tool": tool,
+                "target": target,
+                "call": call,
+                "text": card_line,
+                "at": time.time(),
             },
         )
 
@@ -496,6 +566,8 @@ class BoardRunner:
                 task.status = TASK_RUNNING
             doing = board.lane_for(ROLE_DOING)
             if task.lane != doing.id:
+                task.started_at = time.time()
+                task.finished_at = 0.0
                 _move(board, task, doing.id, to_top=False)
 
         await self._mutate(start)
@@ -524,6 +596,12 @@ class BoardRunner:
             if sub is None:
                 return
             sub.status = status
+            if status == SUB_RUNNING:
+                sub.started_at = time.time()
+                sub.finished_at = 0.0
+            else:
+                sub.finished_at = time.time()
+                sub.activity = ""
             if agent is not None:
                 sub.agent = agent
             if report is not None:
@@ -539,6 +617,7 @@ class BoardRunner:
             if task is None:
                 return
             task.activity = ""
+            task.finished_at = time.time()
             if status == TASK_DONE:
                 task.status = TASK_DONE
                 task.error = ""
@@ -654,3 +733,22 @@ def _record_verdict(board: Board, *, task_id: str, verdict: prompts.Verdict) -> 
             item.done = True
     if verdict.summary:
         task.report = prompts.clip_report(verdict.summary)
+
+
+def _attached_images(task: Task | None) -> list[ImageContent]:
+    """The task's attached pictures, for the model to see, not only to read about."""
+
+    if task is None:
+        return []
+    images: list[ImageContent] = []
+    for item in task.attachments:
+        if not item.is_image or item.size > _MAX_IMAGE_BYTES or len(images) >= _MAX_IMAGES:
+            continue
+        try:
+            data = Path(item.path).read_bytes()
+        except OSError:
+            continue
+        images.append(
+            ImageContent(data=base64.b64encode(data).decode("ascii"), media_type=item.mime)
+        )
+    return images

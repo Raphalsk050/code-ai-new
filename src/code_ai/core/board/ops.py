@@ -47,6 +47,7 @@ OPERATIONS = (
     "add_item",
     "update_item",
     "remove_item",
+    "remove_attachment",
 )
 
 _LISTS = {"checklist": "c", "criteria": "v"}
@@ -311,6 +312,20 @@ def _remove_item(board: Board, op: dict[str, Any]) -> None:
     items.remove(_item(items, op.get("item")))
 
 
+def _remove_attachment(board: Board, op: dict[str, Any]) -> None:
+    # The file goes with it: the service sweeps what nothing refers to any more.
+    task = _editable(board, op.get("task"))
+    task.attachments.remove(_item_named(task.attachments, op.get("attachment")))
+
+
+def _item_named(items: list[Any], ref: Any) -> Any:
+    key = str(ref or "").strip().lower()
+    for item in items:
+        if item.id.lower() == key or item.name.strip().lower() == key:
+            return item
+    raise BoardError(f"No attachment {ref!r}.")
+
+
 _HANDLERS: dict[str, Any] = {
     "add_lane": _add_lane,
     "rename_lane": _rename_lane,
@@ -328,6 +343,7 @@ _HANDLERS: dict[str, Any] = {
     "add_item": _add_item,
     "update_item": _update_item,
     "remove_item": _remove_item,
+    "remove_attachment": _remove_attachment,
 }
 
 

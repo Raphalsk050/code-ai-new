@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 51,
-  "patch": 2,
-  "build": 137,
+  "minor": 52,
+  "patch": 0,
+  "build": 138,
   "updated": "2026-10-22",
-  "note": "Board: a card click no longer blanks the tab in VS Code"
+  "note": "Board: sub-cards pulled across lanes, live agent activity, attachments"
 }

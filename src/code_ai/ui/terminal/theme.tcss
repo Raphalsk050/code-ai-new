@@ -928,8 +928,52 @@ QuestionnaireModal {
 .board-ghost {
   layer: fly;
   position: absolute;
+  padding: 0 1;
   border: round $ca-accent;
   background: $ca-surface;
+}
+
+.board-subcards {
+  height: auto;
+  margin: 0 0 1 2;
+  border-left: solid $ca-border-dim;
+  padding-left: 1;
+}
+
+.board-subcard {
+  height: auto;
+  padding: 0 1;
+  border: round $ca-border-dim;
+}
+
+.board-subcard.st-running {
+  border: round $ca-accent;
+}
+
+.board-subcard.st-failed, .board-subcard.st-blocked {
+  border: round $ca-error-soft;
+}
+
+.board-subcard.landed {
+  border: round $ca-success;
+  background: $ca-success-border;
+}
+
+.board-stub {
+  height: 1;
+  padding: 0 1;
+  color: $ca-muted;
+}
+
+#board-activity {
+  height: 10;
+  border-top: solid $ca-border;
+  padding: 0 1;
+  background: $ca-background;
+}
+
+.board-attachment {
+  width: 1fr;
 }
 
 

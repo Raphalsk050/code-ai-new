@@ -35,6 +35,21 @@ export interface BoardSubTask {
   agent: string;
   report: string;
   error: string;
+  /** The lane its sub-card is drawn in: under its task, or pulled along by the run. */
+  lane?: string;
+  /** What its agent is doing right now. */
+  activity?: string;
+  /** Epoch seconds; 0 when it has not started or not ended. */
+  started_at?: number;
+  finished_at?: number;
+}
+
+export interface BoardAttachment {
+  id: string;
+  name: string;
+  path: string;
+  size: number;
+  mime: string;
 }
 
 export type TaskStatus =
@@ -58,9 +73,12 @@ export interface BoardTask {
   checklist: BoardCheck[];
   criteria: BoardCriterion[];
   depends_on: string[];
+  attachments?: BoardAttachment[];
   report: string;
   error: string;
   activity: string;
+  started_at?: number;
+  finished_at?: number;
 }
 
 export interface BoardSnapshot {
@@ -83,14 +101,32 @@ export interface BoardMove {
 
 export type BoardHostToWebview =
   | { type: "boardSnapshot"; board: BoardSnapshot; moved: BoardMove[]; language?: string }
-  | { type: "boardActivity"; task: string; subtask: string; agent: string; text: string }
+  | { type: "boardActivity"; step: BoardStep }
   | { type: "boardReview"; tasks: string[]; message: string }
   | { type: "boardNotice"; level: "info" | "warn" | "error"; text: string }
   | { type: "boardCreated"; ids: string[] }
   | { type: "boardRunDone"; status: string; done: string[]; failed: string[] };
 
+/** One step of one agent: a tool started or ended, something it said, a phase it entered. */
+export interface BoardStep {
+  task: string;
+  subtask: string;
+  agent: string;
+  kind: "tool" | "say" | "phase";
+  state: "" | "started" | "done" | "failed";
+  tool: string;
+  target: string;
+  call: string;
+  text: string;
+  /** Epoch seconds. */
+  at: number;
+}
+
 export type BoardWebviewToHost =
   | { type: "boardReady" }
+  | { type: "boardAttach"; task: string; name: string; data: string }
+  | { type: "boardAttachPick"; task: string }
+  | { type: "boardOpenFile"; path: string }
   | { type: "boardEdit"; operations: BoardOperation[] }
   | { type: "boardPlan"; tasks: string[] }
   | { type: "boardPlay"; tasks: string[] }

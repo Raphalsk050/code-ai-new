@@ -10,6 +10,7 @@ lane flies there over the lanes, as it does in the panel.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -20,7 +21,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.geometry import Region
 from textual.screen import ModalScreen, Screen
 from textual.timer import Timer
-from textual.widgets import Button, Checkbox, Footer, Input, Static, TextArea
+from textual.widgets import Button, Checkbox, Footer, Input, RichLog, Static, TextArea
 
 from code_ai.app.commands import SessionCommands
 
@@ -50,6 +51,16 @@ _CRITERION_MARK = {"pending": "○", "passed": "✓", "failed": "✗"}
 # The flight from one lane to another: frames and their spacing.
 _FLIGHT_FRAMES = 14
 _FLIGHT_STEP_S = 0.035
+_FLIGHT_STAGGER_S = 0.35
+_FEED_LINES = 300
+
+
+def _size(size: int) -> str:
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.0f} KB"
+    return f"{size / (1024 * 1024):.1f} MB"
 
 
 def _lane_of(board: dict[str, Any], role: str) -> dict[str, Any] | None:
@@ -85,6 +96,8 @@ def _card_text(task: dict[str, Any], activity: str = "") -> Text:
         parts.append(
             f"◎ {sum(1 for item in criteria if item.get('status') == 'passed')}/{len(criteria)}"
         )
+    if task.get("attachments"):
+        parts.append(f"📎 {len(task['attachments'])}")
     if parts:
         text.append("\n" + "  ".join(parts), style="dim")
     if task.get("depends_on") and status != "done":
@@ -93,6 +106,125 @@ def _card_text(task: dict[str, Any], activity: str = "") -> Text:
     if line and status in _BUSY:
         text.append(f"\n{line}", style="italic dim")
     return text
+
+
+_VERBS = {
+    "read_file": "reading",
+    "edit_code": "editing",
+    "write_file": "writing",
+    "execute_command": "running",
+    "list_files": "listing",
+    "web_search": "searching the web",
+}
+
+
+def _verb(tool: str) -> str:
+    """What a tool reads as on a card: "editing src/api.py"."""
+
+    if tool in _VERBS:
+        return _VERBS[tool]
+    if tool.startswith("search_") or tool == "index_workspace":
+        return "searching"
+    if tool.startswith("browser_"):
+        return "browsing"
+    if tool.endswith("_review"):
+        return "reviewing"
+    return f"using {tool}" if tool else "working"
+
+
+def _clock(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+def _step_text(live: dict[str, Any] | None, fallback: str = "") -> str:
+    if live and live.get("phase"):
+        return str(live["phase"])
+    if live and live.get("tool"):
+        return f"{_verb(live['tool'])} {live.get('target', '')}".strip()
+    # What the board saved of the step: "<tool> <target>", read the same way.
+    tool, _, target = fallback.partition(" ")
+    return f"{_verb(tool)} {target}".strip() if tool else ""
+
+
+def _sub_text(sub: dict[str, Any], live: dict[str, Any] | None = None) -> Text:
+    """One sub-task: its mark, id and title, and while it runs, its agent and step."""
+
+    status = sub.get("status", "pending")
+    text = Text()
+    text.append(f"{_SUB_MARK.get(status, '○')} ", style=_sub_style(status))
+    text.append(f"{sub['id']} ", style="dim")
+    text.append(sub.get("title", ""))
+    if status == "running":
+        started = float(sub.get("started_at") or 0)
+        clock = f"  {_clock(time.time() - started)}" if started else ""
+        steps = f" · {live['steps']} step(s)" if live and live.get("steps") else ""
+        text.append(f"\n{sub.get('agent', '')}", style="bold cyan")
+        text.append(f"{clock}{steps}", style="dim")
+        step = _step_text(live, sub.get("activity", ""))
+        if step:
+            text.append(f"\n{step}", style="italic")
+        if live and live.get("said"):
+            text.append(f"\n“{live['said'][-90:]}”", style="dim italic")
+    elif status == "done" and sub.get("agent"):
+        text.append(f"\n{sub['agent']}", style="dim")
+    elif status in ("failed", "blocked") and sub.get("error"):
+        text.append(f"\n{sub['error'][:120]}", style="red")
+    elif status == "pending" and sub.get("depends_on"):
+        text.append(f"\nafter {', '.join(sub['depends_on'])}", style="dim")
+    return text
+
+
+def _sub_style(status: str) -> str:
+    if status == "done":
+        return "green"
+    if status == "running":
+        return "cyan"
+    if status in ("failed", "blocked"):
+        return "red"
+    return "grey50"
+
+
+def _sub_lane(task: dict[str, Any], sub: dict[str, Any]) -> str:
+    return str(sub.get("lane") or task["lane"])
+
+
+def _lane_groups(
+    board: dict[str, Any], lane_id: str
+) -> list[tuple[dict[str, Any], bool, list[dict[str, Any]]]]:
+    """Each task this lane shows: the card itself or a stub, and the sub-cards the lane holds."""
+
+    groups = []
+    for task in board.get("tasks", []):
+        subs = [sub for sub in task.get("subtasks", []) if _sub_lane(task, sub) == lane_id]
+        full = task["lane"] == lane_id
+        if full or subs:
+            groups.append((task, full, subs))
+    return groups
+
+
+def _flights_between(before: dict[str, Any], after: dict[str, Any]) -> list[tuple[str, str]]:
+    """(id, new lane) of every card and sub-card that moved: tasks first, as the run pulls them."""
+
+    was: dict[str, str] = {}
+    for task in before.get("tasks", []):
+        was[task["id"]] = task["lane"]
+        for sub in task.get("subtasks", []):
+            was[sub["id"]] = _sub_lane(task, sub)
+    tasks: list[tuple[str, str]] = []
+    subs: list[tuple[str, str]] = []
+    for task in after.get("tasks", []):
+        if was.get(task["id"], task["lane"]) != task["lane"]:
+            tasks.append((task["id"], task["lane"]))
+        for sub in task.get("subtasks", []):
+            lane = _sub_lane(task, sub)
+            if sub["id"] in was and was[sub["id"]] != lane:
+                subs.append((sub["id"], lane))
+    return tasks + subs
+
+
+def _widget_id(card_id: str) -> str:
+    return "board-card-" + card_id.replace(".", "_")
 
 
 def _status_style(status: str) -> str:
@@ -120,7 +252,7 @@ class BoardCard(Static, can_focus=True):
 
     def __init__(self, task: dict[str, Any], activity: str = "") -> None:
         super().__init__(
-            _card_text(task, activity), id=f"board-card-{task['id']}", classes="board-card"
+            _card_text(task, activity), id=_widget_id(task["id"]), classes="board-card"
         )
         self.task_id = task["id"]
         self.lane_id = task["lane"]
@@ -130,25 +262,80 @@ class BoardCard(Static, can_focus=True):
         self.update(_card_text(task, activity))
 
 
+class BoardSubCard(Static):
+    """A sub-task as a card of its own, under its task: it moves across lanes as it is worked."""
+
+    def __init__(
+        self, task: dict[str, Any], sub: dict[str, Any], live: dict[str, Any] | None
+    ) -> None:
+        super().__init__(_sub_text(sub, live), id=_widget_id(sub["id"]), classes="board-subcard")
+        self.task_id = task["id"]
+        self.sub_id = sub["id"]
+        self.set_class(True, f"st-{sub.get('status', 'pending')}")
+
+    def on_click(self) -> None:
+        screen = self.screen
+        if isinstance(screen, BoardScreen):
+            self.app.push_screen(SubTaskEditor(screen, self.task_id, self.sub_id))
+
+
+class BoardStub(Static):
+    """A task named in a lane it is not in, over the sub-cards of it the lane holds."""
+
+    def __init__(self, task: dict[str, Any]) -> None:
+        super().__init__(
+            Text.assemble(("↳ ", "dim"), (task["id"] + " ", "dim"), (task.get("title", ""), "dim")),
+            classes="board-stub",
+        )
+        self.task_id = task["id"]
+
+    def on_click(self) -> None:
+        screen = self.screen
+        if isinstance(screen, BoardScreen):
+            self.app.push_screen(TaskEditor(screen, self.task_id))
+
+
 class BoardLaneView(Vertical):
     def __init__(
-        self, lane: dict[str, Any], tasks: list[dict[str, Any]], activity: dict[str, str]
+        self, lane: dict[str, Any], board: dict[str, Any], live: dict[str, dict[str, Any]]
     ) -> None:
         super().__init__(id=f"board-lane-{lane['id']}", classes="board-lane")
         self.lane = lane
-        self._tasks = tasks
-        self._activity = activity
+        self._board = board
+        self._live = live
 
     def compose(self) -> ComposeResult:
+        groups = _lane_groups(self._board, self.lane["id"])
+        cards = sum(1 for _, full, _ in groups if full)
+        pulled = sum(len(subs) for _, full, subs in groups if not full)
+        count = f"  {cards}" + (f"  ▤ {pulled}" if pulled else "")
         yield Static(
-            Text.assemble((self.lane["title"].upper(), "bold"), (f"  {len(self._tasks)}", "dim")),
+            Text.assemble((self.lane["title"].upper(), "bold"), (count, "dim")),
             classes="board-lane-title",
         )
         with VerticalScroll(classes="board-lane-cards"):
-            for task in self._tasks:
-                yield BoardCard(task, self._activity.get(task["id"], ""))
-            if not self._tasks:
+            for task, full, subs in groups:
+                if full:
+                    yield BoardCard(task, self._live.get(task["id"], {}).get("line", ""))
+                else:
+                    yield BoardStub(task)
+                with Vertical(classes="board-subcards"):
+                    for sub in subs:
+                        yield BoardSubCard(task, sub, self._live.get(sub["id"]))
+            if not groups:
                 yield Static("—", classes="board-lane-empty")
+
+
+def _ghost_text(board: dict[str, Any], card_id: str) -> Text:
+    """What a card looked like before it moved: the copy that flies."""
+
+    for task in board.get("tasks", []):
+        if task["id"] == card_id:
+            return _card_text(task)
+        for sub in task.get("subtasks", []):
+            if sub["id"] == card_id:
+                return _sub_text(sub)
+    return Text(card_id)
 
 
 class TextPrompt(ModalScreen[str | None]):
@@ -451,6 +638,26 @@ class TaskEditor(_EditorBase):
             yield from self._items("checklist", task.get("checklist", []), locked, "task")
             yield Static("Validation criteria", classes="board-label")
             yield from self._items("criteria", task.get("criteria", []), locked, "task")
+            attachments = task.get("attachments", [])
+            yield Static(f"Attachments  {len(attachments)}", classes="board-label")
+            for item in attachments:
+                with Horizontal(classes="board-row"):
+                    yield Static(
+                        f"📎 {item['name']}  ({_size(item.get('size', 0))})  {item['path']}",
+                        classes="board-attachment",
+                    )
+                    yield Button(
+                        "✕",
+                        id=f"task-remove-attachment-{item['id']}",
+                        classes="board-x",
+                        compact=True,
+                        disabled=locked,
+                    )
+            yield Input(
+                placeholder="Attach a file: its path (Enter)",
+                id="task-attach",
+                disabled=locked,
+            )
             yield Static("Starts after (task ids, comma separated)", classes="board-label")
             yield Input(", ".join(task.get("depends_on", [])), id="task-depends", disabled=locked)
             if task.get("report"):
@@ -517,6 +724,9 @@ class TaskEditor(_EditorBase):
                 return
             self.edit({"op": "remove_task", "task": self.task_id})
             self.dismiss(None)
+        elif widget_id.startswith("task-remove-attachment-"):
+            attachment = widget_id[len("task-remove-attachment-") :]
+            self.edit({"op": "remove_attachment", "task": self.task_id, "attachment": attachment})
         elif widget_id.startswith("task-subedit-"):
             self.app.push_screen(
                 SubTaskEditor(
@@ -555,6 +765,9 @@ class TaskEditor(_EditorBase):
             name = widget_id.rsplit("-", 1)[1]
             self.edit({"op": "add_item", **self._where(), "list": name, "text": value})
             event.input.value = ""
+        elif widget_id == "task-attach" and value:
+            self._board_screen.attach(self.task_id, value.strip('"'))
+            event.input.value = ""
         elif widget_id in ("task-title", "task-depends"):
             self._save()
 
@@ -573,6 +786,7 @@ class BoardScreen(Screen[None]):
         Binding("r", "run", "Run card"),
         Binding("s", "stop", "Stop"),
         Binding("a", "add_lane", "Lane"),
+        Binding("l", "toggle_activity", "Activity"),
         Binding("e", "rename_lane", "Rename lane", show=False),
         Binding("x", "remove_lane", "Remove lane", show=False),
         Binding("delete", "delete", "Delete", show=False),
@@ -585,12 +799,16 @@ class BoardScreen(Screen[None]):
         self._on_close = on_close
         snapshot = self._commands.board_snapshot()
         self.board: dict[str, Any] = snapshot.data.get("board") or {"lanes": [], "tasks": []}
-        self._activity: dict[str, str] = {}
+        # What each agent is doing, by sub-task id (or task id when worked whole).
+        self._live: dict[str, dict[str, Any]] = {}
         self._review = ""
         self._subscription: Any = None
         self._confirm = ""
         self._focus_id = ""
         self._flights: list[Timer] = []
+        # Cards pulled together leave one after another (monotonic time of the next start).
+        self._next_flight = 0.0
+        self._activity_shown = False
 
     # -- reading ----------------------------------------------------------
 
@@ -616,6 +834,9 @@ class BoardScreen(Screen[None]):
         yield Static(self._header(), id="board-header")
         yield Static(self._banner(), id="board-review")
         yield Horizontal(id="board-lanes")
+        log = RichLog(id="board-activity", max_lines=_FEED_LINES, wrap=False, markup=False)
+        log.display = False
+        yield log
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -673,8 +894,7 @@ class BoardScreen(Screen[None]):
         container = self.query_one("#board-lanes", Horizontal)
         await container.remove_children()
         lanes = [
-            BoardLaneView(lane, self._tasks_in(lane["id"]), self._activity)
-            for lane in self.board.get("lanes", [])
+            BoardLaneView(lane, self.board, self._live) for lane in self.board.get("lanes", [])
         ]
         await container.mount_all(lanes)
         self.query_one("#board-header", Static).update(self._header())
@@ -703,63 +923,139 @@ class BoardScreen(Screen[None]):
         if envelope.event_type == "board.changed":
             await self.apply_snapshot(payload.get("board") or {}, payload.get("moved") or [])
         elif envelope.event_type == "board.activity":
-            task_id = str(payload.get("task") or "")
-            self._activity[task_id] = str(payload.get("text") or "")
-            task = self.task(task_id)
-            for card in self.query(BoardCard):
-                if card.task_id == task_id and task is not None:
-                    card.show(task, self._activity[task_id])
+            self._on_step(payload)
         elif envelope.event_type == "board.review.requested":
             self._review = str(payload.get("message") or "")
         elif envelope.event_type == "board.run.completed":
-            self._activity.clear()
+            self._live.clear()
             failed = payload.get("failed") or []
             if failed:
                 self.notify(
                     f"Not done: {', '.join(failed)}. Open the card to see why.", severity="warning"
                 )
 
+    def _on_step(self, step: dict[str, Any]) -> None:
+        """One step of one agent: its card says what it does now, the log keeps it."""
+
+        key = str(step.get("subtask") or step.get("task") or "")
+        agent = str(step.get("agent") or "")
+        live = self._live.get(key)
+        if live is None or live.get("agent") != agent:
+            live = {"agent": agent, "steps": 0}
+            self._live[key] = live
+        kind = step.get("kind")
+        text = str(step.get("text") or "").split(": ", 1)[-1]
+        if kind == "tool":
+            if step.get("state") == "started":
+                live.update(
+                    tool=step.get("tool", ""), target=step.get("target", ""), phase="", said=""
+                )
+                live["steps"] += 1
+                self._log(step, f"{_verb(str(step.get('tool') or ''))} {step.get('target', '')}")
+            elif step.get("state") == "failed":
+                self._log(step, f"{step.get('tool')} failed", style="red")
+        elif kind == "say":
+            live["said"] = text
+        else:
+            live.update(phase=text, tool="", target="")
+            self._log(step, text, style="cyan")
+        live["line"] = f"{agent}: {_step_text(live)}"
+        task = self.task(str(step.get("task") or ""))
+        if task is None:
+            return
+        sub = next((item for item in task.get("subtasks", []) if item["id"] == key), None)
+        for widget in self.query(f"#{_widget_id(key)}"):
+            if isinstance(widget, BoardSubCard) and sub is not None:
+                widget.update(_sub_text(sub, live))
+            elif isinstance(widget, BoardCard):
+                widget.show(task, live["line"])
+
+    def _log(self, step: dict[str, Any], what: str, *, style: str = "") -> None:
+        log = self.query_one("#board-activity", RichLog)
+        # The first step shows the log, unless the user already chose: a board
+        # opened mid-run never sees the run start.
+        if not self._activity_shown:
+            self._activity_shown = True
+            log.display = True
+        when = time.strftime("%H:%M:%S", time.localtime(float(step.get("at") or time.time())))
+        where = str(step.get("subtask") or step.get("task") or "")
+        log.write(
+            Text.assemble(
+                (f"{when} ", "dim"),
+                (f"{step.get('agent', '')} ", "bold cyan"),
+                (f"{where} ", "dim"),
+                (what.strip(), style),
+            )
+        )
+
     async def apply_snapshot(self, board: dict[str, Any], moved: list[dict[str, str]]) -> None:
         if not board:
             return
-        before = {card.task_id: card.region for card in self.query(BoardCard)}
+        previous = self.board
+        before = {
+            widget.id or "": widget.region for widget in self.query(".board-card, .board-subcard")
+        }
         self.board = board
         if not self.is_mounted:
             return
+        # A run that starts shows its log, once.
+        if board.get("running") and not previous.get("running") and not self._activity_shown:
+            self._activity_shown = True
+            self.query_one("#board-activity", RichLog).display = True
         await self._draw_lanes()
         self._refocus()
         done = _lane_of(board, "done")
-        for move in moved:
-            origin = before.get(move["task"])
+        for card_id, lane in _flights_between(previous, board):
+            origin = before.get(_widget_id(card_id))
             if origin is not None:
                 # After the next refresh: until then the new cards have no place.
                 self.call_after_refresh(
-                    self._fly, move["task"], origin, landing=bool(done and move["to"] == done["id"])
+                    self._schedule_flight,
+                    card_id,
+                    origin,
+                    _ghost_text(previous, card_id),
+                    bool(done and lane == done["id"]),
                 )
         for screen in self.app.screen_stack:
             if isinstance(screen, _EditorBase):
                 await screen.redraw()
 
-    def _fly(self, task_id: str, origin: Region, *, landing: bool) -> None:
-        """Send a copy of the card from where it was to where it is now, over the lanes."""
+    def _schedule_flight(self, card_id: str, origin: Region, text: Text, landing: bool) -> None:
+        """Fly a card in its turn: a task first, then its sub-tasks as they are pulled."""
 
-        cards = [card for card in self.query(BoardCard) if card.task_id == task_id]
-        task = self.task(task_id)
-        if not cards or task is None or origin.width == 0:
+        if origin.width == 0:
             return
-        card = cards[0]
-        target = card.region
-        if target.width == 0:
-            if landing:
-                card.add_class("landed")
-                self.set_timer(0.9, lambda: card.remove_class("landed"))
-            return
-        ghost = Static(_card_text(task), classes="board-card board-ghost")
+        ghost = Static(text, classes="board-ghost")
         ghost.styles.width = origin.width
         ghost.styles.height = origin.height
         ghost.styles.offset = (origin.x, origin.y)
         self.mount(ghost)
+        for widget in self.query(f"#{_widget_id(card_id)}"):
+            widget.styles.opacity = 0.0
+        now = time.monotonic()
+        start = max(now, self._next_flight)
+        self._next_flight = start + _FLIGHT_STAGGER_S
+        def fly() -> None:
+            self._fly(card_id, origin, ghost, landing)
+
+        # A timer of no delay is one Textual cannot run.
+        if start - now < 0.02:
+            self.call_later(fly)
+        else:
+            self.set_timer(start - now, fly)
+
+    def _fly(self, card_id: str, origin: Region, ghost: Static, landing: bool) -> None:
+        """Send the copy from where the card was to where it is now, over the lanes."""
+
+        found = list(self.query(f"#{_widget_id(card_id)}"))
+        if not found or found[0].region.width == 0:
+            ghost.remove()
+            for widget in found:
+                widget.styles.opacity = 1.0
+            return
+        card = found[0]
         card.styles.opacity = 0.0
+        target = card.region
         frame = [0]
 
         def step() -> None:
@@ -774,10 +1070,12 @@ class BoardScreen(Screen[None]):
             if frame[0] >= _FLIGHT_FRAMES:
                 timer.stop()
                 ghost.remove()
-                card.styles.opacity = 1.0
-                if landing:
-                    card.add_class("landed")
-                    self.set_timer(0.9, lambda: card.remove_class("landed"))
+                # Looked up again: the lanes may have been drawn anew in flight.
+                for landed in self.query(f"#{_widget_id(card_id)}"):
+                    landed.styles.opacity = 1.0
+                    if landing:
+                        landed.add_class("landed")
+                        self.set_timer(0.9, lambda widget=landed: widget.remove_class("landed"))
 
         timer = self.set_interval(_FLIGHT_STEP_S, step)
         self._flights.append(timer)
@@ -789,6 +1087,11 @@ class BoardScreen(Screen[None]):
                 self.notify(result.message, severity="warning")
 
         self.run_worker(send(), exclusive=False)
+
+    def attach(self, task_id: str, path: str) -> None:
+        self.run_worker(
+            self._call(self._commands.board_attach(task_id, path=path)), exclusive=False
+        )
 
     def plan(self, task_ids: list[str] | None = None) -> None:
         self.run_worker(self._call(self._commands.board_plan(task_ids)), exclusive=False)
@@ -885,6 +1188,11 @@ class BoardScreen(Screen[None]):
 
     def action_stop(self) -> None:
         self.run_worker(self._call(self._commands.board_stop()), exclusive=False)
+
+    def action_toggle_activity(self) -> None:
+        log = self.query_one("#board-activity", RichLog)
+        log.display = not log.display
+        self._activity_shown = True
 
     def action_add_lane(self) -> None:
         def added(title: str | None) -> None:

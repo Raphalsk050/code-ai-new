@@ -67,6 +67,8 @@ def worker_prompt(task: Task, sub: SubTask | None) -> str:
     lines = [f"You are doing one piece of the feature {task.id}: {task.title}."]
     if task.description:
         lines += ["", "The feature:", task.description]
+    if task.attachments:
+        lines += ["", *attachments_block(task)]
     if sub is None:
         lines += ["", "Do the whole feature."]
         lines += _checks("Make sure of", task.checklist)
@@ -265,10 +267,23 @@ def extract_json(text: str) -> Any:
 # -- helpers --------------------------------------------------------------------
 
 
+def attachments_block(task: Task) -> list[str]:
+    """The files the user attached and where an agent reads them; pictures also go as images."""
+
+    if not task.attachments:
+        return []
+    lines = ["Files the user attached to this task (read them with read_file at these paths):"]
+    for item in task.attachments:
+        seen = ", also attached as an image" if item.is_image else ""
+        lines.append(f"- {item.name} ({item.mime or 'file'}, {item.size} bytes{seen}): {item.path}")
+    return lines
+
+
 def _task_block(task: Task, *, ids: bool = False) -> str:
     lines = [f"Task {task.id}: {task.title}"]
     if task.description:
         lines.append(task.description)
+    lines += attachments_block(task)
     for sub in task.subtasks:
         lines.append(f"- sub-task {sub.id}: {sub.title}")
         if sub.description:

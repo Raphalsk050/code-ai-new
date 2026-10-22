@@ -334,6 +334,22 @@ class SessionCommands:
     async def board_play(self, task_ids: list[str] | None = None) -> CommandResult:
         return await self._board_call("play", task_ids)
 
+    async def board_attach(
+        self, task: str, *, path: str = "", name: str = "", data: bytes | None = None
+    ) -> CommandResult:
+        board = self._board()
+        if board is None:
+            return _failed("This session has no task board.")
+        result = await board.attach(task, name=name, data=data, source=path)
+        if not result["ok"]:
+            return _failed(result["message"])
+        attachment = result["attachment"]
+        return CommandResult(
+            ok=True,
+            message=f"Attached {attachment['name']} to {task}.",
+            data={"attachment": attachment, "board": result["board"]},
+        )
+
     async def board_stop(self) -> CommandResult:
         board = self._board()
         if board is None:
@@ -371,6 +387,11 @@ class SessionCommands:
             return await self.board_stop()
         if verb in ("remove", "delete") and ids:
             return await self.board_edit([{"op": "remove_task", "task": ref} for ref in ids])
+        if verb == "attach":
+            task, _, path = rest.partition(" ")
+            if not task or not path.strip():
+                return _failed("Use /board attach <task> <path>.")
+            return await self.board_attach(task, path=path.strip().strip('"'))
         if verb == "lane":
             action, _, name = rest.partition(" ")
             name = name.strip()
@@ -381,7 +402,7 @@ class SessionCommands:
             return _failed("Use /board lane add <name> or /board lane remove <name>.")
         return _failed(
             "Use /board to open it, or /board add <title>, plan [ids], play [ids], stop, "
-            "remove <ids>, lane add <name>, lane remove <name>."
+            "remove <ids>, attach <task> <path>, lane add <name>, lane remove <name>."
         )
 
     # -- workflows and skills ----------------------------------------------

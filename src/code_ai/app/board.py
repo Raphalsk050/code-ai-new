@@ -13,6 +13,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import mimetypes
+import re
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -28,11 +31,15 @@ from code_ai.core.board.models import (
     ROLE_TODO,
     TASK_DRAFT,
     TASK_READY,
+    Attachment,
     Board,
 )
 from code_ai.events.bus import AsyncEventBus
 
 logger = logging.getLogger(__name__)
+
+# An attachment is read whole by the agents it is handed to.
+MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 
 
 class BoardService:
@@ -46,6 +53,8 @@ class BoardService:
         profiles: Callable[[], Any] = lambda: None,
     ) -> None:
         self._path = path
+        # Attached files live beside the board, out of the project.
+        self._files = path.parent / "board-files" if path is not None else None
         self._bus = event_bus
         self._runtime = runtime
         self._max_parallel = max_parallel
@@ -71,7 +80,7 @@ class BoardService:
         return any(not task.done() for task in self._planners)
 
     def snapshot(self) -> dict[str, Any]:
-        payload = self._board.to_dict()
+        payload = self._board.to_view()
         payload["running"] = self.running
         payload["planning"] = self.planning
         payload["run_id"] = self._runner.run_id if self._runner and self.running else ""
@@ -90,6 +99,7 @@ class BoardService:
             return {"ok": False, "message": str(exc), "board": self.snapshot()}
         self._board = board
         self._save()
+        self._sweep_files()
         await self._announce(moved=applied.moved, source=source)
         return {"ok": True, "created": applied.created, "board": self.snapshot()}
 
@@ -110,6 +120,74 @@ class BoardService:
             if task.id in before and before[task.id] != task.lane
         ]
         await self._announce(moved=moved, source="run")
+
+    # -- attachments ------------------------------------------------------
+
+    async def attach(
+        self, task_ref: str, *, name: str = "", data: bytes | None = None, source: str = ""
+    ) -> dict[str, Any]:
+        """Keep a file with a task: copied from ``source`` on disk, or ``data`` as sent."""
+
+        if self._files is None:
+            return {"ok": False, "message": "This board has nowhere to keep files."}
+        task = self._board.task(task_ref)
+        if task is None:
+            return {"ok": False, "message": f"No task {task_ref!r}."}
+        if task.busy:
+            return {
+                "ok": False,
+                "message": f"{task.id} is being worked on; stop the run to change it.",
+            }
+        origin = Path(source).expanduser() if source else None
+        if origin is not None:
+            if not origin.is_file():
+                return {"ok": False, "message": f"There is no file at {source}."}
+            size = origin.stat().st_size
+            name = name or origin.name
+        elif data is not None:
+            size = len(data)
+        else:
+            return {"ok": False, "message": "No file was sent."}
+        if size > MAX_ATTACHMENT_BYTES:
+            limit = MAX_ATTACHMENT_BYTES >> 20
+            return {"ok": False, "message": f"{name} is over the {limit} MB an attachment may be."}
+        name = name.strip() or "file"
+        attachment_id = self._board.new_item_id("a")
+        target = self._files / task.id / f"{attachment_id}-{_safe_name(name)}"
+        try:
+            await asyncio.to_thread(_store, target, origin, data)
+        except OSError as exc:
+            return {"ok": False, "message": f"{name} could not be kept: {exc}"}
+        attachment = Attachment(
+            id=attachment_id,
+            name=name,
+            path=str(target),
+            size=size,
+            mime=mimetypes.guess_type(name)[0] or "application/octet-stream",
+        )
+
+        def add(board: Board) -> None:
+            owner = board.task(task.id)
+            if owner is not None:
+                owner.attachments.append(attachment)
+
+        await self.mutate(add)
+        return {"ok": True, "attachment": attachment.to_dict(), "board": self.snapshot()}
+
+    def _sweep_files(self) -> None:
+        """Delete the attached files no task refers to any more."""
+
+        if self._files is None or not self._files.is_dir():
+            return
+        kept = {Path(item.path) for task in self._board.tasks for item in task.attachments}
+        for folder in self._files.iterdir():
+            if not folder.is_dir():
+                continue
+            for file in folder.iterdir():
+                if file not in kept:
+                    file.unlink(missing_ok=True)
+            if not any(folder.iterdir()):
+                folder.rmdir()
 
     # -- planning ---------------------------------------------------------
 
@@ -323,3 +401,19 @@ class BoardService:
 
     async def _emit(self, event_type: str, payload: dict[str, Any]) -> None:
         await self._bus.emit(event_type, payload, source="board")
+
+
+def _safe_name(name: str) -> str:
+    """A file name any system can keep: the name, without its folders or odd characters."""
+
+    base = Path(name.replace("\\", "/")).name
+    cleaned = re.sub(r"[^\w.\- ]+", "_", base).strip(" .")
+    return cleaned[:120] or "file"
+
+
+def _store(target: Path, origin: Path | None, data: bytes | None) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if origin is not None:
+        shutil.copyfile(origin, target)
+    else:
+        target.write_bytes(data or b"")

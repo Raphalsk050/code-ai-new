@@ -38,6 +38,7 @@ are named by id (T3, T3.2, c7, v4, lane-2) or by their exact title.
   {"op": "add_lane", "title", "after"} | {"op": "rename_lane", "lane", "title"}
   {"op": "remove_lane", "lane"} | {"op": "move_lane", "lane", "index"}
   {"op": "clear_lane", "lane"} - removes every task in it
+  {"op": "remove_attachment", "task", "attachment"} - the user attaches files from the board
 To Do, In Progress and Done can be renamed but not removed. Sub-tasks run in
 parallel, one agent each: make two that touch the same files depend on each other."""
 
@@ -92,6 +93,10 @@ def _render_task(task: Task) -> list[str]:
         f"    check {item.id} [{'x' if item.done else ' '}] {item.text}" for item in task.checklist
     ]
     lines += [f"    criterion {item.id} ({item.status}) {item.text}" for item in task.criteria]
+    for item in task.attachments:
+        lines.append(
+            f"    attachment {item.id} {item.name} ({item.mime}, {item.size} bytes): {item.path}"
+        )
     if task.error:
         lines.append(f"    error: {task.error[:400]}")
     return lines

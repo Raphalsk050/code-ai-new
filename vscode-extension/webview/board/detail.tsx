@@ -1,15 +1,28 @@
 import * as React from "react";
 
 import type {
+  BoardAttachment,
   BoardCheck,
   BoardCriterion,
   BoardOperation,
   BoardSnapshot,
   BoardSubTask,
   BoardTask,
+  BoardWebviewToHost,
 } from "../../src/board-schema";
 import { t, tf } from "../i18n";
-import { canRun, checksOf, DEFAULT_TITLES, dependencyChoices, isLocked, STATUS_LABEL, SUB_ICON } from "./model";
+import { elapsed, LiveAgent } from "./live";
+import {
+  canRun,
+  checksOf,
+  DEFAULT_TITLES,
+  dependencyChoices,
+  formatSize,
+  isLocked,
+  STATUS_LABEL,
+  SUB_ICON,
+} from "./model";
+import { AgentChip, LiveLine, useNow } from "./subcard";
 
 type Edit = (operations: BoardOperation[]) => void;
 
@@ -209,6 +222,7 @@ function SubTaskCard({
   onToggle,
   locked,
   edit,
+  live,
 }: {
   task: BoardTask;
   sub: BoardSubTask;
@@ -216,10 +230,14 @@ function SubTaskCard({
   onToggle: () => void;
   locked: boolean;
   edit: Edit;
+  live?: LiveAgent;
 }): JSX.Element {
   const choices = dependencyChoices(task, sub);
+  const running = sub.status === "running";
+  const now = useNow(running);
+  const started = sub.started_at ?? 0;
   return (
-    <div className="sub" data-sub={sub.id}>
+    <div className={`sub ${running ? "running" : ""}`} data-sub={sub.id}>
       <div className="sub-head">
         <input
           type="checkbox"
@@ -236,11 +254,20 @@ function SubTaskCard({
         <span className="title" onClick={onToggle}>
           {sub.title}
         </span>
-        {sub.agent && <span className="agent">{sub.agent}</span>}
+        {sub.agent && <AgentChip agent={sub.agent} live={running} />}
+        {started > 0 && (
+          <span className="clock">{elapsed(started, running ? now : sub.finished_at || now)}</span>
+        )}
         <button className="ghost icon" title={open ? t("Fold") : t("Open")} onClick={onToggle}>
           <i className={`codicon codicon-chevron-${open ? "up" : "down"}`} />
         </button>
       </div>
+      {running && (
+        <div className="sub-live inline">
+          <LiveLine live={live} fallback={sub.activity} />
+          {live?.said && <div className="said">{live.said}</div>}
+        </div>
+      )}
       {sub.depends_on.length > 0 && !open && (
         <div className="card-after">{tf("after {0}", sub.depends_on.join(", "))}</div>
       )}
@@ -310,23 +337,114 @@ function SubTaskCard({
   );
 }
 
+/** A task's files: picked, dropped (Shift held, in VS Code) or pasted; a click opens one. */
+function Attachments({
+  task,
+  locked,
+  edit,
+  send,
+}: {
+  task: BoardTask;
+  locked: boolean;
+  edit: Edit;
+  send: (message: BoardWebviewToHost) => void;
+}): JSX.Element {
+  const [over, setOver] = React.useState(false);
+  const items: BoardAttachment[] = task.attachments ?? [];
+  const attachFiles = (files: FileList | File[]) => {
+    for (const file of Array.from(files)) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const url = String(reader.result ?? "");
+        send({ type: "boardAttach", task: task.id, name: file.name || "pasted.png", data: url.slice(url.indexOf(",") + 1) });
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+  return (
+    <section
+      className={`attachments ${over ? "over" : ""}`}
+      data-testid="board-attachments"
+      onDragOver={(event) => {
+        if (locked || !event.dataTransfer.types.includes("Files")) return;
+        event.preventDefault();
+        setOver(true);
+      }}
+      onDragLeave={() => setOver(false)}
+      onDrop={(event) => {
+        setOver(false);
+        if (locked || !event.dataTransfer.files.length) return;
+        event.preventDefault();
+        attachFiles(event.dataTransfer.files);
+      }}
+      onPaste={(event) => {
+        if (locked || !event.clipboardData.files.length) return;
+        event.preventDefault();
+        attachFiles(event.clipboardData.files);
+      }}
+      tabIndex={-1}
+    >
+      <h4>
+        {t("Attachments")}
+        <span className="count">{items.length}</span>
+      </h4>
+      {items.map((item) => (
+        <div className="item-row attachment" key={item.id}>
+          <i className={`codicon codicon-${item.mime.startsWith("image/") ? "file-media" : "file"}`} />
+          <button className="ghost link text" title={item.path} onClick={() => send({ type: "boardOpenFile", path: item.path })}>
+            {item.name}
+          </button>
+          <span className="size">{formatSize(item.size)}</span>
+          <button
+            className="ghost icon remove"
+            title={t("Remove")}
+            disabled={locked}
+            onClick={() => edit([{ op: "remove_attachment", task: task.id, attachment: item.id }])}
+          >
+            <i className="codicon codicon-close" />
+          </button>
+        </div>
+      ))}
+      <div className="row">
+        <button disabled={locked} onClick={() => send({ type: "boardAttachPick", task: task.id })}>
+          <i className="codicon codicon-attach" />
+          {t("Attach files")}
+        </button>
+        <span className="hint">{t("or drop them here holding Shift, or paste a picture")}</span>
+      </div>
+    </section>
+  );
+}
+
 export function Detail({
   task,
   board,
+  live,
+  focusSub,
   edit,
+  send,
   onClose,
   onPlan,
   onRun,
 }: {
   task: BoardTask;
   board: BoardSnapshot;
+  live: Record<string, LiveAgent>;
+  /** The sub-task to show open: the drawer was opened from its sub-card. */
+  focusSub?: string;
   edit: Edit;
+  send: (message: BoardWebviewToHost) => void;
   onClose: () => void;
   onPlan: (id: string) => void;
   onRun: (id: string) => void;
 }): JSX.Element {
   const locked = isLocked(task);
-  const [open, setOpen] = React.useState<Set<string>>(new Set());
+  const [open, setOpen] = React.useState<Set<string>>(new Set(focusSub ? [focusSub] : []));
+  React.useEffect(() => {
+    if (!focusSub) return;
+    setOpen((current) => new Set([...current, focusSub]));
+    document.querySelector(`[data-sub="${CSS.escape(focusSub)}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [focusSub, task.id]);
   const [confirmDelete, setConfirmDelete] = React.useState(false);
   React.useEffect(() => {
     setConfirmDelete(false);
@@ -431,6 +549,7 @@ export function Detail({
               onToggle={() => toggle(sub.id)}
               locked={locked}
               edit={edit}
+              live={live[sub.id]}
             />
           ))}
           <AddRow
@@ -439,6 +558,8 @@ export function Detail({
             onAdd={(title) => edit([{ op: "add_subtask", task: task.id, title }])}
           />
         </section>
+
+        <Attachments task={task} locked={locked} edit={edit} send={send} />
 
         <section>
           <h4>

@@ -10,8 +10,10 @@ import type {
   BoardWebviewToHost,
 } from "../../src/board-schema";
 import { setLanguage, t, tf } from "../i18n";
+import { ActivityPanel } from "./activity";
 import { Detail } from "./detail";
-import { flyCards, measureCards, Rects } from "./flight";
+import { captureCards, flyCards, measureCards, Rects } from "./flight";
+import { applyStep, emptyLive, LiveAgent, LiveState, settle } from "./live";
 import {
   agentsAt,
   awaitingReview,
@@ -19,20 +21,22 @@ import {
   DEFAULT_TITLES,
   dropIndex,
   emptyBoard,
+  flightsBetween,
   isLocked,
+  laneGroups,
   laneOfRole,
-  movesBetween,
   playable,
   progressOf,
   STATUS_LABEL,
   tasksIn,
 } from "./model";
 import { BOARD_STYLE } from "./styles";
+import { AgentChip, LiveLine, SubCard, TaskStub } from "./subcard";
 
 declare function acquireVsCodeApi(): {
   postMessage: (message: BoardWebviewToHost) => void;
   getState: () => unknown;
-  setState: (state: unknown) => void;
+  setState: (state: unknown) => unknown;
 };
 
 const vscode = acquireVsCodeApi();
@@ -46,6 +50,7 @@ interface Notice {
 
 interface Saved {
   selected?: string;
+  activity?: boolean;
 }
 
 const laneTitle = (lane: BoardLane) =>
@@ -56,9 +61,12 @@ function App(): JSX.Element {
   const [board, setBoard] = React.useState<BoardSnapshot>(emptyBoard);
   const [loaded, setLoaded] = React.useState(false);
   const [selected, setSelected] = React.useState<string | undefined>(saved.selected);
+  // The sub-task to show open in the drawer, when the drawer was opened from its sub-card.
+  const [focusSub, setFocusSub] = React.useState<string | undefined>(undefined);
   const [notices, setNotices] = React.useState<Notice[]>([]);
   const [review, setReview] = React.useState<{ message: string } | null>(null);
-  const [activity, setActivity] = React.useState<Record<string, string>>({});
+  const [live, setLive] = React.useState<LiveState>(emptyLive);
+  const [showActivity, setShowActivity] = React.useState(Boolean(saved.activity));
   const [dragging, setDragging] = React.useState<string | null>(null);
   const [dropLane, setDropLane] = React.useState<string | null>(null);
   const [addingLane, setAddingLane] = React.useState(false);
@@ -66,13 +74,18 @@ function App(): JSX.Element {
   boardRef.current = board;
   // Where every card was before the board changed, and which moved: read by
   // the layout effect once the new board is on screen.
-  const flight = React.useRef<{ rects: Rects; moved: string[]; landing: Set<string> } | null>(null);
+  const flight = React.useRef<{
+    rects: Rects;
+    moved: string[];
+    landing: Set<string>;
+    copies: Map<string, HTMLElement>;
+  } | null>(null);
 
   // A block, not an arrow's value: VS Code's setState returns the state, and an
   // effect's return value is its cleanup, which React calls on the next change.
   React.useEffect(() => {
-    vscode.setState({ selected } satisfies Saved);
-  }, [selected]);
+    vscode.setState({ selected, activity: showActivity } satisfies Saved);
+  }, [selected, showActivity]);
 
   const notify = React.useCallback((level: Notice["level"], text: string) => {
     const id = Date.now() + Math.random();
@@ -87,22 +100,26 @@ function App(): JSX.Element {
         case "boardSnapshot": {
           if (message.language) setLanguage(message.language);
           const previous = boardRef.current;
-          const moves = message.moved.length ? message.moved : movesBetween(previous, message.board);
+          const moves = flightsBetween(previous, message.board);
           if (moves.length) {
             const done = laneOfRole(message.board, "done")?.id;
+            const moved = moves.map((move) => move.task);
             flight.current = {
               rects: measureCards(),
-              moved: moves.map((move) => move.task),
+              moved,
               landing: new Set(moves.filter((move) => move.to === done).map((move) => move.task)),
+              copies: captureCards(moved),
             };
           }
+          // A run that starts opens the feed of what its agents do.
+          if (message.board.running && !previous.running) setShowActivity(true);
           setBoard(message.board);
           setLoaded(true);
           if (message.board.running) setReview(null);
           break;
         }
         case "boardActivity":
-          setActivity((current) => ({ ...current, [message.task]: message.text }));
+          setLive((current) => applyStep(current, message.step));
           break;
         case "boardReview":
           setReview({ message: message.message });
@@ -118,7 +135,7 @@ function App(): JSX.Element {
           } else if (message.status === "completed" && message.done.length) {
             notify("info", tf("Done: {0}.", message.done.join(", ")));
           }
-          setActivity({});
+          setLive(settle);
           break;
       }
     };
@@ -131,10 +148,14 @@ function App(): JSX.Element {
     const pending = flight.current;
     if (!pending) return;
     flight.current = null;
-    flyCards(pending.rects, pending.moved, pending.landing);
+    flyCards(pending.rects, pending.moved, pending.landing, pending.copies);
   }, [board]);
 
   const edit = React.useCallback((operations: BoardOperation[]) => send({ type: "boardEdit", operations }), []);
+  const open = React.useCallback((task: string, subtask = "") => {
+    setSelected(task);
+    setFocusSub(subtask || undefined);
+  }, []);
   const selectedTask = board.tasks.find((task) => task.id === selected);
   const { run, drafts } = playable(board);
   const waiting = awaitingReview(board);
@@ -159,7 +180,8 @@ function App(): JSX.Element {
     setDragging(null);
     setDropLane(null);
     if (!id) return;
-    const cards = Array.from(event.currentTarget.querySelectorAll<HTMLElement>("[data-card]")).filter(
+    // Tasks only: a sub-card goes where its agent takes it.
+    const cards = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(".card[data-card]")).filter(
       (element) => element.dataset.card !== id
     );
     const middles = cards.map((element) => {
@@ -189,6 +211,15 @@ function App(): JSX.Element {
           </span>
         )}
         <span className="spacer" />
+        <button
+          className={showActivity ? "on" : ""}
+          data-testid="board-activity-toggle"
+          onClick={() => setShowActivity((open) => !open)}
+          title={t("What every agent is doing, step by step")}
+        >
+          <i className="codicon codicon-pulse" />
+          {t("Activity")}
+        </button>
         <button onClick={() => setAddingLane(true)} disabled={addingLane}>
           <i className="codicon codicon-add" />
           {t("Lane")}
@@ -247,11 +278,11 @@ function App(): JSX.Element {
               lane={lane}
               board={board}
               selected={selected}
-              activity={activity}
+              live={live.agents}
               dragging={dragging}
               drop={dropLane === lane.id}
               edit={edit}
-              onSelect={setSelected}
+              onOpen={open}
               onDragStart={setDragging}
               onDragEnd={() => {
                 setDragging(null);
@@ -279,13 +310,18 @@ function App(): JSX.Element {
           <Detail
             task={selectedTask}
             board={board}
+            live={live.agents}
+            focusSub={focusSub}
             edit={edit}
+            send={send}
             onClose={() => setSelected(undefined)}
             onPlan={(id) => plan([id])}
             onRun={(id) => play([id])}
           />
         )}
       </div>
+
+      {showActivity && <ActivityPanel feed={live.feed} onClose={() => setShowActivity(false)} onOpen={open} />}
 
       {loaded && board.tasks.length === 0 && (
         <div className="board-empty" style={{ position: "absolute", top: "40%", left: 0, right: 0, pointerEvents: "none" }}>
@@ -308,11 +344,11 @@ function Lane({
   lane,
   board,
   selected,
-  activity,
+  live,
   dragging,
   drop,
   edit,
-  onSelect,
+  onOpen,
   onDragStart,
   onDragEnd,
   onDragOver,
@@ -321,16 +357,17 @@ function Lane({
   lane: BoardLane;
   board: BoardSnapshot;
   selected?: string;
-  activity: Record<string, string>;
+  live: Record<string, LiveAgent>;
   dragging: string | null;
   drop: boolean;
   edit: (operations: BoardOperation[]) => void;
-  onSelect: (id: string) => void;
+  onOpen: (task: string, subtask?: string) => void;
   onDragStart: (id: string) => void;
   onDragEnd: () => void;
   onDragOver: (event: React.DragEvent<HTMLDivElement>) => void;
   onDrop: (event: React.DragEvent<HTMLDivElement>) => void;
 }): JSX.Element {
+  const groups = laneGroups(board, lane.id);
   const cards = tasksIn(board, lane.id);
   const [renaming, setRenaming] = React.useState(false);
   const [menu, setMenu] = React.useState(false);
@@ -338,6 +375,7 @@ function Lane({
   const [adding, setAdding] = React.useState(false);
   const [title, setTitle] = React.useState("");
   const canAdd = lane.role !== "done" && lane.role !== "in_progress";
+  const subCount = groups.reduce((sum, group) => sum + (group.full ? 0 : group.subs.length), 0);
 
   React.useEffect(() => {
     if (!menu) setConfirm("");
@@ -350,12 +388,7 @@ function Lane({
   };
 
   return (
-    <div
-      className={`lane ${drop ? "drop" : ""}`}
-      data-lane={lane.id}
-      onDragOver={onDragOver}
-      onDrop={onDrop}
-    >
+    <div className={`lane ${drop ? "drop" : ""}`} data-lane={lane.id} onDragOver={onDragOver} onDrop={onDrop}>
       <div className="lane-head" style={{ position: "relative" }}>
         {renaming ? (
           <input
@@ -377,9 +410,22 @@ function Lane({
             {laneTitle(lane)}
           </span>
         )}
-        <span className="lane-count">{cards.length}</span>
+        <span className="lane-count" title={t("Tasks")}>
+          {cards.length}
+        </span>
+        {subCount > 0 && (
+          <span className="lane-count subs" title={t("Sub-tasks pulled here")}>
+            <i className="codicon codicon-list-tree" />
+            {subCount}
+          </span>
+        )}
         <span className="spacer" />
-        <button className="ghost icon" title={t("Lane actions")} aria-label={t("Lane actions")} onClick={() => setMenu((open) => !open)}>
+        <button
+          className="ghost icon"
+          title={t("Lane actions")}
+          aria-label={t("Lane actions")}
+          onClick={() => setMenu((open) => !open)}
+        >
           <i className="codicon codicon-ellipsis" />
         </button>
         {menu && (
@@ -422,21 +468,39 @@ function Lane({
         )}
       </div>
       <div className="lane-cards">
-        {cards.map((task) => (
-          <Card
-            key={task.id}
-            task={task}
-            selected={selected === task.id}
-            dragging={dragging === task.id}
-            activity={activity[task.id] || task.activity}
-            onSelect={() => onSelect(task.id)}
-            onDragStart={(event) => {
-              event.dataTransfer.setData("text/x-board-card", task.id);
-              event.dataTransfer.effectAllowed = "move";
-              onDragStart(task.id);
-            }}
-            onDragEnd={onDragEnd}
-          />
+        {groups.map((group) => (
+          <div className={`card-group ${group.full ? "" : "stubbed"}`} key={group.task.id} data-group={group.task.id}>
+            {group.full ? (
+              <Card
+                task={group.task}
+                selected={selected === group.task.id}
+                dragging={dragging === group.task.id}
+                live={live[group.task.id]}
+                onSelect={() => onOpen(group.task.id)}
+                onDragStart={(event) => {
+                  event.dataTransfer.setData("text/x-board-card", group.task.id);
+                  event.dataTransfer.effectAllowed = "move";
+                  onDragStart(group.task.id);
+                }}
+                onDragEnd={onDragEnd}
+              />
+            ) : (
+              <TaskStub task={group.task} onOpen={() => onOpen(group.task.id)} />
+            )}
+            {group.subs.length > 0 && (
+              <div className="subcards">
+                {group.subs.map((sub) => (
+                  <SubCard
+                    key={sub.id}
+                    task={group.task}
+                    sub={sub}
+                    live={live[sub.id]}
+                    onOpen={() => onOpen(group.task.id, sub.id)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
         ))}
       </div>
       {canAdd &&
@@ -476,7 +540,7 @@ function Card({
   task,
   selected,
   dragging,
-  activity,
+  live,
   onSelect,
   onDragStart,
   onDragEnd,
@@ -484,7 +548,7 @@ function Card({
   task: BoardTask;
   selected: boolean;
   dragging: boolean;
-  activity: string;
+  live?: LiveAgent;
   onSelect: () => void;
   onDragStart: (event: React.DragEvent<HTMLDivElement>) => void;
   onDragEnd: () => void;
@@ -492,8 +556,12 @@ function Card({
   const progress = progressOf(task);
   const counts = checksOf(task);
   const locked = isLocked(task);
-  const live = task.status === "running" || task.status === "verifying" || task.status === "planning";
+  const attachments = task.attachments?.length ?? 0;
+  const busy = task.status === "running" || task.status === "verifying" || task.status === "planning";
   const share = progress.total ? Math.round((progress.done / progress.total) * 100) : task.status === "done" ? 100 : 0;
+  // A task worked as a whole, or checked, has one agent of its own; one with
+  // sub-tasks shows its agents on their sub-cards.
+  const ownAgent = busy && (progress.total === 0 || task.status !== "running") ? live : undefined;
   return (
     <div
       className={`card s-${task.status} ${selected ? "selected" : ""} ${dragging ? "dragging" : ""}`}
@@ -509,7 +577,7 @@ function Card({
         {task.status !== "done" && <span className={`pill ${task.status}`}>{t(STATUS_LABEL[task.status], "status")}</span>}
       </div>
       <div className="card-title">{task.title}</div>
-      {(progress.total > 0 || counts.checks > 0 || counts.criteria > 0) && (
+      {(progress.total > 0 || counts.checks > 0 || counts.criteria > 0 || attachments > 0) && (
         <div className="card-meta">
           {progress.total > 0 && (
             <span className="item" title={t("Sub-tasks done")}>
@@ -530,8 +598,14 @@ function Card({
               {counts.passed}/{counts.criteria}
             </span>
           )}
+          {attachments > 0 && (
+            <span className="item" title={t("Attachments")}>
+              <i className="codicon codicon-attach" />
+              {attachments}
+            </span>
+          )}
           {progress.running > 0 && (
-            <span className="item" title={t("Agents working")}>
+            <span className="item working" title={t("Agents working")}>
               <i className="codicon codicon-loading" />
               {progress.running}
             </span>
@@ -546,7 +620,13 @@ function Card({
       {task.depends_on.length > 0 && task.status !== "done" && (
         <div className="card-after">{tf("after {0}", task.depends_on.join(", "))}</div>
       )}
-      {live && activity && <div className="card-activity">{activity}</div>}
+      {ownAgent && (
+        <div className="sub-live">
+          <AgentChip agent={ownAgent.agent} live />
+          <LiveLine live={ownAgent} />
+          {ownAgent.said && <div className="said">{ownAgent.said}</div>}
+        </div>
+      )}
     </div>
   );
 }

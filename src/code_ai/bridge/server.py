@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import contextlib
 import json
 import logging
@@ -496,6 +498,23 @@ class BridgeServer:
     async def _h_board_stop(self, params: dict[str, Any]) -> dict[str, Any]:
         return (await self._commands.board_stop()).to_payload()
 
+    async def _h_board_attach(self, params: dict[str, Any]) -> dict[str, Any]:
+        """A file for a task: a path on this machine, or its bytes as base64 (dropped or pasted)."""
+        data = None
+        raw = params.get("data")
+        if raw:
+            try:
+                data = base64.b64decode(str(raw), validate=True)
+            except (ValueError, binascii.Error):
+                return {"ok": False, "message": "The file did not arrive whole."}
+        result = await self._commands.board_attach(
+            str(params.get("task") or ""),
+            path=str(params.get("path") or ""),
+            name=str(params.get("name") or ""),
+            data=data,
+        )
+        return result.to_payload()
+
     async def _h_board_command(self, params: dict[str, Any]) -> dict[str, Any]:
         """``/board <subcommand>`` typed in the chat, as the terminal runs it."""
         return (await self._commands.board_command(str(params.get("text") or ""))).to_payload()
@@ -680,6 +699,7 @@ class BridgeServer:
         "boardPlay": _h_board_play,
         "boardStop": _h_board_stop,
         "boardCommand": _h_board_command,
+        "boardAttach": _h_board_attach,
         "mcpList": _h_mcp_list,
         "mcpReconnect": _h_mcp_reconnect,
         "mcpApprove": _h_mcp_approve,

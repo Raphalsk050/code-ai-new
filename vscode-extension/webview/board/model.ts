@@ -161,3 +161,65 @@ export const SUB_ICON: Record<BoardSubTask["status"], string> = {
 
 /** The three role lanes keep their default names translated until the user renames them. */
 export const DEFAULT_TITLES = new Set(["To Do", "In Progress", "Done"]);
+
+/** The lane a sub-card is in: what the backend placed it in, else under its task. */
+export function subLane(task: BoardTask, sub: BoardSubTask): string {
+  return sub.lane || task.lane;
+}
+
+/**
+ * What a lane shows of one task: the card itself when the task is in this
+ * lane, else a stub naming it, and under either the sub-cards this lane holds.
+ */
+export interface LaneGroup {
+  task: BoardTask;
+  full: boolean;
+  subs: BoardSubTask[];
+}
+
+export function laneGroups(board: BoardSnapshot, laneId: string): LaneGroup[] {
+  const groups: LaneGroup[] = [];
+  for (const task of board.tasks) {
+    const subs = task.subtasks.filter((sub) => subLane(task, sub) === laneId);
+    const full = task.lane === laneId;
+    if (full || subs.length) groups.push({ task, full, subs });
+  }
+  return groups;
+}
+
+/** Where every card and sub-card is, by id: two of these give the moves to fly. */
+export function placements(board: BoardSnapshot): Map<string, string> {
+  const places = new Map<string, string>();
+  for (const task of board.tasks) {
+    places.set(task.id, task.lane);
+    for (const sub of task.subtasks) places.set(sub.id, subLane(task, sub));
+  }
+  return places;
+}
+
+/**
+ * The cards that changed lane between two boards, in the order they fly:
+ * tasks first, as the run pulls a task before its sub-tasks, then sub-cards in
+ * the order of their task.
+ */
+export function flightsBetween(before: BoardSnapshot, after: BoardSnapshot): BoardMove[] {
+  const was = placements(before);
+  const tasks: BoardMove[] = [];
+  const subs: BoardMove[] = [];
+  for (const task of after.tasks) {
+    const from = was.get(task.id);
+    if (from !== undefined && from !== task.lane) tasks.push({ task: task.id, from, to: task.lane });
+    for (const sub of task.subtasks) {
+      const at = subLane(task, sub);
+      const subFrom = was.get(sub.id);
+      if (subFrom !== undefined && subFrom !== at) subs.push({ task: sub.id, from: subFrom, to: at });
+    }
+  }
+  return [...tasks, ...subs];
+}
+
+export function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}

@@ -5,6 +5,7 @@ import type {
   BoardHostToWebview,
   BoardMove,
   BoardSnapshot,
+  BoardStep,
   BoardWebviewToHost,
 } from "./board-schema";
 import type { EventEnvelope } from "./protocol";
@@ -94,10 +95,18 @@ export class BoardPanel {
       case "board.activity":
         this.post({
           type: "boardActivity",
-          task: String(payload.task ?? ""),
-          subtask: String(payload.subtask ?? ""),
-          agent: String(payload.agent ?? ""),
-          text: String(payload.text ?? ""),
+          step: {
+            task: String(payload.task ?? ""),
+            subtask: String(payload.subtask ?? ""),
+            agent: String(payload.agent ?? ""),
+            kind: (payload.kind as BoardStep["kind"]) ?? "tool",
+            state: (payload.state as BoardStep["state"]) ?? "",
+            tool: String(payload.tool ?? ""),
+            target: String(payload.target ?? ""),
+            call: String(payload.call ?? ""),
+            text: String(payload.text ?? ""),
+            at: Number(payload.at ?? Date.now() / 1000),
+          },
         });
         break;
       case "board.review.requested":
@@ -170,11 +179,32 @@ export class BoardPanel {
       case "boardStop":
         void this.call("boardStop", {});
         break;
+      case "boardAttach":
+        void this.call("boardAttach", { task: message.task, name: message.name, data: message.data });
+        break;
+      case "boardAttachPick":
+        void this.pickFiles(message.task);
+        break;
+      case "boardOpenFile":
+        void vscode.commands.executeCommand("vscode.open", vscode.Uri.file(message.path));
+        break;
+    }
+  }
+
+  /** Attach files picked in the system's dialog: the backend copies each from where it is. */
+  private async pickFiles(task: string): Promise<void> {
+    const picked = await vscode.window.showOpenDialog({
+      canSelectMany: true,
+      openLabel: "Attach",
+      title: `Attach files to ${task}`,
+    });
+    for (const uri of picked ?? []) {
+      await this.call("boardAttach", { task, path: uri.fsPath });
     }
   }
 
   private async call(
-    method: "boardEdit" | "boardPlan" | "boardPlay" | "boardStop",
+    method: "boardEdit" | "boardPlan" | "boardPlay" | "boardStop" | "boardAttach",
     params: Record<string, unknown>
   ): Promise<void> {
     this.bridge.ensureStarted();
@@ -184,7 +214,7 @@ export class BoardPanel {
         message?: string;
         created?: string[];
         board?: BoardSnapshot;
-      }>(method, params, 30000);
+      }>(method, params, method === "boardAttach" ? 120000 : 30000);
       if (!result?.ok) {
         this.notify("warn", result?.message ?? "The board refused that.");
         // A refused edit leaves the board as it was: put the tab back on it.
@@ -192,7 +222,9 @@ export class BoardPanel {
         return;
       }
       if (result.created?.length) this.post({ type: "boardCreated", ids: result.created });
-      if (result.message && method !== "boardEdit") this.notify("info", result.message);
+      if (result.message && method !== "boardEdit" && method !== "boardAttach") {
+        this.notify("info", result.message);
+      }
     } catch (err) {
       this.notify("error", String(err));
     }

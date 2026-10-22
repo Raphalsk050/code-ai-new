@@ -74,6 +74,7 @@ class BoardProvider:
         self.peak = 0
         self.worked: list[str] = []
         self.started: list[str] = []
+        self.saw_images = 0
 
     @property
     def capabilities(self) -> ProviderCapabilities:
@@ -83,6 +84,7 @@ class BoardProvider:
 
     async def _answer(self, request: ModelRequest) -> str:
         prompt = _task_of(request)
+        self.saw_images += sum(len(message.images or []) for message in request.messages)
         if "Break the task below into sub-tasks" in prompt:
             return "Here it is:\n```json\n" + json.dumps(self.plan) + "\n```"
         if "Judge whether the work below is done" in prompt:
@@ -354,4 +356,89 @@ async def test_the_agent_sets_up_the_board_and_hands_it_over(tmp_path) -> None:
     # Sub-agents never get the board.
     coder = app.subagent_runtime.build(app.subagent_profiles.get("coder"))
     assert not any(name.startswith("board_") for name in coder.orchestrator.tool_registry.names())
+    await app.close()
+
+
+async def test_sub_cards_are_pulled_across_the_lanes_as_their_agents_work(tmp_path) -> None:
+    hold = asyncio.Event()
+    provider = BoardProvider(hold=hold)
+    app, events = await started_app(tmp_path, provider)
+    await app.board.apply(
+        [
+            {
+                "op": "add_task",
+                "title": "API",
+                "subtasks": [
+                    {"title": "one"},
+                    {"title": "two"},
+                    {"title": "three", "depends_on": [1]},
+                ],
+            }
+        ]
+    )
+    # Before the run every sub-card sits under its task.
+    view = app.board.snapshot()["tasks"][0]
+    assert {sub["lane"] for sub in view["subtasks"]} == {"todo"}
+
+    await app.board.play()
+    await wait_for(lambda: provider.active == 2)
+    view = app.board.snapshot()["tasks"][0]
+    lanes = {sub["id"]: sub["lane"] for sub in view["subtasks"]}
+    # The task was pulled; the two its agents took went with it; the third waits in To Do.
+    assert view["lane"] == "in_progress"
+    assert lanes == {"T1.1": "in_progress", "T1.2": "in_progress", "T1.3": "todo"}
+    running = [sub for sub in app.board.board.task("T1").subtasks if sub.status == "running"]
+    assert all(sub.started_at > 0 and sub.agent for sub in running)
+
+    hold.set()
+    await finish_run(app)
+    view = app.board.snapshot()["tasks"][0]
+    assert view["lane"] == "done"
+    assert {sub["lane"] for sub in view["subtasks"]} == {"done"}
+    assert all(sub["finished_at"] >= sub["started_at"] > 0 for sub in view["subtasks"])
+    # Each sub-card's own pull reached the panel as a board change.
+    seen = [
+        {sub["id"]: sub["lane"] for sub in payload["board"]["tasks"][0]["subtasks"]}
+        for payload in events.of("board.changed")
+        if payload["board"]["tasks"]
+    ]
+    assert any(lanes["T1.1"] == "done" and lanes["T1.3"] == "todo" for lanes in seen)
+    await app.close()
+
+
+async def test_sub_tasks_are_pulled_in_their_order(tmp_path) -> None:
+    provider = BoardProvider()
+    config = AppConfig.from_mapping(
+        {
+            "api_mode": "ollama",
+            "workspace": str(tmp_path),
+            "model": "main-model",
+            "permission_mode": "bypass",
+            "learn": False,
+            "budgets": {"max_concurrent_subagents": 1},
+        }
+    )
+    app = build_application(config=config, provider=provider)
+    await app.start()
+    await app.board.apply([{"op": "add_task", "title": "API", "subtasks": ["a", "b", "c", "d"]}])
+    await app.board.play()
+    await finish_run(app)
+    assert provider.started == ["T1.1", "T1.2", "T1.3", "T1.4"]
+    await app.close()
+
+
+async def test_an_attached_picture_reaches_the_workers(tmp_path) -> None:
+    provider = BoardProvider()
+    app, _ = await started_app(tmp_path, provider)
+    await app.board.apply([{"op": "add_task", "title": "Page", "subtasks": ["Layout"]}])
+    png = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00"
+        b"\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\xcf\xc0\x00\x00\x03\x01\x01\x00\xc9\xfe\x92\xef"
+        b"\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    assert (await app.board.attach("T1", name="mockup.png", data=png))["ok"]
+    await app.board.play()
+    await finish_run(app)
+    assert app.board.board.task("T1").status == "done"
+    assert provider.saw_images >= 1
     await app.close()

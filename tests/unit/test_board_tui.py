@@ -5,12 +5,21 @@ same lanes, cards, editors and flight the panel has, from the keyboard.
 from __future__ import annotations
 
 import asyncio
+import time
 
 from textual.widgets import Input, TextArea
 
 from code_ai.app.board import BoardService
 from code_ai.ui.terminal.app import create_terminal_app
-from code_ai.ui.terminal.board import BoardCard, BoardScreen, SubTaskEditor, TaskEditor, TextPrompt
+from code_ai.ui.terminal.board import (
+    BoardCard,
+    BoardLaneView,
+    BoardScreen,
+    BoardSubCard,
+    SubTaskEditor,
+    TaskEditor,
+    TextPrompt,
+)
 from tests.unit.test_terminal_ui import FakeTerminalApplication
 
 
@@ -157,3 +166,89 @@ async def test_board_subcommands_from_the_prompt(tmp_path) -> None:
         await pilot.pause(0.3)
         # No sub-agents in the fake: Play says so instead of running anything.
         assert fake.board.running is False
+
+
+async def test_sub_cards_nest_under_their_task_and_follow_their_agent(tmp_path) -> None:
+    fake = _App(tmp_path)
+    await fake.board.apply(
+        [{"op": "add_task", "title": "API", "subtasks": ["Schema", "Endpoint", "Tests"]}]
+    )
+    terminal_app = create_terminal_app(fake)
+    async with terminal_app.run_test(size=(160, 50)) as pilot:
+        board = await _open_board(terminal_app, pilot)
+        lane = board.query_one("#board-lane-todo")
+        assert [sub.sub_id for sub in lane.query(BoardSubCard)] == ["T1.1", "T1.2", "T1.3"]
+
+        # The run pulls the task and two of its pieces; the third waits in To Do under a stub.
+        def pull(state) -> None:
+            task = state.task("T1")
+            task.status = "running"
+            task.lane = "in_progress"
+            for sub, status in zip(task.subtasks, ("done", "running", "pending"), strict=True):
+                sub.status = status
+            task.subtasks[1].agent = "Lovelace"
+            task.subtasks[1].started_at = time.time() - 65
+
+        await fake.board.mutate(pull)
+        await _until(pilot, lambda: bool(board.query("#board-lane-done BoardSubCard")))
+        place = {
+            sub.sub_id: next(item for item in sub.ancestors if isinstance(item, BoardLaneView)).id
+            for sub in board.query(BoardSubCard)
+        }
+        assert place == {
+            "T1.1": "board-lane-done",
+            "T1.2": "board-lane-in_progress",
+            "T1.3": "board-lane-todo",
+        }
+        assert [stub.task_id for stub in board.query("#board-lane-todo BoardStub")] == ["T1"]
+        assert [stub.task_id for stub in board.query("#board-lane-done BoardStub")] == ["T1"]
+
+        # The agent's step shows on its sub-card and lands in the log.
+        await fake.emit(
+            "board.activity",
+            {
+                "task": "T1",
+                "subtask": "T1.2",
+                "agent": "Lovelace",
+                "kind": "tool",
+                "state": "started",
+                "tool": "edit_code",
+                "target": "src/api.py",
+                "call": "c1",
+                "text": "",
+                "at": time.time(),
+            },
+        )
+        await pilot.pause(0.1)
+        card = str(board.query_one("#board-card-T1_2").render())
+        assert "Lovelace" in card and "editing src/api.py" in card and "1:0" in card
+        # The first step showed the log, and it is in it.
+        log = board.query_one("#board-activity")
+        assert log.display
+        assert any("editing src/api.py" in line.text for line in log.lines)
+        await pilot.press("l")
+        assert not board.query_one("#board-activity").display
+
+
+async def test_files_are_attached_from_the_task_editor(tmp_path) -> None:
+    fake = _App(tmp_path)
+    await fake.board.apply([{"op": "add_task", "title": "Login"}])
+    spec = tmp_path / "spec.md"
+    spec.write_text("# Login", encoding="utf-8")
+    terminal_app = create_terminal_app(fake)
+    async with terminal_app.run_test(size=(150, 50)) as pilot:
+        board = await _open_board(terminal_app, pilot)
+        board.query_one(BoardCard).focus()
+        await pilot.press("enter")
+        await _until(pilot, lambda: isinstance(terminal_app.screen, TaskEditor))
+        editor = terminal_app.screen
+        field = editor.query_one("#task-attach", Input)
+        field.focus()
+        field.value = str(spec)
+        await pilot.press("enter")
+        await _until(pilot, lambda: bool(fake.board.board.task("T1").attachments))
+        attachment = fake.board.board.task("T1").attachments[0]
+        assert attachment.name == "spec.md"
+        await _until(pilot, lambda: bool(editor.query(f"#task-remove-attachment-{attachment.id}")))
+        editor.query_one(f"#task-remove-attachment-{attachment.id}").press()
+        await _until(pilot, lambda: not fake.board.board.task("T1").attachments)
