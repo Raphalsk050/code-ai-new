@@ -83,6 +83,8 @@ const vscode = acquireVsCodeApi();
 const send = (message: WebviewToHost) => vscode.postMessage(message);
 /** This page is the chat's own window (see popOut in src/extension.ts), not the sidebar. */
 const IS_WINDOW = document.body?.dataset.surface === "window";
+/** The host has a board tab to open (VS Code does; a host without one hides the button). */
+const HAS_BOARD = document.body?.dataset.board === "1";
 /** Saved where it survives a reload; the window also tells the host, which hands it back to the sidebar. */
 const saveState = (next: PersistedState) => {
   vscode.setState(next);
@@ -838,6 +840,21 @@ function App(): JSX.Element {
       case "index":
         send({ type: "indexRefresh", full: cmd.action.full, subtree: argument || undefined });
         break;
+      case "board": {
+        if (!HAS_BOARD) {
+          dispatch(
+            clientEvent("warning", {
+              message: tf("{0} is not in the extension yet; use the terminal for now.", cmd.command),
+            })
+          );
+          break;
+        }
+        // Bare, it opens the board's tab; with words, it is /board add, plan, play or stop.
+        const words = [cmd.command.replace(/^\/board\s*/, "").split(" <")[0], argument].join(" ").trim();
+        if (words) send({ type: "boardCommand", text: words });
+        else send({ type: "openBoard" });
+        break;
+      }
       case "terminal": {
         const action = cmd.action.action;
         if (action === "write") send({ type: "terminal", request: { action: "write", text: argument } });
@@ -1299,6 +1316,7 @@ function App(): JSX.Element {
         onSettings={openSettings}
         onCompact={() => send({ type: "compact" })}
         onPopIn={IS_WINDOW ? () => send({ type: "popIn" }) : undefined}
+        onBoard={HAS_BOARD ? () => send({ type: "openBoard" }) : undefined}
       />
 
       <div className="workbench">

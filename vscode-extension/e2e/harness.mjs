@@ -44,7 +44,7 @@ const PAGE = `<!DOCTYPE html>
       }
     </style>
   </head>
-  <body>
+  <body data-board="1">
     <div id="root"></div>
     <script>
       window.__toHost = [];
@@ -108,6 +108,10 @@ export async function buildWebview(entry = "webview/index.tsx", bundleName = "we
 
 export function buildFlowWebview() {
   return buildWebview("webview/flow/index.tsx", "flow.js");
+}
+
+export function buildBoardWebview() {
+  return buildWebview("webview/board/index.tsx", "board.js");
 }
 
 /**

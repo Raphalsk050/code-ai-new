@@ -54,6 +54,12 @@ export type BridgeMethod =
   | "graphAnswer"
   | "graphStatus"
   | "graphListModels"
+  | "boardGet"
+  | "boardEdit"
+  | "boardPlan"
+  | "boardPlay"
+  | "boardStop"
+  | "boardCommand"
   | "listAssets"
   | "listRules"
   | "listAgents"
@@ -452,6 +458,8 @@ export type WebviewToHost =
   | { type: "popOut"; state?: unknown; conversation?: string }
   /** Take the chat back to the sidebar. */
   | { type: "popIn" }
+  | { type: "openBoard" }
+  | { type: "boardCommand"; text: string }
   /** The window's state as it saves it, for the sidebar to take back. */
   | { type: "surfaceState"; state: unknown }
   /** One of the user's messages, counted from the newest, with the answer(s) it got. */

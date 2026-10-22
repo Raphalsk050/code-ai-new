@@ -158,6 +158,7 @@ _HELP_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
     ("Planning", ("/auto", "/plan", "/act", "/mode", "/deep-plan", "/plan-status", "/replan")),
     ("Goals", ("/goal",)),
+    ("Task board", ("/board",)),
     ("Terminal", ("/term",)),
     ("Code index", ("/index",)),
     ("Workflows, skills and rules", ("/workflows", "/skills", "/rules", "/agents")),

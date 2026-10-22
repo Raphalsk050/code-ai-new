@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 50,
+  "minor": 51,
   "patch": 0,
-  "build": 134,
-  "updated": "2026-10-20",
-  "note": "Flow: functions and sub-graphs in the editor, Blueprint-style"
+  "build": 135,
+  "updated": "2026-10-22",
+  "note": "Task board: lanes, planned sub-tasks confirmed by Play, parallel agents"
 }

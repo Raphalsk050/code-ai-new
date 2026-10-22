@@ -183,6 +183,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
     )
 
     from code_ai.ui.terminal.approval import TerminalApprovalGateway
+    from code_ai.ui.terminal.board import BoardScreen
     from code_ai.ui.terminal.doctor import DoctorModal
     from code_ai.ui.terminal.questions import QuestionnaireModal
 
@@ -1271,6 +1272,7 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 self._render_event(event)
                 self._open_questions_if_waiting()
                 self._follow_mcp_question(event)
+                self._follow_board(event)
             except Exception:
                 if not self.is_running:
                     # Shutting down: the widgets are already gone, and an event
@@ -1278,6 +1280,23 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                     return
                 logger.exception("Failed to render %s", event.event_type)
                 self._report_render_failure(event.event_type)
+
+        def _open_board(self) -> None:
+            if not any(isinstance(screen, BoardScreen) for screen in self.screen_stack):
+                self.push_screen(BoardScreen(application))
+
+        def _follow_board(self, event) -> None:
+            """Say when planned tasks wait for the user's Play, unless the board is open."""
+
+            if event.event_type != "board.review.requested":
+                return
+            if any(isinstance(screen, BoardScreen) for screen in self.screen_stack):
+                return
+            count = len(event.payload.get("tasks") or [])
+            self._append_conversation_line(
+                f"board> {count} task(s) waiting for your confirmation. Open /board to "
+                "check them, then press g to Play."
+            )
 
         def _follow_mcp_question(self, event) -> None:
             """Open the form when an MCP server asks something; close it once answered.
@@ -1630,6 +1649,18 @@ def create_terminal_app(application, *, config_path: Path | None = None):
                 return
             if text.strip() == "/status":
                 self._append_conversation_line(self._session_text())
+                return
+            if text.strip() == "/board":
+                self._open_board()
+                return
+            if text.strip().startswith("/board "):
+                argument = text.strip()[len("/board") :].strip()
+
+                async def _board() -> None:
+                    result = await self.controller.commands.board_command(argument)
+                    self._append_conversation_line(f"board> {result.message}")
+
+                self._spawn(_board(), "the board command")
                 return
             if text.strip() in {
                 "/doctor",

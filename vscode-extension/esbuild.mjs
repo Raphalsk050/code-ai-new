@@ -48,7 +48,19 @@ const flowConfig = {
   ...shipped,
 };
 
-const configs = [extensionConfig, webviewConfig, flowConfig];
+/** Task board bundle: the board's editor tab. */
+const boardConfig = {
+  entryPoints: ["webview/board/index.tsx"],
+  outfile: "dist/board.js",
+  bundle: true,
+  platform: "browser",
+  format: "iife",
+  target: "es2021",
+  sourcemap: true,
+  ...shipped,
+};
+
+const configs = [extensionConfig, webviewConfig, flowConfig, boardConfig];
 
 /** The codicon font and its stylesheet ship beside the bundles: node_modules is not packaged. */
 function copyCodicons() {

@@ -165,6 +165,12 @@ def project_conversations_dir(workspace: Path | str) -> Path:
     return Path.home() / DEFAULT_CONFIG_DIRNAME / "projects" / slug / "conversations"
 
 
+def project_board_path(workspace: Path | str) -> Path:
+    """The workspace's task board, kept beside its conversations and out of the repo."""
+
+    return project_conversations_dir(workspace).parent / "board.json"
+
+
 def project_memories_dir(workspace: Path | str) -> Path:
     """Directory holding memories scoped to a single workspace.
 

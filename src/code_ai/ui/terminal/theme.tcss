@@ -847,3 +847,160 @@ QuestionnaireModal {
 #update-button:hover {
   background: $ca-highlight;
 }
+
+/* -- task board (ui/terminal/board.py) -------------------------------------
+   Lanes side by side, a bordered card per task. The flying copy of a card
+   sits on a layer of its own, above the lanes it crosses. */
+#board-screen {
+  layers: base fly;
+  layout: vertical;
+}
+
+#board-header {
+  height: 1;
+  padding: 0 1;
+}
+
+#board-review {
+  height: auto;
+  margin: 0 1;
+  padding: 0 1;
+  border: round $ca-accent;
+  color: $ca-foreground;
+}
+
+#board-lanes {
+  height: 1fr;
+  padding: 1 1 0 1;
+}
+
+.board-lane {
+  width: 1fr;
+  min-width: 26;
+  height: 100%;
+  margin-right: 1;
+  border: round $ca-border-dim;
+}
+
+.board-lane-title {
+  height: 1;
+  padding: 0 1;
+  color: $ca-muted;
+}
+
+.board-lane-cards {
+  height: 1fr;
+}
+
+.board-lane-empty {
+  color: $ca-faint;
+  padding: 0 1;
+}
+
+.board-card {
+  height: auto;
+  margin: 0 0 1 0;
+  padding: 0 1;
+  border: round $ca-border;
+}
+
+.board-card:focus {
+  border: round $ca-accent;
+}
+
+.board-card.s-running, .board-card.s-queued, .board-card.s-verifying, .board-card.s-planning {
+  border-left: thick $ca-accent;
+}
+
+.board-card.s-failed {
+  border: round $ca-error-soft;
+}
+
+.board-card.s-done {
+  border-left: thick $ca-success;
+}
+
+.board-card.landed {
+  border: round $ca-success;
+  background: $ca-success-border;
+}
+
+.board-ghost {
+  layer: fly;
+  position: absolute;
+  border: round $ca-accent;
+  background: $ca-surface;
+}
+
+
+TextPrompt, TaskEditor, SubTaskEditor {
+  align: center middle;
+}
+
+.board-dialog {
+  width: 80%;
+  max-width: 100;
+  height: auto;
+  max-height: 90%;
+  border: thick $ca-accent;
+  background: $ca-surface;
+  padding: 1 2;
+}
+
+.board-prompt {
+  max-width: 70;
+}
+
+.board-dialog-title {
+  color: $ca-accent;
+  text-style: bold;
+  padding-bottom: 1;
+}
+
+.board-editor TextArea {
+  height: 6;
+}
+
+.board-label {
+  color: $ca-muted;
+  padding-top: 1;
+}
+
+.board-hint {
+  color: $ca-muted;
+}
+
+.board-row {
+  height: auto;
+}
+
+.board-row Checkbox, .board-row .board-criterion {
+  width: 1fr;
+}
+
+.board-x {
+  min-width: 6;
+  width: auto;
+}
+
+.board-criterion.c-passed {
+  color: $ca-success;
+}
+
+.board-criterion.c-failed, .board-error {
+  color: $ca-error-soft;
+}
+
+.board-locked {
+  color: $ca-accent;
+  padding-bottom: 1;
+}
+
+.board-report {
+  color: $ca-muted;
+}
+
+.board-actions {
+  height: auto;
+  padding-top: 1;
+}

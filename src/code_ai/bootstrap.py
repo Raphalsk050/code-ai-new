@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+from code_ai.app.board import BoardService
 from code_ai.app.conversation_store import ConversationStore
 from code_ai.app.service import CodeAIApplication
 from code_ai.app.session import ApplicationSession
@@ -13,6 +15,7 @@ from code_ai.config.defaults import (
     global_instructions_file,
     global_knowledge_dir,
     global_rules_dir,
+    project_board_path,
     project_conversations_dir,
     project_instructions_files,
     project_memories_dir,
@@ -61,6 +64,7 @@ from code_ai.sandbox.session import SessionSandbox
 from code_ai.tools.agents import DispatchAgentTool
 from code_ai.tools.apk import AnalyzeApkTool
 from code_ai.tools.base import ToolContext
+from code_ai.tools.board import BoardEditTool, BoardPlanTool, BoardSubmitTool, BoardViewTool
 from code_ai.tools.browser import (
     BrowserActTool,
     BrowserClickTool,
@@ -154,7 +158,7 @@ from code_ai.util.paths import WorkspacePolicy
 from code_ai.version import __version__
 
 
-def build_tool_registry() -> ToolRegistry:
+def build_tool_registry(board: Callable[[], Any] = lambda: None) -> ToolRegistry:
     from code_ai.core.graph.toolbox import grantable_names, tools_payload
 
     registry = ToolRegistry()
@@ -222,6 +226,12 @@ def build_tool_registry() -> ToolRegistry:
         GraphReferenceTool(lambda: tools_payload(registry)),
         WriteGraphTool(lambda: grantable_names(registry)),
         EditGraphTool(lambda: grantable_names(registry)),
+        # The board tools read the session's board when they run: it is built
+        # after the registry, and a registry built without one has none.
+        BoardViewTool(board),
+        BoardEditTool(board),
+        BoardPlanTool(board),
+        BoardSubmitTool(board),
         WebSearchTool(),
         UseSkillTool(),
         CreateSkillTool(),
@@ -285,7 +295,16 @@ def build_application(
     )
     workspace = WorkspacePolicy.from_path(config.workspace)
     sandbox = _build_sandbox(config, session_id=event_bus.session_id)
-    registry = build_tool_registry()
+    # Built here, before the tools that act on it; its runtime and profiles
+    # are read when it plans or runs, by which time both exist.
+    board = BoardService(
+        path=project_board_path(config.workspace),
+        event_bus=event_bus,
+        runtime=lambda: subagent_runtime,
+        max_parallel=lambda: config.budgets.max_concurrent_subagents,
+        profiles=lambda: profile_registry,
+    )
+    registry = build_tool_registry(board=lambda: board)
     registry.set_disabled(config.disabled_tools)
     # The workspace's code index. Built once per session and shared with the
     # sub-agents; it follows the agent by re-indexing every file a tool touches
@@ -612,6 +631,7 @@ def build_application(
         mcp=mcp,
         rules=rules,
         subagent_profiles=profile_registry,
+        board=board,
     )
 
 

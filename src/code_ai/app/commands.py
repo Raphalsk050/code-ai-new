@@ -306,6 +306,84 @@ class SessionCommands:
             },
         )
 
+    # -- task board ----------------------------------------------------------
+
+    def _board(self) -> Any | None:
+        return getattr(self._app, "board", None)
+
+    def board_snapshot(self) -> CommandResult:
+        board = self._board()
+        if board is None:
+            return _failed("This session has no task board.")
+        return CommandResult(ok=True, data={"board": board.snapshot()})
+
+    async def board_edit(self, operations: list[dict[str, Any]]) -> CommandResult:
+        board = self._board()
+        if board is None:
+            return _failed("This session has no task board.")
+        result = await board.apply(operations, source="user")
+        return CommandResult(
+            ok=result["ok"],
+            message=result.get("message", ""),
+            data={"board": result["board"], "created": result.get("created", [])},
+        )
+
+    async def board_plan(self, task_ids: list[str] | None = None) -> CommandResult:
+        return await self._board_call("plan", task_ids)
+
+    async def board_play(self, task_ids: list[str] | None = None) -> CommandResult:
+        return await self._board_call("play", task_ids)
+
+    async def board_stop(self) -> CommandResult:
+        board = self._board()
+        if board is None:
+            return _failed("This session has no task board.")
+        result = await board.stop()
+        return CommandResult(ok=result["ok"], message=result["message"])
+
+    async def _board_call(self, action: str, task_ids: list[str] | None) -> CommandResult:
+        board = self._board()
+        if board is None:
+            return _failed("This session has no task board.")
+        result = await getattr(board, action)(task_ids or None)
+        data = {key: value for key, value in result.items() if key not in ("ok", "message")}
+        return CommandResult(ok=result["ok"], message=result.get("message", ""), data=data)
+
+    async def board_command(self, argument: str) -> CommandResult:
+        """``/board <subcommand>`` for the keyboard; the board screen does the same with keys."""
+
+        words = argument.split()
+        verb = words[0].lower() if words else ""
+        rest = argument[len(words[0]) :].strip() if words else ""
+        ids = [item for item in rest.replace(",", " ").split() if item]
+        if verb == "add":
+            if not rest:
+                return _failed("Give the task a title: /board add <title>.")
+            result = await self.board_edit([{"op": "add_task", "title": rest}])
+            if not result.ok:
+                return result
+            return CommandResult(ok=True, message=f"Added {result.data['created'][0]} to To Do.")
+        if verb == "plan":
+            return await self.board_plan(ids)
+        if verb in ("play", "run"):
+            return await self.board_play(ids)
+        if verb == "stop":
+            return await self.board_stop()
+        if verb in ("remove", "delete") and ids:
+            return await self.board_edit([{"op": "remove_task", "task": ref} for ref in ids])
+        if verb == "lane":
+            action, _, name = rest.partition(" ")
+            name = name.strip()
+            if action == "add" and name:
+                return await self.board_edit([{"op": "add_lane", "title": name}])
+            if action == "remove" and name:
+                return await self.board_edit([{"op": "remove_lane", "lane": name}])
+            return _failed("Use /board lane add <name> or /board lane remove <name>.")
+        return _failed(
+            "Use /board to open it, or /board add <title>, plan [ids], play [ids], stop, "
+            "remove <ids>, lane add <name>, lane remove <name>."
+        )
+
     # -- workflows and skills ----------------------------------------------
     #
     # Both are authored by the user on disk, so they are discovered rather than

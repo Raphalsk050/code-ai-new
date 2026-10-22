@@ -17,6 +17,7 @@ import {
   syntheticEvent,
   syntheticNotice,
 } from "./bridge-session";
+import { BoardPanel } from "./board-panel";
 import { createFlowFile, FlowEditorProvider } from "./flow-editor";
 import type {
   AppMode,
@@ -90,6 +91,8 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push({ dispose: () => void transcripts.flush() });
   const provider = new ChatViewProvider(context.extensionUri, bridge, diffs, changes, transcripts);
   const flowEditor = new FlowEditorProvider(context.extensionUri, bridge, context.secrets);
+  const board = new BoardPanel(context.extensionUri, bridge);
+  provider.onOpenBoard = () => board.open();
   provider.onSettingsSaved = () => flowEditor.refreshCatalog();
   context.subscriptions.push(
     bridge,
@@ -121,6 +124,12 @@ export function activate(context: vscode.ExtensionContext): void {
     // Respawn the bridge so edited settings/config take effect without having to
     // reload the whole extension host.
     vscode.commands.registerCommand("code-ai.restart", () => bridge.restart()),
+    board,
+    // A board tab left open comes back after a reload, like a graph's.
+    vscode.window.registerWebviewPanelSerializer(BoardPanel.viewType, {
+      deserializeWebviewPanel: async (panel) => board.adopt(panel),
+    }),
+    vscode.commands.registerCommand("code-ai.openBoard", () => board.open()),
     vscode.commands.registerCommand("code-ai.newFlow", () => createFlowFile()),
     vscode.commands.registerCommand("code-ai.runFlow", () => flowEditor.runActive()),
     vscode.commands.registerCommand("code-ai.stopFlow", () => flowEditor.stopActive()),
@@ -209,6 +218,8 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /** Called after a settings save lands, so other views can refresh. */
   onSettingsSaved?: () => void;
+  /** The chat header's board button. */
+  onOpenBoard?: () => void;
   private view?: vscode.WebviewView;
   /** The chat in a window of its own, while it is popped out of the sidebar. */
   private window?: vscode.WebviewPanel;
@@ -1098,6 +1109,12 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       case "popIn":
         this.popIn();
         break;
+      case "openBoard":
+        this.onOpenBoard?.();
+        break;
+      case "boardCommand":
+        this.runCommand("boardCommand", { text: message.text }, client);
+        break;
       case "surfaceState":
         if (this.window) this.windowState = message.state;
         break;
@@ -1649,7 +1666,7 @@ function renderHtml(webview: vscode.Webview, extensionUri: vscode.Uri, options: 
     <link rel="stylesheet" href="${codiconsUri}" />
     <title>Code-AI</title>
   </head>
-  <body${options.window ? ' data-surface="window"' : ""}>
+  <body data-board="1"${options.window ? ' data-surface="window"' : ""}>
     <div id="root"></div>
     <script nonce="${nonce}" src="${scriptUri}"></script>
   </body>

@@ -2,7 +2,7 @@
   "name": "code-ai",
   "displayName": "Code-AI",
   "description": "Drive the Code-AI agent from VSCode. Ships the agent with it: no Python, no install.",
-  "version": "0.50.0",
+  "version": "0.51.0",
   "publisher": "code-ai",
   "private": true,
   "engines": {
@@ -14,7 +14,9 @@
   "activationEvents": [
     "onView:code-ai.chat",
     "onWebviewPanel:code-ai.window",
-    "onCustomEditor:code-ai.flow"
+    "onCustomEditor:code-ai.flow",
+    "onWebviewPanel:code-ai.board",
+    "onCommand:code-ai.openBoard"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -74,6 +76,11 @@
       {
         "command": "code-ai.testInlineHint",
         "title": "Code-AI: Test Inline Hint at Cursor"
+      },
+      {
+        "command": "code-ai.openBoard",
+        "title": "Code-AI: Open Task Board",
+        "icon": "$(project)"
       },
       {
         "command": "code-ai.newFlow",

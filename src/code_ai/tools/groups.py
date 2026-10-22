@@ -144,6 +144,14 @@ DEFERRED_TOOL_GROUPS: tuple[ToolGroup, ...] = (
         tools=frozenset({"graph_reference", "write_graph", "edit_graph"}),
     ),
     ToolGroup(
+        name="board",
+        summary=(
+            "the Code-AI task board the user plans work on: lanes, tasks, sub-tasks, "
+            "checklists and validation criteria; planning there for the user to confirm"
+        ),
+        tools=frozenset({"board_view", "board_edit", "board_plan", "board_submit"}),
+    ),
+    ToolGroup(
         name="latex",
         summary=(
             "write and compile LaTeX articles: IEEE, ACM, Springer, Elsevier, ABNT templates, "

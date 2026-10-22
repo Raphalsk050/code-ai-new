@@ -286,7 +286,7 @@ class SubagentCoordinator:
         # must learn about real file changes even when the child times out.
         evidence = SubagentEvidenceCollector()
         built.event_bus.subscribe(evidence)
-        pulse = _Pulse()
+        pulse = Pulse()
         beat = built.event_bus.subscribe(pulse.beat)
 
         await self._bus.emit(
@@ -504,7 +504,7 @@ class SubagentCoordinator:
         )
 
 
-class _Pulse:
+class Pulse:
     """When a sub-agent last showed it was alive: any event it emitted.
 
     A wall clock stopped sub-agents that were working, and the slower the

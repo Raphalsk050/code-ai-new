@@ -476,6 +476,30 @@ class BridgeServer:
             return {"ok": False, "message": str(exc) or type(exc).__name__, "models": []}
         return {"ok": True, "models": models}
 
+    # -- task board --------------------------------------------------------
+
+    async def _h_board_get(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._commands.board_snapshot().to_payload()
+
+    async def _h_board_edit(self, params: dict[str, Any]) -> dict[str, Any]:
+        operations = params.get("operations")
+        if not isinstance(operations, list):
+            return {"ok": False, "message": "No operations were sent."}
+        return (await self._commands.board_edit(operations)).to_payload()
+
+    async def _h_board_plan(self, params: dict[str, Any]) -> dict[str, Any]:
+        return (await self._commands.board_plan(_ids(params.get("tasks")))).to_payload()
+
+    async def _h_board_play(self, params: dict[str, Any]) -> dict[str, Any]:
+        return (await self._commands.board_play(_ids(params.get("tasks")))).to_payload()
+
+    async def _h_board_stop(self, params: dict[str, Any]) -> dict[str, Any]:
+        return (await self._commands.board_stop()).to_payload()
+
+    async def _h_board_command(self, params: dict[str, Any]) -> dict[str, Any]:
+        """``/board <subcommand>`` typed in the chat, as the terminal runs it."""
+        return (await self._commands.board_command(str(params.get("text") or ""))).to_payload()
+
     # -- MCP servers -------------------------------------------------------
 
     def _mcp(self) -> Any:
@@ -650,6 +674,12 @@ class BridgeServer:
         "graphAnswer": _h_graph_answer,
         "graphStatus": _h_graph_status,
         "graphListModels": _h_graph_list_models,
+        "boardGet": _h_board_get,
+        "boardEdit": _h_board_edit,
+        "boardPlan": _h_board_plan,
+        "boardPlay": _h_board_play,
+        "boardStop": _h_board_stop,
+        "boardCommand": _h_board_command,
         "mcpList": _h_mcp_list,
         "mcpReconnect": _h_mcp_reconnect,
         "mcpApprove": _h_mcp_approve,
@@ -744,6 +774,12 @@ def _picture_browser(config: Any) -> updates.BrowserFactory:
         )
 
     return make
+
+
+def _ids(raw: Any) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    return [str(item) for item in raw if str(item).strip()]
 
 
 def _parse_images(raw: Any) -> list[ImageContent]:

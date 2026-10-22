@@ -9,7 +9,7 @@
 // Two bundles, two groups: the chat panel and the orchestrator-graph editor.
 // Screenshots land in e2e/shots/ so a run can also be looked at.
 
-import { buildFlowWebview, buildWebview, launchBrowser, openWebview, shotsDir } from "./harness.mjs";
+import { buildBoardWebview, buildFlowWebview, buildWebview, launchBrowser, openWebview, shotsDir } from "./harness.mjs";
 import { tests as settings } from "./settings.e2e.mjs";
 import { tests as mcp } from "./mcp.e2e.mjs";
 import { tests as update } from "./update.e2e.mjs";
@@ -32,6 +32,8 @@ import { tests as flow } from "./flow.e2e.mjs";
 import { tests as notes } from "./notes.e2e.mjs";
 import { tests as follow } from "./follow.e2e.mjs";
 import { tests as functions } from "./functions.e2e.mjs";
+import { tests as board } from "./board.e2e.mjs";
+import { tests as boardChat } from "./board-chat.e2e.mjs";
 import { tests as desktopAvatar, desk } from "./desktop-avatar.e2e.mjs";
 
 const GROUPS = [
@@ -41,7 +43,7 @@ const GROUPS = [
     ready: "#root .app",
     // The chat panel is a sidebar: its specs assume the width one has.
     viewport: { width: 900, height: 900 },
-    specs: { settings, mcp, update, branch, transcript, stream, chrome, turns, rail, settingsLayout, terminal, avatar, desktopAvatar, remove, history, perf, surface, queue, dropdown },
+    specs: { settings, mcp, update, branch, transcript, stream, chrome, turns, rail, settingsLayout, terminal, avatar, desktopAvatar, remove, history, perf, surface, queue, dropdown, boardChat },
   },
   {
     // The page the avatar loose on the desktop shows, as its native host would.
@@ -56,6 +58,13 @@ const GROUPS = [
     build: () => buildFlowWebview(),
     ready: "#root .flow-app",
     specs: { flow, notes, follow, functions },
+  },
+  {
+    name: "board",
+    build: () => buildBoardWebview(),
+    ready: "#root .board-app",
+    viewport: { width: 1400, height: 820 },
+    specs: { board },
   },
 ];
 

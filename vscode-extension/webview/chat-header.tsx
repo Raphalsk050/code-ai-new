@@ -31,6 +31,7 @@ export function ChatHeader({
   onSettings,
   onPopIn,
   onCompact,
+  onBoard,
 }: {
   title: string;
   branch: string;
@@ -52,6 +53,8 @@ export function ChatHeader({
   /** In the chat's own window: back to the sidebar. */
   onPopIn?: () => void;
   onCompact: () => void;
+  /** Opens the task board in an editor tab of its own; absent where the host has none. */
+  onBoard?: () => void;
 }): JSX.Element {
   return (
     <div className={`statusbar ${narrow ? "narrow" : ""}`}>
@@ -90,6 +93,11 @@ export function ChatHeader({
         {!narrow && (
           <button className="icon-btn" title={t("History")} onPointerDown={ripple} onClick={onHistory}>
             <Codicon name="history" />
+          </button>
+        )}
+        {onBoard && (
+          <button className="icon-btn" title={t("Task board")} onPointerDown={ripple} onClick={onBoard}>
+            <Codicon name="project" />
           </button>
         )}
         <button

@@ -92,6 +92,7 @@ class CodeAIApplication:
         mcp: Any = None,
         rules: Any = None,
         subagent_profiles: Any = None,
+        board: Any = None,
     ) -> None:
         self.session = session
         self.event_bus = event_bus
@@ -135,6 +136,10 @@ class CodeAIApplication:
         # /agents: both include what was read from other agents' files.
         self.rules = rules
         self.subagent_profiles = subagent_profiles
+        # The workspace's task board (code_ai.app.board.BoardService): its own
+        # mode, beside the chat, that the agent can also set up. ``None`` when
+        # built without one.
+        self.board = board
         # Id of the conversation currently loaded in the live session. Assigned
         # by the client via reset_conversation/load_conversation; a turn persists
         # under it so the user can resume the thread later.
@@ -1228,6 +1233,14 @@ class CodeAIApplication:
         self.mcp = rebuilt.mcp
         self.rules = rebuilt.rules
         self.subagent_profiles = rebuilt.subagent_profiles
+        self.subagent_runtime = rebuilt.subagent_runtime
+        # The board is the project's too: its agents stop, and the new
+        # project's board is the one the front ends see from now on.
+        previous_board = self.board
+        self.board = rebuilt.board
+        if previous_board is not None and previous_board is not self.board:
+            with contextlib.suppress(Exception):
+                await previous_board.close()
 
         # A project's MCP servers belong to that project, and the ones a
         # workspace declares need approving again for the new one.
@@ -1779,6 +1792,10 @@ class CodeAIApplication:
                 await self._graph_task
             except BaseException:  # noqa: BLE001 - shutdown must not propagate
                 pass
+        if self.board is not None:
+            # Its agents run on the provider closed below.
+            with contextlib.suppress(Exception):
+                await self.board.close()
         if self._goal_runner is not None:
             self._goal_runner.request_stop()
         if self._goal_task and not self._goal_task.done():

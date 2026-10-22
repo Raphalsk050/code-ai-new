@@ -15,6 +15,7 @@ export type CommandAction =
   | { kind: "goal"; action: "define" | "start" | "stop" | "status" }
   | { kind: "terminal"; action: "start" | "write" | "ctrl" | "kill" | "status" }
   | { kind: "index"; full: boolean }
+  | { kind: "board" }
   | { kind: "settings" }
   | { kind: "settings-update"; field: string }
   | { kind: "history" }
@@ -63,6 +64,7 @@ const ROUTES: { prefix: string; action: CommandAction }[] = [
   { prefix: "/term status", action: { kind: "terminal", action: "status" } },
   { prefix: "/term ctrl", action: { kind: "terminal", action: "ctrl" } },
   { prefix: "/term", action: { kind: "terminal", action: "write" } },
+  { prefix: "/board", action: { kind: "board" } },
   { prefix: "/skills", action: { kind: "assets", which: "skills" } },
   { prefix: "/rules", action: { kind: "report", method: "listRules" } },
   { prefix: "/agents", action: { kind: "report", method: "listAgents" } },
