@@ -270,7 +270,11 @@ val buildWebview by tasks.registering(Exec::class) {
         vscodeExtension.file("scripts/webview-build.mjs"),
         vscodeExtension.file("package-lock.json"),
     )
-    outputs.files(vscodeExtension.file("dist/webview.js"), vscodeExtension.file("dist/flow.js"))
+    outputs.files(
+        vscodeExtension.file("dist/webview.js"),
+        vscodeExtension.file("dist/flow.js"),
+        vscodeExtension.file("dist/board.js"),
+    )
     outputs.dir(vscodeExtension.dir("dist/codicons"))
 }
 
@@ -278,7 +282,7 @@ val webviewResources by tasks.registering(Sync::class) {
     description = "Collects the panel's bundles as plugin resources."
     dependsOn(buildWebview)
     from(vscodeExtension.dir("dist")) {
-        include("webview.js", "flow.js", "codicons/**")
+        include("webview.js", "flow.js", "board.js", "codicons/**")
     }
     into(layout.buildDirectory.dir("generated/webview/webview"))
 }

@@ -14,7 +14,7 @@ internal object WebviewPage {
     const val URL = "$ORIGIN/index.html"
 
     /**
-     * @param script the bundle to run: `webview.js` or `flow.js`
+     * @param script the bundle to run: `webview.js`, `flow.js` or `board.js`
      * @param theme the stylesheet from [ThemeVariables.stylesheet]
      * @param themeKind the body class from [ThemeVariables.kind]
      * @param state the state a previous page saved with `setState`, as JSON, or null
@@ -34,7 +34,7 @@ internal object WebviewPage {
             <link rel="stylesheet" href="codicons/codicon.css" />
             <title>Code-AI</title>
           </head>
-          <body class="$themeKind" data-vscode-theme-kind="$themeKind">
+          <body class="$themeKind" data-vscode-theme-kind="$themeKind" data-board="1">
             <div id="root"></div>
             <script nonce="$nonce">${bootstrap(state, toHost)}</script>
             <script nonce="$nonce" src="$script"></script>

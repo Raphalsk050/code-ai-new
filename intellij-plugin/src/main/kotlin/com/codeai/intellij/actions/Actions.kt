@@ -1,6 +1,7 @@
 package com.codeai.intellij.actions
 
 import com.codeai.intellij.CodeAiPlugin
+import com.codeai.intellij.board.BoardHost
 import com.codeai.intellij.bridge.BridgeSession
 import com.codeai.intellij.chat.ChatHost
 import com.intellij.openapi.actionSystem.ActionUpdateThread
@@ -20,6 +21,19 @@ internal class FocusChatAction : DumbAwareAction() {
     override fun actionPerformed(event: AnActionEvent) {
         val project = event.project ?: return
         ToolWindowManager.getInstance(project).getToolWindow(CodeAiPlugin.TOOL_WINDOW)?.activate(null)
+    }
+}
+
+/** Code-AI: Open Task Board. The board in an editor tab of its own, as the chat's button opens it. */
+internal class OpenBoardAction : DumbAwareAction() {
+    override fun getActionUpdateThread() = ActionUpdateThread.BGT
+
+    override fun update(event: AnActionEvent) {
+        event.presentation.isEnabled = event.project != null
+    }
+
+    override fun actionPerformed(event: AnActionEvent) {
+        (event.project ?: return).service<BoardHost>().open(focus = true)
     }
 }
 

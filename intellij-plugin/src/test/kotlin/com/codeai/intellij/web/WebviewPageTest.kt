@@ -23,7 +23,8 @@ class WebviewPageTest {
         assertTrue("<style id=\"_defaultStyles\">@layer vscode-default {" in html)
         assertTrue("<style id=\"code-ai-theme\">:root { --vscode-foreground: #cccccc; }</style>" in html)
         assertTrue("<link rel=\"stylesheet\" href=\"codicons/codicon.css\" />" in html)
-        assertTrue("<body class=\"vscode-dark\" data-vscode-theme-kind=\"vscode-dark\">" in html)
+        // data-board: this host has the board's tab, so the chat shows its button.
+        assertTrue("<body class=\"vscode-dark\" data-vscode-theme-kind=\"vscode-dark\" data-board=\"1\">" in html)
         // The body's side padding is VS Code's, and the panel is laid out on it.
         assertTrue("padding: 0 20px;" in html)
     }

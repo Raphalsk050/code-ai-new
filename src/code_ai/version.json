@@ -1,8 +1,8 @@
 {
   "major": 0,
   "minor": 51,
-  "patch": 0,
-  "build": 135,
+  "patch": 1,
+  "build": 136,
   "updated": "2026-10-22",
-  "note": "Task board: lanes, planned sub-tasks confirmed by Play, parallel agents"
+  "note": "Task board in the IntelliJ plugin: its own editor tab"
 }

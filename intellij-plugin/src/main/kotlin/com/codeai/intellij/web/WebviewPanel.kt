@@ -54,7 +54,7 @@ import org.cef.network.CefResponse
  */
 internal class WebviewPanel(
     parent: Disposable,
-    /** The bundle to run: `webview.js` or `flow.js`. */
+    /** The bundle to run: `webview.js`, `flow.js` or `board.js`. */
     private val script: String,
     private val client: Client,
     /** The project's folder: pictures in answers and documents are served from it, and nothing else of it. */

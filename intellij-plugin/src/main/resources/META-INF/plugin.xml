@@ -35,6 +35,8 @@
                             implementation="com.codeai.intellij.status.AgentStatusWidgetFactory"/>
     <projectViewNodeDecorator implementation="com.codeai.intellij.changes.ChangeDecorator"/>
     <inline.completion.provider implementation="com.codeai.intellij.inline.CodeAiInlineCompletionProvider"/>
+    <!-- The task board's tab, opened on a file of no disk (board/BoardEditor.kt). -->
+    <fileEditorProvider implementation="com.codeai.intellij.board.BoardEditorProvider"/>
   </extensions>
 
   <actions>
@@ -42,6 +44,10 @@
             class="com.codeai.intellij.actions.FocusChatAction"
             text="Code-AI: Focus Chat"
             description="Open the Code-AI chat"/>
+    <action id="CodeAi.OpenBoard"
+            class="com.codeai.intellij.actions.OpenBoardAction"
+            text="Code-AI: Open Task Board"
+            description="Open the Code-AI task board in an editor tab"/>
     <action id="CodeAi.Restart"
             class="com.codeai.intellij.actions.RestartAction"
             text="Code-AI: Restart (Reload Settings)"

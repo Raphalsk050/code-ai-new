@@ -2,6 +2,7 @@ package com.codeai.intellij.chat
 
 import com.codeai.intellij.HostThread
 import com.codeai.intellij.InlineHints
+import com.codeai.intellij.board.BoardHost
 import com.codeai.intellij.Notify
 import com.codeai.intellij.bridge.BridgeClient
 import com.codeai.intellij.bridge.BridgeSession
@@ -76,6 +77,10 @@ internal class ChatHost(private val project: Project) : Disposable {
     private val changes = project.service<SessionChanges>()
     private val status = project.service<AgentStatusService>()
     private val inline = project.service<InlineHints>()
+
+    // Up with the chat, so planned work asking for the user's Play can open
+    // the board's tab before anyone has opened it.
+    private val board = project.service<BoardHost>()
     private val saved = WebviewStateStore(project, "chat")
     private val transcripts = TranscriptStore(project, host::later)
 
@@ -424,6 +429,8 @@ internal class ChatHost(private val project: Project) : Disposable {
                     json("type" to "slashCommands", "commands" to (result.asObject().array("commands") ?: JsonArray()))
                 )
             })
+            "openBoard" -> board.open(focus = true)
+            "boardCommand" -> runCommand("boardCommand", json("text" to message.text("text")), client)
             "restartBridge" -> bridge.restart()
             "openDiff" -> diffs.open(message.text("path"))
             "openChange" -> changes.open(message.text("path"))
