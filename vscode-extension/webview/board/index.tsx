@@ -68,7 +68,11 @@ function App(): JSX.Element {
   // the layout effect once the new board is on screen.
   const flight = React.useRef<{ rects: Rects; moved: string[]; landing: Set<string> } | null>(null);
 
-  React.useEffect(() => vscode.setState({ selected } satisfies Saved), [selected]);
+  // A block, not an arrow's value: VS Code's setState returns the state, and an
+  // effect's return value is its cleanup, which React calls on the next change.
+  React.useEffect(() => {
+    vscode.setState({ selected } satisfies Saved);
+  }, [selected]);
 
   const notify = React.useCallback((level: Notice["level"], text: string) => {
     const id = Date.now() + Math.random();

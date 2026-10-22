@@ -32,7 +32,9 @@ function Field({
   label: string;
 }): JSX.Element {
   const [draft, setDraft] = React.useState(value);
-  React.useEffect(() => setDraft(value), [value]);
+  React.useEffect(() => {
+    setDraft(value);
+  }, [value]);
   const commit = () => {
     if (draft.trim() !== value.trim()) onCommit(draft);
   };
@@ -326,7 +328,9 @@ export function Detail({
   const locked = isLocked(task);
   const [open, setOpen] = React.useState<Set<string>>(new Set());
   const [confirmDelete, setConfirmDelete] = React.useState(false);
-  React.useEffect(() => setConfirmDelete(false), [task.id]);
+  React.useEffect(() => {
+    setConfirmDelete(false);
+  }, [task.id]);
   const counts = checksOf(task);
   const others = board.tasks.filter((other) => other.id !== task.id);
   const toggle = (id: string) =>

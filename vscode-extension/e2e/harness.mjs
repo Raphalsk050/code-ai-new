@@ -73,7 +73,9 @@ const PAGE = `<!DOCTYPE html>
       window.acquireVsCodeApi = () => ({
         postMessage: (message) => { window.__toHost.push(message); keepTranscript(message); },
         getState: () => window.__state,
-        setState: (state) => { window.__state = state; },
+        // Returns the state, as VS Code's own does: a page that hands that value
+        // to React as an effect's cleanup crashes there, and must here too.
+        setState: (state) => { window.__state = state; return state; },
       });
     </script>
     <link rel="stylesheet" href="./codicons/codicon.css" />
