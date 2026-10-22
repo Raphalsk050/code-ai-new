@@ -53,6 +53,8 @@ _FLIGHT_FRAMES = 14
 _FLIGHT_STEP_S = 0.035
 _FLIGHT_STAGGER_S = 0.35
 _FEED_LINES = 300
+_LOG_ROWS = 10
+_MIN_LANE = 20
 
 
 def _size(size: int) -> str:
@@ -262,18 +264,35 @@ class BoardCard(Static, can_focus=True):
         self.update(_card_text(task, activity))
 
 
-class BoardSubCard(Static):
+class BoardSubCard(Static, can_focus=True):
     """A sub-task as a card of its own, under its task: it moves across lanes as it is worked."""
 
+    BINDINGS = [
+        Binding("up", "screen.focus_card(-1)", show=False),
+        Binding("down", "screen.focus_card(1)", show=False),
+        Binding("left", "screen.focus_lane(-1)", show=False),
+        Binding("right", "screen.focus_lane(1)", show=False),
+    ]
+
     def __init__(
-        self, task: dict[str, Any], sub: dict[str, Any], live: dict[str, Any] | None
+        self,
+        task: dict[str, Any],
+        sub: dict[str, Any],
+        live: dict[str, Any] | None,
+        lane_id: str,
     ) -> None:
         super().__init__(_sub_text(sub, live), id=_widget_id(sub["id"]), classes="board-subcard")
         self.task_id = task["id"]
         self.sub_id = sub["id"]
+        self.lane_id = lane_id
         self.set_class(True, f"st-{sub.get('status', 'pending')}")
 
     def on_click(self) -> None:
+        self.open()
+
+    def open(self) -> None:
+        """The sub-task alone, not the task it is part of."""
+
         screen = self.screen
         if isinstance(screen, BoardScreen):
             self.app.push_screen(SubTaskEditor(screen, self.task_id, self.sub_id))
@@ -321,7 +340,7 @@ class BoardLaneView(Vertical):
                     yield BoardStub(task)
                 with Vertical(classes="board-subcards"):
                     for sub in subs:
-                        yield BoardSubCard(task, sub, self._live.get(sub["id"]))
+                        yield BoardSubCard(task, sub, self._live.get(sub["id"]), self.lane["id"])
             if not groups:
                 yield Static("—", classes="board-lane-empty")
 
@@ -787,6 +806,10 @@ class BoardScreen(Screen[None]):
         Binding("s", "stop", "Stop"),
         Binding("a", "add_lane", "Lane"),
         Binding("l", "toggle_activity", "Activity"),
+        Binding("ctrl+up", "resize_log(2)", "", show=False),
+        Binding("ctrl+down", "resize_log(-2)", "", show=False),
+        Binding("ctrl+right", "resize_lanes(4)", "", show=False),
+        Binding("ctrl+left", "resize_lanes(-4)", "", show=False),
         Binding("e", "rename_lane", "Rename lane", show=False),
         Binding("x", "remove_lane", "Remove lane", show=False),
         Binding("delete", "delete", "Delete", show=False),
@@ -809,6 +832,8 @@ class BoardScreen(Screen[None]):
         # Cards pulled together leave one after another (monotonic time of the next start).
         self._next_flight = 0.0
         self._activity_shown = False
+        # Cells per lane once the user widened or narrowed them; 0 shares the width.
+        self._lane_width = 0
 
     # -- reading ----------------------------------------------------------
 
@@ -821,9 +846,24 @@ class BoardScreen(Screen[None]):
     def _focused_card(self) -> BoardCard | None:
         return self.focused if isinstance(self.focused, BoardCard) else None
 
+    def _focused_item(self) -> BoardCard | BoardSubCard | None:
+        return self.focused if isinstance(self.focused, (BoardCard, BoardSubCard)) else None
+
+    def _items_in(self, lane_id: str) -> list[BoardCard | BoardSubCard]:
+        """The lane's cards and sub-cards, top to bottom: what the arrows walk."""
+
+        lane = self.query(f"#board-lane-{lane_id}")
+        if not lane:
+            return []
+        return [
+            widget
+            for widget in lane.first().query(".board-card, .board-subcard")
+            if isinstance(widget, (BoardCard, BoardSubCard))
+        ]
+
     def _focused_lane(self) -> dict[str, Any] | None:
-        card = self._focused_card()
-        lane_id = card.lane_id if card else self._focus_lane_id
+        item = self._focused_item()
+        lane_id = item.lane_id if item else self._focus_lane_id
         return next((lane for lane in self.board.get("lanes", []) if lane["id"] == lane_id), None)
 
     _focus_lane_id = "todo"
@@ -835,6 +875,7 @@ class BoardScreen(Screen[None]):
         yield Static(self._banner(), id="board-review")
         yield Horizontal(id="board-lanes")
         log = RichLog(id="board-activity", max_lines=_FEED_LINES, wrap=False, markup=False)
+        log.border_title = "Activity · l hides it · ctrl+↑↓ its height · ctrl+←→ lane width"
         log.display = False
         yield log
         yield Footer()
@@ -897,16 +938,20 @@ class BoardScreen(Screen[None]):
             BoardLaneView(lane, self.board, self._live) for lane in self.board.get("lanes", [])
         ]
         await container.mount_all(lanes)
+        self._apply_lane_width()
         self.query_one("#board-header", Static).update(self._header())
         banner = self.query_one("#board-review", Static)
         banner.update(self._banner())
         banner.display = bool(self._waiting()) and not self.board.get("running")
 
     def _refocus(self) -> None:
-        cards = list(self.query(BoardCard))
-        target = next((card for card in cards if card.task_id == self._focus_id), None)
-        if target is None and cards:
-            target = next((card for card in cards if card.lane_id == self._focus_lane_id), cards[0])
+        items = [widget for widget in self.query(".board-card, .board-subcard") if widget.focusable]
+        target = next((item for item in items if item.id == _widget_id(self._focus_id)), None)
+        if target is None and items:
+            target = next(
+                (item for item in items if getattr(item, "lane_id", "") == self._focus_lane_id),
+                items[0],
+            )
         if target is not None:
             target.focus()
 
@@ -914,6 +959,9 @@ class BoardScreen(Screen[None]):
         widget = event.widget if hasattr(event, "widget") else None
         if isinstance(widget, BoardCard):
             self._focus_id = widget.task_id
+            self._focus_lane_id = widget.lane_id
+        elif isinstance(widget, BoardSubCard):
+            self._focus_id = widget.sub_id
             self._focus_lane_id = widget.lane_id
 
     # -- backend ----------------------------------------------------------
@@ -1035,6 +1083,7 @@ class BoardScreen(Screen[None]):
         now = time.monotonic()
         start = max(now, self._next_flight)
         self._next_flight = start + _FLIGHT_STAGGER_S
+
         def fly() -> None:
             self._fly(card_id, origin, ghost, landing)
 
@@ -1112,9 +1161,11 @@ class BoardScreen(Screen[None]):
             self._on_close()
 
     def action_open(self) -> None:
-        card = self._focused_card()
-        if card is not None:
-            self.app.push_screen(TaskEditor(self, card.task_id))
+        item = self._focused_item()
+        if isinstance(item, BoardSubCard):
+            item.open()
+        elif item is not None:
+            self.app.push_screen(TaskEditor(self, item.task_id))
 
     def action_new_task(self) -> None:
         lane = self._focused_lane()
@@ -1136,21 +1187,41 @@ class BoardScreen(Screen[None]):
         index = next((i for i, lane in enumerate(lanes) if lane["id"] == current["id"]), 0)
         for offset in range(1, len(lanes)):
             lane = lanes[(index + step * offset) % len(lanes)]
-            cards = [card for card in self.query(BoardCard) if card.lane_id == lane["id"]]
+            items = self._items_in(lane["id"])
             self._focus_lane_id = lane["id"]
-            if cards:
-                cards[0].focus()
+            if items:
+                items[0].focus()
                 return
 
     def action_focus_card(self, step: int) -> None:
-        card = self._focused_card()
-        if card is None:
+        item = self._focused_item()
+        if item is None:
             self._refocus()
             return
-        cards = [item for item in self.query(BoardCard) if item.lane_id == card.lane_id]
-        index = cards.index(card) + step
-        if 0 <= index < len(cards):
-            cards[index].focus()
+        items = self._items_in(item.lane_id)
+        index = items.index(item) + step
+        if 0 <= index < len(items):
+            items[index].focus()
+
+    def action_resize_log(self, rows: int) -> None:
+        log = self.query_one("#board-activity", RichLog)
+        height = log.styles.height.value if log.styles.height else _LOG_ROWS
+        log.styles.height = int(max(4, min(40, height + rows)))
+        log.display = True
+        self._activity_shown = True
+
+    def action_resize_lanes(self, cells: int) -> None:
+        """Every lane wider or narrower together, starting from the width they share now."""
+
+        if not self._lane_width:
+            lanes = max(1, len(self.board.get("lanes", [])))
+            self._lane_width = self.query_one("#board-lanes").size.width // lanes
+        self._lane_width = max(_MIN_LANE, self._lane_width + cells)
+        self._apply_lane_width()
+
+    def _apply_lane_width(self) -> None:
+        for lane in self.query(BoardLaneView):
+            lane.styles.width = self._lane_width if self._lane_width else "1fr"
 
     def action_move(self, step: int) -> None:
         card = self._focused_card()

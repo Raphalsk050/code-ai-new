@@ -22,6 +22,7 @@ for line in sys.stdin:
     log.flush()
     if "pose" in json.loads(line):
         print(json.dumps({"rest": {"right": False, "bottom": True, "x": 40, "y": 12}}), flush=True)
+        print(json.dumps({"size": 132}), flush=True)
 """
 
 
@@ -152,7 +153,7 @@ def test_it_shows_only_once_switched_on(tmp_path: Path) -> None:
     assert avatar.set_enabled(True) is None
     try:
         first = _until(lambda: _lines(log))[0]
-        assert first == {"at": None, "lang": "pt-BR"}
+        assert first == {"at": None, "lang": "pt-BR", "size": None}
     finally:
         avatar.close()
     assert not avatar.running
@@ -170,12 +171,14 @@ def test_the_turn_reaches_it_and_where_it_rests_is_kept(tmp_path: Path) -> None:
     finally:
         avatar.close()
 
-    # Shown again, it starts where it was left.
+    # Shown again, it starts where it was left, as big as it was made on its menu.
+    _until(lambda: '"size": 132' in (tmp_path / "desktop-avatar.json").read_text(encoding="utf-8"))
     log.unlink()
     avatar.set_enabled(True)
     try:
         first = _until(lambda: _lines(log))[0]
         assert first["at"] == {"right": False, "bottom": True, "x": 40, "y": 12}
+        assert first["size"] == 132
     finally:
         avatar.close()
 

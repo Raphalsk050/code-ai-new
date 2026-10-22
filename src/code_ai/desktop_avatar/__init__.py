@@ -228,7 +228,7 @@ class DesktopAvatar:
         for reader in (self._read, self._read_errors):
             threading.Thread(target=reader, args=(process,), daemon=True).start()
         language = str(getattr(self._settings(), "language", "en"))
-        self._send({"at": self._saved_place(), "lang": language})
+        self._send({"at": self._saved_place(), "lang": language, "size": self._saved().get("size")})
         self._send({"pose": self._mood.pose, "waiting": self._mood.waiting, "seat": self._seat})
         return None
 
@@ -308,8 +308,14 @@ class DesktopAvatar:
                 message = json.loads(line)
             except ValueError:
                 continue
-            if isinstance(message, dict) and isinstance(message.get("rest"), dict):
+            if not isinstance(message, dict):
+                continue
+            if isinstance(message.get("rest"), dict):
                 self._save_place(message["rest"])
+            size = message.get("size")
+            # Picked on its right-click menu: what it opens at next time.
+            if isinstance(size, (int, float)) and not isinstance(size, bool) and 16 <= size <= 512:
+                self._save(size=int(size))
 
     def _read_errors(self, process: subprocess.Popen[str]) -> None:
         assert process.stderr is not None
@@ -320,17 +326,25 @@ class DesktopAvatar:
     def _path(self, name: str) -> Path:
         return (self._dir or _state_dir()) / name
 
-    def _saved_place(self) -> dict[str, Any] | None:
+    def _saved(self) -> dict[str, Any]:
+        """What it keeps between runs: where it was left ("at") and how big it is ("size")."""
+
         try:
             saved = json.loads(self._path("desktop-avatar.json").read_text(encoding="utf-8"))
-            place = saved.get("at")
-        except (OSError, ValueError, AttributeError):
-            return None
+        except (OSError, ValueError):
+            return {}
+        return saved if isinstance(saved, dict) else {}
+
+    def _saved_place(self) -> dict[str, Any] | None:
+        place = self._saved().get("at")
         return place if isinstance(place, dict) else None
 
     def _save_place(self, place: dict[str, Any]) -> None:
+        self._save(at=place)
+
+    def _save(self, **fields: Any) -> None:
         try:
-            text = json.dumps({"at": place})
+            text = json.dumps({**self._saved(), **fields})
             self._path("desktop-avatar.json").write_text(text, encoding="utf-8")
         except OSError:
             pass

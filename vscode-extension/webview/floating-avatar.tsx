@@ -11,6 +11,7 @@ import { type Felt, Nerves, onStroke, UNFELT } from "./avatar-nerves";
 import type { AvatarPose } from "./avatar-pose";
 import type { AvatarSkin } from "./avatar-skin";
 import { caretPoint } from "./caret-point";
+import { AvatarSizeMenu, menuSpot } from "./avatar-size-menu";
 import { t } from "./i18n";
 
 /** Its box. The face is six tenths of it: the agent in the room, not one more button. */
@@ -199,6 +200,7 @@ const same = (a: Place, b: Place) =>
  * @param onRest called with where it came to rest, for remembering it
  * @param screens on the desktop, the screens the room spans: it keeps to one
  *   at a time, never the gaps between, and is remembered on the one it was left on
+ * @param onResize given, a right-click opens a menu to pick its size, handed back here
  */
 export function FloatingAvatar({
   pose,
@@ -213,6 +215,7 @@ export function FloatingAvatar({
   waitsOn,
   onRest,
   screens,
+  onResize,
 }: {
   pose: AvatarPose | null;
   skin?: AvatarSkin;
@@ -226,10 +229,23 @@ export function FloatingAvatar({
   waitsOn?: string;
   onRest?: (place: Place) => void;
   screens?: Screen[];
+  onResize?: (size: number) => void;
 }): JSX.Element {
   const ref = React.useRef<HTMLDivElement>(null);
   const effects = React.useRef<SVGSVGElement>(null);
   const [held, setHeld] = React.useState(false);
+  // Where the size menu stands while it is open.
+  const [menu, setMenu] = React.useState<{ left: number; top: number } | null>(null);
+  const closeMenu = React.useCallback(() => setMenu(null), []);
+  const menuOpen = menu !== null;
+  // Grown or shrunk from its menu, it moves by its corner: the menu goes along.
+  React.useEffect(() => {
+    if (!menuOpen) return undefined;
+    const frame = requestAnimationFrame(() => {
+      if (ref.current) setMenu(menuSpot(ref.current.getBoundingClientRect()));
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [menuOpen, size]);
   const [act, setAct] = React.useState<ActName | null>(null);
   const sim = React.useRef<Sim>({
     x: 0, y: 0, vx: 0, vy: 0, held: false, grabX: 0, grabY: 0, wantX: 0, wantY: 0, home: null, dock: null, gaze: null, watching: false, moved: false,
@@ -812,6 +828,7 @@ export function FloatingAvatar({
       style={{ width: size, height: size }}
       data-held={held ? "" : undefined}
       data-act={act ?? undefined}
+      data-menu={menu ? "" : undefined}
     >
       {/* Acting, its eyes and its body are the script's: the pose stands down. */}
       <AgentAvatar pose={act ? null : pose} size={size} fx skin={skin} backed />
@@ -852,7 +869,13 @@ export function FloatingAvatar({
         onPointerCancel={release}
         onKeyDown={onKeyDown}
         onDoubleClick={goHome}
+        onContextMenu={(event) => {
+          if (!onResize || !ref.current) return;
+          event.preventDefault();
+          setMenu(menuSpot(ref.current.getBoundingClientRect()));
+        }}
       />
+      {menu && onResize && <AvatarSizeMenu at={menu} size={size} onSize={onResize} onClose={closeMenu} />}
     </div>
   );
 }

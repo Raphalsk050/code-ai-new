@@ -30,7 +30,9 @@ import {
   STATUS_LABEL,
   tasksIn,
 } from "./model";
+import { clampSize, DEFAULT_SIZES, PanelSizes, Splitter } from "./splitter";
 import { BOARD_STYLE } from "./styles";
+import { SubDetail } from "./sub-detail";
 import { AgentChip, LiveLine, SubCard, TaskStub } from "./subcard";
 
 declare function acquireVsCodeApi(): {
@@ -49,8 +51,10 @@ interface Notice {
 }
 
 interface Saved {
+  /** A task's id, or a sub-task's: what the drawer shows. */
   selected?: string;
   activity?: boolean;
+  sizes?: Partial<PanelSizes>;
 }
 
 const laneTitle = (lane: BoardLane) =>
@@ -61,8 +65,7 @@ function App(): JSX.Element {
   const [board, setBoard] = React.useState<BoardSnapshot>(emptyBoard);
   const [loaded, setLoaded] = React.useState(false);
   const [selected, setSelected] = React.useState<string | undefined>(saved.selected);
-  // The sub-task to show open in the drawer, when the drawer was opened from its sub-card.
-  const [focusSub, setFocusSub] = React.useState<string | undefined>(undefined);
+  const [sizes, setSizes] = React.useState<PanelSizes>({ ...DEFAULT_SIZES, ...saved.sizes });
   const [notices, setNotices] = React.useState<Notice[]>([]);
   const [review, setReview] = React.useState<{ message: string } | null>(null);
   const [live, setLive] = React.useState<LiveState>(emptyLive);
@@ -84,8 +87,8 @@ function App(): JSX.Element {
   // A block, not an arrow's value: VS Code's setState returns the state, and an
   // effect's return value is its cleanup, which React calls on the next change.
   React.useEffect(() => {
-    vscode.setState({ selected, activity: showActivity } satisfies Saved);
-  }, [selected, showActivity]);
+    vscode.setState({ selected, activity: showActivity, sizes } satisfies Saved);
+  }, [selected, showActivity, sizes]);
 
   const notify = React.useCallback((level: Notice["level"], text: string) => {
     const id = Date.now() + Math.random();
@@ -152,11 +155,17 @@ function App(): JSX.Element {
   }, [board]);
 
   const edit = React.useCallback((operations: BoardOperation[]) => send({ type: "boardEdit", operations }), []);
-  const open = React.useCallback((task: string, subtask = "") => {
-    setSelected(task);
-    setFocusSub(subtask || undefined);
-  }, []);
+  // A sub-task opens on its own; its task only when that is what was clicked.
+  const open = React.useCallback((task: string, subtask = "") => setSelected(subtask || task), []);
   const selectedTask = board.tasks.find((task) => task.id === selected);
+  const selectedParent = selectedTask
+    ? undefined
+    : board.tasks.find((task) => task.subtasks.some((sub) => sub.id === selected));
+  const selectedSub = selectedParent?.subtasks.find((sub) => sub.id === selected);
+  const resize = (which: keyof PanelSizes) => (value: number) =>
+    setSizes((current) => ({ ...current, [which]: clampSize(which, value) }));
+  const reset = (which: keyof PanelSizes) => () =>
+    setSizes((current) => ({ ...current, [which]: DEFAULT_SIZES[which] }));
   const { run, drafts } = playable(board);
   const waiting = awaitingReview(board);
   const agents = agentsAt(board);
@@ -271,13 +280,16 @@ function App(): JSX.Element {
       )}
 
       <div className="board-body">
-        <div className="board-lanes">
+        <div className="board-lanes" style={{ "--lane-width": `${sizes.lane}px` } as React.CSSProperties}>
           {board.lanes.map((lane) => (
             <Lane
               key={lane.id}
               lane={lane}
               board={board}
               selected={selected}
+              laneWidth={sizes.lane}
+              onLaneWidth={resize("lane")}
+              onLaneReset={reset("lane")}
               live={live.agents}
               dragging={dragging}
               drop={dropLane === lane.id}
@@ -306,22 +318,61 @@ function App(): JSX.Element {
             />
           )}
         </div>
+        {(selectedTask || selectedSub) && (
+          <Splitter
+            axis="x"
+            grow={-1}
+            size={sizes.drawer}
+            label={t("Drag to resize, double-click for the default size")}
+            onSize={resize("drawer")}
+            onReset={reset("drawer")}
+          />
+        )}
         {selectedTask && (
           <Detail
             task={selectedTask}
             board={board}
             live={live.agents}
-            focusSub={focusSub}
             edit={edit}
             send={send}
+            width={sizes.drawer}
             onClose={() => setSelected(undefined)}
             onPlan={(id) => plan([id])}
             onRun={(id) => play([id])}
+            onOpenSub={(id) => setSelected(id)}
+          />
+        )}
+        {selectedParent && selectedSub && (
+          <SubDetail
+            task={selectedParent}
+            sub={selectedSub}
+            live={live.agents[selectedSub.id]}
+            edit={edit}
+            width={sizes.drawer}
+            onClose={() => setSelected(undefined)}
+            onOpenTask={() => setSelected(selectedParent.id)}
           />
         )}
       </div>
 
-      {showActivity && <ActivityPanel feed={live.feed} onClose={() => setShowActivity(false)} onOpen={open} />}
+      {showActivity && (
+        <>
+          <Splitter
+            axis="y"
+            grow={-1}
+            size={sizes.activity}
+            label={t("Drag to resize, double-click for the default size")}
+            onSize={resize("activity")}
+            onReset={reset("activity")}
+          />
+          <ActivityPanel
+            feed={live.feed}
+            height={sizes.activity}
+            onClose={() => setShowActivity(false)}
+            onOpen={open}
+          />
+        </>
+      )}
 
       {loaded && board.tasks.length === 0 && (
         <div className="board-empty" style={{ position: "absolute", top: "40%", left: 0, right: 0, pointerEvents: "none" }}>
@@ -344,6 +395,9 @@ function Lane({
   lane,
   board,
   selected,
+  laneWidth,
+  onLaneWidth,
+  onLaneReset,
   live,
   dragging,
   drop,
@@ -357,6 +411,9 @@ function Lane({
   lane: BoardLane;
   board: BoardSnapshot;
   selected?: string;
+  laneWidth: number;
+  onLaneWidth: (width: number) => void;
+  onLaneReset: () => void;
   live: Record<string, LiveAgent>;
   dragging: string | null;
   drop: boolean;
@@ -389,6 +446,15 @@ function Lane({
 
   return (
     <div className={`lane ${drop ? "drop" : ""}`} data-lane={lane.id} onDragOver={onDragOver} onDrop={onDrop}>
+      <Splitter
+        axis="x"
+        grow={1}
+        size={laneWidth}
+        label={t("Drag to resize the lanes, double-click for the default width")}
+        onSize={onLaneWidth}
+        onReset={onLaneReset}
+        className="lane-edge"
+      />
       <div className="lane-head" style={{ position: "relative" }}>
         {renaming ? (
           <input

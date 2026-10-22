@@ -442,3 +442,22 @@ async def test_an_attached_picture_reaches_the_workers(tmp_path) -> None:
     assert app.board.board.task("T1").status == "done"
     assert provider.saw_images >= 1
     await app.close()
+
+
+async def test_the_last_word_of_a_run_or_a_plan_says_it_ended(tmp_path) -> None:
+    app, events = await started_app(tmp_path, BoardProvider())
+    await app.board.apply([{"op": "add_task", "title": "Draft"}])
+    await app.board.plan()
+    await finish_run(app)
+    await asyncio.sleep(0.05)
+    last = events.of("board.changed")[-1]["board"]
+    assert last["planning"] is False
+
+    await app.board.play()
+    await finish_run(app)
+    await asyncio.sleep(0.05)
+    last = events.of("board.changed")[-1]["board"]
+    # What the panel and the terminal are left with once it is over.
+    assert last["running"] is False and last["run_id"] == ""
+    assert last["tasks"][0]["status"] == "done"
+    await app.close()

@@ -1,8 +1,8 @@
 {
   "major": 0,
-  "minor": 52,
+  "minor": 53,
   "patch": 0,
-  "build": 138,
+  "build": 139,
   "updated": "2026-10-22",
-  "note": "Board: sub-cards pulled across lanes, live agent activity, attachments"
+  "note": "Board: run ends cleanly, sub-tasks open alone, resizable panels; avatar size menu"
 }

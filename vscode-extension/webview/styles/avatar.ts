@@ -215,6 +215,27 @@ ${COLOR_STYLE}
 /* ---- floating ---- */
 /* Loose over the panel with nothing under it but its shadow. Only the face
    takes the pointer: the rest of its box lets a click through to the panel. */
+/* Right-click on the avatar: its size. Outside its box, which tilts and squashes. */
+.av-size-menu {
+  position: fixed; z-index: 40; box-sizing: border-box; padding: 8px 10px 10px;
+  display: flex; flex-direction: column; gap: 7px; pointer-events: auto;
+  color: var(--vscode-foreground, #ccc); font-size: 12px;
+  background: var(--vscode-menu-background, var(--vscode-editorWidget-background, #252526));
+  border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border, #3c3c3c)); border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .35);
+}
+.av-size-title { display: flex; align-items: center; font-weight: 600; }
+.av-size-value { margin-left: auto; font-weight: 400; color: var(--vscode-descriptionForeground, #9d9d9d); font-variant-numeric: tabular-nums; }
+.av-size-presets { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+.av-size-menu button {
+  font: inherit; font-size: 11px; color: inherit; cursor: pointer; padding: 3px 2px; white-space: nowrap;
+  background: transparent; border: 1px solid var(--vscode-panel-border, #3c3c3c); border-radius: 5px;
+}
+.av-size-menu button:hover:not(:disabled) { background: var(--vscode-list-hoverBackground, rgba(127,127,127,.16)); }
+.av-size-menu button.on { border-color: var(--accent); color: var(--accent); }
+.av-size-menu button:disabled { opacity: .45; cursor: default; }
+.av-size-menu input[type=range] { width: 100%; margin: 0; accent-color: var(--accent); }
+
 .av-float {
   position: absolute; left: 0; top: 0; z-index: 2;
   color: var(--accent); pointer-events: none;

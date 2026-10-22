@@ -61,6 +61,7 @@ import { stroke, useRapt } from "./avatar-nerves";
 import { avatarPose, turnMood } from "./avatar-pose";
 import { seasonalSkin, setAvatarColor, setAvatarSkin } from "./avatar-skin";
 import { useDesktopSeat } from "./desktop-seat";
+import { clampAvatarSize } from "./avatar-size-menu";
 import { FloatingAvatar } from "./floating-avatar";
 import { VersionMark } from "./version-mark";
 import { PromptPin, usePromptPin } from "./prompt-pin";
@@ -1109,6 +1110,8 @@ function App(): JSX.Element {
           : undefined
       }
       onRest={(avatarAt) => updatePrefs({ avatarAt })}
+      size={clampAvatarSize(prefs.avatarSize)}
+      onResize={(avatarSize) => updatePrefs({ avatarSize })}
     />
   );
 

@@ -13,10 +13,12 @@ function clock(at: number): string {
 /** Everything the board's agents did, oldest first, following the newest while it is in view. */
 export function ActivityPanel({
   feed,
+  height,
   onClose,
   onOpen,
 }: {
   feed: BoardStep[];
+  height: number;
   onClose: () => void;
   onOpen: (task: string, subtask: string) => void;
 }): JSX.Element {
@@ -27,7 +29,7 @@ export function ActivityPanel({
     if (element && pinned.current) element.scrollTop = element.scrollHeight;
   }, [feed]);
   return (
-    <section className="activity" data-testid="board-activity">
+    <section className="activity" data-testid="board-activity" style={{ height, flexBasis: height }}>
       <div className="activity-head">
         <i className="codicon codicon-pulse" />
         <span className="title">{t("Activity")}</span>

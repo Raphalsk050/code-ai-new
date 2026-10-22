@@ -95,10 +95,13 @@ export interface ExtPrefs {
   avatarSleeps: boolean;
   avatarTouch: boolean;
   avatarHides: boolean;
+  /** The floating avatar's box, in px: set from its right-click menu. */
+  avatarSize: number;
 }
 
 export const DEFAULT_PREFS: ExtPrefs = { mode: "agent", autoRunRefactor: false, floatingAvatar: true, avatarSkin: "auto", avatarColor: "theme", avatarWatches: true, avatarAnxious: true,
   avatarGreets: true, avatarWaits: true, avatarCheers: true, avatarSleeps: true, avatarTouch: true, avatarHides: true,
+  avatarSize: 88,
 };
 
 export interface PersistedState {

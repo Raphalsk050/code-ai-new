@@ -226,6 +226,37 @@ async function seatOf(ui) {
 }
 
 export const tests = {
+
+  async "a right-click on it picks its size, and the panel keeps it"(ui, assert) {
+    await openChat(ui);
+    const width = () => ui.page.$eval(FLOAT, (element) => element.getBoundingClientRect().width);
+    assert(Math.round(await width()) === 88, `it starts at ${await width()}`);
+    await ui.page.click(GRIP, { button: "right" });
+    await ui.page.waitForSelector(".av-size-menu");
+    await ui.shot("avatar-size-menu");
+    await ui.page.click('.av-size-menu button:has-text("Large")');
+    await ui.page.waitForTimeout(100);
+    assert(Math.round(await width()) === 120, `Large made it ${await width()}`);
+    // The slider goes between the presets.
+    await ui.page.$eval(".av-size-menu input[type=range]", (input) => {
+      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+      set.call(input, "148");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await ui.page.waitForTimeout(100);
+    assert(Math.round(await width()) === 148, `the slider made it ${await width()}`);
+    const kept = await ui.page.evaluate(() => window.__state?.prefs?.avatarSize);
+    assert(kept === 148, `the panel kept ${kept}`);
+    await ui.page.keyboard.press("Escape");
+    await ui.page.waitForTimeout(50);
+    assert(!(await ui.page.$(".av-size-menu")), "Esc did not close the menu");
+    // A click elsewhere closes it too.
+    await ui.page.click(GRIP, { button: "right" });
+    await ui.page.waitForSelector(".av-size-menu");
+    await ui.page.mouse.click(20, 400);
+    await ui.page.waitForTimeout(50);
+    assert(!(await ui.page.$(".av-size-menu")), "a click elsewhere did not close the menu");
+  },
   async "it floats in its corner and goes where it is carried"(ui, assert) {
     const home = await openChat(ui);
     const panel = ui.page.viewportSize();

@@ -250,9 +250,16 @@ export const tests = {
     assert(await ui.page.$(".activity-row .state.ok"), "the finished step is not marked");
     await ui.shot("board-subcards");
 
-    // A sub-card opens its task's drawer with that sub-task open.
-    await ui.page.click('[data-card="T3.3"]');
-    await ui.page.waitForSelector('[data-testid="board-detail"] [data-sub="T3.3"] .sub-body');
+    // A sub-card opens that sub-task alone, and its task is a click away.
+    await ui.page.click('[data-card="T3.2"]');
+    await ui.page.waitForSelector('[data-testid="board-sub-detail"]');
+    assert(!(await ui.page.$('[data-testid="board-detail"]')), "the whole task opened");
+    const alone = await ui.page.textContent('[data-testid="board-sub-detail"]');
+    assert(alone.includes("T3.2") && alone.includes("Lovelace") && alone.includes("Editing"), alone);
+    assert(!alone.includes("T3.3"), "another sub-task is in the sub-task's drawer");
+    await ui.shot("board-sub-detail");
+    await ui.page.click('[data-testid="board-sub-detail"] .crumb');
+    await ui.page.waitForSelector('[data-testid="board-detail"]');
   },
 
   async "the run pulls the task first, then its sub-tasks one after another"(ui, assert) {
@@ -317,6 +324,49 @@ export const tests = {
     const sent = await ui.toHost("boardAttach");
     assert(sent.length === 1 && sent[0].name === "shot.png" && sent[0].data === "iVBORw==", JSON.stringify(sent));
     await ui.shot("board-attachments");
+  },
+
+  async "the drawer, the feed and the lanes are resized by dragging"(ui, assert) {
+    await boot(ui, sampleBoard());
+    await ui.page.click('[data-card="T1"]');
+    await ui.page.waitForSelector('[data-testid="board-detail"]');
+    const width = () => ui.page.$eval('[data-testid="board-detail"]', (element) => element.getBoundingClientRect().width);
+    const before = await width();
+    const bar = await ui.page.$(".board-body > .splitter-x");
+    const box = await bar.boundingBox();
+    await ui.page.mouse.move(box.x + 3, box.y + 200);
+    await ui.page.mouse.down();
+    await ui.page.mouse.move(box.x - 120, box.y + 200, { steps: 6 });
+    await ui.page.mouse.up();
+    const after = await width();
+    assert(Math.abs(after - before - 123) < 6, `drawer ${before} -> ${after}`);
+
+    // The feed grows upwards from its top edge.
+    const feed = () => ui.page.$eval('[data-testid="board-activity"]', (element) => element.getBoundingClientRect().height);
+    const tall = await feed();
+    const top = await (await ui.page.$(".board-app > .splitter-y")).boundingBox();
+    await ui.page.mouse.move(top.x + 300, top.y + 3);
+    await ui.page.mouse.down();
+    await ui.page.mouse.move(top.x + 300, top.y - 80, { steps: 6 });
+    await ui.page.mouse.up();
+    assert(Math.abs((await feed()) - tall - 83) < 6, `feed ${tall} -> ${await feed()}`);
+
+    // Every lane follows the edge of the one dragged.
+    const lanes = () => ui.page.$$eval(".lane", (items) => items.map((item) => Math.round(item.getBoundingClientRect().width)));
+    const edge = await (await ui.page.$('[data-lane="todo"] .lane-edge')).boundingBox();
+    await ui.page.mouse.move(edge.x + 3, edge.y + 100);
+    await ui.page.mouse.down();
+    await ui.page.mouse.move(edge.x + 63, edge.y + 100, { steps: 6 });
+    await ui.page.mouse.up();
+    const widths = await lanes();
+    assert(new Set(widths).size === 1 && Math.abs(widths[0] - 320) < 6, `lanes: ${widths}`);
+
+    // Kept with the tab, and a double-click puts the default back.
+    const kept = await ui.page.evaluate(() => window.__state.sizes);
+    assert(Math.abs(kept.drawer - after) < 2 && Math.abs(kept.lane - 320) < 6, JSON.stringify(kept));
+    await ui.page.dblclick(".board-body > .splitter-x");
+    assert(Math.abs((await width()) - 430) < 2, "double-click did not reset the drawer");
+    await ui.shot("board-resized");
   },
 };
 

@@ -252,3 +252,30 @@ async def test_files_are_attached_from_the_task_editor(tmp_path) -> None:
         await _until(pilot, lambda: bool(editor.query(f"#task-remove-attachment-{attachment.id}")))
         editor.query_one(f"#task-remove-attachment-{attachment.id}").press()
         await _until(pilot, lambda: not fake.board.board.task("T1").attachments)
+
+
+async def test_sub_cards_take_the_keyboard_and_the_panels_resize(tmp_path) -> None:
+    fake = _App(tmp_path)
+    await fake.board.apply([{"op": "add_task", "title": "API", "subtasks": ["Schema", "Endpoint"]}])
+    terminal_app = create_terminal_app(fake)
+    async with terminal_app.run_test(size=(160, 50)) as pilot:
+        board = await _open_board(terminal_app, pilot)
+        board.query_one(BoardCard).focus()
+        # Down walks from the card into its sub-cards; Enter opens the sub-task alone.
+        await pilot.press("down", "down")
+        assert isinstance(board.focused, BoardSubCard) and board.focused.sub_id == "T1.2"
+        await pilot.press("enter")
+        await _until(pilot, lambda: isinstance(terminal_app.screen, SubTaskEditor))
+        assert terminal_app.screen.sub_id == "T1.2"
+        await pilot.press("escape")
+        await _until(pilot, lambda: terminal_app.screen is board)
+
+        await pilot.press("ctrl+up")
+        log = board.query_one("#board-activity")
+        assert log.display and log.styles.height.value == 12
+        lanes = list(board.query(BoardLaneView))
+        shared = lanes[0].size.width
+        await pilot.press("ctrl+right")
+        await pilot.pause(0.1)
+        assert all(lane.styles.width.value == lanes[0].styles.width.value for lane in lanes)
+        assert lanes[0].size.width >= shared + 3

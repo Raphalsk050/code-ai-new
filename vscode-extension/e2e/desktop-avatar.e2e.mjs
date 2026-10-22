@@ -119,6 +119,35 @@ async function start(ui, x, y, scale) {
 }
 
 export const desk = {
+
+  async "its right-click menu sets its size, takes clicks, and goes to the host"(ui, assert) {
+    await ui.page.evaluate(() => {
+      window.__ipc = [];
+      window.ipc = { postMessage: (message) => window.__ipc.push(message) };
+    });
+    await ui.page.evaluate(() => window.desk.frame(0, 0, 1));
+    // The host gives back the size it kept.
+    await say(ui, { at: null, lang: "en", size: 132 });
+    await say(ui, { pose: "idle", waiting: false, seat: null });
+    await ui.page.waitForSelector(GRIP);
+    const width = () => ui.page.$eval(".av-float", (element) => element.getBoundingClientRect().width);
+    assert(Math.round(await width()) === 132, `it opened at ${await width()}`);
+
+    await ui.page.click(GRIP, { button: "right" });
+    await ui.page.waitForSelector(".av-size-menu");
+    await ui.page.waitForTimeout(100);
+    // While it is open the menu is part of where clicks land, or they would fall through to the desktop.
+    const faces = await ui.page.evaluate(() => window.__ipc.filter((m) => m.startsWith("face:")));
+    const [, , w] = faces[faces.length - 1].slice(5).split(",").map(Number);
+    const grip = await ui.page.$eval(GRIP, (element) => element.getBoundingClientRect().width);
+    assert(w > grip + 150, `the clickable box (${w}) leaves the menu out`);
+    await ui.page.click('.av-size-menu button:has-text("Huge")');
+    await ui.page.waitForTimeout(100);
+    assert(Math.round(await width()) === 168, `Huge made it ${await width()}`);
+    const sent = await ui.page.evaluate(() => window.__ipc.filter((m) => m.startsWith("out:")));
+    assert(sent.includes('out:{"size":168}'), JSON.stringify(sent));
+    await ui.shot("desktop-avatar-size");
+  },
   async "told where the logo is, it sits on it; told it is gone, it goes back"(ui, assert) {
     await start(ui, 0, 0, 1);
     const home = await face(ui);

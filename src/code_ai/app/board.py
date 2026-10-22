@@ -71,19 +71,22 @@ class BoardService:
     def board(self) -> Board:
         return self._board
 
+    # Both read state the jobs clear before their last announcement: read off
+    # the asyncio tasks, the board.changed that closes a run would still say
+    # it runs, since it is sent from inside that task.
     @property
     def running(self) -> bool:
-        return bool(self._run and not self._run.done())
+        return self._runner is not None
 
     @property
     def planning(self) -> bool:
-        return any(not task.done() for task in self._planners)
+        return bool(self._plan_runners)
 
     def snapshot(self) -> dict[str, Any]:
         payload = self._board.to_view()
         payload["running"] = self.running
         payload["planning"] = self.planning
-        payload["run_id"] = self._runner.run_id if self._runner and self.running else ""
+        payload["run_id"] = self._runner.run_id if self._runner else ""
         return payload
 
     # -- editing ----------------------------------------------------------
@@ -325,6 +328,8 @@ class BoardService:
             logger.exception("The board run failed")
             status = "failed"
         finally:
+            if self._runner is runner:
+                self._runner = None
             if runner.stopped and status == "completed":
                 status = "stopped"
             done = [task_id for task_id, result in outcome.items() if result == "done"]

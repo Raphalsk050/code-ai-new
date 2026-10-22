@@ -27,7 +27,7 @@ import { AgentChip, LiveLine, useNow } from "./subcard";
 type Edit = (operations: BoardOperation[]) => void;
 
 /** A field that sends its value when it loses focus or on Enter, not per keystroke. */
-function Field({
+export function Field({
   value,
   onCommit,
   multiline = false,
@@ -119,7 +119,7 @@ function AddRow({
   );
 }
 
-function Checklist({
+export function Checklist({
   items,
   locked,
   edit,
@@ -170,7 +170,7 @@ const CRITERION_ICON: Record<BoardCriterion["status"], string> = {
   failed: "error",
 };
 
-function Criteria({
+export function Criteria({
   items,
   locked,
   edit,
@@ -223,6 +223,7 @@ function SubTaskCard({
   locked,
   edit,
   live,
+  onOpenAlone,
 }: {
   task: BoardTask;
   sub: BoardSubTask;
@@ -231,6 +232,7 @@ function SubTaskCard({
   locked: boolean;
   edit: Edit;
   live?: LiveAgent;
+  onOpenAlone: () => void;
 }): JSX.Element {
   const choices = dependencyChoices(task, sub);
   const running = sub.status === "running";
@@ -258,6 +260,9 @@ function SubTaskCard({
         {started > 0 && (
           <span className="clock">{elapsed(started, running ? now : sub.finished_at || now)}</span>
         )}
+        <button className="ghost icon" title={t("Open the sub-task")} onClick={onOpenAlone}>
+          <i className="codicon codicon-go-to-file" />
+        </button>
         <button className="ghost icon" title={open ? t("Fold") : t("Open")} onClick={onToggle}>
           <i className={`codicon codicon-chevron-${open ? "up" : "down"}`} />
         </button>
@@ -420,31 +425,27 @@ export function Detail({
   task,
   board,
   live,
-  focusSub,
   edit,
   send,
+  width,
   onClose,
   onPlan,
   onRun,
+  onOpenSub,
 }: {
   task: BoardTask;
   board: BoardSnapshot;
   live: Record<string, LiveAgent>;
-  /** The sub-task to show open: the drawer was opened from its sub-card. */
-  focusSub?: string;
   edit: Edit;
   send: (message: BoardWebviewToHost) => void;
+  width: number;
   onClose: () => void;
   onPlan: (id: string) => void;
   onRun: (id: string) => void;
+  onOpenSub: (id: string) => void;
 }): JSX.Element {
   const locked = isLocked(task);
-  const [open, setOpen] = React.useState<Set<string>>(new Set(focusSub ? [focusSub] : []));
-  React.useEffect(() => {
-    if (!focusSub) return;
-    setOpen((current) => new Set([...current, focusSub]));
-    document.querySelector(`[data-sub="${CSS.escape(focusSub)}"]`)?.scrollIntoView({ block: "nearest" });
-  }, [focusSub, task.id]);
+  const [open, setOpen] = React.useState<Set<string>>(new Set());
   const [confirmDelete, setConfirmDelete] = React.useState(false);
   React.useEffect(() => {
     setConfirmDelete(false);
@@ -461,7 +462,7 @@ export function Detail({
   const laneTitle = (title: string) => (DEFAULT_TITLES.has(title) ? t(title, "lane") : title);
 
   return (
-    <aside className="detail" data-testid="board-detail">
+    <aside className="detail" data-testid="board-detail" style={{ width }}>
       <div className="detail-head">
         <span className="key">{task.id}</span>
         <span className={`pill ${task.status}`}>{t(STATUS_LABEL[task.status], "status")}</span>
@@ -550,6 +551,7 @@ export function Detail({
               locked={locked}
               edit={edit}
               live={live[sub.id]}
+              onOpenAlone={() => onOpenSub(sub.id)}
             />
           ))}
           <AddRow
