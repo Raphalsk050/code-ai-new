@@ -76,6 +76,13 @@ export const AVATAR_STYLE = `
 .agent-av-eye { transform-box: fill-box; transform-origin: center; }
 .agent-av-lens { transform-origin: 18.3px 15.6px; }
 .agent-av-ring { stroke: var(--bg); fill: none; }
+/* Glasses have no motion of their own: the rig and the breath carry them, and the
+   look and gaze they share with the eyes (.agent-av-look, .agent-av-eyes) turn them. */
+.agent-av-glasses { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.agent-av-glasses-ring { stroke: var(--bg); }
+.agent-av-glasses-frame { stroke: currentColor; }
+.agent-av-glasses-tint { fill: currentColor; fill-opacity: .24; }
+.brand-live .agent-av-glasses-ring { stroke: var(--bg-rail); }
 .agent-av-fx { opacity: 0; transition: opacity var(--dur-base, .2s) ease; }
 .agent-av-key { opacity: .4; }
 .agent-av-dot { transform-box: fill-box; transform-origin: center; }

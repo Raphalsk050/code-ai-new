@@ -64,8 +64,13 @@ export const AVATAR_COLOR_VALUE: Record<AvatarColor, string> = {
 };
 export const AVATAR_COLORS = Object.keys(AVATAR_COLOR_VALUE) as AvatarColor[];
 
+/** Glasses sit on the face, apart from the costume and the colour: any mix is allowed. */
+export type AvatarGlasses = "none" | "round" | "square" | "sunglasses";
+export const AVATAR_GLASSES: readonly AvatarGlasses[] = ["none", "round", "square", "sunglasses"];
+
 let worn: AvatarSkin = "default";
 let tint: AvatarColor = "theme";
+let specs: AvatarGlasses = "none";
 const listeners = new Set<() => void>();
 const subscribe = (listener: () => void) => {
   listeners.add(listener);
@@ -93,4 +98,15 @@ export function setAvatarColor(color: AvatarColor): void {
 
 export function useAvatarColor(): AvatarColor {
   return React.useSyncExternalStore(subscribe, () => tint);
+}
+
+/** Put the same glasses on every avatar on the page at once. */
+export function setAvatarGlasses(glasses: AvatarGlasses): void {
+  if (glasses === specs) return;
+  specs = glasses;
+  listeners.forEach((listener) => listener());
+}
+
+export function useAvatarGlasses(): AvatarGlasses {
+  return React.useSyncExternalStore(subscribe, () => specs);
 }

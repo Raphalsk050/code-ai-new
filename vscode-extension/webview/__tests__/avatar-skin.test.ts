@@ -1,7 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { AVATAR_COLOR_VALUE, AVATAR_COLORS, easterSunday, SEASON_LEAD_DAYS, seasonalSkin } from "../avatar-skin";
+import * as React from "react";
+
+import {
+  AVATAR_COLOR_VALUE,
+  AVATAR_COLORS,
+  AVATAR_GLASSES,
+  easterSunday,
+  SEASON_LEAD_DAYS,
+  seasonalSkin,
+  setAvatarGlasses,
+  useAvatarGlasses,
+} from "../avatar-skin";
+import { DEFAULT_PREFS } from "../history";
 import { AVATAR_STYLE } from "../styles/avatar";
 
 const on = (year: number, month: number, day: number) => seasonalSkin(new Date(year, month - 1, day, 15, 30));
@@ -56,4 +68,27 @@ test("every colour but the theme's own has a rule that draws the glyph in it", (
     const rule = `.agent-av[data-color=${color}] { color: ${AVATAR_COLOR_VALUE[color]}; }`;
     assert.equal(AVATAR_STYLE.includes(rule), color !== "theme", color);
   }
+});
+
+test("glasses default to none and list every style, none first", () => {
+  assert.deepEqual([...AVATAR_GLASSES], ["none", "round", "square", "sunglasses"]);
+  assert.equal(DEFAULT_PREFS.avatarGlasses, "none");
+  // The hook outside a render: a dispatcher that answers useSyncExternalStore with the store's current value.
+  const internals = (React as unknown as {
+    __SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED: { ReactCurrentDispatcher: { current: unknown } };
+  }).__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED.ReactCurrentDispatcher;
+  const read = () => {
+    const before = internals.current;
+    internals.current = { useSyncExternalStore: (_subscribe: unknown, snapshot: () => unknown) => snapshot() };
+    try {
+      return useAvatarGlasses();
+    } finally {
+      internals.current = before;
+    }
+  };
+  assert.equal(read(), "none");
+  setAvatarGlasses("sunglasses");
+  assert.equal(read(), "sunglasses");
+  setAvatarGlasses("none");
+  assert.equal(read(), "none");
 });

@@ -3,7 +3,7 @@ import * as React from "react";
 import { t, tf } from "./i18n";
 
 import type { AppMode, EditorSettings, McpAction, Settings, ToolSpec } from "../src/protocol";
-import { AVATAR_COLOR_VALUE, AVATAR_COLORS, AVATAR_SKINS, type AvatarColor } from "./avatar-skin";
+import { AVATAR_COLOR_VALUE, AVATAR_COLORS, AVATAR_GLASSES, AVATAR_SKINS, type AvatarColor, type AvatarGlasses } from "./avatar-skin";
 import { Codicon } from "./codicon";
 import { Dropdown } from "./dropdown";
 import { ExtPrefs } from "./history";
@@ -619,6 +619,26 @@ export function SettingsScreen({
               grey: t("Grey"),
             }}
             onChange={(v) => onPrefsChange({ avatarColor: v })}
+          />
+        ),
+      },
+      {
+        id: "avatar_glasses",
+        category: "agent",
+        label: t("Avatar glasses"),
+        hint: t("Worn with any costume and colour."),
+        keys: [],
+        control: (
+          <Choice
+            value={prefs.avatarGlasses}
+            options={[...AVATAR_GLASSES]}
+            labels={{
+              none: t("No glasses"),
+              round: t("Round"),
+              square: t("Square"),
+              sunglasses: t("Sunglasses"),
+            }}
+            onChange={(v) => onPrefsChange({ avatarGlasses: v as AvatarGlasses })}
           />
         ),
       },

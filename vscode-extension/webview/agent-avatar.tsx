@@ -3,7 +3,7 @@ import * as React from "react";
 import { blend, type Held, hold } from "./avatar-blend";
 import type { AvatarPose } from "./avatar-pose";
 import { IDLE_LOOP_S } from "./avatar-rig";
-import { type AvatarSkin, useAvatarColor, useAvatarSkin } from "./avatar-skin";
+import { type AvatarGlasses, type AvatarSkin, useAvatarColor, useAvatarGlasses, useAvatarSkin } from "./avatar-skin";
 
 const FACE = "M12 3.6c5.3 0 8.6 3.1 8.6 8.2 0 5.4-3.4 8.6-8.6 8.6s-8.6-3.2-8.6-8.6c0-5.1 3.3-8.2 8.6-8.2z";
 const LEAF = "M12.4 3.9C12 2 13.6.6 16.1.9c.1 2-1.4 3.4-3.7 3z";
@@ -46,16 +46,85 @@ const NOSE = "M11.1 14.9h1.8l-.9 1.1z";
 const DROP = "M0-1.35C.75-.35 1 .25 1 .7a1 1 0 0 1-2 0C-1 .25-.75-.35 0-1.35z";
 const DROP_AT = "translate(19.7 5.8)";
 const DROP_AT_HAT = "translate(20.2 9.2)";
+// With glasses: out past the right lens and its temple arm (y 10), the hat's drop lower down.
+const DROP_AT_SPECS = "translate(21.2 4.6)";
+const DROP_AT_HAT_SPECS = "translate(21.8 12.4)";
 
 // Glad: two arches where the eyes are, standing on the line a shut eye leaves.
 const ARCH_L = "M8.1 12.9Q9.45 8.9 10.8 12.9";
 const ARCH_R = "M13.2 12.9Q14.55 8.9 15.9 12.9";
+
+// Glasses: a rigid part of the head, drawn in the breathing layer with the
+// face. On a flat glyph the eyes moving is the head turning, so the frame
+// takes the eyes' look and gaze (not their blink) and turns with it. The
+// lenses sit outward of the eyes (the bridge stays at x=12, the rims never
+// touch) and are tall enough to hold a blink. The frame is the glyph's flat
+// colour, so a ring of the ground's colour under it keeps it apart from the face.
+const LENS_Y = 11.8;
+const LENS_R = 4;
+const BRIDGE_ROUND = "M11.6 11Q12 10.4 12.4 11";
+const BRIDGE_SQUARE = "M11.6 10.4H12.4";
+const TEMPLES = "M3.7 10.6L2.7 10M20.3 10.6L21.3 10";
+const GLASSES_STROKE = { round: 0.7, square: 0.7, sunglasses: 1.2 } as const;
+// Lower detail: a thicker line and nothing but the rims and the bridge.
+const GLASSES_STROKE_SIMPLE = { round: 1.1, square: 1.1, sunglasses: 1.5 } as const;
+
+function Lenses({ style }: { style: Exclude<AvatarGlasses, "none"> }): JSX.Element {
+  if (style === "round") {
+    return (
+      <>
+        <circle cx="7.6" cy={LENS_Y} r={LENS_R} />
+        <circle cx="16.4" cy={LENS_Y} r={LENS_R} />
+      </>
+    );
+  }
+  const rx = style === "sunglasses" ? 3 : 2.4;
+  return (
+    <>
+      <rect x="3.6" y="7.8" width="8" height="8" rx={rx} />
+      <rect x="12.4" y="7.8" width="8" height="8" rx={rx} />
+    </>
+  );
+}
+
+function GlassesFrame({
+  style,
+  detail,
+  carved,
+}: {
+  style: Exclude<AvatarGlasses, "none">;
+  detail: boolean;
+  carved: boolean;
+}): JSX.Element {
+  const sw = (detail ? GLASSES_STROKE : GLASSES_STROKE_SIMPLE)[style];
+  const bridge = style === "round" ? BRIDGE_ROUND : BRIDGE_SQUARE;
+  const parts = (tint: boolean): JSX.Element => (
+    <>
+      <g className={tint ? "agent-av-glasses-tint" : undefined}>
+        <Lenses style={style} />
+      </g>
+      <path d={bridge} />
+      {detail && <path d={TEMPLES} />}
+    </>
+  );
+  return (
+    <g className={`agent-av-glasses agent-av-glasses-${style}`} transform={carved ? "translate(0 -1.3)" : undefined}>
+      <g className="agent-av-glasses-ring" strokeWidth={sw + (detail ? 1.1 : 0.8)}>
+        {parts(false)}
+      </g>
+      <g className="agent-av-glasses-frame" strokeWidth={sw}>
+        {parts(style === "sunglasses")}
+      </g>
+    </g>
+  );
+}
 
 export function AgentAvatar({
   pose,
   size = 16,
   fx = false,
   skin,
+  glasses,
   backed = false,
   className,
 }: {
@@ -64,6 +133,8 @@ export function AgentAvatar({
   fx?: boolean;
   /** Left out, the avatar wears what the whole page wears. */
   skin?: AvatarSkin;
+  /** Left out, the avatar wears the glasses the whole page wears. */
+  glasses?: AvatarGlasses;
   /** The eyes are holes: over anything but the page's own ground they need one behind them. */
   backed?: boolean;
   className?: string;
@@ -73,6 +144,8 @@ export function AgentAvatar({
   const worn = useAvatarSkin();
   const tint = useAvatarColor();
   const dress = skin ?? worn;
+  const wornGlasses = useAvatarGlasses();
+  const specs = glasses ?? wornGlasses;
   // Under about a pixel per unit a mouth or a rind is a smudge, not a detail.
   const detail = size / (fx ? FX_UNITS : GLYPH_UNITS) >= 0.9;
   const carved = dress === "halloween";
@@ -163,6 +236,15 @@ export function AgentAvatar({
               </g>
             )}
             {dress === "easter" && detail && <path className="agent-av-blush" d={NOSE} />}
+            {specs !== "none" && (
+              // The same two layers the eyes move in, so the stylesheet, the
+              // pose blend and the pointer's pull turn both alike.
+              <g className="agent-av-look">
+                <g className="agent-av-eyes agent-av-specs">
+                  <GlassesFrame style={specs} detail={detail} carved={carved} />
+                </g>
+              </g>
+            )}
             {dress === "christmas" && (
               <g className="agent-av-hat-set">
                 <path className="agent-av-hat" d={HAT_BODY} />
@@ -180,7 +262,7 @@ export function AgentAvatar({
             )}
             {/* The one effect that rides the head: the others stand beside it. */}
             {fx && (
-              <g className="agent-av-fx agent-av-fx-sweat" transform={dress === "christmas" ? DROP_AT_HAT : DROP_AT}>
+              <g className="agent-av-fx agent-av-fx-sweat" transform={specs !== "none" ? (dress === "christmas" ? DROP_AT_HAT_SPECS : DROP_AT_SPECS) : dress === "christmas" ? DROP_AT_HAT : DROP_AT}>
                 <g className="agent-av-sweat">
                   <path className="agent-av-drop-ring" d={DROP} />
                   <path className="agent-av-drop" d={DROP} />
@@ -192,7 +274,8 @@ export function AgentAvatar({
       </g>
       {fx && (
         <>
-          <g className="agent-av-fx agent-av-fx-search">
+          {/* Held a little further out and down with glasses on, so it does not sit on the right lens. */}
+          <g className="agent-av-fx agent-av-fx-search" transform={specs !== "none" ? "translate(2.2 3)" : undefined}>
             <g className="agent-av-lens">
               <circle className="agent-av-ring" cx="18.3" cy="15.6" r="2.4" strokeWidth="2.6" />
               <line className="agent-av-ring" x1="20.1" y1="17.4" x2="22.2" y2="19.5" strokeWidth="3.2" strokeLinecap="round" />

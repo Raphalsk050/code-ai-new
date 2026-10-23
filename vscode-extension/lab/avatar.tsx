@@ -11,7 +11,22 @@ import { createRoot } from "react-dom/client";
 
 import { AgentAvatar } from "../webview/agent-avatar";
 import type { AvatarPose } from "../webview/avatar-pose";
-import { AVATAR_SKINS, type AvatarSkin, seasonalSkin, setAvatarSkin } from "../webview/avatar-skin";
+import {
+  AVATAR_GLASSES,
+  AVATAR_SKINS,
+  type AvatarGlasses,
+  type AvatarSkin,
+  seasonalSkin,
+  setAvatarGlasses,
+  setAvatarSkin,
+} from "../webview/avatar-skin";
+
+const GLASSES_NAME: Record<AvatarGlasses, string> = {
+  none: "Sem óculos",
+  round: "Redondo",
+  square: "Quadrado",
+  sunglasses: "Escuro",
+};
 
 const SKIN_NAME: Record<AvatarSkin, string> = {
   default: "Padrão",
@@ -120,10 +135,12 @@ function Choice<T extends string>({
 
 function Lab(): JSX.Element {
   const [skin, setSkin] = React.useState<AvatarSkin>("default");
+  const [glasses, setGlasses] = React.useState<AvatarGlasses>("none");
   const [pose, setPose] = React.useState<AvatarPose>("idle");
   const [theme, setTheme] = React.useState("dark");
 
   React.useEffect(() => setAvatarSkin(skin), [skin]);
+  React.useEffect(() => setAvatarGlasses(glasses), [glasses]);
   React.useEffect(() => showTurn(pose), [pose]);
   React.useEffect(() => {
     document.documentElement.classList.toggle("lab-light", theme === "light");
@@ -141,6 +158,12 @@ function Lab(): JSX.Element {
 
       <section className="lab-card">
         <Choice label="Skin" value={skin} options={AVATAR_SKINS.map((s) => [s, SKIN_NAME[s]] as const)} onPick={setSkin} />
+        <Choice
+          label="Óculos"
+          value={glasses}
+          options={AVATAR_GLASSES.map((g) => [g, GLASSES_NAME[g]] as const)}
+          onPick={setGlasses}
+        />
         <Choice label="Estado" value={pose} options={POSES} onPick={setPose} />
         <Choice label="Tema" value={theme} options={[["dark", "Escuro"], ["light", "Claro"]]} onPick={setTheme} />
       </section>

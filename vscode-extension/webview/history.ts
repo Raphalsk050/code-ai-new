@@ -7,7 +7,7 @@
 
 import type { AppMode, ServerConversation } from "../src/protocol";
 import type { Place } from "./avatar-motion";
-import type { AvatarColor, AvatarSkin } from "./avatar-skin";
+import type { AvatarColor, AvatarGlasses, AvatarSkin } from "./avatar-skin";
 import type { Item } from "./store/transcript";
 
 export interface Conversation {
@@ -84,6 +84,8 @@ export interface ExtPrefs {
   avatarSkin: "auto" | AvatarSkin;
   /** The glyph's colour: the theme's accent, or one picked by hand. */
   avatarColor: AvatarColor;
+  /** The glasses the avatar wears, whatever its costume and colour. */
+  avatarGlasses: AvatarGlasses;
   /** Whether the floating avatar looks at the pointer while it is idle. */
   avatarWatches: boolean;
   /** Whether the avatar gets anxious while the user types. */
@@ -99,7 +101,7 @@ export interface ExtPrefs {
   avatarSize: number;
 }
 
-export const DEFAULT_PREFS: ExtPrefs = { mode: "agent", autoRunRefactor: false, floatingAvatar: true, avatarSkin: "auto", avatarColor: "theme", avatarWatches: true, avatarAnxious: true,
+export const DEFAULT_PREFS: ExtPrefs = { mode: "agent", autoRunRefactor: false, floatingAvatar: true, avatarSkin: "auto", avatarColor: "theme", avatarGlasses: "none", avatarWatches: true, avatarAnxious: true,
   avatarGreets: true, avatarWaits: true, avatarCheers: true, avatarSleeps: true, avatarTouch: true, avatarHides: true,
   avatarSize: 88,
 };

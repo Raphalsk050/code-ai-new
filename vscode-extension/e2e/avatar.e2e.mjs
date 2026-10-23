@@ -35,6 +35,7 @@ async function type(ui, text) {
   await ui.page.keyboard.type(text, { delay: 60 });
 }
 const COSTUME = '.settings-field:has(.settings-field-label:text-is("Avatar costume"))';
+const GLASSES = '.settings-field:has(.settings-field-label:text-is("Avatar glasses"))';
 
 /** Where its box is once it has stopped moving. */
 async function settle(ui) {
@@ -440,6 +441,115 @@ export const tests = {
     await ui.shot("avatar-colour");
     await ui.page.click(`.swatch[aria-label="Theme's accent"]`);
     await ui.page.waitForSelector(`${FLOAT} .agent-av:not([data-color])`);
+  },
+
+  async "the glasses picked in the settings are saved and drawn, whatever it wears"(ui, assert) {
+    await openSettings(ui);
+    assert(!(await ui.page.$(".agent-av-glasses")), "glasses before any were picked");
+    assert((await ui.page.evaluate(() => window.__state?.prefs?.avatarGlasses ?? "none")) === "none", "it does not start without");
+    const options = await ui.page.$$eval(`${GLASSES} [role="radio"]`, (items) => items.map((item) => item.textContent.trim()));
+    assert(options.join() === "No glasses,Round,Square,Sunglasses", `the glasses offered: ${options}`);
+    for (const [label, style] of [["Round", "round"], ["Square", "square"], ["Sunglasses", "sunglasses"]]) {
+      await ui.page.click(`${GLASSES} [role="radio"]:text-is("${label}")`);
+      await ui.page.waitForSelector(`${FLOAT} .agent-av-glasses-${style}`);
+      assert((await ui.page.evaluate(() => window.__state.prefs.avatarGlasses)) === style, `${style} was not saved`);
+    }
+    // Apart from the costume and the colour: the three go on together.
+    await choose(ui, COSTUME, "halloween");
+    await ui.page.click('.swatch[aria-label="Green"]');
+    await ui.page.waitForSelector(`${FLOAT} .agent-av[data-skin="halloween"][data-color="green"] .agent-av-glasses-sunglasses`);
+    await ui.shot("avatar-glasses");
+    await ui.page.click(`${GLASSES} [role="radio"]:text-is("No glasses")`);
+    await ui.page.waitForSelector(`${FLOAT} .agent-av-glasses`, { state: "detached" });
+    assert((await ui.page.evaluate(() => window.__state.prefs.avatarGlasses)) === "none", "taking them off was not saved");
+  },
+
+  async "the frame is part of the head: it turns with the eyes, never on its own"(ui, assert) {
+    await openSettings(ui);
+    await ui.page.click(`${GLASSES} [role="radio"]:text-is("Round")`);
+    await ui.page.waitForSelector(`${FLOAT} .agent-av-glasses`);
+    await ui.page.click('button[title="Back"]');
+    await openChat(ui);
+    // Where it hangs: in the rig and the breath with the face, and in the look and
+    // gaze layers the eyes move in; nothing in between moves by itself.
+    const hung = await ui.page.$eval(`${FLOAT} .agent-av-glasses`, (el) => {
+      const inside = (selector) => !!el.closest(selector);
+      return {
+        rig: inside(".agent-av-rig"),
+        breath: inside(".agent-av-breath"),
+        look: inside(".agent-av-look"),
+        gaze: !!el.parentElement?.matches(".agent-av-eyes.agent-av-specs"),
+        lag: inside(".agent-av-leaf-lag") || inside(".agent-av-leaf"),
+        animation: getComputedStyle(el).animationName,
+      };
+    });
+    assert(hung.rig && hung.breath, "the frame is not inside the head's rig and breath");
+    assert(hung.look && hung.gaze, "the frame is not in the layers the eyes turn in");
+    assert(!hung.lag, "the frame hangs from a layer that lags behind the head");
+    assert(hung.animation === "none", `the frame has an animation of its own: ${hung.animation}`);
+
+    // Frame by frame, against the face: rigid (no turn or squash of its own), and
+    // exactly where the eyes' look and gaze have gone.
+    const sample = (ms) =>
+      ui.page.evaluate(
+        ([selector, ms]) =>
+          new Promise((done) => {
+            const root = document.querySelector(selector);
+            const specs = root.querySelector(".agent-av-specs");
+            const face = root.querySelector(".agent-av-face");
+            const look = root.querySelector("mask .agent-av-look");
+            const eyes = root.querySelector("mask .agent-av-eyes");
+            const out = { shape: 0, off: 0, turned: 0, frames: 0 };
+            const start = performance.now();
+            const frame = () => {
+              const rel = face.getScreenCTM().inverse().multiply(specs.getScreenCTM());
+              out.shape = Math.max(out.shape, Math.abs(rel.a - 1), Math.abs(rel.b), Math.abs(rel.c), Math.abs(rel.d - 1));
+              const turn = new DOMMatrix(getComputedStyle(look).transform).multiply(new DOMMatrix(getComputedStyle(eyes).transform));
+              out.off = Math.max(out.off, Math.hypot(rel.e - turn.e, rel.f - turn.f));
+              out.turned = Math.max(out.turned, Math.hypot(rel.e, rel.f));
+              out.frames += 1;
+              if (performance.now() - start < ms) requestAnimationFrame(frame);
+              else done(out);
+            };
+            requestAnimationFrame(frame);
+          }),
+        [FLOAT, ms]
+      );
+
+    // Idle: the head sways, breathes and looks around.
+    const idle = await sample(3000);
+    assert(idle.frames > 20, `only ${idle.frames} frames were sampled`);
+    assert(idle.turned > 0.15, `the head never turned (${idle.turned}), so nothing was tested`);
+    assert(idle.shape < 0.02, `the frame turned or squashed on its own while idle by ${idle.shape}`);
+    assert(idle.off < 0.05, `the frame fell behind the eyes while idle by ${idle.off}`);
+
+    // Watching the pointer: the look follows it, and the frame with it.
+    const grip = await ui.page.locator(GRIP).boundingBox();
+    await ui.page.mouse.move(grip.x - 220, grip.y - 160, { steps: 8 });
+    const watching = await sample(900);
+    assert(watching.off < 0.05, `the frame did not follow the look at the pointer (${watching.off})`);
+
+    // Anxious: it trembles at the keys.
+    await ui.page.click(FIELD);
+    await ui.page.keyboard.type("Refactor the parser of the arguments, and run every test there is", { delay: 40 });
+    await ui.page.waitForSelector(ANXIOUS);
+    const anxious = await sample(1200);
+    assert(anxious.shape < 0.02 && anxious.off < 0.05, `the frame came off the head while anxious (${anxious.shape}, ${anxious.off})`);
+
+    // Carried and thrown: the whole glyph moves, and the frame with it.
+    const from = { x: grip.x + grip.width / 2, y: grip.y + grip.height / 2 };
+    await ui.page.mouse.move(from.x, from.y);
+    await ui.page.mouse.down();
+    const during = sample(700);
+    for (let i = 1; i <= 12; i++) {
+      await ui.page.mouse.move(from.x - i * 12, from.y - i * 9);
+      await ui.page.waitForTimeout(30);
+    }
+    const carried = await during;
+    assert(carried.shape < 0.02 && carried.off < 0.05, `the frame came off the head while carried (${carried.shape}, ${carried.off})`);
+    await ui.page.mouse.up();
+    const after = await sample(900);
+    assert(after.shape < 0.02 && after.off < 0.05, `the frame came off the head after it was let go (${after.shape}, ${after.off})`);
   },
 
   async "left to the calendar, it dresses for the season"(ui, assert) {

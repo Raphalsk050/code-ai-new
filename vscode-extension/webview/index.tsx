@@ -59,7 +59,7 @@ import { isPlace } from "./avatar-motion";
 import { cue } from "./avatar-acts";
 import { stroke, useRapt } from "./avatar-nerves";
 import { avatarPose, turnMood } from "./avatar-pose";
-import { seasonalSkin, setAvatarColor, setAvatarSkin } from "./avatar-skin";
+import { seasonalSkin, setAvatarColor, setAvatarGlasses, setAvatarSkin } from "./avatar-skin";
 import { useDesktopSeat } from "./desktop-seat";
 import { clampAvatarSize } from "./avatar-size-menu";
 import { FloatingAvatar } from "./floating-avatar";
@@ -202,6 +202,7 @@ function App(): JSX.Element {
     return () => window.clearInterval(hourly);
   }, [prefs.avatarSkin]);
   React.useEffect(() => setAvatarColor(prefs.avatarColor), [prefs.avatarColor]);
+  React.useEffect(() => setAvatarGlasses(prefs.avatarGlasses), [prefs.avatarGlasses]);
 
   // -- host messages -------------------------------------------------------
   React.useEffect(() => {
